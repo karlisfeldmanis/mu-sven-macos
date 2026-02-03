@@ -9,6 +9,7 @@ const TERRAIN_SIZE = 256
 
 const MUTerrainParser = preload("res://addons/mu_tools/mu_terrain_parser.gd")
 const MUTerrainMeshBuilder = preload("res://addons/mu_tools/mu_terrain_mesh_builder.gd")
+const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
 
 var heightmap: PackedFloat32Array
 var map_data: MUTerrainParser.MapData
@@ -41,7 +42,6 @@ func load_world():
 	
 	# 5. Load Lightmap (TerrainLight.OZJ)
 	var light_path = data_path.path_join("TerrainLight.OZJ")
-	const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
 	var light_tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(light_path))
 	if light_tex:
 		lightmap = light_tex.get_image()
@@ -73,77 +73,73 @@ func load_world():
 func _setup_material():
 	print("[MUTerrain] Loading tile textures...")
 	
-	# SVEN texture order (MapManager.cpp lines 1364-1447)
-	var texture_names = [
-		"TileGrass01",    # Index 0 - BITMAP_MAPTILE + 0
-		"TileGrass02",    # Index 1 - BITMAP_MAPTILE + 1
-		"TileGround01",   # Index 2 - BITMAP_MAPTILE + 2
-		"TileGround02",   # Index 3 - BITMAP_MAPTILE + 3
-		"TileGround03",   # Index 4 - BITMAP_MAPTILE + 4
-		"TileWater01",    # Index 5 - BITMAP_MAPTILE + 5
-		"TileWood01",     # Index 6 - BITMAP_MAPTILE + 6
-		"TileRock01",     # Index 7 - BITMAP_MAPTILE + 7
-		"TileRock02",     # Index 8 - BITMAP_MAPTILE + 8
-		"TileRock03",     # Index 9 - BITMAP_MAPTILE + 9
-		"TileRock04",     # Index 10 - BITMAP_MAPTILE + 10
-		"TileRock05",     # Index 11 - BITMAP_MAPTILE + 11
-		"TileRock06",     # Index 12 - BITMAP_MAPTILE + 12
-		"TileRock07",     # Index 13 - BITMAP_MAPTILE + 13
+	# 1. Base textures (Indices 0-13)
+	var base_texture_names = [
+		"TileGrass01",    # Index 0
+		"TileGrass02",    # Index 1
+		"TileGround01",   # Index 2
+		"TileGround02",   # Index 3
+		"TileGround03",   # Index 4
+		"TileWater01",    # Index 5
+		"TileWood01",     # Index 6
+		"TileRock01",     # Index 7
+		"TileRock02",     # Index 8
+		"TileRock03",     # Index 9
+		"TileRock04",     # Index 10
+		"TileRock05",     # Index 11
+		"TileRock06",     # Index 12
+		"TileRock07",     # Index 13
 	]
 	
-	const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
-	var textures: Array[Image] = []
+	# 2. Map-specific ExtTile textures (Indices 14-255)
+	# MuOnline usually loads ExtTile01 to ExtTileXY and maps them to BITMAP_MAPTILE + 13 + i
+	# However, we'll try to load any available ExtTile textures up to 242 (255 - 13)
+	var texture_map = {} # index -> Image
 	
-	for i in range(texture_names.size()):
-		var tex_name = texture_names[i]
-		var loaded = false
-		
-		# Try .OZJ first, then .OZT, then .jpg
-		for ext in [".OZJ", ".OZT", ".jpg"]:
-			var path = data_path.path_join(tex_name + ext)
-			
-			# Try Godot's load first
-			var tex = load(path) as Texture2D
-			if tex:
-				var img = tex.get_image()
-				textures.append(img)
-				print("  [%d] Loaded: %s (%dx%d)" % [i, tex_name + ext, img.get_width(), img.get_height()])
-				loaded = true
-				break
-			
-			# Try direct loader
-			var direct_tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
-			if direct_tex:
-				var img = direct_tex.get_image()
-				textures.append(img)
-				print("  [%d] Loaded (direct): %s (%dx%d)" % [i, tex_name + ext, img.get_width(), img.get_height()])
-				loaded = true
-				break
-		
-		if not loaded:
-			# Create fallback texture
-			var img = Image.create(256, 256, false, Image.FORMAT_RGB8)
-			img.fill(Color(0.5, 0.5, 0.5))  # Gray fallback
-			textures.append(img)
-			print("  [%d] FALLBACK: %s (gray 256x256)" % [i, tex_name])
 	
-	# Create Texture2DArray
-	print("[MUTerrain] Creating Texture2DArray with %d textures..." % textures.size())
-	
-	# Find max size for array (all must be same size)
+	# Load base textures
+	for i in range(base_texture_names.size()):
+		var tex_name = base_texture_names[i]
+		var img = _load_tile_image(tex_name)
+		if img:
+			texture_map[i] = img
+			print("  [%d] Loaded base: %s" % [i, tex_name])
+
+	# Load extended textures (ExtTile01, ExtTile02, etc.)
+	# Mapping starts at index 14
+	for i in range(1, 243):
+		var tex_name = "ExtTile%02d" % i
+		var img = _load_tile_image(tex_name)
+		if img:
+			var target_idx = 13 + i
+			if target_idx < 256:
+				texture_map[target_idx] = img
+				print("  [%d] Loaded extended: %s" % [target_idx, tex_name])
+
+	# Create fallbacks and finalize the list of 256 images
+	var final_images: Array[Image] = []
 	var max_size = 256
-	for img in textures:
+	
+	# Initial pass to find max size
+	for img in texture_map.values():
 		max_size = max(max_size, max(img.get_width(), img.get_height()))
 	
-	# Resize all to max_size
-	for i in range(textures.size()):
-		var img = textures[i]
-		if img.get_width() != max_size or img.get_height() != max_size:
-			print("  Resizing texture from (%d, %d) to %dx%d" % [img.get_width(), img.get_height(), max_size, max_size])
-			img.resize(max_size, max_size, Image.INTERPOLATE_LANCZOS)
+	# Create fallback image
+	var fallback_img = Image.create(max_size, max_size, false, Image.FORMAT_RGB8)
+	fallback_img.fill(Color(0.2, 0.2, 0.5)) # Dark blue-gray fallback
 	
+	for i in range(256):
+		var img: Image = texture_map.get(i)
+		if img:
+			if img.get_width() != max_size or img.get_height() != max_size:
+				img.resize(max_size, max_size, Image.INTERPOLATE_LANCZOS)
+			final_images.append(img)
+		else:
+			final_images.append(fallback_img)
+	
+	print("[MUTerrain] Creating Texture2DArray with 256 layers...")
 	var tex_array = Texture2DArray.new()
-	tex_array.create_from_images(textures)
+	tex_array.create_from_images(final_images)
 	
 	print("[MUTerrain] Texture2DArray created successfully!")
 	
@@ -170,6 +166,29 @@ func _setup_material():
 		mat.set_shader_parameter("alpha_map", ImageTexture.create_from_image(alpha_img))
 	
 	terrain_mesh.material_override = mat
+
+func _load_tile_image(tex_name: String) -> Image:
+	# Try .OZJ first, then .OZT, then .jpg, then .tga
+	for ext in [".OZJ", ".OZT", ".jpg", ".tga"]:
+		var path = data_path.path_join(tex_name + ext)
+		
+		# Skip if file doesn't exist to avoid Godot error spam in console
+		if not FileAccess.file_exists(ProjectSettings.globalize_path(path)):
+			continue
+			
+		# Only try Godot's load if it's a standard format Godot might recognize
+		# MU specific formats (.OZJ, .OZT, .OZB) will always fail Godot's load()
+		if ext.to_lower() in [".jpg", ".png"]:
+			var tex = load(path) as Texture2D
+			if tex:
+				return tex.get_image()
+		
+		# Try direct loader
+		var direct_tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
+		if direct_tex:
+			return direct_tex.get_image()
+			
+	return null
 
 
 func _create_water_mesh():
@@ -234,16 +253,18 @@ func _create_water_mesh():
 	]
 	
 	for path in tex_paths:
-		var tex = load(path) as Texture2D
-		if tex:
-			water_tex = tex
-			print("  Loaded water texture: %s" % path)
-			break
+		var ext = path.get_extension().to_lower()
+		if ext in ["jpg", "png"]:
+			if FileAccess.file_exists(path):
+				var tex = load(path) as Texture2D
+				if tex:
+					water_tex = tex
+					print("  Loaded water texture: %s" % path)
+					break
 	
 	# Try direct texture loader as fallback
 	if not water_tex:
 		for path in tex_paths:
-			const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
 			var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
 			if tex:
 				water_tex = tex
@@ -274,26 +295,27 @@ func _create_grass_mesh():
 	
 	print("[MUTerrain] Creating grass with %d tiles..." % map_data.grass_tiles.size())
 	
-	# Create FLAT grass quad (horizontal on terrain, not vertical billboard!)
+	# Create VERTICAL grass billboard (stands upright, faces camera)
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	
-	# Flat quad lying on terrain surface (1m x 1m)
-	var size = 1.0
-	var v0 = Vector3(-size/2, 0.05, -size/2)  # Slight raise (5cm) above terrain
-	var v1 = Vector3(size/2, 0.05, -size/2)
-	var v2 = Vector3(size/2, 0.05, size/2)
-	var v3 = Vector3(-size/2, 0.05, size/2)
+	# Vertical billboard quad (0.5m wide x 0.5m tall)
+	var width = 0.5
+	var height = 0.5
+	var v0 = Vector3(-width/2, 0.0, 0.0)    # Bottom-left
+	var v1 = Vector3(width/2, 0.0, 0.0)     # Bottom-right
+	var v2 = Vector3(width/2, height, 0.0)  # Top-right
+	var v3 = Vector3(-width/2, height, 0.0) # Top-left
 	
-	# UVs for full texture (we'll use texture atlas in shader if needed)
-	var uv0 = Vector2(0, 0)
-	var uv1 = Vector2(1, 0)
-	var uv2 = Vector2(1, 1)
-	var uv3 = Vector2(0, 1)
+	# UVs for full texture
+	var uv0 = Vector2(0, 1)  # Bottom-left
+	var uv1 = Vector2(1, 1)  # Bottom-right
+	var uv2 = Vector2(1, 0)  # Top-right
+	var uv3 = Vector2(0, 0)  # Top-left
 	
-	var normal = Vector3.UP
+	var normal = Vector3(0, 0, 1)  # Facing forward (will be rotated by billboard)
 	
-	# Triangle 1
+	# Triangle 1 (bottom-left, bottom-right, top-right)
 	st.set_normal(normal)
 	st.set_uv(uv0)
 	st.add_vertex(v0)
@@ -302,7 +324,7 @@ func _create_grass_mesh():
 	st.set_uv(uv2)
 	st.add_vertex(v2)
 	
-	# Triangle 2
+	# Triangle 2 (bottom-left, top-right, top-left)
 	st.set_uv(uv0)
 	st.add_vertex(v0)
 	st.set_uv(uv2)
@@ -344,21 +366,39 @@ func _create_grass_mesh():
 	]
 	
 	for path in tex_paths:
-		var tex = load(path) as Texture2D
-		if tex:
-			grass_tex = tex
-			print("  Loaded grass texture: %s" % path)
-			break
+		var ext = path.get_extension().to_lower()
+		if ext in ["jpg", "png"]:
+			if FileAccess.file_exists(path):
+				var tex = load(path) as Texture2D
+				if tex:
+					grass_tex = tex
+					print("  Loaded grass texture: %s" % path)
+					break
 	
-	# Try direct texture loader as fallback
+	# Try direct texture loader as fallback (for MU-encrypted files)
 	if not grass_tex:
 		for path in tex_paths:
-			const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
 			var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
 			if tex:
 				grass_tex = tex
-				print("  Loaded grass texture (direct): %s" % path)
+				print("  Loaded grass texture (MU encrypted): %s" % path)
 				break
+	
+	# Try loading as raw TGA (grass textures are NOT encrypted!)
+	if not grass_tex:
+		for ext in [".tga", ".OZT"]:
+			var tga_path = data_path.path_join("TileGrass01" + ext)
+			var abs_path = ProjectSettings.globalize_path(tga_path)
+			if FileAccess.file_exists(abs_path):
+				var file = FileAccess.open(abs_path, FileAccess.READ)
+				if file:
+					var tga_data = file.get_buffer(file.get_length())
+					file.close()
+					var img = Image.new()
+					if img.load_tga_from_buffer(tga_data) == OK:
+						grass_tex = ImageTexture.create_from_image(img)
+						print("  Loaded grass texture (raw TGA): %s" % tga_path)
+						break
 	
 	# Create grass material with wind shader
 	var mat = ShaderMaterial.new()

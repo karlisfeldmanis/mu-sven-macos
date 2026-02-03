@@ -6,10 +6,12 @@ class_name MUMeshBuilder
 ## Converts BMD mesh data to Godot ArrayMesh with proper coordinate conversion
 ## Based on ZzzObject.cpp rendering logic
 
+const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+
 ## Build a Godot ArrayMesh from BMD mesh data
 static func build_mesh(bmd_mesh: BMDParser.BMDMesh, 
 		_skeleton: Skeleton3D = null, 
-		bmd_path: String = "",
+		_bmd_path: String = "",
 		debug: bool = false) -> ArrayMesh:
 	if not bmd_mesh or bmd_mesh.vertices.is_empty():
 		push_error("[Mesh Builder] Invalid or empty mesh data")
@@ -55,20 +57,24 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 	var mesh = st.commit()
 	
 	# Automated Texture Resolution
-	if not bmd_path.is_empty() and not bmd_mesh.texture_filename.is_empty():
-		var tex_path = MUTextureResolver.resolve_texture_path(bmd_path, bmd_mesh.texture_filename)
+	if not _bmd_path.is_empty() and bmd_mesh.texture_filename:
+		var tex_path = MUTextureResolver.resolve_texture_path(_bmd_path, bmd_mesh.texture_filename)
 		if not tex_path.is_empty():
-			var texture = load(tex_path)
+			var texture: Texture2D = null
+			var ext = tex_path.get_extension().to_lower()
+			var is_mu_format = ext in ["ozj", "ozt", "ozb"]
 			
-			# Fallback: If load() fails (unimported), try direct creation
-			if not texture and (tex_path.ends_with(".ozj") or tex_path.ends_with(".ozt")):
-				if debug: print("  [Mesh Builder] Load failed, attempting direct OZJ/OZT load: ", tex_path)
+			# Only try Godot's load if it exists and is a standard format
+			if not is_mu_format and FileAccess.file_exists(tex_path):
+				texture = load(tex_path)
+			
+			# Fallback: MU formats or failed standard load
+			if not texture:
 				texture = _direct_load_mu_texture(tex_path)
 				
 			if texture:
 				var material = MUMaterialFactory.create_material(texture, bmd_mesh.flags)
 				mesh.surface_set_material(0, material)
-				if debug: print("  [Mesh Builder] Resolved texture: ", tex_path.get_file())
 	
 	if debug:
 		print("[Mesh Builder] Created mesh:")
@@ -104,7 +110,5 @@ static func create_mesh_instance(bmd_mesh: BMDParser.BMDMesh,
 	return mesh_instance
 
 ## Fallback: Directly load and decrypt an OZJ/OZT file as an ImageTexture
-## Fallback: Directly load and decrypt an OZJ/OZT file as an ImageTexture
 static func _direct_load_mu_texture(path: String) -> ImageTexture:
-	const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
-	return MUTextureLoader.load_mu_texture(path)
+	return MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
