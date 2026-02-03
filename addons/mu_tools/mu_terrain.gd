@@ -12,6 +12,7 @@ const MUTerrainMeshBuilder = preload("res://addons/mu_tools/mu_terrain_mesh_buil
 
 var heightmap: PackedFloat32Array
 var map_data: RefCounted # MUTerrainParser.MapData
+var attributes: PackedByteArray # Collision/walkability data
 var object_data: Array # Array[MUTerrainParser.ObjectData]
 var terrain_mesh: MeshInstance3D
 
@@ -30,6 +31,10 @@ func load_world():
 	heightmap = parser.parse_height_file(height_file)
 	map_data = parser.parse_mapping_file(mapping_file)
 	object_data = parser.parse_objects_file(objects_file)
+	
+	# Load attributes (collision)
+	var att_file = data_path.path_join("EncTerrain%d.att" % world_id)
+	attributes = parser.parse_attributes_file(att_file)
 	
 	# 2. Load Lightmap
 	var lightmap_tex = load(light_file) as Texture2D
@@ -132,3 +137,28 @@ func _spawn_objects():
 	for obj in object_data:
 		# TODO: Implement object spawning logic
 		pass
+
+func is_walkable(tile_x: int, tile_y: int) -> bool:
+	"""Check if a tile is walkable based on attributes"""
+	if attributes.is_empty():
+		return true  # No attributes loaded, assume walkable
+	
+	if tile_x < 0 or tile_x >= TERRAIN_SIZE or tile_y < 0 or tile_y >= TERRAIN_SIZE:
+		return false  # Out of bounds
+	
+	var idx = tile_y * TERRAIN_SIZE + tile_x
+	var attr = attributes[idx]
+	
+	# Attribute 0 = walkable, 1 = blocked, 2+ = special zones
+	return attr == 0 or attr == 2  # Walkable or safe zone
+
+func get_attribute(tile_x: int, tile_y: int) -> int:
+	"""Get attribute value for a tile"""
+	if attributes.is_empty():
+		return 0
+	
+	if tile_x < 0 or tile_x >= TERRAIN_SIZE or tile_y < 0 or tile_y >= TERRAIN_SIZE:
+		return 1  # Out of bounds = blocked
+	
+	var idx = tile_y * TERRAIN_SIZE + tile_x
+	return attributes[idx]

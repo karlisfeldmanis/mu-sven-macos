@@ -99,6 +99,45 @@ func parse_mapping_file(path: String) -> MapData:
 		
 	return res
 
+func parse_attributes_file(path: String) -> PackedByteArray:
+	"""Parse terrain attributes (collision/walkability) from .att file"""
+	var file = FileAccess.open(path, FileAccess.READ)
+	if not file:
+		push_error("Cannot open attributes file: ", path)
+		return PackedByteArray()
+	
+	var encrypted_data = file.get_buffer(file.get_length())
+	var data = decrypt_map_file(encrypted_data)
+	
+	# File format:
+	# Byte 0: Version
+	# Byte 1: Map number
+	# Byte 2: Width (256)
+	# Byte 3: Height (256)
+	# Byte 4+: Attribute data (BYTE or WORD format)
+	
+	# Check if BYTE or WORD format based on size
+	var expected_byte_size = 4 + (TERRAIN_SIZE * TERRAIN_SIZE)
+	var expected_word_size = 4 + (TERRAIN_SIZE * TERRAIN_SIZE * 2)
+	
+	var attributes = PackedByteArray()
+	attributes.resize(TERRAIN_SIZE * TERRAIN_SIZE)
+	
+	if data.size() == expected_byte_size:
+		# BYTE format (legacy)
+		for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
+			attributes[i] = data[4 + i]
+	elif data.size() == expected_word_size:
+		# WORD format (extended) - use low byte only for simplicity
+		for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
+			attributes[i] = data[4 + i * 2]
+	else:
+		push_error("Invalid attributes file size: ", data.size())
+		return PackedByteArray()
+	
+	print("[Terrain Parser] Loaded %d attribute bytes" % attributes.size())
+	return attributes
+
 func parse_objects_file(path: String) -> Array[ObjectData]:
 	var file = FileAccess.open(path, FileAccess.READ)
 	if not file:
