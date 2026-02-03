@@ -15,6 +15,8 @@ var map_data: RefCounted # MUTerrainParser.MapData
 var attributes: PackedByteArray # Collision/walkability data
 var object_data: Array # Array[MUTerrainParser.ObjectData]
 var terrain_mesh: MeshInstance3D
+var water_mesh: MeshInstance3D
+var grass_mesh: MultiMeshInstance3D
 
 func load_world():
 	var parser = MUTerrainParser.new()
@@ -52,7 +54,13 @@ func load_world():
 	# 4. Setup Material
 	_setup_material()
 	
-	# 5. Spawn Objects
+	# 5. Create Water Mesh
+	_create_water_mesh()
+	
+	# 6. Create Grass Mesh
+	_create_grass_mesh()
+	
+	# 7. Spawn Objects
 	_spawn_objects()
 
 func _setup_material():
@@ -129,6 +137,216 @@ func _setup_material():
 		push_error("[MUTerrain] No tile textures loaded!")
 	
 	terrain_mesh.material_override = mat
+
+func _create_water_mesh():
+	if not map_data or map_data.water_tiles.is_empty():
+		return
+	
+	print("[MUTerrain] Creating water mesh with %d tiles..." % map_data.water_tiles.size())
+	
+	var st = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	
+	for tile in map_data.water_tiles:
+		var x = tile.x
+		var y = tile.y
+		
+		# Get height at this position
+		var idx = y * TERRAIN_SIZE + x
+		var h = heightmap[idx] if idx < heightmap.size() else 0.0
+		
+		# Raise water slightly above terrain
+		h += 0.15
+		
+		# Create water quad (two triangles)
+		var v0 = Vector3(x, h, y)
+		var v1 = Vector3(x + 1, h, y)
+		var v2 = Vector3(x + 1, h, y + 1)
+		var v3 = Vector3(x, h, y + 1)
+		
+		var uv0 = Vector2(0, 0)
+		var uv1 = Vector2(1, 0)
+		var uv2 = Vector2(1, 1)
+		var uv3 = Vector2(0, 1)
+		
+		var normal = Vector3.UP
+		
+		# Triangle 1
+		st.set_normal(normal)
+		st.set_uv(uv0)
+		st.add_vertex(v0)
+		st.set_uv(uv1)
+		st.add_vertex(v1)
+		st.set_uv(uv2)
+		st.add_vertex(v2)
+		
+		# Triangle 2
+		st.set_uv(uv0)
+		st.add_vertex(v0)
+		st.set_uv(uv2)
+		st.add_vertex(v2)
+		st.set_uv(uv3)
+		st.add_vertex(v3)
+	
+	var mesh = st.commit()
+	
+	# Load water texture - try multiple paths
+	var water_tex: Texture2D = null
+	var tex_paths = [
+		data_path.path_join("TileWater01.OZJ"),
+		data_path.path_join("TileWater01.OZT"),
+	]
+	
+	for path in tex_paths:
+		var tex = load(path) as Texture2D
+		if tex:
+			water_tex = tex
+			print("  Loaded water texture: %s" % path)
+			break
+	
+	# Try direct texture loader as fallback
+	if not water_tex:
+		for path in tex_paths:
+			const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+			var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
+			if tex:
+				water_tex = tex
+				print("  Loaded water texture (direct): %s" % path)
+				break
+	
+	# Create water material
+	var mat = StandardMaterial3D.new()
+	if water_tex:
+		mat.albedo_texture = water_tex
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	else:
+		# Fallback to blue if no texture
+		mat.albedo_color = Color(0.3, 0.5, 0.8, 0.7)
+		print("  Using fallback blue color for water")
+	
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	
+	water_mesh = MeshInstance3D.new()
+	water_mesh.mesh = mesh
+	water_mesh.material_override = mat
+	water_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(water_mesh)
+	
+	print("[MUTerrain] Water mesh created!")
+
+func _create_grass_mesh():
+	if not map_data or map_data.grass_tiles.is_empty():
+		return
+	
+	print("[MUTerrain] Creating grass with %d tiles..." % map_data.grass_tiles.size())
+	
+	# Create FLAT grass quad (horizontal on terrain, not vertical billboard!)
+	var st = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	
+	# Flat quad lying on terrain surface (1m x 1m)
+	var size = 1.0
+	var v0 = Vector3(-size/2, 0.05, -size/2)  # Slight raise (5cm) above terrain
+	var v1 = Vector3(size/2, 0.05, -size/2)
+	var v2 = Vector3(size/2, 0.05, size/2)
+	var v3 = Vector3(-size/2, 0.05, size/2)
+	
+	# UVs for full texture (we'll use texture atlas in shader if needed)
+	var uv0 = Vector2(0, 0)
+	var uv1 = Vector2(1, 0)
+	var uv2 = Vector2(1, 1)
+	var uv3 = Vector2(0, 1)
+	
+	var normal = Vector3.UP
+	
+	# Triangle 1
+	st.set_normal(normal)
+	st.set_uv(uv0)
+	st.add_vertex(v0)
+	st.set_uv(uv1)
+	st.add_vertex(v1)
+	st.set_uv(uv2)
+	st.add_vertex(v2)
+	
+	# Triangle 2
+	st.set_uv(uv0)
+	st.add_vertex(v0)
+	st.set_uv(uv2)
+	st.add_vertex(v2)
+	st.set_uv(uv3)
+	st.add_vertex(v3)
+	
+	var grass_quad = st.commit()
+	
+	# Create MultiMesh for instancing
+	var multi_mesh = MultiMesh.new()
+	multi_mesh.transform_format = MultiMesh.TRANSFORM_3D
+	multi_mesh.use_colors = true
+	multi_mesh.mesh = grass_quad
+	multi_mesh.instance_count = map_data.grass_tiles.size()
+	
+	# Position each grass instance
+	for i in range(map_data.grass_tiles.size()):
+		var tile = map_data.grass_tiles[i]
+		var x = tile.x
+		var y = tile.y
+		
+		# Get height at this position
+		var idx = y * TERRAIN_SIZE + x
+		var tile_h = heightmap[idx] if idx < heightmap.size() else 0.0
+		
+		# Position at tile center
+		var transform = Transform3D()
+		transform.origin = Vector3(x + 0.5, tile_h, y + 0.5)
+		
+		multi_mesh.set_instance_transform(i, transform)
+	
+	# Load grass texture - try multiple paths
+	var grass_tex: Texture2D = null
+	var tex_paths = [
+		data_path.path_join("TileGrass01.OZJ"),
+		data_path.path_join("TileGrass01.OZT"),
+	]
+	
+	for path in tex_paths:
+		var tex = load(path) as Texture2D
+		if tex:
+			grass_tex = tex
+			print("  Loaded grass texture: %s" % path)
+			break
+	
+	# Try direct texture loader as fallback
+	if not grass_tex:
+		for path in tex_paths:
+			const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+			var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
+			if tex:
+				grass_tex = tex
+				print("  Loaded grass texture (direct): %s" % path)
+				break
+	
+	# Create grass material
+	var mat = StandardMaterial3D.new()
+	if grass_tex:
+		mat.albedo_texture = grass_tex
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+		mat.alpha_scissor_threshold = 0.5
+	else:
+		# Fallback to green if no texture
+		mat.albedo_color = Color(0.4, 0.7, 0.3)
+		print("  Using fallback green color for grass")
+	
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED  # Use vertex colors
+	
+	grass_mesh = MultiMeshInstance3D.new()
+	grass_mesh.multimesh = multi_mesh
+	grass_mesh.material_override = mat
+	grass_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(grass_mesh)
+	
+	print("[MUTerrain] Grass mesh created with %d instances!" % multi_mesh.instance_count)
 
 func _spawn_objects():
 	print("[MUTerrain] Spawning %d objects..." % object_data.size())

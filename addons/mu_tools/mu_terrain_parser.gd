@@ -17,6 +17,8 @@ class MapData:
 	var layer1: PackedByteArray # 256x256
 	var layer2: PackedByteArray # 256x256
 	var alpha: PackedFloat32Array # 256x256
+	var water_tiles: Array # Positions of water tiles (Vector2i) - index 5
+	var grass_tiles: Array # Positions of grass tiles (Vector2i) - indices 0-2
 
 class ObjectData:
 	var type: int
@@ -96,6 +98,28 @@ func parse_mapping_file(path: String) -> MapData:
 	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
 		res.alpha[i] = float(data[ptr]) / 255.0
 		ptr += 1
+	
+	# Detect water tiles (Layer1 index 5)
+	res.water_tiles = []
+	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
+		if res.layer1[i] == 5:
+			var x = i % TERRAIN_SIZE
+			var y = i / TERRAIN_SIZE
+			res.water_tiles.append(Vector2i(x, y))
+	
+	if not res.water_tiles.is_empty():
+		print("[Terrain Parser] Found %d water tiles" % res.water_tiles.size())
+	
+	# Detect grass tiles (Layer1 indices 0-2)
+	res.grass_tiles = []
+	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
+		if res.layer1[i] >= 0 and res.layer1[i] <= 2:
+			var x = i % TERRAIN_SIZE
+			var y = i / TERRAIN_SIZE
+			res.grass_tiles.append(Vector2i(x, y))
+	
+	if not res.grass_tiles.is_empty():
+		print("[Terrain Parser] Found %d grass tiles" % res.grass_tiles.size())
 		
 	return res
 
