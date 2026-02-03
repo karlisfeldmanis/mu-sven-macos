@@ -1,24 +1,21 @@
 shader_type spatial;
-render_mode blend_mix, depth_draw_opaque, cull_back;
+render_mode blend_mix, cull_disabled, unshaded;
 
-uniform sampler2D water_texture : source_color;
-uniform vec4 water_tint : source_color = vec4(0.4, 0.6, 0.8, 0.7);
+uniform sampler2D water_texture : source_color, filter_linear, repeat_enable;
 uniform float scroll_speed = 0.05;
-uniform float wave_scale = 1.0;
+uniform vec2 scroll_direction = vec2(0.3, 0.7);
 
 void fragment() {
-	// Animated UV scrolling
-	vec2 uv = UV + vec2(TIME * scroll_speed, 0.0);
+	// Animated UV scrolling for flowing water effect
+	vec2 animated_uv = UV + scroll_direction * TIME * scroll_speed;
 	
-	// Sample water texture
-	vec4 tex = texture(water_texture, uv * wave_scale);
+	vec4 tex = texture(water_texture, animated_uv);
 	
-	// Apply water tint
-	ALBEDO = tex.rgb * water_tint.rgb;
-	ALPHA = water_tint.a;
+	// Apply vertex color (lightmap) and texture
+	ALBEDO = tex.rgb * COLOR.rgb;
+	ALPHA = 0.8;  // Semi-transparent water
 	
 	// Water material properties
-	METALLIC = 0.3;
-	ROUGHNESS = 0.2;
-	SPECULAR = 0.5;
+	METALLIC = 0.0;
+	ROUGHNESS = 0.3;  // Slightly reflective
 }
