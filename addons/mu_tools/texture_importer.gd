@@ -27,10 +27,10 @@ func _get_recognized_extensions() -> PackedStringArray:
 	return PackedStringArray(["ozj", "ozt"])
 
 func _get_save_extension() -> String:
-	return "ctex"  # Godot's compressed texture format
+	return "res"
 
 func _get_resource_type() -> String:
-	return "CompressedTexture2D"
+	return "ImageTexture"
 
 func _get_preset_count() -> int:
 	return Presets.size()
@@ -122,9 +122,6 @@ func _import(source_file: String, save_path: String, options: Dictionary,
 	
 	# Create and save texture resource
 	var texture = ImageTexture.create_from_image(image)
-	
-	# Save as material if requested (MuOnline uses custom materials)
-	var material = MUMaterialFactory.create_material(texture, header.get("flags", 0))
 	
 	var filename = save_path + "." + _get_save_extension()
 	err = ResourceSaver.save(texture, filename)

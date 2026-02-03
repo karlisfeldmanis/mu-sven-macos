@@ -9,6 +9,7 @@ class_name MUMeshBuilder
 ## Build a Godot ArrayMesh from BMD mesh data
 static func build_mesh(bmd_mesh: BMDParser.BMDMesh, 
 		_skeleton: Skeleton3D = null, 
+		bmd_path: String = "",
 		debug: bool = false) -> ArrayMesh:
 	if not bmd_mesh or bmd_mesh.vertices.is_empty():
 		push_error("[Mesh Builder] Invalid or empty mesh data")
@@ -53,6 +54,22 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 	st.index()
 	var mesh = st.commit()
 	
+	# Automated Texture Resolution
+	if not bmd_path.is_empty() and not bmd_mesh.texture_filename.is_empty():
+		var tex_path = MUTextureResolver.resolve_texture_path(bmd_path, bmd_mesh.texture_filename)
+		if not tex_path.is_empty():
+			var texture = load(tex_path)
+			
+			# Fallback: If load() fails (unimported), try direct creation
+			if not texture and (tex_path.ends_with(".ozj") or tex_path.ends_with(".ozt")):
+				if debug: print("  [Mesh Builder] Load failed, attempting direct OZJ/OZT load: ", tex_path)
+				texture = _direct_load_mu_texture(tex_path)
+				
+			if texture:
+				var material = MUMaterialFactory.create_material(texture, bmd_mesh.flags)
+				mesh.surface_set_material(0, material)
+				if debug: print("  [Mesh Builder] Resolved texture: ", tex_path.get_file())
+	
 	if debug:
 		print("[Mesh Builder] Created mesh:")
 		print("  Vertices: ", bmd_mesh.vertex_count)
@@ -63,19 +80,31 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 ## Create a MeshInstance3D node with the built mesh
 static func create_mesh_instance(bmd_mesh: BMDParser.BMDMesh, 
 		skeleton: Skeleton3D = null, 
-		texture_path: String = "") -> MeshInstance3D:
-	var mesh = build_mesh(bmd_mesh, skeleton)
+		bmd_path: String = "") -> MeshInstance3D:
+	var mesh = build_mesh(bmd_mesh, skeleton, bmd_path)
 	if not mesh:
 		return null
 	
 	var mesh_instance = MeshInstance3D.new()
 	mesh_instance.mesh = mesh
 	
-	# Apply MU specialized material
-	if not texture_path.is_empty() and FileAccess.file_exists(texture_path):
-		var texture = load(texture_path)
-		if texture:
-			var material = MUMaterialFactory.create_material(texture, bmd_mesh.flags)
-			mesh_instance.set_surface_override_material(0, material)
+	# Ensure the mesh has a skin if skeleton is provided
+	if skeleton:
+		var skin = Skin.new()
+		skin.set_bind_count(skeleton.get_bone_count())
+		for j in range(skeleton.get_bone_count()):
+			skin.set_bind_bone(j, j)
+			skin.set_bind_pose(j, Transform3D.IDENTITY)
+		mesh_instance.skin = skin
+		
+		# Set skeleton path (caller must add to tree for this to be absolute)
+		# For now use the name/relative path
+		mesh_instance.skeleton = NodePath("..")
 	
 	return mesh_instance
+
+## Fallback: Directly load and decrypt an OZJ/OZT file as an ImageTexture
+## Fallback: Directly load and decrypt an OZJ/OZT file as an ImageTexture
+static func _direct_load_mu_texture(path: String) -> ImageTexture:
+	const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+	return MUTextureLoader.load_mu_texture(path)

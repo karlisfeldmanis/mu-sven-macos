@@ -49,14 +49,17 @@ static func decrypt_bmd(buffer: PackedByteArray, version: int,
 
 ## Decrypts texture files (.ozj, .ozt)
 static func decrypt_texture(buffer: PackedByteArray) -> PackedByteArray:
-	# Texture files often use a simpler XOR or fixed header shift
+	# 1. If it's already a valid image, don't decrypt
+	if is_jpg(buffer) or is_tga(buffer):
+		return buffer
+		
+	# 2. Try XORing
 	var decrypted = buffer.duplicate()
-	
-	# Skip the header if already processed, but MuMain often XORs 
-	# the entire block after the 24-byte header
 	for i in range(decrypted.size()):
 		decrypted[i] = decrypted[i] ^ XOR_KEY_TEXTURE
 		
+	# 3. If still not valid after XOR, it might be a different encryption 
+	# or just raw data we don't recognize. Return decrypt for now.
 	return decrypted
 
 ## Detects if a buffer is a JPG after decryption
@@ -68,12 +71,18 @@ static func is_jpg(buffer: PackedByteArray) -> bool:
 static func is_tga(buffer: PackedByteArray) -> bool:
 	if buffer.size() < 18: return false
 	
-	# TGA footer is 26 bytes, but the signature "TRUEVISION-XFILE." is at offset -18
-	var footer_sig = buffer.slice(buffer.size() - 18, buffer.size()).get_string_from_ascii()
-	if footer_sig == "TRUEVISION-XFILE.":
-		return true
-		
-	# Fallback: Check for common TGA header (offset 2 in decrypted data should be 2, 3, 10 or 11)
-	# Header: [ID length, color map type, image type, ...]
+	# Common TGA headers
+	# 0: id length (any)
+	# 1: color map type (0 or 1)
+	# 2: image type (2, 3, 10, 11)
 	var image_type = buffer[2]
-	return image_type in [2, 3, 10, 11]
+	if not image_type in [2, 3, 10, 11]:
+		return false
+		
+	# Check footer if possible
+	if buffer.size() > 26:
+		var footer_sig = buffer.slice(buffer.size() - 18, buffer.size()).get_string_from_ascii()
+		if footer_sig == "TRUEVISION-XFILE.":
+			return true
+	
+	return true

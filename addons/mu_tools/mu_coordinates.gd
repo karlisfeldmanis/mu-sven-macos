@@ -1,0 +1,81 @@
+class_name MUCoordinates
+extends RefCounted
+
+## MU Online Coordinate System Utilities
+##
+## Based on SVEN engine research. Handles conversion between MU's Z-up coordinate
+## system and Godot's Y-up system, with proper tile centering and scaling.
+##
+## Key Constants:
+## - TERRAIN_SCALE: 100.0 MU units = 1.0 Godot meter
+## - TERRAIN_SIZE: 256x256 tiles
+## - Tile Centering: Characters/objects centered at (tile_index + 0.5)
+
+const TERRAIN_SCALE := 100.0
+const TERRAIN_SIZE := 256
+
+## Convert MU world-space position to Godot position
+## MU uses Z-up, Godot uses Y-up
+static func mu_to_godot_position(mu_pos: Vector3) -> Vector3:
+	return Vector3(
+		mu_pos.x / TERRAIN_SCALE,  # X stays X
+		mu_pos.z / TERRAIN_SCALE,  # Z becomes Y (height)
+		mu_pos.y / TERRAIN_SCALE   # Y becomes Z (depth)
+	)
+
+## Convert Godot position back to MU world-space
+static func godot_to_mu_position(godot_pos: Vector3) -> Vector3:
+	return Vector3(
+		godot_pos.x * TERRAIN_SCALE,  # X stays X
+		godot_pos.z * TERRAIN_SCALE,  # Z becomes Y
+		godot_pos.y * TERRAIN_SCALE   # Y becomes Z (height)
+	)
+
+## Convert tile coordinates to Godot world position
+## Characters and objects are centered on tiles: (tile_index + 0.5)
+static func tile_to_world(tile_x: int, tile_y: int, height: float = 0.0) -> Vector3:
+	return Vector3(
+		float(tile_x) + 0.5,  # Centered on tile
+		height,                # Height from terrain
+		float(tile_y) + 0.5   # Centered on tile
+	)
+
+## Convert Godot world position to tile coordinates
+static func world_to_tile(world_pos: Vector3) -> Vector2i:
+	return Vector2i(
+		int(floor(world_pos.x)),
+		int(floor(world_pos.z))
+	)
+
+## Convert MU Euler angles (ZYX order) to Godot rotation (YXZ order)
+## MU: angle[0]=Roll, angle[1]=Pitch, angle[2]=Yaw (around Z)
+## Godot: Y-up, so Yaw is around Y axis
+static func mu_angle_to_godot_rotation(mu_angle: Vector3) -> Vector3:
+	return Vector3(
+		deg_to_rad(mu_angle.x),  # Roll around X
+		deg_to_rad(mu_angle.z),  # Yaw around Y (was Z in MU)
+		deg_to_rad(mu_angle.y)   # Pitch around Z (was Y in MU)
+	)
+
+## Validate tile coordinates are within bounds
+static func is_valid_tile(tile_x: int, tile_y: int) -> bool:
+	return tile_x >= 0 and tile_x < TERRAIN_SIZE and tile_y >= 0 and tile_y < TERRAIN_SIZE
+
+## Get linear index from 2D tile coordinates
+## Used for accessing heightmap and attribute arrays
+static func tile_to_index(tile_x: int, tile_y: int) -> int:
+	return tile_y * TERRAIN_SIZE + tile_x
+
+## Get 2D tile coordinates from linear index
+static func index_to_tile(index: int) -> Vector2i:
+	return Vector2i(
+		index % TERRAIN_SIZE,
+		index / TERRAIN_SIZE
+	)
+
+## Clamp tile coordinates to valid range
+static func clamp_tile(tile_x: int, tile_y: int) -> Vector2i:
+	return Vector2i(
+		clampi(tile_x, 0, TERRAIN_SIZE - 1),
+		clampi(tile_y, 0, TERRAIN_SIZE - 1)
+	)

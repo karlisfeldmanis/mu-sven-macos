@@ -30,6 +30,7 @@ class BMDMesh:
 	var normals: Array[Vector3] = []
 	var uv_coords: Array[Vector2] = []
 	var triangles: Array[BMDTriangle] = []
+	var texture_filename: String = ""
 	var flags: int # Placeholder for texture or extra data
 
 class BMDVertex:
@@ -99,10 +100,14 @@ func parse_file(path: String, debug: bool = false) -> bool:
 		return false
 	
 	stream.data_array = decrypted_data
-	stream.seek(0) # Start from 0 in decrypted buffer
+	stream.seek(0)
 	
-	# Skip name (32 bytes)
-	stream.seek(stream.get_position() + 32)
+	if debug:
+		var slice = decrypted_data.slice(0, 64)
+		print("[BMD Parser] Decrypted Header Hex: ", slice.hex_encode())
+	
+	# Skip name (32 bytes - confirm via hex if meshes still 0)
+	stream.seek(32)
 	
 	# Read header counts
 	header = BMDHeader.new()
@@ -203,7 +208,10 @@ func _parse_meshes(stream: StreamPeerBuffer, _debug: bool) -> bool:
 			mesh.triangles.append(tri)
 			
 		# 5. Texture Filename (32 bytes)
-		stream.seek(stream.get_position() + 32)
+		var tex_bytes = stream.get_data(32)
+		var raw_name = (tex_bytes[1] as PackedByteArray).get_string_from_ascii()
+		mesh.texture_filename = raw_name.strip_edges()
+		if _debug: print("  [BMD Parser] Mesh %d texture: %s" % [mesh_idx, mesh.texture_filename])
 		meshes.append(mesh)
 	return true
 

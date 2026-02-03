@@ -1,4 +1,4 @@
-shader_type border; // Using standard spatial for character
+shader_type spatial; // Using standard spatial for character
 render_mode blend_mix, depth_draw_opaque, cull_disabled;
 
 uniform sampler2D albedo_texture : source_color;
