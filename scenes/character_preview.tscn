@@ -1,0 +1,38 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/mu_tools/mu_character.gd" id="1_char"]
+
+[sub_resource type="GDScript" id="GDScript_preview"]
+script/source = "extends Node
+func _ready():
+	var character = get_parent().get_node(\"MUCharacter\")
+	await get_tree().process_frame
+	character.add_part(\"res://assets/converted/players/ArmorClass01.tscn\")
+	character.add_part(\"res://assets/converted/players/PantClass01.tscn\")
+	character.add_part(\"res://assets/converted/players/BootClass01.tscn\")
+	character.add_part(\"res://assets/converted/players/HelmClass01.tscn\")
+	character.add_part(\"res://assets/converted/players/GloveClass01.tscn\")
+	# Play first available animation
+	if character.animation_player:
+		var anims = character.animation_player.get_animation_library(\"\").get_animation_list()
+		if anims.size() > 0:
+			character.play_animation(anims[0])
+"
+
+[node name="CharacterPreview" type="Node3D"]
+
+[node name="MUCharacter" type="Node3D" parent="."]
+script = ExtResource("1_char")
+master_skeleton_path = "res://assets/converted/players/Player.tscn"
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, -0.75, 0.433012, 0, 5, 0)
+shadow_enabled = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.965926, 0.258819, 0, -0.258819, 0.965926, 0, 1.5, 3)
+
+[node name="Assemblies" type="Node" parent="."]
+script = SubResource("GDScript_preview")
