@@ -4,7 +4,7 @@ render_mode cull_disabled;
 uniform sampler2DArray tile_textures : source_color;
 uniform sampler2D layer1_map : filter_nearest; // R8 texture containing tile indices
 uniform sampler2D layer2_map : filter_nearest; // R8 texture containing tile indices
-uniform sampler2D alpha_map : filter_nearest;  // R8 texture containing blend values
+uniform sampler2D alpha_map : filter_linear;  // R8 texture containing blend values
 uniform sampler2D grass_offset_map : filter_nearest; // R8 random UV offsets
 uniform float lightmap_intensity : hint_range(0.0, 5.0) = 1.0;
 
