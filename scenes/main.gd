@@ -37,7 +37,7 @@ var _friction: float = 6.0
 var _acceleration: float = 120.0
 var _is_rmb_down: bool = false
 
-var _fsr_mode = MURenderSettings.QualityMode.ULTRA
+var _fsr_mode = MURenderSettings.QualityMode.NATIVE
 
 func _ready() -> void:
 	MULogger.init()
