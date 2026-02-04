@@ -1,5 +1,6 @@
-@tool
 extends SceneTree
+
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
 
 ## Pre-flight Check Script
 ## Run with: godot --path . --headless -s addons/mu_tools/preflight_check.gd
@@ -13,7 +14,7 @@ func _init() -> void:
 	# 1. Check Essential Directories
 	var dirs = ["res://addons/mu_tools/", "res://scenes/", "res://raw_data/Player/"]
 	for d in dirs:
-		if DirAccess.dir_exists_absolute(d):
+		if MUFileUtil.dir_exists(d):
 			print("[✓] Directory exists: %s" % d)
 		else:
 			print("[!] MISSING Directory: %s" % d)
@@ -30,7 +31,7 @@ func _init() -> void:
 	]
 	
 	for s in scripts:
-		if not FileAccess.file_exists(s):
+		if not MUFileUtil.file_exists(s):
 			print("[!] MISSING Script: %s" % s)
 			errors += 1
 			continue
@@ -45,7 +46,7 @@ func _init() -> void:
 	# 3. Test BMD Parser
 	print("\n--- Testing BMD Parser ---")
 	var bmd_path = "res://raw_data/Player/player.bmd"
-	if FileAccess.file_exists(bmd_path):
+	if MUFileUtil.file_exists(bmd_path):
 		var parser = load("res://addons/mu_tools/bmd_parser.gd").new()
 		if parser.parse_file(bmd_path, false):
 			print("[✓] BMD Parser successfully read player.bmd")

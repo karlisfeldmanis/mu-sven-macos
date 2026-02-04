@@ -3,29 +3,22 @@ class_name MUTextureLoader
 
 const MUDecryptor = preload("res://addons/mu_tools/mu_decryptor.gd")
 const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
 
 ## Directly load and decrypt an OZJ/OZT file as an ImageTexture
 static func load_mu_texture(path: String) -> ImageTexture:
-	var file = FileAccess.open(path, FileAccess.READ)
-	if not file: 
-		# Attempt case-insensitive recovery
-		var dir_path = path.get_base_dir()
-		var target_file = path.get_file().to_lower()
-		var dir = DirAccess.open(dir_path)
-		if dir:
-			dir.list_dir_begin()
-			var fn = dir.get_next()
-			while fn != "":
-				if fn.to_lower() == target_file:
-					path = dir_path.path_join(fn)
-					file = FileAccess.open(path, FileAccess.READ)
-					break
-				fn = dir.get_next()
+	# Proactively resolve case to avoid Godot warnings on macOS/Windows 
+	# and failures on Linux.
+	var actual_path = MUFileUtil.resolve_case(path)
 	
+	var file = FileAccess.open(actual_path, FileAccess.READ)
 	if not file:
 		var err = FileAccess.get_open_error()
-		MULogger.error("[MUTextureLoader] FAILED to open %s: %d" % [path, err])
+		MULogger.error("[MUTextureLoader] FAILED to open %s: %d" % [actual_path, err])
 		return null
+	
+	# Update path for extension check later
+	path = actual_path
 	
 	# Read whole file
 	var buffer = file.get_buffer(file.get_length())

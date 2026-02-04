@@ -15,6 +15,8 @@ static func convert_position(mu_pos: Vector3) -> Vector3:
 	# MU-Z (Up)  -> Godot Y
 	return Vector3(mu_pos.y, mu_pos.z, mu_pos.x) * SCALE_FACTOR
 
+const HEIGHT_FACTOR = 1.5  # Same as terrain heightmap scaling
+
 ## Converts MU object position to Transpose (Mode 4) world space
 static func convert_object_position(mu_pos: Vector3) -> Vector3:
 	# Same cyclic permutation, but with world-space extent offset for Z (Col)

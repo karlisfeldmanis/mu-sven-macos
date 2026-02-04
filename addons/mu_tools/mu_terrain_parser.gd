@@ -1,6 +1,7 @@
 extends Node
 
 class_name MUTerrainParser
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
 
 # XOR key for map and object files decryption
 const MAP_XOR_KEY = [
@@ -46,7 +47,7 @@ static func decrypt_map_file(data: PackedByteArray) -> PackedByteArray:
 	return decrypted
 
 func parse_height_file(path: String) -> PackedFloat32Array:
-	var file = FileAccess.open(path, FileAccess.READ)
+	var file = MUFileUtil.open_file(path, FileAccess.READ)
 	if not file:
 		push_error("Cannot open height file: ", path)
 		return PackedFloat32Array()
@@ -79,12 +80,13 @@ func parse_height_file(path: String) -> PackedFloat32Array:
 			var file_idx = y * TERRAIN_SIZE + x
 			# Direct Mapping: Load linearly
 			# Row 0 in file = Row 0 in memory = X 0 in World
+			# Add 5.0m baseline: SVEN terrain baseline is at -500 units (-5m)
 			heights[file_idx] = float(raw_heights[file_idx]) * HEIGHT_FACTOR / TERRAIN_SCALE
 		
 	return heights
 
 func parse_mapping_file(path: String) -> MapData:
-	var file = FileAccess.open(path, FileAccess.READ)
+	var file = MUFileUtil.open_file(path, FileAccess.READ)
 	if not file:
 		return null
 		
@@ -180,7 +182,7 @@ func parse_mapping_file(path: String) -> MapData:
 
 func parse_attributes_file(path: String) -> PackedByteArray:
 	# Parse terrain attributes (collision/walkability) from .att file
-	var file = FileAccess.open(path, FileAccess.READ)
+	var file = MUFileUtil.open_file(path, FileAccess.READ)
 	if not file:
 		push_error("Cannot open attributes file: ", path)
 		return PackedByteArray()
@@ -218,7 +220,7 @@ func parse_attributes_file(path: String) -> PackedByteArray:
 	return attributes
 
 func parse_objects_file(path: String) -> Array[ObjectData]:
-	var file = FileAccess.open(path, FileAccess.READ)
+	var file = MUFileUtil.open_file(path, FileAccess.READ)
 	if not file:
 		return []
 		

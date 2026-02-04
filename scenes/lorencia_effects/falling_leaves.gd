@@ -1,6 +1,7 @@
 extends GPUParticles3D
 
 const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
 
 func _ready() -> void:
 	name = "FallingLeaves"
@@ -48,13 +49,12 @@ func _ready() -> void:
 	
 	var leaf_tex: Texture2D = null
 	for path in tex_paths:
-		if FileAccess.file_exists(path):
+		if MUFileUtil.file_exists(path):
 			# Use appropriate loader
 			if path.ends_with(".png"):
 				leaf_tex = load(path)
 			else:
-				# Assuming MUTextureLoader and ProjectSettings are available
-				leaf_tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
+				leaf_tex = MUTextureLoader.load_mu_texture(path)
 			
 			if leaf_tex:
 				break

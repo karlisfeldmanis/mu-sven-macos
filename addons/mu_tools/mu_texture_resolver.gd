@@ -1,5 +1,6 @@
 @tool
 class_name MUTextureResolver
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
 
 ## Utility for resolving MU texture names to Godot paths (Phase 1)
 ##
@@ -46,40 +47,31 @@ static func resolve_texture_path(bmd_path: String, internal_name: String) -> Str
 			while fn != "":
 				files.append(fn)
 				fn = dir.get_next()
-		print("  [TextureResolver] FAILED to find: '", search_name, "' for internal '", internal_name, "' in ", base_dir)
+		print("  [TextureResolver] FAILED to find: '%s' for internal '%s' in %s" % 
+				[search_name, internal_name, base_dir])
 		print("    Files in dir: ", files)
 	return result
 
 ## Searches for a texture in the BMD directory and common subfolders (Case-Insensitive)
 static func _search_texture(base_dir: String, filename: String) -> String:
-	var target = filename.to_lower()
-	var dir = DirAccess.open(base_dir)
-	if not dir:
-		return ""
-		
-	# 1. Simple fast check
-	var path = base_dir.path_join(filename)
-	if FileAccess.file_exists(path):
-		return path
-		
-	# 2. Case-insensitive search in directory
-	dir.list_dir_begin()
-	var file_name = dir.get_next()
-	while file_name != "":
-		if file_name.to_lower() == target:
-			dir.list_dir_end()
-			return base_dir.path_join(file_name)
-		file_name = dir.get_next()
-	dir.list_dir_end()
+	# 1. Proactively resolve case using our robust utility.
+	# This handles both directory and file case mismatches from the root.
+	var full_path = base_dir.path_join(filename)
+	var resolved = MUFileUtil.resolve_case(full_path)
+	
+	if MUFileUtil.file_exists(resolved):
+		return resolved
 			
-	# 3. Check common alternative locations
+	# 2. Check common alternative locations
 	if base_dir.contains("/Object"):
 		# Try looking in sister Object folders or base Data folder
 		var data_dir = base_dir.get_base_dir()
 		var alt_path = data_dir.path_join(filename)
-		if FileAccess.file_exists(alt_path): return alt_path
+		var resolved_alt = MUFileUtil.resolve_case(alt_path)
+		if MUFileUtil.file_exists(resolved_alt): 
+			return resolved_alt
 		
-	# 4. Check "Data" root if we can find it
+	# 3. Check "Data" root if we can find it
 	if base_dir.contains("/raw_data/"):
 		var data_root = base_dir.split("/raw_data/")[0] + "/raw_data/"
 		if data_root != base_dir:

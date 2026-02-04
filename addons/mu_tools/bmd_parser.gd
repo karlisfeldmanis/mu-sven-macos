@@ -1,5 +1,6 @@
 @tool
 class_name BMDParser
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
 
 ## BMD File Parser (Phase 2-4)
 ##
@@ -66,7 +67,7 @@ var actions: Array[BMDAction] = []
 
 ## Parse a BMD file from path
 func parse_file(path: String, debug: bool = false) -> bool:
-	var file = FileAccess.open(path, FileAccess.READ)
+	var file = MUFileUtil.open_file(path, FileAccess.READ)
 	if not file:
 		push_error("[BMD Parser] Failed to open file: " + path)
 		return false

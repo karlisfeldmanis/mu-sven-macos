@@ -11,6 +11,7 @@ const MUTextureResolver = preload("res://addons/mu_tools/mu_texture_resolver.gd"
 const BMDParserResource = preload("res://addons/mu_tools/bmd_parser.gd")
 const MUTerrainParser = preload("res://addons/mu_tools/mu_terrain_parser.gd")
 const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
 
 class PreflightReport:
 	var success: bool = true
@@ -20,7 +21,8 @@ class PreflightReport:
 	var missing_bmds: int = 0
 	var missing_textures: int = 0
 
-static func validate_world(p_world_id: int, p_data_path: String, p_object_map: Dictionary) -> Dictionary:
+static func validate_world(p_world_id: int, p_data_path: String, 
+		p_object_map: Dictionary) -> Dictionary:
 	var report = {
 		"success": true,
 		"errors": [],
@@ -45,20 +47,18 @@ static func validate_world(p_world_id: int, p_data_path: String, p_object_map: D
 	var world_dir = "World" + str(p_world_id)
 	for file in base_files:
 		var path = p_data_path.path_join(world_dir).path_join(file)
-		if not FileAccess.file_exists(ProjectSettings.globalize_path(path)):
-			# Try case-insensitive if exact match fails
-			var abs_path = ProjectSettings.globalize_path(path)
-			if not FileAccess.file_exists(abs_path):
-				report.errors.append("Missing base terrain file: %s" % file)
-				report.success = false
-				report.missing_files.append(file)
+		if not MUFileUtil.file_exists(path):
+			report.errors.append("Missing base terrain file: %s" % file)
+			report.success = false
+			report.missing_files.append(file)
 			
 	if not report.success:
 		return report
 		
 	# 2. Parse Objects File
 	var parser = MUTerrainParser.new()
-	var obj_path = p_data_path.path_join(world_dir).path_join("EncTerrain" + str(p_world_id) + ".obj")
+	var obj_path = p_data_path.path_join(world_dir).path_join(
+			"EncTerrain" + str(p_world_id) + ".obj")
 	var object_data = parser.parse_objects_file(obj_path)
 	report.total_objects = object_data.size()
 	
@@ -75,19 +75,14 @@ static func validate_world(p_world_id: int, p_data_path: String, p_object_map: D
 			continue
 			
 		var bmd_path = model_dir.path_join(bmd_name + ".bmd")
-		var bmd_abs = ProjectSettings.globalize_path(bmd_path)
+		var bmd_abs = MUFileUtil.resolve_case(bmd_path)
 		
 		if not FileAccess.file_exists(bmd_abs):
-			# Case-insensitive check
-			var real_path = _find_case_insensitive(bmd_abs)
-			if real_path.is_empty():
-				if not bmd_path in report.missing_files:
-					report.missing_bmds += 1
-					report.missing_files.append(bmd_path)
-					report.errors.append("Missing BMD: %s" % bmd_path)
-				continue
-			else:
-				bmd_abs = real_path
+			if not bmd_path in report.missing_files:
+				report.missing_bmds += 1
+				report.missing_files.append(bmd_path)
+				report.errors.append("Missing BMD: %s" % bmd_path)
+			continue
 			
 		# 4. In-depth BMD Texture Check
 		if not bmd_abs in checked_bmds:
@@ -98,8 +93,8 @@ static func validate_world(p_world_id: int, p_data_path: String, p_object_map: D
 					var tex_path = MUTextureResolver.resolve_texture_path(bmd_abs, mesh.texture_filename)
 					if tex_path.is_empty():
 						report.missing_textures += 1
-						var m_tex = "Missing Texture '%s' for BMD '%s'" % \
-							[mesh.texture_filename, bmd_name]
+						var m_tex = "Missing Texture '%s' for BMD '%s'" % [
+								mesh.texture_filename, bmd_name]
 						report.warnings.append(m_tex)
 			checked_bmds[bmd_abs] = true
 			
@@ -126,21 +121,3 @@ static func _get_bmd_name(p_type: int, p_object_map: Dictionary) -> String:
 		var idx = (p_type - base_type) + 1
 		return pattern % idx
 	return pattern
-
-static func _find_case_insensitive(path: String) -> String:
-	if FileAccess.file_exists(path): return path
-	
-	var dir_path = path.get_base_dir()
-	var target_file = path.get_file().to_lower()
-	var dir = DirAccess.open(dir_path)
-	if not dir: return ""
-	
-	dir.list_dir_begin()
-	var fn = dir.get_next()
-	while fn != "":
-		if fn.to_lower() == target_file:
-			dir.list_dir_end()
-			return dir_path.path_join(fn)
-		fn = dir.get_next()
-	dir.list_dir_end()
-	return ""

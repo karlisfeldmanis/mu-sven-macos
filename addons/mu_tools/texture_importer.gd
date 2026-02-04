@@ -12,6 +12,9 @@ extends EditorImportPlugin
 
 enum Presets { DEFAULT }
 
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
+const MUDecryptor = preload("res://addons/mu_tools/mu_decryptor.gd")
+
 ## Texture format constants (from MuMain)
 const FORMAT_DXT1 = 1
 const FORMAT_DXT3 = 3
@@ -42,7 +45,7 @@ func _get_preset_name(preset_index: int) -> String:
 		_:
 			return "Unknown"
 
-func _get_import_options(path: String, preset_index: int) -> Array[Dictionary]:
+func _get_import_options(_path: String, _preset_index: int) -> Array[Dictionary]:
 	return [
 		{
 			"name": "compress/mode",
@@ -60,7 +63,7 @@ func _get_import_options(path: String, preset_index: int) -> Array[Dictionary]:
 		}
 	]
 
-func _get_option_visibility(path: String, option_name: StringName, options: Dictionary) -> bool:
+func _get_option_visibility(_path: String, _option_name: StringName, _options: Dictionary) -> bool:
 	return true
 
 func _get_priority() -> float:
@@ -70,7 +73,7 @@ func _get_import_order() -> int:
 	return 0
 
 func _import(source_file: String, save_path: String, options: Dictionary, 
-			platform_variants: Array[String], gen_files: Array[String]) -> Error:
+			_platform_variants: Array[String], _gen_files: Array[String]) -> Error:
 	
 	var debug_log = options.get("debug/log_details", false)
 	
@@ -78,7 +81,7 @@ func _import(source_file: String, save_path: String, options: Dictionary,
 		print("[MU Texture] Importing: ", source_file)
 	
 	# Open the source file
-	var file = FileAccess.open(source_file, FileAccess.READ)
+	var file = MUFileUtil.open_file(source_file, FileAccess.READ)
 	if not file:
 		push_error("[MU Texture] Failed to open file: " + source_file)
 		return ERR_FILE_CANT_OPEN
@@ -135,7 +138,7 @@ func _import(source_file: String, save_path: String, options: Dictionary,
 	
 	return OK
 
-func _create_image_dxt(header: Dictionary, pixel_data: PackedByteArray, debug: bool) -> Image:
+func _create_image_dxt(header: Dictionary, pixel_data: PackedByteArray, _debug: bool) -> Image:
 	var format_map = {
 		FORMAT_DXT1: Image.FORMAT_DXT1,
 		FORMAT_DXT3: Image.FORMAT_DXT3,
@@ -213,7 +216,8 @@ func _read_pixel_data(file: FileAccess, header: Dictionary, debug: bool) -> Pack
 	
 	var remaining = file.get_length() - file.get_position()
 	if remaining < data_size:
-		push_error("[MU Texture] Not enough data. Expected: %d, Available: %d" % [data_size, remaining])
+		push_error("[MU Texture] Not enough data. Expected: %d, Available: %d" % 
+				[data_size, remaining])
 		return PackedByteArray()
 	
 	return file.get_buffer(data_size)
@@ -226,7 +230,7 @@ func _calculate_dxt_size(width: int, height: int, format: int) -> int:
 	return blocks_x * blocks_y * block_size
 
 ## Creates a Godot Image from DXT data
-func _create_image(header: Dictionary, pixel_data: PackedByteArray, debug: bool) -> Image:
+func _create_image(header: Dictionary, pixel_data: PackedByteArray, _debug: bool) -> Image:
 	var format_map = {
 		FORMAT_DXT1: Image.FORMAT_DXT1,
 		FORMAT_DXT3: Image.FORMAT_DXT3,

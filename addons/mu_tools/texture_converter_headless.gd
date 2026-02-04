@@ -1,4 +1,5 @@
 class_name TextureConverterHeadless
+const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
 
 ## Headless Texture Converter
 ##
@@ -16,7 +17,7 @@ func convert_directory(input_dir: String, output_dir: String) -> Dictionary:
 		"files": []
 	}
 	
-	var dir = DirAccess.open(input_dir)
+	var dir = DirAccess.open(MUFileUtil.resolve_case(input_dir))
 	if not dir:
 		push_error("Failed to open directory: " + input_dir)
 		return result
@@ -47,7 +48,7 @@ func convert_directory(input_dir: String, output_dir: String) -> Dictionary:
 	return result
 
 func convert_file(input_path: String, output_path: String) -> bool:
-	var file = FileAccess.open(input_path, FileAccess.READ)
+	var file = MUFileUtil.open_file(input_path, FileAccess.READ)
 	if not file: return false
 	var raw_data = file.get_buffer(file.get_length())
 	file.close()
