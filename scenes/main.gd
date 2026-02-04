@@ -13,6 +13,7 @@ const MUCoordinateUtils = preload("res://addons/mu_tools/coordinate_utils.gd")
 const MUAnimationRegistry = preload("res://addons/mu_tools/mu_animation_registry.gd")
 const MUStateMachine = preload("res://addons/mu_tools/mu_state_machine.gd")
 const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
+const MURenderSettings = preload("res://addons/mu_tools/mu_render_settings.gd")
 
 var _character: Node3D
 var _terrain: Node # MUTerrain instance
@@ -36,6 +37,8 @@ var _friction: float = 6.0
 var _acceleration: float = 120.0
 var _is_rmb_down: bool = false
 
+var _fsr_mode = MURenderSettings.QualityMode.ULTRA
+
 func _ready() -> void:
 	MULogger.init()
 	MULogger.info("Application starting...")
@@ -55,6 +58,9 @@ func _ready() -> void:
 	_setup_environment()
 	_setup_falling_leaves()
 	_add_lorencia_terrain()
+	
+	# Initialize FSR
+	MURenderSettings.set_quality_mode(get_viewport(), _fsr_mode)
 	
 	_update_camera_rig()
 	
@@ -315,8 +321,13 @@ func _input(event: InputEvent) -> void:
 		if event.keycode == KEY_C:
 			_is_free_cam = !_is_free_cam
 			print("[Camera] Mode: ", "Free" if _is_free_cam else "Follow")
+			print("[Camera] Mode: ", "Free" if _is_free_cam else "Follow")
 		if event.keycode == KEY_P:
 			_take_screenshot("manual_screenshot_%d.png" % int(Time.get_unix_time_from_system()))
+		
+		# FSR Control
+		if event.keycode == KEY_F2:
+			_fsr_mode = MURenderSettings.cycle_mode(get_viewport(), _fsr_mode)
 			
 		if event.keycode == KEY_V:
 			if _camera.projection == Camera3D.PROJECTION_PERSPECTIVE:
