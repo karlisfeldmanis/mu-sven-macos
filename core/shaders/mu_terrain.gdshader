@@ -19,11 +19,9 @@ void fragment() {
 	float idx1 = texture(layer1_map, global_uv).r * 255.0;
 	float idx2 = texture(layer2_map, global_uv).r * 255.0;
 	
-	// SVEN compatibility: Apply grass UV randomization to layer1
-	// Matches: su = xf * Width; su += TerrainGrassTexture[yi & TERRAIN_SIZE_MASK];
+	// Reverted to simple mapping for visual clarity
 	float grass_offset = texture(grass_offset_map, global_uv).r;
-	vec2 layer1_uv = vec2(tile_uv.x + grass_offset, tile_uv.y);
-	layer1_uv = fract(layer1_uv); // Wrap UVs
+	vec2 layer1_uv = vec2(fract(UV.x) + grass_offset, fract(UV.y));
 	
 	// Sample both layers from the TextureArray
 	vec3 tex1 = texture(tile_textures, vec3(layer1_uv, idx1)).rgb;
@@ -33,11 +31,13 @@ void fragment() {
 	float alpha = texture(alpha_map, global_uv).r;
 	vec3 final_color = mix(tex1, tex2, alpha);
 	
-	// Apply vertex color (Pre-baked Lightmap) - BOOSTED FOR VISIBILITY
-	vec3 light = clamp(COLOR.rgb * (lightmap_intensity * 2.0), vec3(0.0), vec3(4.0));
-	ALBEDO = final_color * light;
-	ALPHA = 1.0;
+	// ALBEDO-only lighting for shadow testing
+	// We'll multiply the final_color by the lightmap here to see if shadows appear on the darker surface
+	vec3 lightmap = clamp(COLOR.rgb * lightmap_intensity, vec3(0.1), vec3(1.0));
 	
-	METALLIC = 0.0;
+	ALBEDO = final_color * lightmap;
+	EMISSION = vec3(0.0);
+	
+	SPECULAR = 0.0;
 	ROUGHNESS = 1.0;
 }

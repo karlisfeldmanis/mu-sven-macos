@@ -2,6 +2,7 @@
 class_name MUTextureLoader
 
 const MUDecryptor = preload("res://addons/mu_tools/mu_decryptor.gd")
+const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
 
 ## Directly load and decrypt an OZJ/OZT file as an ImageTexture
 static func load_mu_texture(path: String) -> ImageTexture:
@@ -23,17 +24,18 @@ static func load_mu_texture(path: String) -> ImageTexture:
 	
 	if not file:
 		var err = FileAccess.get_open_error()
-		push_error("[MUTextureLoader] FAILED to open %s: %d" % [path, err])
+		MULogger.error("[MUTextureLoader] FAILED to open %s: %d" % [path, err])
 		return null
 	
 	# Read whole file
 	var buffer = file.get_buffer(file.get_length())
 	file.close()
 	
-	print("    [MUTextureLoader] Loading ", path.get_file(), " (", buffer.size(), " bytes)")
+	MULogger.info("Loading %s (%d bytes)" % [path.get_file(), buffer.size()])
 	
 	# Strategy: Try to detect if this is already a valid image (raw JPG/TGA)
-	# by checking for common signatures BEFORE any decryption, BUT ONLY if it's not a known MU format
+	# by checking for common signatures BEFORE any decryption, 
+	# BUT ONLY if it's not a known MU format
 	var ext = path.get_extension().to_lower()
 	var is_mu_format = ext in ["ozj", "ozt", "ozb", "map", "att"]
 	
@@ -47,7 +49,8 @@ static func load_mu_texture(path: String) -> ImageTexture:
 		if is_raw_jpg:
 			# Even raw JPGs might have a double header
 			if buffer.size() > 24 and buffer[24] == 0xFF and buffer[25] == 0xD8:
-				print("    [MUTextureLoader] Detected DOUBLE-ENCODED JPG, skipping wrapper: ", path.get_file())
+				print("    [MUTextureLoader] Detected DOUBLE-ENCODED JPG, skipping wrapper: ", 
+					path.get_file())
 				data = buffer.slice(24)
 			else:
 				print("    [MUTextureLoader] Detected RAW JPG (no wrapper): ", path.get_file())
@@ -124,8 +127,8 @@ static func load_mu_texture(path: String) -> ImageTexture:
 	if err == OK:
 		print("    [MUTextureLoader] Successfully loaded image: ", path.get_file())
 		return ImageTexture.create_from_image(image)
-	else:
-		push_error("[MUTextureLoader] FAILED to load image from buffer: %s error:%d" % [path, err])
+	
+	push_error("[MUTextureLoader] FAILED to load image from buffer: %s error:%d" % [path, err])
 	return null
 
 ## Custom decoder for MU TGA format (.OZT files)

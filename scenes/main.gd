@@ -12,6 +12,7 @@ var _state_machine: MUStateMachine
 const MUCoordinateUtils = preload("res://addons/mu_tools/coordinate_utils.gd")
 const MUAnimationRegistry = preload("res://addons/mu_tools/mu_animation_registry.gd")
 const MUStateMachine = preload("res://addons/mu_tools/mu_state_machine.gd")
+const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
 
 var _character: Node3D
 var _terrain: Node # MUTerrain instance
@@ -36,27 +37,97 @@ var _acceleration: float = 120.0
 var _is_rmb_down: bool = false
 
 func _ready() -> void:
+	MULogger.init()
+	MULogger.info("Application starting...")
+	
+	# Handle Heartbeat for launch verification
+	_check_heartbeat()
+	
 	# 0. Strict Resource Pre-flight
 	if not _validate_critical_resources():
-		push_error("[Render Test] FATAL: Critical script or shader errors detected. Aborting launch.")
+		var msg = "FATAL: Critical script or shader errors detected. Aborting launch."
+		MULogger.error(msg)
+		push_error("[Render Test] " + msg)
 		return
 		
 	_setup_camera()
+	_setup_sun()
+	_setup_environment()
+	_setup_falling_leaves()
 	_add_lorencia_terrain()
 	
-	# Initialize camera at map center (Town)
-	_camera_yaw.position = Vector3(128.0, 50.0, -128.0) # Start slightly higher
-	_zoom_val = 50.0 
 	_update_camera_rig()
 	
-	print("\n[Controls] CAMERA: WASD=Move, Q/E=Up/Down, Shift=Faster")
-	print("[Controls] LOOK: Hold Right Mouse Button to Rotate")
-	print("[Controls] PICK: Left Click on objects to identify them")
+	MULogger.info("Scene tree initialization complete. Waiting for first frames...")
 	print("[Controls] VIEW: Press 'V' to toggle Perspective/Orthographic")
 	print("[Controls] Press 'P' to take a manual screenshot")
+
+func _check_heartbeat():
+	# Wait for two frames to ensure rendering has actually started
+	await get_tree().process_frame
+	await get_tree().process_frame
+	MULogger.info("HEARTBEAT_SUCCESS: First frames rendered successfully.")
+
+
+func _setup_sun() -> void:
+	# Clean up any existing lights
+	for child in get_children():
+		if child is DirectionalLight3D:
+			child.queue_free()
 	
-	# AUTO-SCREENSHOT FOR DEBUGGING
-	_take_screenshot("debug_render_square.png")
+	var sun = DirectionalLight3D.new()
+	sun.name = "Sun"
+	sun.rotation_degrees = Vector3(-60, 45, 0)
+	sun.light_energy = 1.0 # Standard energy
+	sun.light_indirect_energy = 0.5
+	sun.shadow_enabled = true
+	
+	# Performance optimized settings (High Quality Defaults)
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+	sun.directional_shadow_max_distance = 120.0
+	sun.shadow_blur = 0.5
+	sun.shadow_bias = 0.1
+	
+	add_child(sun)
+	print("[Main] Created optimized Sun")
+
+func _setup_environment() -> void:
+	# Clean up existing environment
+	for child in get_children():
+		if child is WorldEnvironment:
+			child.queue_free()
+			
+	var env = Environment.new()
+	
+	# Fog Settings (Authentic Lorencia Dark Brown)
+	env.fog_enabled = true
+	# SVEN: (30, 20, 10) / 256
+	env.fog_light_color = Color(30.0/255.0, 20.0/255.0, 10.0/255.0)
+	env.fog_density = 0.002 # Subtle depth
+	env.fog_aerial_perspective = 0.5
+	env.fog_sky_affect = 0.2
+	
+	# Global Illumination & Background
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(30.0/255.0, 20.0/255.0, 10.0/255.0)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.2, 0.2, 0.2)
+	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	
+	var world_env = WorldEnvironment.new()
+	world_env.environment = env
+	add_child(world_env)
+	print("[Main] Environment configured (Lorencia Fog)")
+
+func _setup_falling_leaves() -> void:
+	var leaves_script = load("res://scenes/lorencia_effects/falling_leaves.gd")
+	if leaves_script:
+		var leaves = GPUParticles3D.new()
+		leaves.set_script(leaves_script)
+		add_child(leaves)
+		print("[Main] Falling leaves effect added")
+	else:
+		push_error("[Main] Failed to load falling_leaves.gd")
 
 func _validate_critical_resources() -> bool:
 	var resources = [
@@ -67,20 +138,25 @@ func _validate_critical_resources() -> bool:
 		"res://addons/mu_tools/mesh_builder.gd",
 		"res://addons/mu_tools/mu_preflight.gd",
 		"res://core/shaders/mu_terrain.gdshader",
-		"res://core/shaders/mu_character.gdshader"
+		"res://core/shaders/mu_character.gdshader",
+		"res://scenes/lorencia_effects/mu_fire.gd",
+		"res://scenes/lorencia_effects/shaders/mu_fire.gdshader"
 	]
 	
+	print("[Pre-flight] Validating critical resources...")
 	var all_ok = true
 	for res_path in resources:
 		if not FileAccess.file_exists(res_path):
-			print("  [Pre-flight] ERROR: File not found: ", res_path)
+			push_error("  [Pre-flight] ERROR: File not found: " + res_path)
 			all_ok = false
 			continue
 			
 		var res = load(res_path)
 		if not res:
-			print("  [Pre-flight] ERROR: Failed to load/parse: ", res_path)
+			push_error("  [Pre-flight] ERROR: Failed to load/parse: " + res_path)
 			all_ok = false
+		else:
+			print("  [Pre-flight] OK: " + res_path)
 			
 	return all_ok
 
@@ -165,20 +241,30 @@ func _save_camera_state() -> void:
 	config.set_value("camera", "position", _camera_yaw.position)
 	config.set_value("camera", "yaw", _yaw_val)
 	config.set_value("camera", "pitch", _pitch_val)
+	config.set_value("camera", "zoom", _zoom_val)
 	config.save("user://camera_state.cfg")
+	print("[Render Test] Saved camera: pos=", _camera_yaw.position, 
+				" yaw=", _yaw_val, " pitch=", _pitch_val, " zoom=", _zoom_val)
 
 func _load_camera_state() -> void:
 	var config = ConfigFile.new()
 	var err = config.load("user://camera_state.cfg")
 	if err == OK:
-		_camera_yaw.position = config.get_value("camera", "position", Vector3(128, 50, 128))
+		_camera_yaw.position = config.get_value("camera", "position", Vector3(128, 50, -128))
 		_yaw_val = config.get_value("camera", "yaw", 0.0)
 		_pitch_val = config.get_value("camera", "pitch", -45.0)
-		print("[Render Test] Loaded camera state: pos=", _camera_yaw.position, " yaw=", _yaw_val, " pitch=", _pitch_val)
+		_zoom_val = config.get_value("camera", "zoom", 50.0)
+		print("[Render Test] Loaded camera: pos=", _camera_yaw.position, 
+				" yaw=", _yaw_val, " pitch=", _pitch_val, " zoom=", _zoom_val)
+	else:
+		# First run - set defaults
+		_camera_yaw.position = Vector3(128, 50, -128)
+		_zoom_val = 50.0
+		print("[Render Test] No saved camera state, using defaults")
 
 func _handle_spectator_movement(delta: float) -> void:
-	if not _is_free_cam: return
-	
+	# Even if not in free cam, allow movement to break out into free cam
+	# This prevents the "stuck" feeling the user described.
 	var wish_dir = Vector3.ZERO
 	if Input.is_key_pressed(KEY_W): wish_dir += -_camera.global_transform.basis.z
 	if Input.is_key_pressed(KEY_S): wish_dir += _camera.global_transform.basis.z
@@ -188,6 +274,10 @@ func _handle_spectator_movement(delta: float) -> void:
 	if Input.is_key_pressed(KEY_Q): wish_dir += Vector3.DOWN
 	
 	if wish_dir != Vector3.ZERO:
+		if not _is_free_cam:
+			_is_free_cam = true
+			print("[Camera] WASD detected. Entering Free Cam mode.")
+		
 		wish_dir = wish_dir.normalized()
 		
 		var accel = _acceleration
@@ -247,7 +337,9 @@ func _input(event: InputEvent) -> void:
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 				
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-			_perform_object_picking(event.position if not _is_rmb_down else get_viewport().get_visible_rect().size / 2.0)
+			var screen_size = get_viewport().get_visible_rect().size
+			var pos = event.position if not _is_rmb_down else screen_size / 2.0
+			_perform_object_picking(pos)
 
 	if event is InputEventMouseMotion and _is_rmb_down:
 		_yaw_val -= event.relative.x * _mouse_sensitivity
@@ -480,7 +572,9 @@ func attach_bmd_meshes(path: String, skeleton: Skeleton3D) -> void:
 			# Explicitly set skeleton path AFTER adding to tree
 			mesh_instance.skeleton = mesh_instance.get_path_to(skeleton)
 			if mesh_instance.mesh and mesh_instance.get_surface_override_material(0):
-				print("  [Mesh %d] Attached with material: %s" % [i, mesh_instance.get_surface_override_material(0).get_shader_parameter("albedo_texture").resource_path.get_file()])
+				var mat = mesh_instance.get_surface_override_material(0)
+				var tex = mat.get_shader_parameter("albedo_texture")
+				print("  [Mesh %d] Attached with material: %s" % [i, tex.resource_path.get_file()])
 
 func _add_skeleton_visualization(skeleton: Skeleton3D) -> void:
 	const Visualizer = preload("res://addons/mu_tools/skeleton_visualizer.gd")

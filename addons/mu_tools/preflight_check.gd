@@ -25,7 +25,8 @@ func _init() -> void:
 		"res://addons/mu_tools/mu_animation_registry.gd",
 		"res://addons/mu_tools/mu_state_machine.gd",
 		"res://addons/mu_tools/animation_builder.gd",
-		"res://scenes/render_test.gd"
+		"res://addons/mu_tools/mu_logger.gd",
+		"res://scenes/main.gd"
 	]
 	
 	for s in scripts:
@@ -48,7 +49,10 @@ func _init() -> void:
 		var parser = load("res://addons/mu_tools/bmd_parser.gd").new()
 		if parser.parse_file(bmd_path, false):
 			print("[✓] BMD Parser successfully read player.bmd")
-			print("    Indices: %d mesh(es), %d bones, %d actions" % [parser.meshes.size(), parser.bones.size(), parser.actions.size()])
+			print(
+				"    Indices: %d mesh(es), %d bones, %d actions" % 
+				[parser.meshes.size(), parser.bones.size(), parser.actions.size()]
+			)
 		else:
 			print("[!] BMD Parser FAILED to read player.bmd")
 			errors += 1
@@ -61,8 +65,8 @@ func _init() -> void:
 	var registry = load("res://addons/mu_tools/mu_animation_registry.gd")
 	if registry:
 		var test_name = registry.get_action_name("player.bmd", 0)
-		if test_name == "Stop":
-			print("[✓] Animation Registry working (0 -> Stop)")
+		if test_name == "Set":
+			print("[✓] Animation Registry working (0 -> Set)")
 		else:
 			print("[!] Animation Registry returned unexpected name: %s" % test_name)
 			errors += 1

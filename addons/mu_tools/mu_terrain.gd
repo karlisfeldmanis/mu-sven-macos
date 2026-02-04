@@ -5,12 +5,12 @@ class_name MUTerrain
 const TERRAIN_SIZE = 256
 
 const LORENCIA_OBJECT_MAP = {
-	0: "Tree%02d",       # 0-12
-	20: "Grass%02d",      # 20-27
-	30: "Stone%02d",      # 30-34
+	0: "Tree%02d",	   # 0-12
+	20: "Grass%02d",	  # 20-27
+	30: "Stone%02d",	  # 30-34
 	40: "StoneStatue%02d", # 40-42
 	43: "SteelStatue01",
-	44: "Tomb%02d",       # 44-46
+	44: "Tomb%02d",	   # 44-46
 	50: "FireLight%02d",  # 50-51
 	52: "Bonfire01",
 	55: "DoungeonGate01",
@@ -23,37 +23,42 @@ const LORENCIA_OBJECT_MAP = {
 	69: "StoneWall%02d",  # 69-74
 	75: "StoneMuWall%02d", # 75-78
 	80: "Bridge01",
-	81: "Fence%02d",      # 81-84
+	81: "Fence%02d",	  # 81-84
 	85: "BridgeStone01",
 	90: "StreetLight01",
-	91: "Cannon%02d",     # 91-93
+	91: "Cannon%02d",	 # 91-93
 	95: "Curtain01",
-	96: "Sign%02d",       # 96-97
+	96: "Sign%02d",	   # 96-97
 	98: "Carriage%02d",   # 98-101
-	102: "Straw%02d",     # 102-103
+	102: "Straw%02d",	 # 102-103
 	105: "Waterspout01",
-	106: "Well%02d",      # 106-109
+	106: "Well%02d",	  # 106-109
 	110: "Hanging01",
 	111: "Stair01",
-	115: "House%02d",     # 115-119
+	115: "House%02d",	 # 115-119
 	120: "Tent01",
 	121: "HouseWall%02d", # 121-126
 	127: "HouseEtc%02d",  # 127-129
-	130: "Light%02d",     # 130-132
+	130: "Light%02d",	 # 130-132
 	133: "PoseBox01",
 	140: "Furniture%02d", # 140-146
 	150: "Candle01",
-	151: "Beer%02d"       # 151-153
+	151: "Beer%02d"	   # 151-153
 }
 
 @export var world_id: int = 1
 @export var data_path: String = "res://reference/MuMain/src/bin/Data/World1"
 
+const MUFireScript = preload("res://scenes/lorencia_effects/mu_fire.gd")
+
 const MUTerrainParser = preload("res://addons/mu_tools/mu_terrain_parser.gd")
 const MUTerrainMeshBuilder = preload("res://addons/mu_tools/mu_terrain_mesh_builder.gd")
 const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
 const MUPreflight = preload("res://addons/mu_tools/mu_preflight.gd")
+const MUEnvironmentScript = preload("res://addons/mu_tools/mu_environment.gd")
 
+var env_controller: Node
 var heightmap: PackedFloat32Array
 var map_data: MUTerrainParser.MapData
 var attributes: PackedByteArray
@@ -94,7 +99,7 @@ func load_world():
 	if not preflight.warnings.is_empty():
 		for warn in preflight.warnings:
 			print("  [Pre-flight WARNING] ", warn)
-            
+		
 	print("[MUTerrain] Pre-flight summary: %d objects, %d missing BMDs, %d missing textures" % [
 		preflight.total_objects, preflight.missing_bmds, preflight.missing_textures
 	])
@@ -121,7 +126,8 @@ func load_world():
 	
 	terrain_mesh = MeshInstance3D.new()
 	terrain_mesh.mesh = mesh
-	print("[MUTerrain] Created terrain mesh with %d surfaces" % terrain_mesh.mesh.get_surface_count())
+	print("[MUTerrain] Created terrain mesh with %d surfaces" % 
+			terrain_mesh.mesh.get_surface_count())
 	add_child(terrain_mesh)
 	
 	# 6. Setup Material
@@ -134,7 +140,14 @@ func load_world():
 	_create_grass_mesh()
 	
 	_spawn_objects()
-	print("[MUTerrain] World load complete with objects.")
+	
+	# 9. Initialize Environment Controller
+	if not env_controller:
+		env_controller = MUEnvironmentScript.new()
+		env_controller.name = "MUEnvironment"
+		add_child(env_controller)
+		
+	print("[MUTerrain] World load complete with objects and environment.")
 
 
 func _setup_material():
@@ -142,20 +155,20 @@ func _setup_material():
 	
 	# 1. Base textures (Indices 0-13)
 	var base_texture_names = [
-		"TileGrass01",    # Index 0
-		"TileGrass02",    # Index 1
+		"TileGrass01",	# Index 0
+		"TileGrass02",	# Index 1
 		"TileGround01",   # Index 2
 		"TileGround02",   # Index 3
 		"TileGround03",   # Index 4
-		"TileWater01",    # Index 5 (Restored as Water, now with Nearest filtering)
-		"TileWood01",     # Index 6
-		"TileRock01",     # Index 7
-		"TileRock02",     # Index 8
-		"TileRock03",     # Index 9
-		"TileRock04",     # Index 10
-		"TileRock05",     # Index 11
-		"TileRock06",     # Index 12
-		"TileRock07",     # Index 13
+		"TileWater01",	# Index 5 (Restored as Water, now with Nearest filtering)
+		"TileWood01",	 # Index 6
+		"TileRock01",	 # Index 7
+		"TileRock02",	 # Index 8
+		"TileRock03",	 # Index 9
+		"TileRock04",	 # Index 10
+		"TileRock05",	 # Index 11
+		"TileRock06",	 # Index 12
+		"TileRock07",	 # Index 13
 	]
 	
 	# 2. Map-specific ExtTile textures (Indices 14-255)
@@ -193,7 +206,7 @@ func _setup_material():
 	
 	# Create fallback image
 	var fallback_img = Image.create(max_size, max_size, false, Image.FORMAT_RGB8)
-	fallback_img.fill(Color(0.2, 0.2, 0.5)) # Dark blue-gray fallback
+	fallback_img.fill(Color(0.0, 0.0, 0.0)) # Black fallback to avoid purple artifacts
 	
 	print("[MUTerrain] Starting texture array assembly...")
 	for i in range(256):
@@ -228,9 +241,15 @@ func _setup_material():
 				# Shader Map Indexing: (X=Row, Y=Col)
 				# Matches Transpose mapping: MU-Row (y) -> Godot X, MU-Col (x) -> Godot Z
 				var idx = y * TERRAIN_SIZE + x 
-				layer1_img.set_pixel(y, x, Color(map_data.layer1[idx] / 255.0, 0, 0))
-				layer2_img.set_pixel(y, x, Color(map_data.layer2[idx] / 255.0, 0, 0))
-				alpha_img.set_pixel(y, x, Color(map_data.alpha[idx], 0, 0))
+				
+				# Use set_pixel(y, x) to match Grid(Row, Col) where Coll (x) maps to Mesh Z (MU X)
+				# Visual X (Pixel X) = MU Y
+				# Visual Y (Pixel Y) = MU X
+				var pixel_y = x
+				
+				layer1_img.set_pixel(y, pixel_y, Color(map_data.layer1[idx] / 255.0, 0, 0))
+				layer2_img.set_pixel(y, pixel_y, Color(map_data.layer2[idx] / 255.0, 0, 0))
+				alpha_img.set_pixel(y, pixel_y, Color(map_data.alpha[idx], 0, 0))
 		
 		mat.set_shader_parameter("layer1_map", ImageTexture.create_from_image(layer1_img))
 		mat.set_shader_parameter("layer2_map", ImageTexture.create_from_image(layer2_img))
@@ -241,10 +260,20 @@ func _setup_material():
 		var grass_offset_img = Image.create(TERRAIN_SIZE, TERRAIN_SIZE, false, Image.FORMAT_R8)
 		for y in range(TERRAIN_SIZE):
 			var random_offset = float(randi() % 4) / 4.0  # 0.0, 0.25, 0.5, 0.75
+			
+			# NOTE: Grass offset was random per MU-row (y). 
+			# In our Texture Map, MU-row (y) is the X axis.
+			# So we want stripes along the Y axis (constant X) or stripes along X axis (constant Y)?
+			# Logic: "TerrainGrassTexture[yi]" where yi is MU Y.
+			# So for a given MU Y (Pixel X), the offset is constant across all MU X (Pixel Y).
+			# So we fill columns with the same value.
+			
 			for x in range(TERRAIN_SIZE):
-				# All tiles in the same row (Y) share the same offset
-				grass_offset_img.set_pixel(y, x, Color(random_offset, 0, 0))
-		mat.set_shader_parameter("grass_offset_map", ImageTexture.create_from_image(grass_offset_img))
+				var pixel_y = x
+				grass_offset_img.set_pixel(y, pixel_y, Color(random_offset, 0, 0))
+				
+		var offset_tex = ImageTexture.create_from_image(grass_offset_img)
+		mat.set_shader_parameter("grass_offset_map", offset_tex)
 	
 	terrain_mesh.material_override = mat
 
@@ -258,16 +287,26 @@ func _load_tile_image(tex_name: String) -> Image:
 		base_data_path = data_path.get_base_dir()
 	
 	for ext in extensions:
-		var path = base_data_path.path_join(world_dir).path_join(tex_name + ext)
-		var abs_path = ProjectSettings.globalize_path(path)
-		
-		# Always try MUTextureLoader for consistency
-		# Use absolute paths for non-resource files in Reference folder
-		var direct_tex = MUTextureLoader.load_mu_texture(abs_path)
-		if direct_tex:
-			return direct_tex.get_image()
+		# 1. Try World-specific folder (Data/WorldX/ExtTileXX)
+		var world_path = base_data_path.path_join(world_dir).path_join(tex_name + ext)
+		var abs_world_path = ProjectSettings.globalize_path(world_path)
+		if FileAccess.file_exists(abs_world_path):
+			var direct_tex = MUTextureLoader.load_mu_texture(abs_world_path)
+			if direct_tex:
+				return direct_tex.get_image()
 			
-	push_warning("[MUTerrain] ALL attempts failed to load tile: " + tex_name)
+		# 2. Try global Data folder (Data/ExtTileXX)
+		var global_path = base_data_path.path_join(tex_name + ext)
+		var abs_global_path = ProjectSettings.globalize_path(global_path)
+		if FileAccess.file_exists(abs_global_path):
+			var direct_tex = MUTextureLoader.load_mu_texture(abs_global_path)
+			if direct_tex:
+				return direct_tex.get_image()
+			
+	# If we reach here, no file was found. 
+	# For ExtTiles, this is expected if they don't exist, so we don't warn unless it's a base tile.
+	if not tex_name.begins_with("ExtTile"):
+		push_warning("[MUTerrain] ALL attempts failed to load tile: " + tex_name)
 	return null
 
 
@@ -292,7 +331,10 @@ func _create_water_mesh():
 		h += 0.15
 		
 		# Create water quad (two triangles)
-		# MU-Row (y) -> Godot X, MU-Col (x) -> Godot Z
+		# Create water quad (two triangles)
+		# Aligned with New Terrain & Objects:
+		# Godot X = MU Row (y)
+		# Godot Z = MU Col (x) - 255
 		var v0 = Vector3(float(y), h, float(x) - (TERRAIN_SIZE - 1.0))
 		var v1 = Vector3(float(y) + 1.0, h, float(x) - (TERRAIN_SIZE - 1.0))
 		var v2 = Vector3(float(y) + 1.0, h, float(x) - (TERRAIN_SIZE - 1.0) + 1.0)
@@ -376,134 +418,145 @@ func _create_grass_mesh():
 	
 	print("[MUTerrain] Creating grass with %d tiles..." % map_data.grass_tiles.size())
 	
-	# Create VERTICAL grass billboard (stands upright, faces camera)
+	# 1:1 Sven Diagonal Quad Geometry
+	# Quad stands on the diagonal between tile corner 0 (0,0) and corner 2 (1,1)
+	# Top vertices are shifted -0.5 on Sven X (Sven: -50.0 / 100.0)
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	
-	# Vertical billboard quad (0.5m wide x 0.5m tall)
-	var width = 0.5
-	var height = 0.5
-	var v0 = Vector3(-width/2, 0.0, 0.0)    # Bottom-left
-	var v1 = Vector3(width/2, 0.0, 0.0)     # Bottom-right
-	var v2 = Vector3(width/2, height, 0.0)  # Top-right
-	var v3 = Vector3(-width/2, height, 0.0) # Top-left
+	# MU Terrain Grass Geometry (Strict Sven Migration)
+	# Bottom Vertices (Diagonal corner-to-corner)
+	var v_bot_0 = Vector3(0, 0, 0) # sx, sy
+	var v_bot_1 = Vector3(1, 0, 1) # sx + 1.0, sy + 1.0
 	
-	# UVs for full texture
-	var uv0 = Vector2(0, 1)  # Bottom-left
-	var uv1 = Vector2(1, 1)  # Bottom-right
-	var uv2 = Vector2(1, 0)  # Top-right
-	var uv3 = Vector2(0, 0)  # Top-left
+	# Top Vertices (Shifted by 0.5 MU units (50.f) for "lean")
+	# Sven: TerrainVertex[0][0] += -50.f; (MU X maps to Godot Z)
+	var lean = -0.5
+	var h = 1.28 # Sven: pBitmap->Height * 2.f / 100.0 (64 * 2 / 100)
+	var v_top_0 = Vector3(0, h, lean)
+	var v_top_1 = Vector3(1.0, h, 1.0 + lean)
 	
-	var normal = Vector3(0, 0, 1)  # Facing forward (will be rotated by billboard)
+	# UVs: We use a 4x1 atlas. Shader handles su += xf * 0.25
+	# We just need to pass a random 0.0, 0.25, 0.5, 0.75 offset in COLOR.r
 	
-	# Triangle 1 (bottom-left, bottom-right, top-right)
-	st.set_normal(normal)
-	st.set_uv(uv0)
-	st.add_vertex(v0)
-	st.set_uv(uv1)
-	st.add_vertex(v1)
-	st.set_uv(uv2)
-	st.add_vertex(v2)
+	# Vertex Order: v0, v1, v2, v3 (Sven glBegin(GL_QUADS))
+	# v0 = top_0, v1 = top_1, v2 = bot_1, v3 = bot_0
 	
-	# Triangle 2 (bottom-left, top-right, top-left)
-	st.set_uv(uv0)
-	st.add_vertex(v0)
-	st.set_uv(uv2)
-	st.add_vertex(v2)
-	st.set_uv(uv3)
-	st.add_vertex(v3)
+	# Triangle 1 (top_0, top_1, bot_1)
+	st.set_uv(Vector2(0, 0)); st.add_vertex(v_top_0)
+	st.set_uv(Vector2(1, 0)); st.add_vertex(v_top_1)
+	st.set_uv(Vector2(1, 1)); st.add_vertex(v_bot_1)
 	
-	var grass_quad = st.commit()
-	
-	# Create MultiMesh for instancing
-	var multi_mesh = MultiMesh.new()
-	multi_mesh.transform_format = MultiMesh.TRANSFORM_3D
-	multi_mesh.use_colors = true
-	multi_mesh.mesh = grass_quad
-	multi_mesh.instance_count = map_data.grass_tiles.size()
-	
-	# Position each grass instance
-	for i in range(map_data.grass_tiles.size()):
-		var tile = map_data.grass_tiles[i]
-		var x = tile.x
-		var y = tile.y
+	# Triangle 2 (top_0, bot_1, bot_0)
+	st.set_uv(Vector2(0, 0)); st.add_vertex(v_top_0)
+	st.set_uv(Vector2(1, 1)); st.add_vertex(v_bot_1)
+	st.set_uv(Vector2(0, 1)); st.add_vertex(v_bot_0)
 		
-		# Get height at this position
-		var idx = y * TERRAIN_SIZE + x
-		var tile_h = heightmap[idx] if idx < heightmap.size() else 0.0
-		
-		# Position at tile center (Transposed: Row=y->X, Col=x->Z)
-		var transform = Transform3D()
-		transform.origin = Vector3(
-			float(y) + 0.5, 
-			tile_h, 
-			float(x) - (TERRAIN_SIZE - 1.0) + 0.5
-		)
-		
-		multi_mesh.set_instance_transform(i, transform)
-		multi_mesh.set_instance_color(i, Color.WHITE)  # White for proper lighting
+	var grass_primitive_mesh = st.commit()
 	
-	# Load grass texture - SVEN uses .tga for billboards (BITMAP_MAPGRASS)
-	var grass_tex: Texture2D = null
-	var world_dir = "World" + str(world_id)
-	var tex_paths = [
-		data_path.path_join(world_dir).path_join("TileGrass01.tga"),
-		data_path.path_join(world_dir).path_join("TileGrass01.OZT"),
-		data_path.path_join("TileGrass01.tga"),
-		data_path.path_join("TileGrass01.OZT"),
-	]
-	
-	for path in tex_paths:
-		var ext = path.get_extension().to_lower()
-		if ext in ["jpg", "png", "tga", "ozt"]:
-			if FileAccess.file_exists(path):
-				var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
-				if tex:
-					grass_tex = tex
-					print("  Loaded grass texture: %s" % path)
+	# Iterate over grass types
+	for grass_type in map_data.grass_tiles.keys():
+		var positions = map_data.grass_tiles[grass_type]
+		if positions.is_empty():
+			continue
+			
+		print("[MUTerrain] Generating %d grass blades for Type %d..." % [
+			positions.size(), grass_type
+		])
+		
+		# Load specific texture for this type
+		# Sven: BITMAP_MAPGRASS + TerrainMappingLayer1[Index]
+		# World1 (Lorencia) uses TileGrass01.tga
+		var tex_name = "TileGrass%02d" % (grass_type + 1)
+		var grass_tex: Texture2D = null
+		
+		# Search for texture (TGA preferred for grass)
+		var extensions = [".tga", ".TGA", ".ozj", ".OZJ", ".ozt", ".OZT", ".jpg"]
+		var base_data_path = data_path.get_base_dir() # ../Data/
+		var world_dir = "World" + str(world_id) # World1
+		
+		for ext in extensions:
+			# Try World-specific path first
+			var sub_path = world_dir.path_join(tex_name + ext)
+			var path_check = base_data_path.path_join(sub_path)
+			var actual_path = _find_case_insensitive_path(path_check)
+			
+			if actual_path != "":
+				var loaded = MUTextureLoader.load_mu_texture(actual_path)
+				if loaded:
+					grass_tex = loaded
+					print("  Loaded grass texture: %s (%dx%d)" % [
+						tex_name + ext, grass_tex.get_width(), grass_tex.get_height()
+					])
 					break
-	
-	# Try direct texture loader as fallback (for MU-encrypted files)
-	if not grass_tex:
-		for path in tex_paths:
-			var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
-			if tex:
-				grass_tex = tex
-				print("  Loaded grass texture (MU encrypted): %s" % path)
-				break
-	
-	# Try loading as raw TGA (grass textures are NOT encrypted!)
-	if not grass_tex:
-		for ext in [".tga", ".OZT"]:
-			var tga_path = data_path.path_join(world_dir).path_join("TileGrass01" + ext)
-			var abs_path = ProjectSettings.globalize_path(tga_path)
-			if FileAccess.file_exists(abs_path):
-				var file = FileAccess.open(abs_path, FileAccess.READ)
-				if file:
-					var tga_data = file.get_buffer(file.get_length())
-					file.close()
-					var img = Image.new()
-					if img.load_tga_from_buffer(tga_data) == OK:
-						grass_tex = ImageTexture.create_from_image(img)
-						print("  Loaded grass texture (raw TGA): %s" % tga_path)
-						break
-	
-	# Create grass material with wind shader
-	var mat = ShaderMaterial.new()
-	mat.shader = load("res://core/shaders/grass_billboard.gdshader")
-	if grass_tex:
-		mat.set_shader_parameter("grass_texture", grass_tex)
-	else:
-		print("  Using fallback green color for grass")
-	
+		
+		if not grass_tex:
+			print("  [Warning] Missing texture for Grass Type %d (%s), skipping." % [
+				grass_type, tex_name
+			])
+			continue
 
-	grass_mesh = MultiMeshInstance3D.new()
-	grass_mesh.multimesh = multi_mesh
-	grass_mesh.material_override = mat
-	grass_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(grass_mesh)
-	
-	print("[MUTerrain] Grass mesh created with %d instances!" % multi_mesh.instance_count)
+		# Prepare MultiMesh
+		var multi_mesh = MultiMesh.new()
+		multi_mesh.transform_format = MultiMesh.TRANSFORM_3D
+		multi_mesh.use_colors = true 
+		multi_mesh.instance_count = positions.size()
+		multi_mesh.mesh = grass_primitive_mesh
+		
+		multi_mesh.mesh.custom_aabb = AABB(Vector3(-1, 0, -1), Vector3(2, 2, 2))
+		
+		# Set instances
+		for i in range(positions.size()):
+			var tile_pos = positions[i]
+			var x = tile_pos.x
+			var y = tile_pos.y
+			
+			var idx = y * TERRAIN_SIZE + x
+			var h_base = heightmap[idx] if idx < heightmap.size() else 0.0
+			
+			# Coordinate Fix: Matches Terrain Mesh mapping
+			# Godot X = MU Y (y)
+			# Godot Z = MU X (x) with Z-flip offset (x - 255)
+			# Height 'h' comes from index [y, x] which is correct for Data(y, x)
+			
+			var gx = float(y)
+			var gz = float(x) - (TERRAIN_SIZE - 1.0)
+			
+			# Position
+			# Aligned with New Terrain & Objects:
+			# Godot X = MU Row (y)
+			# Godot Z = MU Col (x) - 255
+			var pos_vec = Vector3(float(y), h_base, float(x) - (TERRAIN_SIZE - 1.0)) 
+			
+			# Rotation: Identity (Sven quads are world-aligned)
+			var t = Transform3D(Basis(), pos_vec)
+			multi_mesh.set_instance_transform(i, t)
+			
+			# Logic for Atlas Offset:
+			# SVEN: su = xf * 0.25 + rand % 4 * 0.25
+			var xf = float(x)
+			var base_variation = float(randi() % 4) * 0.25
+			# Total variation offset passed to shader
+			var total_variation = fmod(xf * 0.25 + base_variation, 1.0)
+			
+			# Store Random Phase for Wind in Color.G [0..1]
+			var wind_phase = randf()
+			
+			multi_mesh.set_instance_color(i, Color(total_variation, wind_phase, 0.0, 1.0))
+			
+		# Material
+		var mat = ShaderMaterial.new()
+		mat.shader = load("res://core/shaders/grass_billboard.gdshader")
+		mat.set_shader_parameter("grass_texture", grass_tex)
+		mat.set_shader_parameter("wind_strength", 0.6)
+		mat.set_shader_parameter("wind_speed", 0.6)
+		
+		var mm_inst = MultiMeshInstance3D.new()
+		mm_inst.multimesh = multi_mesh
+		mm_inst.material_override = mat
+		mm_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mm_inst)
+		grass_mesh = mm_inst # Keep reference to last one (hacky but OK for now)
 
 func _spawn_objects():
 	if not object_data or object_data.is_empty():
@@ -579,11 +632,14 @@ func _spawn_objects():
 			static_body.set_meta("bmd_path", abs_path)
 			static_body.set_meta("mu_euler", obj.mu_euler)
 			static_body.set_meta("mu_pos", obj.mu_pos_raw)
+			static_body.set_meta("mu_scale", obj.scale)
 			parent_node.add_child(static_body)
 			
 			for mesh_idx in range(parser.get_mesh_count()):
 				var bmd_mesh = parser.get_mesh(mesh_idx)
-				var mesh_instance = MUMeshBuilder.create_mesh_instance(bmd_mesh, null, abs_path, parser, true)
+				var mesh_instance = MUMeshBuilder.create_mesh_instance(
+					bmd_mesh, null, abs_path, parser, true
+				)
 				if mesh_instance:
 					parent_node.add_child(mesh_instance)
 					
@@ -591,11 +647,15 @@ func _spawn_objects():
 					if obj.hidden_mesh == -2:
 						mesh_instance.visible = false
 					
+					
 					# Add collision shape for picking
 					if mesh_instance.mesh:
 						var shape = CollisionShape3D.new()
 						shape.shape = mesh_instance.mesh.create_convex_shape()
 						static_body.add_child(shape)
+			
+			# Spawn Fire Effects (Once per object)
+			_check_for_fire_effect(parent_node, obj.type)
 			
 			spawned_count += 1
 		else:
@@ -630,3 +690,94 @@ func get_attribute(tile_x: int, tile_y: int) -> int:
 	
 	var idx = tile_y * TERRAIN_SIZE + tile_x
 	return attributes[idx]
+
+func get_height_at_world(world_pos: Vector3) -> float:
+	# Verified Mode 4 (Transpose) Mapping:
+	# Godot X -> MU Row (y)
+	# Godot Z -> MU Col (x) - Offset
+	# MU Col (x) = Godot Z + (TERRAIN_SIZE - 1.0)
+	
+	var mu_y = int(world_pos.x)
+	var mu_x = int(world_pos.z + (TERRAIN_SIZE - 1.0))
+	
+	if mu_x < 0 or mu_x >= TERRAIN_SIZE or mu_y < 0 or mu_y >= TERRAIN_SIZE:
+		return 0.0
+		
+	var idx = mu_y * TERRAIN_SIZE + mu_x
+	if idx < heightmap.size():
+		return heightmap[idx]
+	return 0.0
+
+func _check_for_fire_effect(parent: Node3D, type: int):
+	var fires = [] # Array of {offset: Vector3, type: int}
+	
+	# Coordinate Mapping: MU(x,y,z) -> Godot(y,z,x) * 0.01 (See coordinate_utils.gd)
+	match type:
+		50: # FireLight01 (Torch)
+			# SVEN: (0, 0, 200) -> Godot (0, 2.0, 0)
+			fires.append({offset=Vector3(0, 2.0, 0), type=0})
+			
+		51: # FireLight02 (Wall Torch)
+			# SVEN: (0, -30, 60) -> Godot (-0.3, 0.6, 0)
+			fires.append({offset=Vector3(-0.3, 0.6, 0), type=0})
+			
+		52: # Bonfire01
+			# SVEN: (0, 0, 60) -> Godot (0, 0.6, 0)
+			fires.append({offset=Vector3(0, 0.6, 0), type=1}) # fire02.png
+			
+		130: # Light01 (Fire without mesh)
+			# SVEN: (0, 0, 0)
+			fires.append({offset=Vector3.ZERO, type=0})
+			_hide_meshes(parent)
+			
+		131, 132: # Light02/03
+			_hide_meshes(parent)
+		
+		# Removed: 90 (StreetLight), 150 (Candle)
+		
+		80: # Bridge01
+			# SVEN: (90, -200, 30) -> Godot (-2.0, 0.3, 0.9)
+			# SVEN: (90, 200, 30)  -> Godot (2.0, 0.3, 0.9)
+			fires.append({offset=Vector3(-2.0, 0.3, 0.9), type=0})
+			fires.append({offset=Vector3(2.0, 0.3, 0.9), type=0})
+			
+		55: # DungeonGate01
+			# SVEN: (-150, -150, 140) -> Godot (-1.5, 1.4, -1.5)
+			# SVEN: (150, -150, 140)  -> Godot (-1.5, 1.4, 1.5)
+			fires.append({offset=Vector3(-1.5, 1.4, -1.5), type=0})
+			fires.append({offset=Vector3(-1.5, 1.4, 1.5), type=0})
+			
+	# Spawn all fires
+	if MUFireScript and not fires.is_empty():
+		for f in fires:
+			# Apply offset relative to object rotation
+			var fire_pos = parent.global_transform.origin + parent.global_transform.basis * f.offset
+			MUFireScript.create(parent, fire_pos, f.type)
+
+func _hide_meshes(parent: Node3D):
+	for child in parent.get_children():
+		if child is MeshInstance3D:
+			child.visible = false
+
+
+func _find_case_insensitive_path(path: String) -> String:
+	var global_path = ProjectSettings.globalize_path(path)
+	if FileAccess.file_exists(global_path):
+		return global_path
+	
+	# Attempt case recovery
+	var dir_path = global_path.get_base_dir()
+	var target_file = global_path.get_file().to_lower()
+	
+	if not DirAccess.dir_exists_absolute(dir_path):
+		return ""
+		
+	var dir = DirAccess.open(dir_path)
+	if dir:
+		dir.list_dir_begin()
+		var fn = dir.get_next()
+		while fn != "":
+			if fn.to_lower() == target_file:
+				return dir_path.path_join(fn)
+			fn = dir.get_next()
+	return ""

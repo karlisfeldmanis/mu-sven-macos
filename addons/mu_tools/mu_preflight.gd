@@ -10,6 +10,7 @@ extends RefCounted
 const MUTextureResolver = preload("res://addons/mu_tools/mu_texture_resolver.gd")
 const BMDParserResource = preload("res://addons/mu_tools/bmd_parser.gd")
 const MUTerrainParser = preload("res://addons/mu_tools/mu_terrain_parser.gd")
+const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
 
 class PreflightReport:
 	var success: bool = true
@@ -30,7 +31,7 @@ static func validate_world(p_world_id: int, p_data_path: String, p_object_map: D
 		"missing_files": []
 	}
 	
-	print("[MUPreflight] Starting validation for World %d..." % p_world_id)
+	MULogger.info("Starting validation for World %d..." % p_world_id)
 	
 	# 1. Check Base Terrain Files
 	var base_files = [

@@ -7,6 +7,7 @@ class_name MUMeshBuilder
 ## Based on ZzzObject.cpp rendering logic
 
 const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
 
 ## Build a Godot ArrayMesh from BMD mesh data
 static func build_mesh(bmd_mesh: BMDParser.BMDMesh, 
@@ -16,7 +17,7 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 		bake_pose: bool = false,
 		debug: bool = false) -> ArrayMesh:
 	if not bmd_mesh or bmd_mesh.vertices.is_empty():
-		push_error("[Mesh Builder] Invalid or empty mesh data")
+		MULogger.error("[Mesh Builder] Invalid or empty mesh data")
 		return null
 	
 	# Pre-calculate global bone transforms (Action 0, Frame 0) if baking pose
@@ -132,6 +133,9 @@ static func create_mesh_instance(bmd_mesh: BMDParser.BMDMesh,
 	
 	var mesh_instance = MeshInstance3D.new()
 	mesh_instance.mesh = mesh
+	
+	# Enable shadow casting for all objects
+	mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	
 	# Ensure the mesh has a skin if skeleton is provided
 	if skeleton:

@@ -16,7 +16,7 @@ class MapData:
 	var layer2: PackedByteArray # 256x256
 	var alpha: PackedFloat32Array # 256x256
 	var water_tiles: Array # Positions of water tiles (Vector2i) - index 5
-	var grass_tiles: Array # Positions of grass tiles (Vector2i) - indices 0-2
+	var grass_tiles: Dictionary # { type: [Vector2i, ...], ... }
 
 class ObjectData:
 	var type: int
@@ -66,9 +66,20 @@ func parse_height_file(path: String) -> PackedFloat32Array:
 	const HEIGHT_FACTOR = 1.5
 	const TERRAIN_SCALE = 100.0  # MU units to Godot meters
 	
-	# SVEN stores as [y][x], we map this directly to Godot (x, -y)
-	for i in range(raw_heights.size()):
-		heights[i] = float(raw_heights[i]) * HEIGHT_FACTOR / TERRAIN_SCALE
+	# SVEN stores as [y][x] where Y is "bottom-up" (BMP style)
+	# based on SaveTerrainHeight reversed logic?
+	# ZzzLodTerrain.cpp SaveTerrainHeight: writes Source[i] to Dest[(255-i)].
+	# This implies the file is stored FLIPPED on Y.
+	# OpenTerrainHeight reads it linearly. So Buffer[0] is Row 0 of File.
+	# If File is Flipped, Row 0 is the "Bottom" (or Top?) of the map.
+	# Let's try flipping the row index: file_row `y` -> map_row `255 - y`
+	
+	for y in range(TERRAIN_SIZE):
+		for x in range(TERRAIN_SIZE):
+			var file_idx = y * TERRAIN_SIZE + x
+			# Direct Mapping: Load linearly
+			# Row 0 in file = Row 0 in memory = X 0 in World
+			heights[file_idx] = float(raw_heights[file_idx]) * HEIGHT_FACTOR / TERRAIN_SCALE
 		
 	return heights
 
@@ -90,45 +101,85 @@ func parse_mapping_file(path: String) -> MapData:
 	res.map_number = data[ptr]
 	ptr += 1
 	
-	res.layer1 = data.slice(ptr, ptr + TERRAIN_SIZE * TERRAIN_SIZE)
-	ptr += TERRAIN_SIZE * TERRAIN_SIZE
+	# Layer 1 & 2 Loading with Vertical Flip
+	# Since we flipped the heightmap (Y -> 255-Y), we MUST flip the texture/splat maps too
+	# to keep them aligned. Data is linear [Row0, Row1...] but Row0 is "Bottom".
 	
-	res.layer2 = data.slice(ptr, ptr + TERRAIN_SIZE * TERRAIN_SIZE)
-	ptr += TERRAIN_SIZE * TERRAIN_SIZE
-	
-	# Load Alpha Map (Indices 2 * 64k onwards)
-	# Alpha is 1 byte per tile, stored directly after Layer 1 and Layer 2
+	res.layer1.resize(TERRAIN_SIZE * TERRAIN_SIZE)
+	res.layer2.resize(TERRAIN_SIZE * TERRAIN_SIZE)
 	res.alpha.resize(TERRAIN_SIZE * TERRAIN_SIZE)
-	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
-		res.alpha[i] = float(data[ptr]) / 255.0
-		ptr += 1
 	
+	var raw_layer1 = data.slice(ptr, ptr + TERRAIN_SIZE * TERRAIN_SIZE)
+	ptr += TERRAIN_SIZE * TERRAIN_SIZE
+	
+	var raw_layer2 = data.slice(ptr, ptr + TERRAIN_SIZE * TERRAIN_SIZE)
+	ptr += TERRAIN_SIZE * TERRAIN_SIZE
+	
+	# Mapping for Alpha: stored after layers
+	var raw_alpha_start = ptr
+	
+	for y in range(TERRAIN_SIZE):
+		for x in range(TERRAIN_SIZE):
+			var idx = y * TERRAIN_SIZE + x
+			
+			# Direct Mapping: No flip
+			res.layer1[idx] = raw_layer1[idx]
+			res.layer2[idx] = raw_layer2[idx]
+			res.alpha[idx] = float(data[raw_alpha_start + idx]) / 255.0
+
+	ptr += TERRAIN_SIZE * TERRAIN_SIZE # Advance past alpha block
+
 	# Detect water tiles (Layer1 index 5)
 	res.water_tiles = []
 	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
 		if res.layer1[i] == 5:
 			var x = i % TERRAIN_SIZE
 			var y = i / TERRAIN_SIZE
-			res.water_tiles.append(Vector2i(x, y))
+			# Note: 'i' here iterates the ALREADY FLIPPED buffer 'res.layer1'
+			# So (x,y) are correct map coordinates (Godot X, Godot Z)
+			# Ensure we don't spawn water on top of blended edges if alpha > 0.5
+			if res.alpha[i] < 0.5:
+				res.water_tiles.append(Vector2i(x, y))
 	
 	if not res.water_tiles.is_empty():
 		print("[Terrain Parser] Found %d water tiles" % res.water_tiles.size())
 	
 	# Detect grass tiles (Layer1 indices 0-2)
-	res.grass_tiles = []
-	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
-		if res.layer1[i] >= 0 and res.layer1[i] <= 2:
-			var x = i % TERRAIN_SIZE
-			var y = i / TERRAIN_SIZE
-			res.grass_tiles.append(Vector2i(x, y))
+	# UPDATE: Grass Types & Alpha
+	# SVEN Logic:
+	# - Grass Type (Texture) = Layer1 Index (0, 1, 2)
+	# - Grass ONLY renders if Alpha Blending is NOT active (Alpha == 0)
 	
-	if not res.grass_tiles.is_empty():
-		print("[Terrain Parser] Found %d grass tiles" % res.grass_tiles.size())
+	res.grass_tiles = {} 
+	
+	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
+		var type = res.layer1[i]
+		
+		# SVEN supports grass on Indices 0, 1, 2 (TileGrass01, 02, 03)
+		if type <= 2:
+			# Strict Alpha Check: If blended (> 0.5), suppress grass (Roads/Transitions)
+			# Road is usually Layer 2. If Alpha is high, Layer 2 is dominant.
+			# We want grass only where Layer 1 is dominant (Alpha low).
+			if res.alpha[i] <= 0.5:
+				if not res.grass_tiles.has(type):
+					res.grass_tiles[type] = []
+					
+				var x = i % TERRAIN_SIZE
+				var y = i / TERRAIN_SIZE
+				res.grass_tiles[type].append(Vector2i(x, y))
+	
+	var total_grass = 0
+	for t in res.grass_tiles:
+		total_grass += res.grass_tiles[t].size()
+		print("[Terrain Parser] Grass Type %d: %d tiles" % [t, res.grass_tiles[t].size()])
+		
+	if total_grass > 0:
+		print("[Terrain Parser] Total Grass Tiles: %d" % total_grass)
 		
 	return res
 
 func parse_attributes_file(path: String) -> PackedByteArray:
-	"""Parse terrain attributes (collision/walkability) from .att file"""
+	# Parse terrain attributes (collision/walkability) from .att file
 	var file = FileAccess.open(path, FileAccess.READ)
 	if not file:
 		push_error("Cannot open attributes file: ", path)
