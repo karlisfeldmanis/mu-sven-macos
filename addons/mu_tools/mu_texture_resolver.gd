@@ -30,7 +30,25 @@ static func resolve_texture_path(bmd_path: String, internal_name: String) -> Str
 		return _search_texture(base_dir, raw_name.get_basename() + ".ozt")
 
 	var stem = raw_name.get_basename()
-	return _search_texture(base_dir, stem + target_ext)
+	var search_name = stem + target_ext
+	var result = _search_texture(base_dir, search_name)
+	
+	if result.is_empty():
+		# Try case-insensitive search for the RAW name if mapping failed
+		result = _search_texture(base_dir, raw_name)
+		
+	if result.is_empty():
+		var dir = DirAccess.open(base_dir)
+		var files = []
+		if dir:
+			dir.list_dir_begin()
+			var fn = dir.get_next()
+			while fn != "":
+				files.append(fn)
+				fn = dir.get_next()
+		print("  [TextureResolver] FAILED to find: '", search_name, "' for internal '", internal_name, "' in ", base_dir)
+		print("    Files in dir: ", files)
+	return result
 
 ## Searches for a texture in the BMD directory and common subfolders (Case-Insensitive)
 static func _search_texture(base_dir: String, filename: String) -> String:
@@ -54,10 +72,18 @@ static func _search_texture(base_dir: String, filename: String) -> String:
 		file_name = dir.get_next()
 	dir.list_dir_end()
 			
-	# 3. Check "Data" root if we can find it
+	# 3. Check common alternative locations
+	if base_dir.contains("/Object"):
+		# Try looking in sister Object folders or base Data folder
+		var data_dir = base_dir.get_base_dir()
+		var alt_path = data_dir.path_join(filename)
+		if FileAccess.file_exists(alt_path): return alt_path
+		
+	# 4. Check "Data" root if we can find it
 	if base_dir.contains("/raw_data/"):
 		var data_root = base_dir.split("/raw_data/")[0] + "/raw_data/"
 		if data_root != base_dir:
-			return _search_texture(data_root, filename)
+			var res = _search_texture(data_root, filename)
+			if not res.is_empty(): return res
 			
 	return ""

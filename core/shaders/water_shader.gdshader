@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode blend_mix, cull_disabled, unshaded;
+render_mode blend_mix, depth_draw_opaque, cull_back, unshaded;
 
 uniform sampler2D water_texture : source_color, filter_linear, repeat_enable;
 uniform float scroll_speed = 0.05;

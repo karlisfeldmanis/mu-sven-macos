@@ -9,7 +9,7 @@ var _anim_player: AnimationPlayer
 var _current_action: int = 0
 var _state_machine: MUStateMachine
 
-const MUCoordinates = preload("res://addons/mu_tools/mu_coordinates.gd")
+const MUCoordinateUtils = preload("res://addons/mu_tools/coordinate_utils.gd")
 const MUAnimationRegistry = preload("res://addons/mu_tools/mu_animation_registry.gd")
 const MUStateMachine = preload("res://addons/mu_tools/mu_state_machine.gd")
 
@@ -21,34 +21,75 @@ var _camera_yaw: Node3D
 var _camera_pitch: Node3D
 var _camera: Camera3D
 
-var _pitch_val: float = -48.5
-var _yaw_val: float = -45.0
-var _distance_val: float = 25.0 # Zoomed out more to see terrain
-var _fov_val: float = 30.0 # Authentic narrow perspective
+var _pitch_val: float = -45.0  # Natural 45-degree angle
+var _yaw_val: float = 0.0  # No rotation
+var _distance_val: float = 200.0  # High above terrain
+var _fov_val: float = 30.0  # Authentic narrow perspective
+var _zoom_val: float = 256.0 # Orthographic size (higher = zoomed out)
+
+var _camera_speed: float = 40.0 # Spectator speed
+var _is_free_cam: bool = true # Default to free cam
+var _mouse_sensitivity: float = 0.15
+var _camera_velocity: Vector3 = Vector3.ZERO
+var _friction: float = 6.0
+var _acceleration: float = 120.0
+var _is_rmb_down: bool = false
 
 func _ready() -> void:
+	# 0. Strict Resource Pre-flight
+	if not _validate_critical_resources():
+		push_error("[Render Test] FATAL: Critical script or shader errors detected. Aborting launch.")
+		return
+		
 	_setup_camera()
 	_add_lorencia_terrain()
-	load_character_with_state_machine(bmd_file_path)
 	
-	# Position character at Lorencia city (around the safe zone)
-	var tile_pos = Vector2i(130, 116)
-	var height = _get_terrain_height(tile_pos.x, tile_pos.y)
-	var world_pos = MUCoordinates.tile_to_world(tile_pos.x, tile_pos.y, height)
-	_character.position = world_pos
-	
-	# Update camera to center on character
+	# Initialize camera at map center (Town)
+	_camera_yaw.position = Vector3(128.0, 50.0, -128.0) # Start slightly higher
+	_zoom_val = 50.0 
 	_update_camera_rig()
 	
-	print("[Render Test] Character positioned at tile (%d, %d)" % [tile_pos.x, tile_pos.y])
-	print("  World Position: ", world_pos)
-	print("  Terrain Height: %.3f m" % height)
+	print("\n[Controls] CAMERA: WASD=Move, Q/E=Up/Down, Shift=Faster")
+	print("[Controls] LOOK: Hold Right Mouse Button to Rotate")
+	print("[Controls] PICK: Left Click on objects to identify them")
+	print("[Controls] VIEW: Press 'V' to toggle Perspective/Orthographic")
+	print("[Controls] Press 'P' to take a manual screenshot")
+	
+	# AUTO-SCREENSHOT FOR DEBUGGING
+	_take_screenshot("debug_render_square.png")
+
+func _validate_critical_resources() -> bool:
+	var resources = [
+		"res://addons/mu_tools/mu_terrain.gd",
+		"res://addons/mu_tools/mu_terrain_parser.gd",
+		"res://addons/mu_tools/coordinate_utils.gd",
+		"res://addons/mu_tools/mu_texture_loader.gd",
+		"res://addons/mu_tools/mesh_builder.gd",
+		"res://addons/mu_tools/mu_preflight.gd",
+		"res://core/shaders/mu_terrain.gdshader",
+		"res://core/shaders/mu_character.gdshader"
+	]
+	
+	var all_ok = true
+	for res_path in resources:
+		if not FileAccess.file_exists(res_path):
+			print("  [Pre-flight] ERROR: File not found: ", res_path)
+			all_ok = false
+			continue
+			
+		var res = load(res_path)
+		if not res:
+			print("  [Pre-flight] ERROR: Failed to load/parse: ", res_path)
+			all_ok = false
+			
+	return all_ok
 
 func _add_lorencia_terrain() -> void:
 	var mut_script = load("res://addons/mu_tools/mu_terrain.gd")
 	_terrain = mut_script.new()
 	_terrain.world_id = 1
-	_terrain.data_path = "res://reference/MuMain/src/bin/Data/World1"
+	# Set data_path to the base 'Data' directory instead of 'World1'
+	_terrain.data_path = "res://reference/MuMain/src/bin/Data"
 	add_child(_terrain)
 	_terrain.load_world()
 
@@ -56,10 +97,25 @@ func _get_terrain_height(tile_x: int, tile_y: int) -> float:
 	if not _terrain or not _terrain.heightmap:
 		return 0.0
 	
-	var idx = MUCoordinates.tile_to_index(tile_x, tile_y)
+	var idx = MUCoordinateUtils.tile_to_index(tile_x, tile_y)
 	if idx >= 0 and idx < _terrain.heightmap.size():
 		return _terrain.heightmap[idx]
 	return 0.0
+
+func _take_screenshot(filename: String = "screenshot.png") -> void:
+	await get_tree().process_frame # Ensure rendering is finished
+	await get_tree().process_frame
+	var viewport = get_viewport()
+	var texture = viewport.get_texture()
+	if not texture:
+		print("[Render Test] ERROR: Viewport texture is null")
+		return
+	var img = texture.get_image()
+	if not img:
+		print("[Render Test] ERROR: Viewport image is null")
+		return
+	img.save_png(filename)
+	print("[Render Test] Screenshot saved to: ", filename)
 
 func _setup_camera() -> void:
 	# Clean up any existing cameras in the scene
@@ -80,28 +136,74 @@ func _setup_camera() -> void:
 	_camera.current = true # CRITICAL: Ensure this camera is used
 	_camera_pitch.add_child(_camera)
 	
+	# Load saved camera state
+	_load_camera_state()
+	
 	_update_camera_rig()
 
 func _update_camera_rig() -> void:
-	# Lock to MU Native Angles
 	_camera_yaw.rotation_degrees.y = _yaw_val
 	_camera_pitch.rotation_degrees.x = _pitch_val
 	
-	# Narrow perspective creates the "almost isometric" look seen in reference
 	_camera.projection = Camera3D.PROJECTION_PERSPECTIVE
-	_camera.fov = _fov_val
-	_camera.position.z = _distance_val
-	
-	# Position camera rig at character location to center them in view
-	if _character:
-		var char_pos = _character.position
-		_camera_yaw.position = char_pos
-	else:
-		# Default to center of Lorencia
-		_camera_yaw.position = Vector3(128.5, 0, 128.5)
+	_camera.fov = 75.0
+	_camera.position = Vector3.ZERO # True free cam: No orbital offset
 
-func _process(_delta: float) -> void:
-	pass
+func _process(delta: float) -> void:
+	_handle_spectator_movement(delta)
+	
+	if not _is_free_cam and _character:
+		# Smoothly follow character
+		_camera_yaw.position = _camera_yaw.position.lerp(_character.position, delta * 10.0)
+
+func _exit_tree() -> void:
+	# Save camera state on exit
+	_save_camera_state()
+
+func _save_camera_state() -> void:
+	var config = ConfigFile.new()
+	config.set_value("camera", "position", _camera_yaw.position)
+	config.set_value("camera", "yaw", _yaw_val)
+	config.set_value("camera", "pitch", _pitch_val)
+	config.save("user://camera_state.cfg")
+
+func _load_camera_state() -> void:
+	var config = ConfigFile.new()
+	var err = config.load("user://camera_state.cfg")
+	if err == OK:
+		_camera_yaw.position = config.get_value("camera", "position", Vector3(128, 50, 128))
+		_yaw_val = config.get_value("camera", "yaw", 0.0)
+		_pitch_val = config.get_value("camera", "pitch", -45.0)
+		print("[Render Test] Loaded camera state: pos=", _camera_yaw.position, " yaw=", _yaw_val, " pitch=", _pitch_val)
+
+func _handle_spectator_movement(delta: float) -> void:
+	if not _is_free_cam: return
+	
+	var wish_dir = Vector3.ZERO
+	if Input.is_key_pressed(KEY_W): wish_dir += -_camera.global_transform.basis.z
+	if Input.is_key_pressed(KEY_S): wish_dir += _camera.global_transform.basis.z
+	if Input.is_key_pressed(KEY_A): wish_dir += -_camera.global_transform.basis.x
+	if Input.is_key_pressed(KEY_D): wish_dir += _camera.global_transform.basis.x
+	if Input.is_key_pressed(KEY_E): wish_dir += Vector3.UP
+	if Input.is_key_pressed(KEY_Q): wish_dir += Vector3.DOWN
+	
+	if wish_dir != Vector3.ZERO:
+		wish_dir = wish_dir.normalized()
+		
+		var accel = _acceleration
+		if Input.is_key_pressed(KEY_SHIFT):
+			accel *= 4.0
+		
+		_camera_velocity += wish_dir * accel * delta
+	
+	# Apply friction
+	_camera_velocity = _camera_velocity.lerp(Vector3.ZERO, _friction * delta)
+	
+	# Apply velocity
+	_camera_yaw.global_position += _camera_velocity * delta
+
+func _handle_camera_movement(_delta: float) -> void:
+	pass # Deprecated in favor of spectator logic
 
 func _on_speed_changed(val: float) -> void:
 	if _anim_player:
@@ -116,10 +218,71 @@ func _input(event: InputEvent) -> void:
 			play_action(action_idx)
 		
 		# Simulation shortcuts
-		if event.keycode == KEY_W:
+		if event.keycode == KEY_W and event.shift_pressed: # Avoid conflict with WASD
 			_cycle_weapon()
-		if event.keycode == KEY_S:
+		if event.keycode == KEY_S and event.shift_pressed: # Avoid conflict with WASD
 			_toggle_safe_zone()
+		if event.keycode == KEY_C:
+			_is_free_cam = !_is_free_cam
+			print("[Camera] Mode: ", "Free" if _is_free_cam else "Follow")
+		if event.keycode == KEY_P:
+			_take_screenshot("manual_screenshot_%d.png" % int(Time.get_unix_time_from_system()))
+			
+		if event.keycode == KEY_V:
+			if _camera.projection == Camera3D.PROJECTION_PERSPECTIVE:
+				_camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+				_camera.size = _zoom_val
+				print("[Camera] Switched to Orthographic (Size: %.1f)" % _zoom_val)
+			else:
+				_camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+				_camera.fov = 75.0
+				print("[Camera] Switched to Perspective (FOV: 75)")
+				
+	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			_is_rmb_down = event.pressed
+			if _is_rmb_down:
+				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			else:
+				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+				
+		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			_perform_object_picking(event.position if not _is_rmb_down else get_viewport().get_visible_rect().size / 2.0)
+
+	if event is InputEventMouseMotion and _is_rmb_down:
+		_yaw_val -= event.relative.x * _mouse_sensitivity
+		_pitch_val -= event.relative.y * _mouse_sensitivity
+		_pitch_val = clamp(_pitch_val, -89.0, 89.0)
+		
+		_camera_yaw.rotation_degrees.y = _yaw_val
+		_camera_pitch.rotation_degrees.x = _pitch_val
+
+func _perform_object_picking(mouse_pos: Vector2) -> void:
+	var from = _camera.project_ray_origin(mouse_pos)
+	var to = from + _camera.project_ray_normal(mouse_pos) * 1000.0
+	
+	var space_state = get_world_3d().direct_space_state
+	var query = PhysicsRayQueryParameters3D.create(from, to)
+	var result = space_state.intersect_ray(query)
+	
+	if result:
+		var collider = result.collider
+		var bmd_path = collider.get_meta("bmd_path", "Unknown")
+		var mu_euler = collider.get_meta("mu_euler", Vector3.ZERO)
+		var mu_pos = collider.get_meta("mu_pos", Vector3.ZERO)
+		var obj_name = collider.get_parent().name
+		
+		print("\n[Object Picked]")
+		print("  Name: ", obj_name)
+		print("  BMD Path: ", bmd_path)
+		print("  MU Angle: ", mu_euler)
+		print("  MU Pos: ", mu_pos)
+		print("  Godot Pos: ", collider.global_position)
+		
+		# Visual feedback: Flash the object or show label
+		# For now, just print is enough as requested
+	else:
+		print("[Picking] No object hit")
 
 func _cycle_weapon() -> void:
 	var weapons = ["None", "Sword", "TwoHandSword", "Spear", "Bow", "Staff"]
@@ -270,7 +433,8 @@ func load_base_skeleton(path: String) -> Skeleton3D:
 	# we wrap the skeleton in a container that handles the MU-to-Godot rotation.
 	var mu_container = Node3D.new()
 	mu_container.name = "MUContainer"
-	mu_container.rotation.x = -PI / 2.0
+	# Vertex coordinates are now baked MU->Godot in MUCoordinateUtils
+	mu_container.rotation.x = 0 
 	_character.add_child(mu_container)
 	add_child(_character)
 	

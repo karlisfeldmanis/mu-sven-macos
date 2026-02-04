@@ -2,7 +2,6 @@ extends Node
 
 class_name MUTerrainMeshBuilder
 
-const MUCoordinates = preload("res://addons/mu_tools/mu_coordinates.gd")
 const TERRAIN_SIZE = 256
 
 func build_terrain_mesh(heights: PackedFloat32Array, lightmap: Image) -> Mesh:
@@ -17,12 +16,12 @@ func build_terrain_mesh(heights: PackedFloat32Array, lightmap: Image) -> Mesh:
 		for x in range(TERRAIN_SIZE):
 			# Add two triangles per grid cell
 			_add_vertex(st, x, y, heights, lightmap)
-			_add_vertex(st, x + 1, y, heights, lightmap)
-			_add_vertex(st, x + 1, y + 1, heights, lightmap)
+			_add_vertex(st, x + 1, y + 1, heights, lightmap) # Swapped
+			_add_vertex(st, x + 1, y, heights, lightmap) # Swapped
 			
 			_add_vertex(st, x, y, heights, lightmap)
-			_add_vertex(st, x + 1, y + 1, heights, lightmap)
-			_add_vertex(st, x, y + 1, heights, lightmap)
+			_add_vertex(st, x, y + 1, heights, lightmap) # Swapped
+			_add_vertex(st, x + 1, y + 1, heights, lightmap) # Swapped
 			
 	st.generate_normals()
 	return st.commit()
@@ -45,8 +44,8 @@ func _add_vertex(st: SurfaceTool, x: int, y: int, heights: PackedFloat32Array, l
 	st.set_uv(Vector2(float(cx), float(cy)))
 	st.set_uv2(Vector2(float(cx) / TERRAIN_SIZE, float(cy) / TERRAIN_SIZE))
 	
-	# Position: X and Z are tile coordinates (already in meters), Y is height
-	var v_pos = Vector3(float(cx), h, float(cy))
+	# Position: X and -Z are tile coordinates (already in meters), Y is height
+	var v_pos = Vector3(float(cx), h, -float(cy))
 	st.add_vertex(v_pos)
 
 # Advanced version using ArrayMesh for better performance if needed
@@ -64,26 +63,31 @@ func build_terrain_array_mesh(heights: PackedFloat32Array, lightmap: Image) -> A
 	
 	for y in range(TERRAIN_SIZE):
 		for x in range(TERRAIN_SIZE):
-			var idx = y * TERRAIN_SIZE + x
-			var h = heights[idx]
+			var idx = y * TERRAIN_SIZE + x # Standard Row-Major (Data Index)
 			
-			# Heights are already in Godot meters, X and Z are tile coordinates
-			var v_pos_arr = Vector3(float(x), h, float(y))
-			vertices[idx] = v_pos_arr
+			# Transpose Mode 4 Mapping:
+			# MU-Row (y) -> Godot X
+			# MU-Col (x) -> Godot Z
+			# Up (h)  -> Godot Y
+			# Height Scale: 1.0x (Raw) for perfect parity with objects
+			var h = float(heights[idx]) * 1.0
+			vertices[idx] = Vector3(float(y), h, float(x) - (TERRAIN_SIZE - 1.0))
 			
-			# UV: Per-tile coordinates (0-1 repeating for texture tiling)
-			uvs[idx] = Vector2(float(x % 1), float(y % 1))
+			# UV: Per-tile coordinates (Swapped to match Godot World X/Z)
+			uvs[idx] = Vector2(float(y), float(x))
 			
-			# UV2: Global coordinates (0-1 across entire terrain for layer/alpha maps)
-			uvs2[idx] = Vector2(float(x) / TERRAIN_SIZE, float(y) / TERRAIN_SIZE)
+			# UV2: Global coordinates for index maps (X=Row=y, Y=Col=x)
+			# Synchronized with (y, x) pixel placement in mu_terrain.gd
+			uvs2[idx] = Vector2((float(y) + 0.5) / TERRAIN_SIZE, (float(x) + 0.5) / TERRAIN_SIZE)
 			
 			if lightmap:
-				colors[idx] = lightmap.get_pixel(x, y)
+				colors[idx] = lightmap.get_pixel(x, y) 
 			else:
 				colors[idx] = Color.WHITE
 				
 			if x < TERRAIN_SIZE - 1 and y < TERRAIN_SIZE - 1:
 				var i = idx
+				# Correct CCW Winding: (i, i + 256 + 1, i + 1) and (i, i + 256, i + 256 + 1)
 				indices.append(i)
 				indices.append(i + 1)
 				indices.append(i + TERRAIN_SIZE + 1)
@@ -92,14 +96,24 @@ func build_terrain_array_mesh(heights: PackedFloat32Array, lightmap: Image) -> A
 				indices.append(i + TERRAIN_SIZE + 1)
 				indices.append(i + TERRAIN_SIZE)
 				
+	var normals = PackedVector3Array()
+	normals.resize(TERRAIN_SIZE * TERRAIN_SIZE)
+	normals.fill(Vector3.UP)
+	
 	var arr = []
 	arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = vertices
 	arr[Mesh.ARRAY_COLOR] = colors
+	arr[Mesh.ARRAY_NORMAL] = normals
 	arr[Mesh.ARRAY_TEX_UV] = uvs
 	arr[Mesh.ARRAY_TEX_UV2] = uvs2
 	arr[Mesh.ARRAY_INDEX] = indices
 	
 	var mesh = ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	
+	# Manually calculate and set AABB to ensure it's not culled
+	var aabb = AABB(Vector3(0, -10, -256), Vector3(256, 120, 256))
+	mesh.custom_aabb = aabb
+	
 	return mesh

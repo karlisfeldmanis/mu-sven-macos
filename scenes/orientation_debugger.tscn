@@ -1,0 +1,11 @@
+[gd_scene load_steps=2 format=3 uid="uid://be5e5e5e5e5e"]
+
+[ext_resource type="Script" path="res://scenes/isolate_debug.gd" id="1_x1x1x"]
+
+[node name="OrientationDebugger" type="Node3D"]
+script = ExtResource("1_x1x1x")
+bmd_file = "res://reference/MuMain/src/bin/Data/Object1/House04.bmd"
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 5)
+current = true

@@ -15,46 +15,49 @@ const TERRAIN_SCALE := 100.0
 const TERRAIN_SIZE := 256
 
 ## Convert MU world-space position to Godot position
-## MU uses Z-up, Godot uses Y-up
+## MU uses Z-up (RIGHT-HANDED): X=Forward, Y=Right, Z=Up
+## Godot uses Y-up (RIGHT-HANDED): X=Right, Y=Up, Z=Backward (so -Z is Forward)
 static func mu_to_godot_position(mu_pos: Vector3) -> Vector3:
 	return Vector3(
-		mu_pos.x / TERRAIN_SCALE,  # X stays X
-		mu_pos.z / TERRAIN_SCALE,  # Z becomes Y (height)
-		mu_pos.y / TERRAIN_SCALE   # Y becomes Z (depth)
+		mu_pos.y / TERRAIN_SCALE,  # MU-Right (Y) -> Godot-X (Right)
+		mu_pos.z / TERRAIN_SCALE,  # MU-Up (Z)    -> Godot-Y (Up)
+		-mu_pos.x / TERRAIN_SCALE  # MU-Forward (X) -> Godot-Z (Forward is -Z)
 	)
 
 ## Convert Godot position back to MU world-space
 static func godot_to_mu_position(godot_pos: Vector3) -> Vector3:
 	return Vector3(
-		godot_pos.x * TERRAIN_SCALE,  # X stays X
-		godot_pos.z * TERRAIN_SCALE,  # Z becomes Y
-		godot_pos.y * TERRAIN_SCALE   # Y becomes Z (height)
+		-godot_pos.z * TERRAIN_SCALE, # -Z (Forward) -> MU-Forward (X)
+		godot_pos.x * TERRAIN_SCALE,  # X (Right)   -> MU-Right (Y)
+		godot_pos.y * TERRAIN_SCALE   # Y (Up)      -> MU-Up (Z)
 	)
 
-## Convert tile coordinates to Godot world position
-## Characters and objects are centered on tiles: (tile_index + 0.5)
+## Convert tile coordinates (X=Right, Y=Forward) to Godot world position
 static func tile_to_world(tile_x: int, tile_y: int, height: float = 0.0) -> Vector3:
 	return Vector3(
-		float(tile_x) + 0.5,  # Centered on tile
-		height,                # Height from terrain
-		float(tile_y) + 0.5   # Centered on tile
+		float(tile_x) + 0.5, # Map-X (Right) -> Godot-X
+		height,              # Height -> Godot-Y
+		-float(tile_y) - 0.5 # Map-Y (Forward) -> Godot-Z (Forward is -Z)
 	)
 
 ## Convert Godot world position to tile coordinates
 static func world_to_tile(world_pos: Vector3) -> Vector2i:
 	return Vector2i(
-		int(floor(world_pos.x)),
-		int(floor(world_pos.z))
+		int(floor(world_pos.x)),  # Godot-X (Right) -> Map-X
+		int(floor(-world_pos.z))  # -Godot-Z (Forward) -> Map-Y
 	)
 
-## Convert MU Euler angles (ZYX order) to Godot rotation (YXZ order)
-## MU: angle[0]=Roll, angle[1]=Pitch, angle[2]=Yaw (around Z)
-## Godot: Y-up, so Yaw is around Y axis
+## Convert MU Euler angles (degrees) to Godot rotation (radians)
+## Based on MU ZzzMathLib logic: Angle[0]=Roll(X), Angle[1]=Pitch(Y), Angle[2]=Yaw(Z)
+## Mapping to Godot Y-up (standardized):
+## Pitch (MU-Y) -> Godot-X (Pitch)
+## Yaw   (MU-Z) -> Godot-Y (Yaw)
+## Roll  (MU-X) -> Godot-Z (Roll)
 static func mu_angle_to_godot_rotation(mu_angle: Vector3) -> Vector3:
 	return Vector3(
-		deg_to_rad(mu_angle.x),  # Roll around X
-		deg_to_rad(mu_angle.z),  # Yaw around Y (was Z in MU)
-		deg_to_rad(mu_angle.y)   # Pitch around Z (was Y in MU)
+		deg_to_rad(mu_angle.y), # MU-Pitch (Y) -> Godot-Pitch (X)
+		deg_to_rad(mu_angle.z), # MU-Yaw   (Z) -> Godot-Yaw (Y)
+		deg_to_rad(mu_angle.x)  # MU-Roll  (X) -> Godot-Roll (Z)
 	)
 
 ## Validate tile coordinates are within bounds

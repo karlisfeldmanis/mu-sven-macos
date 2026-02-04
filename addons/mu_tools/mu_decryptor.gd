@@ -69,7 +69,8 @@ static func is_jpg(buffer: PackedByteArray) -> bool:
 
 ## Detects if a buffer is a TGA after decryption
 static func is_tga(buffer: PackedByteArray) -> bool:
-	if buffer.size() < 18: return false
+	if buffer.size() < 18:
+		return false
 	
 	# Common TGA headers
 	# 0: id length (any)
@@ -78,11 +79,24 @@ static func is_tga(buffer: PackedByteArray) -> bool:
 	var image_type = buffer[2]
 	if not image_type in [2, 3, 10, 11]:
 		return false
-		
-	# Check footer if possible
+	
+	# Check for bit depth (offset 16)
+	var bit_depth = buffer[16]
+	if not bit_depth in [8, 16, 24, 32]:
+		return false
+	
+	# Check for Width/Height > 0 (offsets 12, 14)
+	var width = buffer[12] | (buffer[13] << 8)
+	var height = buffer[14] | (buffer[15] << 8)
+	if width <= 0 or height <= 0 or width > 8192 or height > 8192:
+		return false
+	
+	# MU TGAs often don't have the "TRUEVISION-XFILE." footer if they are old
+	# But if they do, it's a strong signal.
 	if buffer.size() > 26:
-		var footer_sig = buffer.slice(buffer.size() - 18, buffer.size()).get_string_from_ascii()
-		if footer_sig == "TRUEVISION-XFILE.":
+		var footer_sig = buffer.slice(buffer.size() - 18).get_string_from_ascii()
+		if footer_sig.contains("TRUEVISION-XFILE."):
 			return true
 	
+	# For MU, we'll trust the image_type + bit_depth check if footer is missing
 	return true

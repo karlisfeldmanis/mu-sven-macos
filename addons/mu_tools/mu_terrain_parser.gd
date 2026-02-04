@@ -2,8 +2,6 @@ extends Node
 
 class_name MUTerrainParser
 
-const MUCoordinates = preload("res://addons/mu_tools/mu_coordinates.gd")
-
 # XOR key for map and object files decryption
 const MAP_XOR_KEY = [
 	0xD1, 0x73, 0x52, 0xF6, 0xD2, 0x9A, 0xCB, 0x27, 
@@ -23,8 +21,11 @@ class MapData:
 class ObjectData:
 	var type: int
 	var position: Vector3
-	var rotation: Vector3
+	var rotation: Quaternion
 	var scale: float
+	var mu_euler: Vector3 # Raw decidegrees
+	var mu_pos_raw: Vector3 # Raw MU world units
+	var hidden_mesh: int = -1  # -2 = hidden (SVEN: HiddenMesh), -1 = visible
 
 static func decrypt_map_file(data: PackedByteArray) -> PackedByteArray:
 	var decrypted = PackedByteArray()
@@ -63,11 +64,11 @@ func parse_height_file(path: String) -> PackedFloat32Array:
 	# *dst = (float)(*src) * factor;
 	# Lorencia uses factor 1.5, then we convert to Godot scale (/ 100.0)
 	const HEIGHT_FACTOR = 1.5
-	const SCALE = MUCoordinates.TERRAIN_SCALE
+	const TERRAIN_SCALE = 100.0  # MU units to Godot meters
 	
-	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
-		# Convert: byte_value * 1.5 (MU height) / 100.0 (to Godot meters)
-		heights[i] = float(raw_heights[i]) * HEIGHT_FACTOR / SCALE
+	# SVEN stores as [y][x], we map this directly to Godot (x, -y)
+	for i in range(raw_heights.size()):
+		heights[i] = float(raw_heights[i]) * HEIGHT_FACTOR / TERRAIN_SCALE
 		
 	return heights
 
@@ -78,6 +79,7 @@ func parse_mapping_file(path: String) -> MapData:
 		
 	var encrypted_data = file.get_buffer(file.get_length())
 	var data = decrypt_map_file(encrypted_data)
+	print("[Terrain Parser] Decrypted Map Data (first 16 bytes): ", data.slice(0, 16))
 	
 	var res = MapData.new()
 	var ptr = 0
@@ -94,6 +96,8 @@ func parse_mapping_file(path: String) -> MapData:
 	res.layer2 = data.slice(ptr, ptr + TERRAIN_SIZE * TERRAIN_SIZE)
 	ptr += TERRAIN_SIZE * TERRAIN_SIZE
 	
+	# Load Alpha Map (Indices 2 * 64k onwards)
+	# Alpha is 1 byte per tile, stored directly after Layer 1 and Layer 2
 	res.alpha.resize(TERRAIN_SIZE * TERRAIN_SIZE)
 	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
 		res.alpha[i] = float(data[ptr]) / 255.0
@@ -196,6 +200,7 @@ func parse_objects_file(path: String) -> Array[ObjectData]:
 		ptr += 12
 		
 		# Read MU Euler angles (vec3_t)
+		# MU terrain objects store rotation in decidegrees (0-3600)
 		var mu_angle = Vector3(
 			data.decode_float(ptr),
 			data.decode_float(ptr + 4),
@@ -206,9 +211,23 @@ func parse_objects_file(path: String) -> Array[ObjectData]:
 		obj.scale = data.decode_float(ptr)
 		ptr += 4
 		
-		# Convert using MUCoordinates utilities
-		obj.position = MUCoordinates.mu_to_godot_position(mu_pos)
-		obj.rotation = MUCoordinates.mu_angle_to_godot_rotation(mu_angle)
+		# Convert using MUCoordinateUtils (Standard Mapping)
+		var mu_rad = Vector3(deg_to_rad(mu_angle.x), deg_to_rad(mu_angle.y), deg_to_rad(mu_angle.z))
+		obj.position = MUCoordinateUtils.convert_object_position(mu_pos)
+		obj.rotation = MUCoordinateUtils.convert_object_rotation(mu_rad)
+		obj.mu_euler = mu_angle
+		obj.mu_pos_raw = mu_pos
+		
+		# SVEN compatibility: Set HiddenMesh for invisible objects
+		# MODEL_POSE_BOX = 133 (interactive pose trigger, invisible)
+		if obj.type == 133:  # MODEL_POSE_BOX
+			obj.hidden_mesh = -2
+		
+		# Diagnostic logging for rotation issues
+		if i < 3000:
+			print("  [Object Parser] Obj %d Type=%d Rot=%.2f,%.2f,%.2f Scale=%.2f" % [
+				i, obj.type, mu_angle.x, mu_angle.y, mu_angle.z, obj.scale
+			])
 		
 		objects.append(obj)
 		

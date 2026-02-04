@@ -4,12 +4,55 @@ class_name MUTerrain
 
 const TERRAIN_SIZE = 256
 
+const LORENCIA_OBJECT_MAP = {
+	0: "Tree%02d",       # 0-12
+	20: "Grass%02d",      # 20-27
+	30: "Stone%02d",      # 30-34
+	40: "StoneStatue%02d", # 40-42
+	43: "SteelStatue01",
+	44: "Tomb%02d",       # 44-46
+	50: "FireLight%02d",  # 50-51
+	52: "Bonfire01",
+	55: "DoungeonGate01",
+	56: "MerchantAnimal%02d", # 56-57
+	58: "TreasureDrum01",
+	59: "TreasureChest01",
+	60: "Ship01",
+	65: "SteelWall%02d",  # 65-67
+	68: "SteelDoor01",
+	69: "StoneWall%02d",  # 69-74
+	75: "StoneMuWall%02d", # 75-78
+	80: "Bridge01",
+	81: "Fence%02d",      # 81-84
+	85: "BridgeStone01",
+	90: "StreetLight01",
+	91: "Cannon%02d",     # 91-93
+	95: "Curtain01",
+	96: "Sign%02d",       # 96-97
+	98: "Carriage%02d",   # 98-101
+	102: "Straw%02d",     # 102-103
+	105: "Waterspout01",
+	106: "Well%02d",      # 106-109
+	110: "Hanging01",
+	111: "Stair01",
+	115: "House%02d",     # 115-119
+	120: "Tent01",
+	121: "HouseWall%02d", # 121-126
+	127: "HouseEtc%02d",  # 127-129
+	130: "Light%02d",     # 130-132
+	133: "PoseBox01",
+	140: "Furniture%02d", # 140-146
+	150: "Candle01",
+	151: "Beer%02d"       # 151-153
+}
+
 @export var world_id: int = 1
 @export var data_path: String = "res://reference/MuMain/src/bin/Data/World1"
 
 const MUTerrainParser = preload("res://addons/mu_tools/mu_terrain_parser.gd")
 const MUTerrainMeshBuilder = preload("res://addons/mu_tools/mu_terrain_mesh_builder.gd")
 const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+const MUPreflight = preload("res://addons/mu_tools/mu_preflight.gd")
 
 var heightmap: PackedFloat32Array
 var map_data: MUTerrainParser.MapData
@@ -25,24 +68,47 @@ func load_world():
 	var mesh_builder = MUTerrainMeshBuilder.new()
 	
 	# 1. Load Data
-	var height_file = data_path.path_join("TerrainHeight.OZB")
-	var mapping_file = data_path.path_join("EncTerrain%d.map" % world_id)
-	var objects_file = data_path.path_join("EncTerrain%d.obj" % world_id)
+	# 1. Load Data
+	var world_dir = "World" + str(world_id)
 	
-	print("[MUTerrain] Loading World %d..." % world_id)
+	# Determine if data_path already includes the world directory
+	var base_data_path = data_path
+	if data_path.get_file() == world_dir:
+		base_data_path = data_path.get_base_dir()
+	
+	var world_full_path = base_data_path.path_join(world_dir)
+	var height_file = world_full_path.path_join("TerrainHeight.OZB")
+	var mapping_file = world_full_path.path_join("EncTerrain" + str(world_id) + ".map")
+	var objects_file = world_full_path.path_join("EncTerrain" + str(world_id) + ".obj")
+	var att_file = world_full_path.path_join("EncTerrain" + str(world_id) + ".att")
+	var light_file = world_full_path.path_join("TerrainLight.OZJ")
+	print("[MUTerrain] Loading World %d from %s..." % [world_id, world_full_path])
+	
+	# 0. Pre-flight Check
+	var preflight = MUPreflight.validate_world(world_id, data_path, LORENCIA_OBJECT_MAP)
+	if not preflight.success:
+		push_error("[MUTerrain] Pre-flight FAILED for World %d" % world_id)
+		for err in preflight.errors:
+			print("  [Pre-flight ERROR] ", err)
+	
+	if not preflight.warnings.is_empty():
+		for warn in preflight.warnings:
+			print("  [Pre-flight WARNING] ", warn)
+            
+	print("[MUTerrain] Pre-flight summary: %d objects, %d missing BMDs, %d missing textures" % [
+		preflight.total_objects, preflight.missing_bmds, preflight.missing_textures
+	])
 	
 	heightmap = parser.parse_height_file(height_file)
 	map_data = parser.parse_mapping_file(mapping_file)
 	object_data = parser.parse_objects_file(objects_file)
 	
 	# 4. Load Attributes
-	var att_path = data_path.path_join("EncTerrain%d.att" % world_id)
-	attributes = parser.parse_attributes_file(att_path)
+	attributes = parser.parse_attributes_file(att_file)
 	print("[MUTerrain] Loaded attributes: %d bytes" % attributes.size())
 	
 	# 5. Load Lightmap (TerrainLight.OZJ)
-	var light_path = data_path.path_join("TerrainLight.OZJ")
-	var light_tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(light_path))
+	var light_tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(light_file))
 	if light_tex:
 		lightmap = light_tex.get_image()
 		print("[MUTerrain] Loaded lightmap: %dx%d" % [lightmap.get_width(), lightmap.get_height()])
@@ -55,6 +121,7 @@ func load_world():
 	
 	terrain_mesh = MeshInstance3D.new()
 	terrain_mesh.mesh = mesh
+	print("[MUTerrain] Created terrain mesh with %d surfaces" % terrain_mesh.mesh.get_surface_count())
 	add_child(terrain_mesh)
 	
 	# 6. Setup Material
@@ -66,8 +133,8 @@ func load_world():
 	# 8. Create Grass Mesh
 	_create_grass_mesh()
 	
-	# 9. Spawn Objects
 	_spawn_objects()
+	print("[MUTerrain] World load complete with objects.")
 
 
 func _setup_material():
@@ -80,7 +147,7 @@ func _setup_material():
 		"TileGround01",   # Index 2
 		"TileGround02",   # Index 3
 		"TileGround03",   # Index 4
-		"TileWater01",    # Index 5
+		"TileWater01",    # Index 5 (Restored as Water, now with Nearest filtering)
 		"TileWood01",     # Index 6
 		"TileRock01",     # Index 7
 		"TileRock02",     # Index 8
@@ -128,6 +195,7 @@ func _setup_material():
 	var fallback_img = Image.create(max_size, max_size, false, Image.FORMAT_RGB8)
 	fallback_img.fill(Color(0.2, 0.2, 0.5)) # Dark blue-gray fallback
 	
+	print("[MUTerrain] Starting texture array assembly...")
 	for i in range(256):
 		var img: Image = texture_map.get(i)
 		if img:
@@ -139,9 +207,11 @@ func _setup_material():
 	
 	print("[MUTerrain] Creating Texture2DArray with 256 layers...")
 	var tex_array = Texture2DArray.new()
-	tex_array.create_from_images(final_images)
-	
-	print("[MUTerrain] Texture2DArray created successfully!")
+	var err = tex_array.create_from_images(final_images)
+	if err != OK:
+		push_error("[MUTerrain] FAILED to create Texture2DArray: ", err)
+	else:
+		print("[MUTerrain] Texture2DArray created successfully!")
 	
 	# Create material
 	var mat = ShaderMaterial.new()
@@ -153,41 +223,51 @@ func _setup_material():
 		var layer1_img = Image.create(TERRAIN_SIZE, TERRAIN_SIZE, false, Image.FORMAT_R8)
 		var layer2_img = Image.create(TERRAIN_SIZE, TERRAIN_SIZE, false, Image.FORMAT_R8)
 		var alpha_img = Image.create(TERRAIN_SIZE, TERRAIN_SIZE, false, Image.FORMAT_R8)
-		
 		for y in range(TERRAIN_SIZE):
 			for x in range(TERRAIN_SIZE):
-				var idx = y * TERRAIN_SIZE + x
-				layer1_img.set_pixel(x, y, Color(map_data.layer1[idx] / 255.0, 0, 0))
-				layer2_img.set_pixel(x, y, Color(map_data.layer2[idx] / 255.0, 0, 0))
-				alpha_img.set_pixel(x, y, Color(map_data.alpha[idx], 0, 0))
+				# Shader Map Indexing: (X=Row, Y=Col)
+				# Matches Transpose mapping: MU-Row (y) -> Godot X, MU-Col (x) -> Godot Z
+				var idx = y * TERRAIN_SIZE + x 
+				layer1_img.set_pixel(y, x, Color(map_data.layer1[idx] / 255.0, 0, 0))
+				layer2_img.set_pixel(y, x, Color(map_data.layer2[idx] / 255.0, 0, 0))
+				alpha_img.set_pixel(y, x, Color(map_data.alpha[idx], 0, 0))
 		
 		mat.set_shader_parameter("layer1_map", ImageTexture.create_from_image(layer1_img))
 		mat.set_shader_parameter("layer2_map", ImageTexture.create_from_image(layer2_img))
 		mat.set_shader_parameter("alpha_map", ImageTexture.create_from_image(alpha_img))
+		
+		# SVEN compatibility: Generate grass UV randomization texture
+		# TerrainGrassTexture[yi] - indexed by Y only (per-row, not per-pixel!)
+		var grass_offset_img = Image.create(TERRAIN_SIZE, TERRAIN_SIZE, false, Image.FORMAT_R8)
+		for y in range(TERRAIN_SIZE):
+			var random_offset = float(randi() % 4) / 4.0  # 0.0, 0.25, 0.5, 0.75
+			for x in range(TERRAIN_SIZE):
+				# All tiles in the same row (Y) share the same offset
+				grass_offset_img.set_pixel(y, x, Color(random_offset, 0, 0))
+		mat.set_shader_parameter("grass_offset_map", ImageTexture.create_from_image(grass_offset_img))
 	
 	terrain_mesh.material_override = mat
 
 func _load_tile_image(tex_name: String) -> Image:
-	# Try .OZJ first, then .OZT, then .jpg, then .tga
-	for ext in [".OZJ", ".OZT", ".jpg", ".tga"]:
-		var path = data_path.path_join(tex_name + ext)
+	var world_dir = "World" + str(world_id)
+	var extensions = [".OZJ", ".ozj", ".OZT", ".ozt", ".jpg", ".JPG", ".tga", ".TGA"]
+	
+	# Determine if data_path already includes the world directory
+	var base_data_path = data_path
+	if data_path.get_file() == world_dir:
+		base_data_path = data_path.get_base_dir()
+	
+	for ext in extensions:
+		var path = base_data_path.path_join(world_dir).path_join(tex_name + ext)
+		var abs_path = ProjectSettings.globalize_path(path)
 		
-		# Skip if file doesn't exist to avoid Godot error spam in console
-		if not FileAccess.file_exists(ProjectSettings.globalize_path(path)):
-			continue
-			
-		# Only try Godot's load if it's a standard format Godot might recognize
-		# MU specific formats (.OZJ, .OZT, .OZB) will always fail Godot's load()
-		if ext.to_lower() in [".jpg", ".png"]:
-			var tex = load(path) as Texture2D
-			if tex:
-				return tex.get_image()
-		
-		# Try direct loader
-		var direct_tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
+		# Always try MUTextureLoader for consistency
+		# Use absolute paths for non-resource files in Reference folder
+		var direct_tex = MUTextureLoader.load_mu_texture(abs_path)
 		if direct_tex:
 			return direct_tex.get_image()
 			
+	push_warning("[MUTerrain] ALL attempts failed to load tile: " + tex_name)
 	return null
 
 
@@ -212,10 +292,14 @@ func _create_water_mesh():
 		h += 0.15
 		
 		# Create water quad (two triangles)
-		var v0 = Vector3(x, h, y)
-		var v1 = Vector3(x + 1, h, y)
-		var v2 = Vector3(x + 1, h, y + 1)
-		var v3 = Vector3(x, h, y + 1)
+		# MU-Row (y) -> Godot X, MU-Col (x) -> Godot Z
+		var v0 = Vector3(float(y), h, float(x) - (TERRAIN_SIZE - 1.0))
+		var v1 = Vector3(float(y) + 1.0, h, float(x) - (TERRAIN_SIZE - 1.0))
+		var v2 = Vector3(float(y) + 1.0, h, float(x) - (TERRAIN_SIZE - 1.0) + 1.0)
+		var v3 = Vector3(float(y), h, float(x) - (TERRAIN_SIZE - 1.0) + 1.0)
+		
+		# Sample heights for all 4 corners for better leveling (or just use center)
+		# For now, stay simple but aligned
 		
 		var uv0 = Vector2(0, 0)
 		var uv1 = Vector2(1, 0)
@@ -225,51 +309,48 @@ func _create_water_mesh():
 		var normal = Vector3.UP
 		var color = Color.WHITE  # White vertex color for proper lighting
 		
-		# Triangle 1
+		# Triangle 1 (v0, v2, v1 for CCW)
 		st.set_normal(normal)
 		st.set_color(color)
 		st.set_uv(uv0)
 		st.add_vertex(v0)
+		st.set_uv(uv2)
+		st.add_vertex(v2)
 		st.set_uv(uv1)
 		st.add_vertex(v1)
-		st.set_uv(uv2)
-		st.add_vertex(v2)
 		
-		# Triangle 2
+		# Triangle 2 (v0, v3, v2 for CCW)
 		st.set_uv(uv0)
 		st.add_vertex(v0)
-		st.set_uv(uv2)
-		st.add_vertex(v2)
 		st.set_uv(uv3)
 		st.add_vertex(v3)
+		st.set_uv(uv2)
+		st.add_vertex(v2)
 	
 	var mesh = st.commit()
 	
 	# Load water texture - try multiple paths
 	var water_tex: Texture2D = null
+	
+	# Determine if data_path already includes the world directory
+	var world_dir = "World" + str(world_id)
+	var base_data_path = data_path
+	if data_path.get_file() == world_dir:
+		base_data_path = data_path.get_base_dir()
+		
 	var tex_paths = [
-		data_path.path_join("TileWater01.OZJ"),
-		data_path.path_join("TileWater01.OZT"),
+		base_data_path.path_join(world_dir).path_join("TileWater01.OZJ"),
+		base_data_path.path_join(world_dir).path_join("TileWater01.OZT"),
+		base_data_path.path_join("TileWater01.OZJ"), # Try root data dir too
+		base_data_path.path_join("TileWater01.OZT"),
 	]
 	
 	for path in tex_paths:
-		var ext = path.get_extension().to_lower()
-		if ext in ["jpg", "png"]:
-			if FileAccess.file_exists(path):
-				var tex = load(path) as Texture2D
-				if tex:
-					water_tex = tex
-					print("  Loaded water texture: %s" % path)
-					break
-	
-	# Try direct texture loader as fallback
-	if not water_tex:
-		for path in tex_paths:
-			var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
-			if tex:
-				water_tex = tex
-				print("  Loaded water texture (direct): %s" % path)
-				break
+		var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
+		if tex:
+			water_tex = tex
+			print("  Loaded water texture: %s" % path)
+			break
 	
 	# Create water material with animated shader
 	var mat = ShaderMaterial.new()
@@ -351,25 +432,32 @@ func _create_grass_mesh():
 		var idx = y * TERRAIN_SIZE + x
 		var tile_h = heightmap[idx] if idx < heightmap.size() else 0.0
 		
-		# Position at tile center
+		# Position at tile center (Transposed: Row=y->X, Col=x->Z)
 		var transform = Transform3D()
-		transform.origin = Vector3(x + 0.5, tile_h, y + 0.5)
+		transform.origin = Vector3(
+			float(y) + 0.5, 
+			tile_h, 
+			float(x) - (TERRAIN_SIZE - 1.0) + 0.5
+		)
 		
 		multi_mesh.set_instance_transform(i, transform)
 		multi_mesh.set_instance_color(i, Color.WHITE)  # White for proper lighting
 	
 	# Load grass texture - SVEN uses .tga for billboards (BITMAP_MAPGRASS)
 	var grass_tex: Texture2D = null
+	var world_dir = "World" + str(world_id)
 	var tex_paths = [
-		data_path.path_join("TileGrass01.tga"),  # Correct billboard texture!
-		data_path.path_join("TileGrass01.OZT"),  # Fallback
+		data_path.path_join(world_dir).path_join("TileGrass01.tga"),
+		data_path.path_join(world_dir).path_join("TileGrass01.OZT"),
+		data_path.path_join("TileGrass01.tga"),
+		data_path.path_join("TileGrass01.OZT"),
 	]
 	
 	for path in tex_paths:
 		var ext = path.get_extension().to_lower()
-		if ext in ["jpg", "png"]:
+		if ext in ["jpg", "png", "tga", "ozt"]:
 			if FileAccess.file_exists(path):
-				var tex = load(path) as Texture2D
+				var tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(path))
 				if tex:
 					grass_tex = tex
 					print("  Loaded grass texture: %s" % path)
@@ -387,7 +475,7 @@ func _create_grass_mesh():
 	# Try loading as raw TGA (grass textures are NOT encrypted!)
 	if not grass_tex:
 		for ext in [".tga", ".OZT"]:
-			var tga_path = data_path.path_join("TileGrass01" + ext)
+			var tga_path = data_path.path_join(world_dir).path_join("TileGrass01" + ext)
 			var abs_path = ProjectSettings.globalize_path(tga_path)
 			if FileAccess.file_exists(abs_path):
 				var file = FileAccess.open(abs_path, FileAccess.READ)
@@ -418,15 +506,108 @@ func _create_grass_mesh():
 	print("[MUTerrain] Grass mesh created with %d instances!" % multi_mesh.instance_count)
 
 func _spawn_objects():
+	if not object_data or object_data.is_empty():
+		return
+		
 	print("[MUTerrain] Spawning %d objects..." % object_data.size())
-	# We'll need a way to map object types to BMD files
-	# For now, just print or spawn placeholders
+	
+	# 1. BMD path: Objects are in Data/ObjectX/
+	var world_dir = "Object" + str(world_id)
+	var model_dir = data_path.path_join(world_dir)
+	var spawned_count = 0
+	var missing_types = []
+	
 	for obj in object_data:
-		# TODO: Implement object spawning logic
-		pass
+		var type = obj.type
+		var bmd_name = ""
+		
+		# Find the base type in the map
+		var base_type = -1
+		if LORENCIA_OBJECT_MAP.has(type):
+			base_type = type
+		else:
+			# Check for ranged types (e.g., Tree01-Tree13 starts at 0)
+			# Find the highest base_type <= type
+			var keys = LORENCIA_OBJECT_MAP.keys()
+			keys.sort()
+			for k in keys:
+				if k <= type:
+					base_type = k
+				else:
+					break
+		
+		if base_type != -1:
+			var pattern = LORENCIA_OBJECT_MAP[base_type]
+			if "%02d" in pattern:
+				# Calculate index relative to base
+				var idx = (type - base_type) + 1
+				bmd_name = pattern % idx
+			else:
+				bmd_name = pattern
+		
+		if bmd_name.is_empty():
+			if not type in missing_types:
+				missing_types.append(type)
+			continue
+			
+		var bmd_path = model_dir.path_join(bmd_name + ".bmd")
+		var abs_path = ProjectSettings.globalize_path(bmd_path)
+		
+		if not FileAccess.file_exists(abs_path):
+			if spawned_count == 0: # Only log first few missing ones to avoid spam
+				print("  [MUTerrain] Missing BMD at: %s" % bmd_path)
+			continue
+			
+		# Parse and build the mesh
+		var parser = BMDParser.new()
+		if parser.parse_file(abs_path):
+			# Create a node for the object
+			var parent_node = Node3D.new()
+			parent_node.name = bmd_name + "_" + str(spawned_count)
+			add_child(parent_node)
+			
+			# Position and Rotation: Already converted to Transpose space in Parser
+			parent_node.position = obj.position
+			parent_node.quaternion = obj.rotation
+			
+			# MU objects are often scaled (SVEN/MU scale factor)
+			parent_node.scale = Vector3.ONE * obj.scale
+			
+			# Add meshes to the newly parent_node directly
+			var static_body = StaticBody3D.new()
+			static_body.name = "PickingBody"
+			static_body.set_meta("bmd_path", abs_path)
+			static_body.set_meta("mu_euler", obj.mu_euler)
+			static_body.set_meta("mu_pos", obj.mu_pos_raw)
+			parent_node.add_child(static_body)
+			
+			for mesh_idx in range(parser.get_mesh_count()):
+				var bmd_mesh = parser.get_mesh(mesh_idx)
+				var mesh_instance = MUMeshBuilder.create_mesh_instance(bmd_mesh, null, abs_path, parser, true)
+				if mesh_instance:
+					parent_node.add_child(mesh_instance)
+					
+					# SVEN compatibility: HiddenMesh == -2 means invisible but with collision
+					if obj.hidden_mesh == -2:
+						mesh_instance.visible = false
+					
+					# Add collision shape for picking
+					if mesh_instance.mesh:
+						var shape = CollisionShape3D.new()
+						shape.shape = mesh_instance.mesh.create_convex_shape()
+						static_body.add_child(shape)
+			
+			spawned_count += 1
+		else:
+			push_error("[MUTerrain] Failed to parse BMD: " + bmd_path)
+			
+	print("[MUTerrain] Spawned %d objects successfully." % spawned_count)
+	if not missing_types.is_empty():
+		missing_types.sort()
+		print("[MUTerrain] Unknown object types: ", missing_types)
 
 func is_walkable(tile_x: int, tile_y: int) -> bool:
-	"""Check if a tile is walkable based on attributes"""
+	# Check if a tile is walkable based on attributes
 	if attributes.is_empty():
 		return true  # No attributes loaded, assume walkable
 	
@@ -440,7 +621,7 @@ func is_walkable(tile_x: int, tile_y: int) -> bool:
 	return attr == 0 or attr == 2  # Walkable or safe zone
 
 func get_attribute(tile_x: int, tile_y: int) -> int:
-	"""Get attribute value for a tile"""
+	# Get attribute value for a tile
 	if attributes.is_empty():
 		return 0
 	

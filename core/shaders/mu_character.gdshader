@@ -1,4 +1,4 @@
-shader_type spatial; // Using standard spatial for character
+shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_disabled;
 
 uniform sampler2D albedo_texture : source_color;
@@ -15,8 +15,11 @@ void vertex() {
 void fragment() {
 	vec4 tex_color = texture(albedo_texture, UV);
 	
-	// Apply Vertex Color tinting (MU Glow effect)
-	ALBEDO = tex_color.rgb * v_color.rgb;
+	// Apply Vertex Color tinting (MU Glow effect/Lighting)
+	// If vertex colors are black/unset (world objects), use white (full brightness)
+	// Characters have vertex colors for lighting, world objects typically don't
+	vec3 lighting = length(v_color.rgb) > 0.01 ? v_color.rgb : vec3(1.0);
+	ALBEDO = tex_color.rgb * lighting;
 	
 	if (use_alpha_scissor) {
 		ALPHA = tex_color.a;

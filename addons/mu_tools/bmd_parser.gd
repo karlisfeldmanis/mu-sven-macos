@@ -152,6 +152,13 @@ func _parse_meshes(stream: StreamPeerBuffer, _debug: bool) -> bool:
 		mesh.uv_count = stream.get_u16()
 		mesh.triangle_count = stream.get_u16()
 		mesh.texture_index = stream.get_u16()
+		mesh.flags = 0 # Default
+		
+		if _debug:
+			print("    [BMD Parser] Mesh %d: V=%d N=%d UV=%d T=%d TexIdx=%d" % [
+				mesh_idx, mesh.vertex_count, mesh.normal_count, mesh.uv_count, 
+				mesh.triangle_count, mesh.texture_index
+			])
 		
 		# ... mesh counts are read ...
 		
@@ -207,11 +214,17 @@ func _parse_meshes(stream: StreamPeerBuffer, _debug: bool) -> bool:
 			
 			mesh.triangles.append(tri)
 			
-		# 5. Texture Filename (32 bytes)
-		var tex_bytes = stream.get_data(32)
-		var raw_name = (tex_bytes[1] as PackedByteArray).get_string_from_ascii()
+		# 5. Texture Filename (32 bytes, null-terminated)
+		var tex_data = stream.get_data(32)[1] as PackedByteArray
+		var null_pos = tex_data.find(0)
+		var raw_name = ""
+		if null_pos != -1:
+			raw_name = tex_data.slice(0, null_pos).get_string_from_ascii()
+		else:
+			raw_name = tex_data.get_string_from_ascii()
+		
 		mesh.texture_filename = raw_name.strip_edges()
-		if _debug: print("  [BMD Parser] Mesh %d texture: %s" % [mesh_idx, mesh.texture_filename])
+		print("  [BMD Parser] Mesh %d texture filename: '%s'" % [mesh_idx, mesh.texture_filename])
 		meshes.append(mesh)
 	return true
 
