@@ -22,10 +22,10 @@ const SCALES = {
 
 const MODES = {
 	QualityMode.NATIVE: Viewport.SCALING_3D_MODE_BILINEAR,
-	QualityMode.ULTRA: Viewport.SCALING_3D_MODE_FSR2,
-	QualityMode.QUALITY: Viewport.SCALING_3D_MODE_FSR2,
-	QualityMode.BALANCED: Viewport.SCALING_3D_MODE_FSR2,
-	QualityMode.PERFORMANCE: Viewport.SCALING_3D_MODE_FSR2
+	QualityMode.ULTRA: Viewport.SCALING_3D_MODE_FSR,
+	QualityMode.QUALITY: Viewport.SCALING_3D_MODE_FSR,
+	QualityMode.BALANCED: Viewport.SCALING_3D_MODE_FSR,
+	QualityMode.PERFORMANCE: Viewport.SCALING_3D_MODE_FSR
 }
 
 static func set_quality_mode(viewport: Viewport, mode: QualityMode):
@@ -35,11 +35,9 @@ static func set_quality_mode(viewport: Viewport, mode: QualityMode):
 	viewport.scaling_3d_mode = scale_mode
 	viewport.scaling_3d_scale = scale_val
 	
-	# FSR2 works best with TAA, but technically replaces it. Enabled for safety.
-	if scale_mode == Viewport.SCALING_3D_MODE_FSR2:
-		viewport.use_taa = true
-	else:
-		viewport.use_taa = false
+	# FSR 1.0 is a spatial upscaler. TAA blurs it too much, so we disable TAA.
+	# It provides a very sharp, crisp image.
+	viewport.use_taa = false
 		
 	var mode_name = QualityMode.keys()[mode]
 	print("[RenderSettings] Set Scaling Mode: %s (Scale: %.2f)" % [mode_name, scale_val])
