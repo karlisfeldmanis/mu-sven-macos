@@ -78,20 +78,22 @@ func parse_height_file(path: String) -> PackedFloat32Array:
 	for y in range(TERRAIN_SIZE):
 		for x in range(TERRAIN_SIZE):
 			var file_idx = y * TERRAIN_SIZE + x
-			# Direct Mapping: Load linearly
-			# Row 0 in file = Row 0 in memory = X 0 in World
-			# Add 5.0m baseline: SVEN terrain baseline is at -500 units (-5m)
-			heights[file_idx] = float(raw_heights[file_idx]) * HEIGHT_FACTOR / TERRAIN_SCALE
+			# Store raw MU byte height (0-255)
+			heights[file_idx] = float(raw_heights[file_idx])
 		
 	return heights
 
-func parse_mapping_file(path: String) -> MapData:
+func parse_mapping_file(path: String, encrypted: bool = true) -> MapData:
 	var file = MUFileUtil.open_file(path, FileAccess.READ)
 	if not file:
 		return null
 		
-	var encrypted_data = file.get_buffer(file.get_length())
-	var data = decrypt_map_file(encrypted_data)
+	var raw_data = file.get_buffer(file.get_length())
+	var data = raw_data
+	
+	if encrypted:
+		data = decrypt_map_file(raw_data)
+	
 	print("[Terrain Parser] Mapping Data Size: %d (Expected >= %d)" % [
 		data.size(), 2 + TERRAIN_SIZE * TERRAIN_SIZE * 3
 	])
@@ -126,12 +128,17 @@ func parse_mapping_file(path: String) -> MapData:
 		for x in range(TERRAIN_SIZE):
 			var idx = y * TERRAIN_SIZE + x
 			
-			# Direct Mapping: No flip
-			res.layer1[idx] = raw_layer1[idx]
-			res.layer2[idx] = raw_layer2[idx]
+			# Vertical Flip Logic
+			# We read from the "End" of the column to match the Z-flipped world.
+			# idx (Destination) = y * Size + x
+			# src_idx (Source) = (Size - 1 - y) * Size + x
+			var src_idx = (TERRAIN_SIZE - 1 - y) * TERRAIN_SIZE + x
 			
-			if raw_alpha_start + idx < data.size():
-				res.alpha[idx] = float(data[raw_alpha_start + idx]) / 255.0
+			res.layer1[idx] = raw_layer1[src_idx]
+			res.layer2[idx] = raw_layer2[src_idx]
+			
+			if raw_alpha_start + src_idx < data.size():
+				res.alpha[idx] = float(data[raw_alpha_start + src_idx]) / 255.0
 			else:
 				res.alpha[idx] = 0.0 # Default to 0 (clean base) if missing
 
@@ -163,8 +170,9 @@ func parse_mapping_file(path: String) -> MapData:
 	for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
 		var type = res.layer1[i]
 		
-		# SVEN supports grass on Indices 0, 1, 2 (TileGrass01, 02, 03)
-		if type <= 2:
+		# SVEN supports grass on Indices 0, 1 (TileGrass01, 02)
+		# Index 2 is usually TileGround01 (Dirt), so we exclude it.
+		if type <= 1:
 			# SVEN Logic: Grass only grows on pure Layer 1 patches (minimal blending)
 			if res.alpha[i] < 0.1:
 				if not res.grass_tiles.has(type):
@@ -216,12 +224,21 @@ func parse_attributes_file(path: String) -> PackedByteArray:
 	
 	if data.size() == expected_byte_size:
 		# BYTE format (legacy)
-		for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
-			attributes[i] = data[4 + i]
+		for y in range(TERRAIN_SIZE):
+			for x in range(TERRAIN_SIZE):
+				# Flip Y to align with World Z-Flip
+				var src_idx = 4 + (TERRAIN_SIZE - 1 - y) * TERRAIN_SIZE + x
+				var dst_idx = y * TERRAIN_SIZE + x
+				attributes[dst_idx] = data[src_idx]
+				
 	elif data.size() == expected_word_size:
 		# WORD format (extended) - use low byte only for simplicity
-		for i in range(TERRAIN_SIZE * TERRAIN_SIZE):
-			attributes[i] = data[4 + i * 2]
+		for y in range(TERRAIN_SIZE):
+			for x in range(TERRAIN_SIZE):
+				# Flip Y
+				var src_idx = 4 + ((TERRAIN_SIZE - 1 - y) * TERRAIN_SIZE + x) * 2
+				var dst_idx = y * TERRAIN_SIZE + x
+				attributes[dst_idx] = data[src_idx]
 	else:
 		push_error("Invalid attributes file size: ", data.size())
 		return PackedByteArray()
@@ -254,7 +271,6 @@ func parse_objects_file(path: String) -> Array[ObjectData]:
 		ptr += 2
 		
 		# Read MU world-space position (vec3_t)
-		# Reference: ZzzObject.cpp:4954 memcpy(Position, Data + DataPtr, sizeof(vec3_t))
 		var mu_pos = Vector3(
 			data.decode_float(ptr),
 			data.decode_float(ptr + 4),
@@ -263,7 +279,6 @@ func parse_objects_file(path: String) -> Array[ObjectData]:
 		ptr += 12
 		
 		# Read MU Euler angles (vec3_t)
-		# MU terrain objects store rotation in decidegrees (0-3600)
 		var mu_angle = Vector3(
 			data.decode_float(ptr),
 			data.decode_float(ptr + 4),
