@@ -4,9 +4,17 @@ class_name MUFileUtil
 ## Utility for case-insensitive file access to suppress Godot warnings on macOS/Windows
 ## and ensure compatibility on Linux.
 
+## Caches to avoid redundant disk I/O
+static var _path_cache: Dictionary = {} # requested_path -> resolved_path
+static var _dir_cache: Dictionary = {}  # dir_path -> { lowercase_name: actual_name }
+
 static func resolve_case(path: String) -> String:
 	if path.is_empty():
 		return ""
+		
+	# Level 1: Full Path Cache (O(1))
+	if _path_cache.has(path):
+		return _path_cache[path]
 		
 	var is_res = path.begins_with("res://")
 	var is_user = path.begins_with("user://")
@@ -40,28 +48,36 @@ static func resolve_case(path: String) -> String:
 	var current_resolved = root
 	for i in range(segments.size()):
 		var target = segments[i].to_lower()
-		var dir = DirAccess.open(current_resolved)
-		if not dir:
-			# Cannot even open the parent, fallback to original path for the rest
-			return path 
-			
-		dir.list_dir_begin()
-		var found = false
-		var fn = dir.get_next()
-		while fn != "":
-			if fn.to_lower() == target:
-				current_resolved = current_resolved.path_join(fn)
-				found = true
-				break
-			fn = dir.get_next()
-		dir.list_dir_end()
+		var dir_contents: Dictionary
 		
-		if not found:
+		# Level 2: Directory Cache
+		if _dir_cache.has(current_resolved):
+			dir_contents = _dir_cache[current_resolved]
+		else:
+			dir_contents = {}
+			var dir = DirAccess.open(current_resolved)
+			if dir:
+				dir.list_dir_begin()
+				var fn = dir.get_next()
+				while fn != "":
+					dir_contents[fn.to_lower()] = fn
+					fn = dir.get_next()
+				dir.list_dir_end()
+				_dir_cache[current_resolved] = dir_contents
+			else:
+				# Cannot even open the parent, fallback to original path for the rest
+				_path_cache[path] = path
+				return path 
+			
+		if dir_contents.has(target):
+			current_resolved = current_resolved.path_join(dir_contents[target])
+		else:
 			# Segment not found with any casing, append original and stop resolving
 			for j in range(i, segments.size()):
 				current_resolved = current_resolved.path_join(segments[j])
 			break
 			
+	_path_cache[path] = current_resolved
 	return current_resolved
 
 static func open_file(path: String, mode: FileAccess.ModeFlags) -> FileAccess:
