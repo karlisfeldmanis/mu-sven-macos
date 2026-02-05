@@ -26,7 +26,7 @@ enabled=PackedStringArray("res://addons/mu_tools/plugin.cfg")
 
 [rendering]
 
-renderer/rendering_method="forward_plus"
+renderer/rendering_method="gl_compatibility"
 lights_and_shadows/directional_shadow/size=4096
 lights_and_shadows/shadow_atlas/size=4096
 anti_aliasing/quality/msaa_3d=1
@@ -54,4 +54,8 @@ mu_water_move_uv={
 mu_wind_direction={
 "type": "vec3",
 "value": Vector3(1, 0, 0.5)
+}
+mu_player_position={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
 }

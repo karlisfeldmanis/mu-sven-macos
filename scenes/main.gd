@@ -14,6 +14,7 @@ const MUAnimationRegistry = preload("res://addons/mu_tools/mu_animation_registry
 const MUStateMachine = preload("res://addons/mu_tools/mu_state_machine.gd")
 const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
 const MURenderSettings = preload("res://addons/mu_tools/mu_render_settings.gd")
+const MUObjectEffectManager = preload("res://addons/mu_tools/mu_object_effect_manager.gd")
 
 var _character: Node3D
 var _terrain: Node # MUTerrain instance
@@ -39,6 +40,8 @@ var _is_rmb_down: bool = false
 
 var _fsr_mode = MURenderSettings.QualityMode.NATIVE
 
+var _sun: DirectionalLight3D
+
 func _ready() -> void:
 	MULogger.init()
 	MULogger.info("Application starting...")
@@ -58,6 +61,7 @@ func _ready() -> void:
 	_setup_environment()
 	_setup_falling_leaves()
 	_add_lorencia_terrain()
+	_setup_lighting_ui()
 	
 	# Initialize FSR
 	MURenderSettings.set_quality_mode(get_viewport(), _fsr_mode)
@@ -81,21 +85,157 @@ func _setup_sun() -> void:
 		if child is DirectionalLight3D:
 			child.queue_free()
 	
-	var sun = DirectionalLight3D.new()
-	sun.name = "Sun"
-	sun.rotation_degrees = Vector3(-60, 45, 0)
-	sun.light_energy = 1.0 # Standard energy
-	sun.light_indirect_energy = 0.5
-	sun.shadow_enabled = true
+	_sun = DirectionalLight3D.new()
+	_sun.name = "Sun"
+	_sun.rotation_degrees = Vector3(-60, 45, 0)
+	_sun.light_energy = 1.0 # Standard energy
+	_sun.light_indirect_energy = 0.5
+	_sun.shadow_enabled = true
 	
 	# Performance optimized settings (High Quality Defaults)
-	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
-	sun.directional_shadow_max_distance = 120.0
-	sun.shadow_blur = 0.5
-	sun.shadow_bias = 0.1
+	_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	_sun.directional_shadow_max_distance = 200.0
+	_sun.shadow_blur = 1.0
+	_sun.shadow_bias = 0.05
+	_sun.shadow_normal_bias = 2.0
 	
-	add_child(sun)
+	add_child(_sun)
 	print("[Main] Created optimized Sun")
+
+func _setup_lighting_ui() -> void:
+	var canvas = CanvasLayer.new()
+	add_child(canvas)
+	
+	var panel = PanelContainer.new()
+	panel.position = Vector2(20, 20)
+	canvas.add_child(panel)
+	
+	var vbox = VBoxContainer.new()
+	panel.add_child(vbox)
+	
+	var title = Label.new()
+	title.text = "Lighting Controls"
+	vbox.add_child(title)
+	
+	# Pitch Slider
+	var pitch_label = Label.new()
+	pitch_label.text = "Pitch: -60"
+	vbox.add_child(pitch_label)
+	var pitch_slider = HSlider.new()
+	pitch_slider.min_value = -90
+	pitch_slider.max_value = 0
+	pitch_slider.value = -60
+	pitch_slider.custom_minimum_size.x = 200
+	pitch_slider.value_changed.connect(func(val): 
+		_sun.rotation_degrees.x = val
+		pitch_label.text = "Pitch: %.0f" % val
+	)
+	vbox.add_child(pitch_slider)
+	
+	# Yaw Slider
+	var yaw_label = Label.new()
+	yaw_label.text = "Angle: 45"
+	vbox.add_child(yaw_label)
+	var yaw_slider = HSlider.new()
+	yaw_slider.min_value = 0
+	yaw_slider.max_value = 360
+	yaw_slider.value = 45
+	yaw_slider.custom_minimum_size.x = 200
+	yaw_slider.value_changed.connect(func(val): 
+		_sun.rotation_degrees.y = val
+		yaw_label.text = "Angle: %.0f" % val
+	)
+	vbox.add_child(yaw_slider)
+	
+	# Intensity Slider
+	var int_label = Label.new()
+	int_label.text = "Intensity: 1.0"
+	vbox.add_child(int_label)
+	var int_slider = HSlider.new()
+	int_slider.min_value = 0.0
+	int_slider.max_value = 3.0
+	int_slider.step = 0.1
+	int_slider.value = 1.0
+	int_slider.custom_minimum_size.x = 200
+	int_slider.value_changed.connect(func(val): 
+		_sun.light_energy = val
+		int_label.text = "Intensity: %.1f" % val
+	)
+	vbox.add_child(int_slider)
+	
+	# Bias Slider
+	var bias_label = Label.new()
+	bias_label.text = "Bias: 0.05"
+	vbox.add_child(bias_label)
+	var bias_slider = HSlider.new()
+	bias_slider.min_value = 0.0
+	bias_slider.max_value = 0.5
+	bias_slider.step = 0.01
+	bias_slider.value = 0.05
+	bias_slider.custom_minimum_size.x = 200
+	bias_slider.value_changed.connect(func(val): 
+		_sun.shadow_bias = val
+		bias_label.text = "Bias: %.2f" % val
+	)
+	vbox.add_child(bias_slider)
+	
+	# Normal Bias Slider
+	var nbias_label = Label.new()
+	nbias_label.text = "N-Bias: 2.0"
+	vbox.add_child(nbias_label)
+	var nbias_slider = HSlider.new()
+	nbias_slider.min_value = 0.0
+	nbias_slider.max_value = 10.0
+	nbias_slider.step = 0.1
+	nbias_slider.value = 2.0
+	nbias_slider.custom_minimum_size.x = 200
+	nbias_slider.value_changed.connect(func(val): 
+		_sun.shadow_normal_bias = val
+		nbias_label.text = "N-Bias: %.1f" % val
+	)
+	vbox.add_child(nbias_slider)
+	
+	# Save Button
+	var save_btn = Button.new()
+	save_btn.text = "Save Settings"
+	save_btn.pressed.connect(_save_lighting_state)
+	vbox.add_child(save_btn)
+	
+	# Load settings to update sliders
+	_load_lighting_state()
+	
+	# Update UI elements to match loaded state
+	pitch_slider.value = _sun.rotation_degrees.x
+	yaw_slider.value = _sun.rotation_degrees.y
+	int_slider.value = _sun.light_energy
+	bias_slider.value = _sun.shadow_bias
+	nbias_slider.value = _sun.shadow_normal_bias
+
+func _save_lighting_state() -> void:
+	if not _sun: return
+	
+	var config = ConfigFile.new()
+	config.set_value("light", "pitch", _sun.rotation_degrees.x)
+	config.set_value("light", "yaw", _sun.rotation_degrees.y)
+	config.set_value("light", "intensity", _sun.light_energy)
+	config.set_value("light", "bias", _sun.shadow_bias)
+	config.set_value("light", "normal_bias", _sun.shadow_normal_bias)
+	
+	config.save("user://lighting_state.cfg")
+	print("[Render Test] Saved lighting state")
+
+func _load_lighting_state() -> void:
+	if not _sun: return
+	
+	var config = ConfigFile.new()
+	var err = config.load("user://lighting_state.cfg")
+	if err == OK:
+		_sun.rotation_degrees.x = config.get_value("light", "pitch", -60.0)
+		_sun.rotation_degrees.y = config.get_value("light", "yaw", 45.0)
+		_sun.light_energy = config.get_value("light", "intensity", 1.0)
+		_sun.shadow_bias = config.get_value("light", "bias", 0.05)
+		_sun.shadow_normal_bias = config.get_value("light", "normal_bias", 2.0)
+		print("[Render Test] Loaded lighting state")
 
 func _setup_environment() -> void:
 	# Clean up existing environment
@@ -228,11 +368,14 @@ func _update_camera_rig() -> void:
 	_camera_pitch.rotation_degrees.x = _pitch_val
 	
 	_camera.projection = Camera3D.PROJECTION_PERSPECTIVE
-	_camera.fov = 75.0
+	_camera.size = _zoom_val
 	_camera.position = Vector3.ZERO # True free cam: No orbital offset
 
 func _process(delta: float) -> void:
 	_handle_spectator_movement(delta)
+	
+	# Update Shader Globals (Wind/Interaction)
+	MUObjectEffectManager.update_globals(_character if _character else null)
 	
 	if not _is_free_cam and _character:
 		# Smoothly follow character

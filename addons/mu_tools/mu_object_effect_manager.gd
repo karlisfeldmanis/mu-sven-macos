@@ -14,6 +14,15 @@ const LIGHT_FLICKER_SCRIPT = preload("res://addons/mu_tools/effects/light_flicke
 const ADDITIVE_SHADER = preload("res://core/shaders/mu_additive.gdshader")
 const WIND_SHADER = preload("res://core/shaders/mu_wind.gdshader")
 
+static func update_globals(player_node: Node3D):
+	if player_node:
+		RenderingServer.global_shader_parameter_set(
+			"mu_player_position", player_node.global_position
+		)
+	else:
+		# Fallback to a far away position if no player
+		RenderingServer.global_shader_parameter_set("mu_player_position", Vector3(9999, 9999, 9999))
+
 static func apply_effects(node: Node3D, type: int, world_id: int):
 	# Default: Apply full opacity
 	_apply_object_alpha(node, 1.0)
@@ -43,18 +52,8 @@ static func _setup_grass(node: Node3D):
 	var variation = randf_range(0.8, 1.2)
 	node.scale *= 0.5 * variation
 	
-	# Apply wind shader to all meshes
-	for child in node.get_children():
-		if child is MeshInstance3D:
-			for i in range(child.get_surface_override_material_count()):
-				var old_mat = child.get_surface_override_material(i)
-				if old_mat is StandardMaterial3D:
-					var new_mat = ShaderMaterial.new()
-					new_mat.shader = WIND_SHADER
-					new_mat.set_shader_parameter("texture_albedo", old_mat.albedo_texture)
-					# Wind parameters are now handled by global uniforms in shader
-					new_mat.set_shader_parameter("global_alpha", 0.8) # Slight opacity
-					child.set_surface_override_material(i, new_mat)
+	# Wind is now only for procedural grass (Terrain-based).
+	# Static objects use standard materials unless they are special effects.
 
 # ... (rest of the file helpers)
 

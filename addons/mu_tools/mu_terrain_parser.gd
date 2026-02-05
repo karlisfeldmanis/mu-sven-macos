@@ -92,7 +92,9 @@ func parse_mapping_file(path: String) -> MapData:
 		
 	var encrypted_data = file.get_buffer(file.get_length())
 	var data = decrypt_map_file(encrypted_data)
-	print("[Terrain Parser] Decrypted Map Data (first 16 bytes): ", data.slice(0, 16))
+	print("[Terrain Parser] Mapping Data Size: %d (Expected >= %d)" % [
+		data.size(), 2 + TERRAIN_SIZE * TERRAIN_SIZE * 3
+	])
 	
 	var res = MapData.new()
 	var ptr = 0
@@ -127,7 +129,11 @@ func parse_mapping_file(path: String) -> MapData:
 			# Direct Mapping: No flip
 			res.layer1[idx] = raw_layer1[idx]
 			res.layer2[idx] = raw_layer2[idx]
-			res.alpha[idx] = float(data[raw_alpha_start + idx]) / 255.0
+			
+			if raw_alpha_start + idx < data.size():
+				res.alpha[idx] = float(data[raw_alpha_start + idx]) / 255.0
+			else:
+				res.alpha[idx] = 0.0 # Default to 0 (clean base) if missing
 
 	ptr += TERRAIN_SIZE * TERRAIN_SIZE # Advance past alpha block
 
@@ -159,10 +165,8 @@ func parse_mapping_file(path: String) -> MapData:
 		
 		# SVEN supports grass on Indices 0, 1, 2 (TileGrass01, 02, 03)
 		if type <= 2:
-			# Strict Alpha Check: If blended (> 0.5), suppress grass (Roads/Transitions)
-			# Road is usually Layer 2. If Alpha is high, Layer 2 is dominant.
-			# We want grass only where Layer 1 is dominant (Alpha low).
-			if res.alpha[i] <= 0.5:
+			# SVEN Logic: Grass only grows on pure Layer 1 patches (minimal blending)
+			if res.alpha[i] < 0.1:
 				if not res.grass_tiles.has(type):
 					res.grass_tiles[type] = []
 					
@@ -189,6 +193,12 @@ func parse_attributes_file(path: String) -> PackedByteArray:
 	
 	var encrypted_data = file.get_buffer(file.get_length())
 	var data = decrypt_map_file(encrypted_data)
+	
+	# Apply BuxConvert (Additional XOR for .att files)
+	# Key: 0xFC, 0xCF, 0xAB
+	var bux_code = [0xFC, 0xCF, 0xAB]
+	for i in range(data.size()):
+		data[i] ^= bux_code[i % 3]
 	
 	# File format:
 	# Byte 0: Version

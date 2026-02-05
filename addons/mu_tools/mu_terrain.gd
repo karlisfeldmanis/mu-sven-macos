@@ -422,160 +422,164 @@ func _create_grass_mesh():
 	if not map_data or map_data.grass_tiles.is_empty():
 		return
 	
-	print("[MUTerrain] Creating grass with %d tiles..." % map_data.grass_tiles.size())
-	
 	# 1:1 Sven Diagonal Quad Geometry
-	# Quad stands on the diagonal between tile corner 0 (0,0) and corner 2 (1,1)
-	# Top vertices are shifted -0.5 on Sven X (Sven: -50.0 / 100.0)
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	
-	# MU Terrain Grass Geometry (Strict Sven Migration)
-	# Bottom Vertices (Diagonal corner-to-corner)
-	var v_bot_0 = Vector3(0, 0, 0) # sx, sy
-	var v_bot_1 = Vector3(1, 0, 1) # sx + 1.0, sy + 1.0
+	var h = 0.6 # Taller to match reference (approx 0.6m)
+	# Single Diagonal Quad (SVEN Style: Front-Left to Back-Right)
+	var w = 0.25 # Slightly wider for single blade coverage
 	
-	# Top Vertices (Shifted by 0.5 MU units (50.f) for "lean")
-	# Sven: TerrainVertex[0][0] += -50.f; (MU X maps to Godot Z)
-	var lean = -0.5
-	var h = 1.28 # Sven: pBitmap->Height * 2.f / 100.0 (64px * 2 = 128)
-	var v_top_0 = Vector3(0, h, lean)
-	var v_top_1 = Vector3(1.0, h, 1.0 + lean)
+	# Diagonal: (-w, 0, w) to (w, 0, -w) relative to center
+	# This creates a South-East facing diagonal (Top-Left to Bottom-Right in Map View)
+	var dl_b = Vector3(-w, 0.0, w)   # Bottom Left (Front-Left)
+	var dr_b = Vector3(w, 0.0, -w)   # Bottom Right (Back-Right)
+	var dl_t = Vector3(-w, h, w)	 # Top Left
+	var dr_t = Vector3(w, h, -w)	 # Top Right
 	
-	# UVs: We use a 4x1 atlas. Shader handles su += xf * 0.25
-	# We just need to pass a random 0.0, 0.25, 0.5, 0.75 offset in COLOR.r
+	# Vertices with colors for Ambient Occlusion (dark roots)
+	var c_t = Color(1, 1, 1, 1) # Top
+	var c_b = Color(0.6, 0.6, 0.6, 1) # Bottom (Soft shadow, not pitch black)
 	
-	# Vertex Order: v0, v1, v2, v3 (Sven glBegin(GL_QUADS))
-	# v0 = top_0, v1 = top_1, v2 = bot_1, v3 = bot_0
+	# Quad generation (Counter-Clockwise)
+	# Triangle 1: Top-Left, Bottom-Right, Top-Right
+	st.set_color(c_t); st.set_uv(Vector2(0, 0)); st.add_vertex(dl_t)
+	st.set_color(c_b); st.set_uv(Vector2(1, 1)); st.add_vertex(dr_b)
+	st.set_color(c_t); st.set_uv(Vector2(1, 0)); st.add_vertex(dr_t)
 	
-	# Triangle 1 (top_0, top_1, bot_1)
-	st.set_uv(Vector2(0, 0)); st.add_vertex(v_top_0)
-	st.set_uv(Vector2(1, 0)); st.add_vertex(v_top_1)
-	st.set_uv(Vector2(1, 1)); st.add_vertex(v_bot_1)
-	
-	# Triangle 2 (top_0, bot_1, bot_0)
-	st.set_uv(Vector2(0, 0)); st.add_vertex(v_top_0)
-	st.set_uv(Vector2(1, 1)); st.add_vertex(v_bot_1)
-	st.set_uv(Vector2(0, 1)); st.add_vertex(v_bot_0)
+	# Triangle 2: Top-Left, Bottom-Left, Bottom-Right
+	st.set_color(c_t); st.set_uv(Vector2(0, 0)); st.add_vertex(dl_t)
+	st.set_color(c_b); st.set_uv(Vector2(0, 1)); st.add_vertex(dl_b)
+	st.set_color(c_b); st.set_uv(Vector2(1, 1)); st.add_vertex(dr_b)
 		
 	var grass_primitive_mesh = st.commit()
 	
-	# Iterate over grass types
+	print("[MUTerrain] Grass Generation Start: %d types found" % map_data.grass_tiles.size())
+	
+	# Pre-calculate row randomization for SVEN authenticity
+	var row_random = []
+	for r in range(TERRAIN_SIZE):
+		row_random.append(float(randi() % 4) * 0.25)
+	
 	for grass_type in map_data.grass_tiles.keys():
-		var positions = map_data.grass_tiles[grass_type]
-		if positions.is_empty():
+		var raw_positions = map_data.grass_tiles[grass_type]
+		if raw_positions.is_empty():
 			continue
 			
-		print("[MUTerrain] Generating %d grass blades for Type %d..." % [
-			positions.size(), grass_type
+		# Attribute Masking: Filter out tiles that are NoMove, NoGround, or Water
+		var positions = []
+		for pos in raw_positions:
+			var idx = int(pos.y) * TERRAIN_SIZE + int(pos.x)
+			if idx < attributes.size():
+				var attr = attributes[idx]
+				# TW_NOMOVE (0x04) | TW_NOGROUND (0x08) | TW_WATER (0x10)
+				# Grass should only grow on walkable ground
+				if (attr & 0x04) != 0 or (attr & 0x08) != 0 or (attr & 0x10) != 0:
+					continue
+			positions.append(pos)
+
+		if positions.is_empty():
+			print("[MUTerrain]   Type %d: 0 tiles (after attribute masking)" % grass_type)
+			continue
+			
+		print("[MUTerrain]   Type %d: %d tiles -> %d blades" % [
+			grass_type, positions.size(), positions.size() * 8
 		])
 		
-		# Load specific texture for this type
-		# Sven: BITMAP_MAPGRASS + TerrainMappingLayer1[Index]
-		# World1 (Lorencia) uses TileGrass01.tga
 		var tex_name = "TileGrass%02d" % (grass_type + 1)
 		var grass_tex: Texture2D = null
 		
-		# Search for texture (TGA preferred for grass)
+		# Texture Discovery
 		var extensions = [".tga", ".TGA", ".ozj", ".OZJ", ".ozt", ".OZT", ".jpg"]
-		var base_data_path = data_path.get_base_dir() # ../Data/
-		var world_dir = "World" + str(world_id) # World1
+		var world_dir = "World" + str(world_id)
+		var search_path = data_path.path_join(world_dir)
 		
 		for ext in extensions:
-			# Try World-specific path first
 			var sub_path = world_dir.path_join(tex_name + ext)
-			var path_check = base_data_path.path_join(sub_path)
+			var path_check = search_path.path_join(tex_name + ext)
 			var actual_path = MUFileUtil.resolve_case(path_check)
-			
 			if actual_path != "":
 				var loaded = MUTextureLoader.load_mu_texture(actual_path)
 				if loaded:
 					grass_tex = loaded
-					print("  Loaded grass texture: %s (%dx%d)" % [
-						tex_name + ext, grass_tex.get_width(), grass_tex.get_height()
-					])
 					break
 		
 		if not grass_tex:
-			print("  [Warning] Missing texture for Grass Type %d (%s), skipping." % [
-				grass_type, tex_name
-			])
 			continue
 
-		# Prepare MultiMesh
 		var multi_mesh = MultiMesh.new()
 		multi_mesh.transform_format = MultiMesh.TRANSFORM_3D
 		multi_mesh.use_colors = true 
-		multi_mesh.instance_count = positions.size()
+		multi_mesh.use_custom_data = true
+		multi_mesh.instance_count = positions.size() * 8
 		multi_mesh.mesh = grass_primitive_mesh
 		
-		multi_mesh.mesh.custom_aabb = AABB(Vector3(-1, 0, -1), Vector3(2, 2, 2))
-		
-		# Set instances
 		for i in range(positions.size()):
 			var tile_pos = positions[i]
 			var x = tile_pos.x
 			var y = tile_pos.y
-			
 			var idx = y * TERRAIN_SIZE + x
 			var h_base = heightmap[idx] if idx < heightmap.size() else 0.0
 			
-			# Coordinate Fix: Matches Terrain Mesh mapping
-			# Godot X = MU Y (y)
-			# Godot Z = MU X (x) with Z-flip offset (x - 255)
-			# Height 'h' comes from index [y, x] which is correct for Data(y, x)
 			
-			var gx = float(y)
-			var gz = float(x) - (TERRAIN_SIZE - 1.0)
+			for sub in range(8):
+				# Randomized scattering for 8 blades
+				# Using a slightly structured but jittered 3x3-ish grid (skipping center)
+				var grid_x = sub % 3
+				var grid_y = sub / 3
+				var sub_x = 0.15 + grid_x * 0.35 + randf_range(-0.1, 0.1)
+				var sub_y = 0.15 + grid_y * 0.35 + randf_range(-0.1, 0.1)
+				
+				var pos_vec = Vector3(
+					float(y) + sub_y, 
+					h_base, 
+					float(x) + sub_x - (TERRAIN_SIZE - 1.0)
+				)
+				
+				var random_scale = 0.6 + randf() * 0.6 # 0.6 to 1.2
+				var random_rot = 0.0 # SVEN uses fixed rotation (world aligned)
+				# But we apply a fixed diagonal in mesh, so no rotation needed here?
+				# Wait, SVEN diagonal is fixed per tile. So all blades in tile parallel? YES.
+				# Do we want all 8 blades parallel?
+				# Authenticity: YES. Fields look like combed waves.
+				
+				var t = Transform3D()
+				t = t.scaled_local(Vector3(random_scale, random_scale, random_scale))
+				t.origin = pos_vec
+				
+				var inst_idx = i * 8 + sub
+				multi_mesh.set_instance_transform(inst_idx, t)
+				
+				# SVEN Authentic UV Logic:
+				# su = xf * Width + TerrainGrassTexture[yi]
+				# xf = tile_x. Width = 0.25. Texture = row_random.
+				var atlas_offset = (float(x) * 0.25) + row_random[int(y)]
+				atlas_offset = fmod(atlas_offset, 1.0) # Wrap UV
+				
+				var individual_phase = fmod(
+					float(x * 123.45 + y * 67.89 + sub * 13.5), 1.0)
+				
+				# COLOR: r=atlas (SVEN logic), g=sway, b=unused
+				multi_mesh.set_instance_color(inst_idx, 
+					Color(atlas_offset, individual_phase, 0.0, 1.0))
 			
-			# Position
-			# Aligned with New Terrain & Objects:
-			# Godot X = MU Row (y)
-			# Godot Z = MU Col (x) - 255
-			var pos_vec = Vector3(float(y), h_base, float(x) - (TERRAIN_SIZE - 1.0)) 
-			
-			# Random Scale (0.7 to 1.3 relative to base height)
-			var random_scale = 0.8 + randf() * 0.4
-			# Random Rotation around Up axis (0 to 360)
-			var random_rot = randf() * TAU
-			# Random Tilt (gentle lean, 0-10 degrees)
-			var random_tilt = deg_to_rad(randf() * 10.0)
-			
-			var t = Transform3D()
-			t = t.scaled_local(Vector3(random_scale, random_scale, random_scale))
-			t = t.rotated_local(Vector3.UP, random_rot)
-			t = t.rotated_local(Vector3.RIGHT, random_tilt)
-			t.origin = pos_vec
-			
-			multi_mesh.set_instance_transform(i, t)
-			
-			# Logic for Atlas Offset:
-			# SVEN: su = xf * 0.25 + rand % 4 * 0.25
-			var xf = float(x)
-			var base_variation = float(randi() % 4) * 0.25
-			# Total variation offset passed to shader (COLOR.r)
-			var total_variation = fmod(xf * 0.25 + base_variation, 1.0)
-			
-			# Individual Offset for Wind Noise (COLOR.g)
-			# This adds a bit of unique jitter to each blade
-			# so they don't move in perfect Lockstep rows
-			var individual_phase = randf()
-			
-			multi_mesh.set_instance_color(i, Color(total_variation, individual_phase, 0.0, 1.0))
-			
-		# Material
 		var mat = ShaderMaterial.new()
 		mat.shader = load("res://core/shaders/grass_billboard.gdshader")
 		mat.set_shader_parameter("grass_texture", grass_tex)
 		mat.set_shader_parameter("global_alpha", 0.8)
+		
+		# SVEN Lighting: Pass the full lightmap texture for bilinear sampling
+		if lightmap:
+			var light_tex = ImageTexture.create_from_image(lightmap)
+			mat.set_shader_parameter("lightmap_texture", light_tex)
 		
 		var mm_inst = MultiMeshInstance3D.new()
 		mm_inst.name = "GrassMesh"
 		mm_inst.multimesh = multi_mesh
 		mm_inst.material_override = mat
 		mm_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mm_inst.custom_aabb = AABB(Vector3(0, -5, -256), Vector3(256, 20, 256))
 		add_child(mm_inst)
-		grass_mesh = mm_inst # Keep reference to last one (hacky but OK for now)
 
 func _spawn_objects():
 	if not object_data or object_data.is_empty():
