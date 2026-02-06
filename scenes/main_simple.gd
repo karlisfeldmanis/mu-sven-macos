@@ -10,37 +10,79 @@ var _character: Node3D
 var _camera_rig: Node3D
 var _camera: Camera3D
 var _state_machine: MUStateMachine
+# Debug Logic
+var _is_debug_cam: bool = true 
+var _debug_cam_pos: Vector3 = Vector3(128.0, 1.5, 128.0) 
+var _debug_ui: CanvasLayer 
+var _debug_label: Label
 
 # Camera Settings
-var _yaw: float = 45.0 # PERFECT: Confirmed by User
-var _pitch: float = -48.5 # Sven Standard
-var _zoom: float = 10.5 # Sven Standard
-var _camera_offset: Vector3 = Vector3.ZERO
+var _yaw: float = 0.0 # Match minimap (North = -Z)
+var _pitch: float = -90.0 # DEBUG TOP-DOWN: Locked for alignment verification
+var _zoom: float = 150.0 
+var _camera_offset: Vector3 = Vector3(0.0, 0.0, 0.0) 
 
 # Persistence
 var _save_timer: float = 0.0
 var _last_saved_pos: Vector3 = Vector3.ZERO
 const SAVE_INTERVAL: float = 2.0
 const SAVE_PATH: String = "user://savegame.json"
+const SCREENSHOT_DIR: String = "user://screenshots"
 
 func _ready():
 	print("[MainSimple] Starting simplified engine...")
 	
 	# 1. Setup Lighting
 	_setup_lighting()
+	_setup_environment()
 	
 	_setup_camera()
 	_load_terrain()
 	_spawn_character()
 	
-	print("[MainSimple] Ready. Tree Nodes: ", get_tree().get_node_count())
+	if OS.get_environment("CAPTURE_SCREENSHOT") == "1":
+		print("[MainSimple] Fountain Out-of-View capture requested.")
+		# 1. Disable process follow
+		set_process(false)
+		
+		# 2. Position Rig so Fountain (128, 128) is just OFF bottom edge (Yaw 180)
+		# Moving Rig "North" (lower Z) to push high-Z fountain off the bottom.
+		var target_pos = Vector3(128.0, 1.65, 90.0) 
+		var fov_val = 10.0
+		_yaw = 180.0
+		_pitch = -90.0
+		_zoom = 180.0 
+		
+		_camera_rig.position = target_pos
+		_camera_rig.rotation_degrees.y = _yaw
+		_camera_rig.get_node("Pitch").rotation_degrees.x = _pitch
+		_camera.fov = fov_val
+		_camera.position.z = _zoom
+		
+		await get_tree().create_timer(3.0).timeout
+		_take_screenshot("fountain_off_edge")
+		get_tree().quit()
 	
+	# Restore State
+	var saved_data = _load_state()
+	if not saved_data.is_empty():
+		if saved_data.has("cam_x") and saved_data.has("cam_z"):
+			_debug_cam_pos = Vector3(saved_data["cam_x"], 1.5, saved_data["cam_z"])
+			_camera_rig.position = _debug_cam_pos
+		if saved_data.has("cam_zoom"):
+			_zoom = saved_data["cam_zoom"]
+			_camera.position.z = _zoom
+		if saved_data.has("cam_yaw"):
+			_yaw = saved_data["cam_yaw"]
+			_camera_rig.rotation_degrees.y = _yaw
+		if saved_data.has("player_x") and _character:
+			_character.position = Vector3(saved_data["player_x"], saved_data["player_y"], saved_data["player_z"])
+			_last_saved_pos = _character.position
+	
+	_setup_debug_ui()
 	print("[MainSimple] Ready. Tree Nodes: ", get_tree().get_node_count())
 	for child in get_children():
 		print(" - ", child.name, " (", child.get_class(), ")")
-	
-	# 5. Setup Navigation (Placeholder for now, or just move logic)
-	_setup_navigation_placeholder()
 
 func _setup_lighting():
 	# Clean up any existing lights
@@ -50,30 +92,26 @@ func _setup_lighting():
 	
 	var sun = DirectionalLight3D.new()
 	sun.name = "Sun"
-	sun.rotation_degrees = Vector3(-60, 45, 0)
-	sun.light_energy = 1.0 # Standard energy
+	
+	# Aligning sun with camera rig (45 deg yaw, -48.5 deg pitch)
+	sun.rotation_degrees = Vector3(-60, 45 + 15, 0) 
+	sun.light_energy = 1.0
 	sun.light_indirect_energy = 0.5
 	sun.shadow_enabled = true
 	
-	# Performance optimized settings (High Quality Defaults)
-	# Use SHADOW_ORTHOGONAL for stable, artifact-free shadows in isometric view
-	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL 
-	sun.directional_shadow_max_distance = 120.0 
+	# OPTIMIZED SHADOWS (now that winding is fixed)
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_max_distance = 40.0 # Small distance = high res shadows
 	
-	# SHADOW TUNING:
-	# Persistent "sines" -> Needs high Normal Bias or Bias.
-	sun.shadow_blur = 1.0 
-	sun.shadow_bias = 0.08 # Heavy bias
-	sun.shadow_normal_bias = 4.0 # High normal bias for orthogonal terrain
-	
-	# Rotate Sun to cast shadow SIDEWAYS (Cross Lighting)
-	sun.rotation_degrees.y = 45.0 
-	sun.rotation_degrees.x = -45.0
+	# Normal bias can be much lower now that triangles face Up
+	sun.shadow_bias = 0.02
+	sun.shadow_normal_bias = 1.0
+	sun.shadow_blur = 1.0 # Sharp, clean shadows
 	
 	add_child(sun)
-	print("[MainSimple] Created optimized Sun (Orthogonal)")
 	
-	_setup_environment()
+	# _setup_environment() # MUTerrainSimple already does this with Sven-Parity logic 
+	
 
 func _setup_environment() -> void:
 	# Clean up existing environment
@@ -81,24 +119,26 @@ func _setup_environment() -> void:
 		if child is WorldEnvironment:
 			child.queue_free()
 			
-	# 1. Environment & Background
 	var env = Environment.new()
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color.BLACK 
-	env.fog_aerial_perspective = 0.5
-	env.fog_sky_affect = 0.2
+	env.background_color = Color(0.1, 0.1, 0.12) # Dark grey-blue instead of pitch black
 	
-	# Global Illumination & Background
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(30.0/255.0, 20.0/255.0, 10.0/255.0)
+	# Ambient Lighting: This will lighten up the dark sides of buildings
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.2, 0.2, 0.2)
+	env.ambient_light_color = Color(0.3, 0.3, 0.35) # Soft cool ambient
+	env.ambient_light_energy = 0.8
+	
+	# Tonemapping for better color range
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.ssr_enabled = false # Not needed
+	env.ssao_enabled = true # Adds depth to corners
+	env.ssil_enabled = false
+	env.sdfgi_enabled = false
 	
 	var world_env = WorldEnvironment.new()
 	world_env.environment = env
 	add_child(world_env)
-	print("[MainSimple] Environment configured (Lorencia Fog)")
+	print("[MainSimple] Environment updated with ambient light and SSAO")
 
 func _setup_camera():
 	_camera_rig = Node3D.new()
@@ -112,18 +152,32 @@ func _setup_camera():
 	_camera = Camera3D.new()
 	_camera.name = "MainCamera"
 	_camera.projection = Camera3D.PROJECTION_PERSPECTIVE
-	_camera.fov = 30.0 # Sven Standard
+	_camera.fov = 10.0 
 	_camera.current = true 
-	_camera.position.z = _zoom 
+	_camera.position.z = 25.0 
 	_camera.near = 0.5
-	_camera.far = 100.0 
+	_camera.far = 2000.0 
 	
 	pitch_node.add_child(_camera)
 	
 	_camera_rig.rotation_degrees.y = _yaw
 	pitch_node.rotation_degrees.x = _pitch
 	
+	_is_debug_cam = true # Default to manual control for this phase
+	_debug_cam_pos = _camera_rig.position
+	
 	print("[MainSimple] Camera Setup: Pitch=%.1f, Yaw=%.1f, Zoom=%.1f" % [_pitch, _yaw, _zoom])
+
+func _setup_debug_ui():
+	_debug_ui = CanvasLayer.new()
+	add_child(_debug_ui)
+	
+	_debug_label = Label.new()
+	_debug_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT, Control.PRESET_MODE_MINSIZE, 20)
+	_debug_label.add_theme_font_size_override("font_size", 24)
+	_debug_label.add_theme_color_override("font_color", Color.YELLOW)
+	_debug_ui.add_child(_debug_label)
+	print("[MainSimple] Debug UI initialized.")
 
 func _load_terrain():
 	_terrain = MUTerrainSimple.new()
@@ -138,15 +192,15 @@ func _spawn_character():
 	# We need a character scene or just a mesh.
 	# Let's try to reuse `main.gd`'s `load_character_with_state_machine` logic but simplified
 	
-	print("[MainSimple] Spawning character...")
+	# Initial Spawn (Matching Donkey 128.2, 118.7)
+	# (Moved to Mirror-X calculation below)
 	
-	# Create Character Node
+	# Create character
 	_character = Node3D.new()
 	_character.name = "Player"
-	_character.add_to_group("player_character") # For Terrain logic
-	# Reverted to 1.0 to ensure stability
-	_character.scale = Vector3(1.0, 1.0, 1.0) 
+	_character.visible = true
 	add_child(_character)
+	_character.add_to_group("player_character")
 	
 	# Load Skeleton from player.bmd (Using Registry)
 	var bmd_path = "res://raw_data/Player/player.bmd"
@@ -178,6 +232,7 @@ func _spawn_character():
 			
 			skeleton.name = "Skeleton" 
 			mu_container.add_child(skeleton)
+			# (Reflection removed)
 			
 			# Ensure meshes cast shadows
 			for child in skeleton.get_children():
@@ -208,27 +263,39 @@ func _spawn_character():
 			
 			# Wait for terrain to be ready if needed (usually _ready runs fast, but safely..)
 			# Ensure terrain has heightmap loaded (it loads in _ready which is good)
-			_state_machine.setup(anim_player, bmd_path, _character, _terrain)
+			_state_machine.setup(anim_player, bmd_path)
+			_state_machine.set_terrain(_terrain)
 			_state_machine.set_state(MUStateMachine.State.IDLE)
 			_state_machine.update_animation() # Force initial animation
 			
-			# Position (Persistence or Default)
-			# var saved_pos = _load_state() # Disabled for debugging
-			# Default: Lorencia Center (Hardcoded for debugging)
-			var spawn_tile_x = 127
-			var spawn_tile_y = 127
-			var h = _get_height_at(float(spawn_tile_x) + 0.5, float(spawn_tile_y) + 0.5)
+			# Position (Standard Mapping 1:1)
+			# Position (Mirror-X Mapping)
+			# Tavern Body (Type 115) at MU (143, 147)
+			# Position should be correct now with Mirror-X basis conversion
+			var mu_x_local = 143.0
+			var mu_y_local = 147.0
+			var spawn_tile_x = 255.0 - mu_x_local
+			var spawn_tile_z = mu_y_local
+			
+			var h = _get_height_at(spawn_tile_x, spawn_tile_z)
+			print("[MainSimple] Sampled Spawn Height: ", h)
+			# Universal Math: Restoring Stable Baseline (Scale X = -1).
 			_character.position = Vector3(
-				float(spawn_tile_x) + 0.5, 
+				spawn_tile_x, 
 				h, 
-				float(spawn_tile_y) + 0.5
+				spawn_tile_z
 			)
+			# Revert to Scale X = -1 (Horizontal Flip) to match terrain.
+			# But rotate 180 degrees around Y to correct "facing opposite"
+			_character.rotate_y(PI)
+			_character.scale.x = -1.0
+			
 			print("[MainSimple] DEBUG: Spawned at: ", _character.position)
 			
 			_last_saved_pos = _character.position
 			
 			# Explicitly update state machine pos
-			_state_machine.snap_to_terrain()
+			_state_machine.snap_to_terrain(_character)
 			_state_machine.target_position = _character.position
 			_state_machine.is_moving = false # STOP MOVEMENT
 			
@@ -252,107 +319,69 @@ func _attach_part(skeleton, path):
 func _get_height_at(world_x: float, world_z: float) -> float:
 	if not _terrain or not _terrain.heightmap: return 0.0
 	
-	# World to Local (Identity 1.0 but offset by 0.5? No, tiles matches world meters)
-	# Check coordinate_utils.gd: tile_to_world(x, y) -> (x+0.5, h, y+0.5)
-	# So a world pos of (x.5, z.5) corresponds to the CENTER of tile (x, z).
-	# But the mesh vertices are at integers (0,0 to 256,256).
-	# So world (0,0) is vertex (0,0).
-	# We can use direct world coordinates.
-	
 	var x = world_x
 	var z = world_z
 	
 	# Clamp to terrain bounds
-	if x < 0 or x >= 255 or z < 0 or z >= 255:
-		return 0.0
-		
 	var fx = floor(x)
 	var fz = floor(z)
 	
-	var tx = int(fx)
-	var tz = int(fz)
+	# Mirror-X Mapping:
+	# Godot X = 255 - MU Column, Godot Z = MU Row
+	var mu_col = int(255.0 - x)
+	var mu_row = int(z) 
+	
+	# Clamp mu_row/mu_col
+	mu_col = clampi(mu_col, 0, 255)
+	mu_row = clampi(mu_row, 0, 255)
 	
 	# Get fractional part within the cell [0,1]
 	var dx = x - fx
 	var dz = z - fz
 	
-	# Get heights of the 4 corners
-	var h00 = _get_raw_height(tx, tz)
-	var h10 = _get_raw_height(tx + 1, tz)
-	var h01 = _get_raw_height(tx, tz + 1)
-	var h11 = _get_raw_height(tx + 1, tz + 1)
+	# Get heights of the 4 corners: index = Row * 256 + Col
+	var h00 = _get_raw_height(mu_row, mu_col)
+	var h10 = _get_raw_height(mu_row, mu_col + 1)
+	var h01 = _get_raw_height(mu_row + 1, mu_col)
+	var h11 = _get_raw_height(mu_row + 1, mu_col + 1)
 	
-	# Triangulation pattern from mu_terrain_mesh_builder.gd:
-	# Diagonal goes from (0,0) to (1,1).
-	# Tri 1: (0,0), (1,1), (1,0) -> Bottom/Right side (dx > dz)
-	# Tri 2: (0,0), (0,1), (1,1) -> Top/Left side (dz > dx)
-	# WAIT: mu_terrain_mesh_builder.gd lines 54-67:
-	# Tri 1: v00, v11, v10. Vertices: (0,0,H00), (1,1,H11), (1,0,H10).
-	# This covers the area where we move from (0,0) towards (1,0) and (1,1).
-	# This implies the diagonal is (0,0)->(1,1).
+	# Bilinear interpolation
+	# Along X-axis (Columns)
+	var top = h00 + (h10 - h00) * dx
+	var bottom = h01 + (h11 - h01) * dx
 	
-	var final_h = 0.0
-	
-	if dx > dz:
-		# Triangle 1: (0,0)-(1,0)-(1,1)
-		# Barycentric or simple plane interpolation.
-		# Plane defined by H00, H10, H11.
-		# height = H00 + (H10-H00)*dx + (H11-H10)*dz ?
-		# Let's check:
-		# at dx=0, dz=0 -> H00. Correct.
-		# at dx=1, dz=0 -> H10. Correct.
-		# at dx=1, dz=1 -> H00 + (H10-H00) + (H11-H10) = H11. Correct.
-		final_h = h00 + (h10 - h00) * dx + (h11 - h10) * dz
-	else:
-		# Triangle 2: (0,0)-(0,1)-(1,1)
-		# Plane defined by H00, H01, H11.
-		# height = H00 + (H11-H01)*dx + (H01-H00)*dz
-		# Check:
-		# at dx=0, dz=0 -> H00. Correct.
-		# at dx=0, dz=1 -> H01. Correct.
-		# at dx=1, dz=1 -> H00 + H11 - H01 + H01 - H00 = H11. Correct.
-		final_h = h00 + (h11 - h01) * dx + (h01 - h00) * dz
-		
-	# Vertical Bias to prevent sinking on edges (+5cm)
-	return final_h + 0.05
-
-func _get_raw_height(tx: int, ty: int) -> float:
-	var idx = ty * 256 + tx
+	# Along Z-axis (Rows)
+	return (top + (bottom - top) * dz)
+func _get_raw_height(row: int, col: int) -> float:
+	var idx = row * 256 + col # Row-Major index
 	if idx >= 0 and idx < _terrain.heightmap.size():
-		return _terrain.heightmap[idx] * 1.5 * 0.01
+		return _terrain.heightmap[idx]
 	return 0.0
 
 func _process(delta):
+	if not _character or not _camera_rig: return
+	
 	if _character:
 		# Persistence: Autosave
 		_save_timer += delta
 		if _save_timer >= SAVE_INTERVAL:
 			_save_timer = 0.0
-			if _character.position.distance_to(_last_saved_pos) > 0.1:
+			# Save if character OR debug camera moved
+			if _character.position.distance_to(_last_saved_pos) > 0.1 or _camera_rig.position.distance_to(_debug_cam_pos) > 0.1:
 				_save_state()
 				
-		# Follow Cam (Direct snap to verify centering)
-		var t = _character.position
-		t.y += 1.5
-		
-		# Apply Camera Offset to shift character on screen
-		# To put Char at TOP, we must look "Below" them (South/East).
-		# Current offset (2.5, 0, -2.5) moves target North-West (Opposite).
-		# Let's flip it to move target South-East.
-		# But wait, looking at `coordinate_test.gd`: it looks at (0, 0.9, 0).
-		# If user wants Char at Top, we need to look at (0, 0.9, 0) + Shift.
-		# Shift direction should be "Down Screen".
-		# Screen Down = +Z +X (approx).
-		# Let's try ZERO offset first (Centered), then tweak.
-		# User said "Top Side", default is Center.
-		# Center usually puts char in middle. "Top Side" means char is above middle.
-		# So Camera Center must be BELOW Char.
-		# So Target = Char + (DownScreenVector * Amount).
-		
-		# Let's try applying the defined `_camera_offset`.
-		# Current value (2.5, 0, -2.5) looks North-West. Wrong way?
-		# Let's assume standard behavior first.
-		_camera_rig.position = t + _camera_offset
+		# Follow Cam (Disabled in Manual Debug)
+		if not _is_debug_cam:
+			var t = _character.position
+			t.y += 1.5
+			_camera_rig.position = t + _camera_offset
+		else:
+			_camera_rig.position = _debug_cam_pos
+
+		if _debug_label:
+			_debug_label.text = "MU Pos: (%.1f, %.1f)\nZoom: %.1f\nYaw: %.1f\nWASD: Move | Q/E: Rotate | F: 90° Step" % [
+				_debug_cam_pos.x, _debug_cam_pos.z, _zoom, fmod(_yaw, 360.0)
+			]
 
 	# AUTO ORBIT REMOVED
 	
@@ -360,25 +389,67 @@ func _process(delta):
 		_camera.make_current() # FORCE
 		print("[MainSimple] Player Pos: ", _character.global_position, " Rig Pos: ", _camera_rig.global_position)
 	
+	# Movement Logic
+	if _state_machine and _state_machine.is_moving:
+		print("Moving to: ", _state_machine.target_position)
+		var move_speed = 6.0 # Base run/walk speed
+		var dir = _state_machine.target_position - _character.position
+		dir.y = 0 # Plane movement
+		
+		var dist = dir.length()
+		if dist > 0.1:
+			dir = dir.normalized()
+			# Move
+			_character.position += dir * move_speed * delta
+			
+			# Face target
+			var target_look = _character.position + dir
+			_character.look_at(Vector3(target_look.x, _character.position.y, target_look.z), Vector3.UP)
+			
+			# Snap to terrain height
+			var h = _get_height_at(_character.position.x, _character.position.z)
+			_character.position.y = h
+		else:
+			# Reached target
+			_state_machine.is_moving = false
+			_state_machine.set_state(MUStateMachine.State.IDLE)
+			_character.position = _state_machine.target_position # Snap to exact
+			# Snap height
+			var h = _get_height_at(_character.position.x, _character.position.z)
+			_character.position.y = h
+	
 	_handle_input(delta)
 
-func _setup_navigation_placeholder():
-	# For now, simplistic click-to-move is handled by StateMachine's move_to if we hook inputs.
-	pass
+func _unhandled_input(event: InputEvent):
+	if event is InputEventMouseButton:
+		var zoom_step = 25.0
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			_zoom = max(10.0, _zoom - zoom_step)
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_zoom = min(1500.0, _zoom + zoom_step)
+		_camera.position.z = _zoom
+	
+	if event is InputEventKey and event.pressed:
+		var zoom_step = 25.0
+		if event.keycode == KEY_F:
+			_yaw = fmod(_yaw + 90.0, 360.0)
+			print("[MainSimple] Rotated Yaw to: ", _yaw)
+		elif event.keycode == KEY_EQUAL: # Zoom In (+)
+			_zoom = max(10.0, _zoom - zoom_step)
+			_camera.position.z = _zoom
+			print("[MainSimple] Zoom In (Key): ", _zoom)
+		elif event.keycode == KEY_MINUS: # Zoom Out (-)
+			_zoom = min(1500.0, _zoom + zoom_step)
+			_camera.position.z = _zoom
+			print("[MainSimple] Zoom Out (Key): ", _zoom)
 
 func _handle_input(delta):
 	# Navigation
 	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		print("Input Left Click")
 		var mouse_pos = get_viewport().get_mouse_position()
 		var from = _camera.project_ray_origin(mouse_pos)
 		var to = from + _camera.project_ray_normal(mouse_pos) * 2000
-		
-		# Raycast against Terrain only (Collision Mask 1 implicitly or explicit)
-		# NOTE: MUTerrainSimple adds a MeshInstance3D with generic collision? 
-		# Actually MUTerrainSimple creates a MeshInstance3D "TerrainMesh".
-		# We need to ensure it has collision or we raycast against a plane.
-		# For now, let's assume direct_space_state works if we add collision, 
-		# OR use a plane intersection fallback if missing.
 		
 		# Fallback: Raycast to Plane(Vector3.UP, 0) since MU is flat-ish
 		var plane = Plane(Vector3.UP, 0)
@@ -393,26 +464,82 @@ func _handle_input(delta):
 		var query = PhysicsRayQueryParameters3D.create(from, to)
 		var res = space.intersect_ray(query)
 		if res and _state_machine:
+			print("Raycast Hit: ", res.position)
 			_state_machine.move_to(res.position)
 	
 	# Camera Settings Hotkeys (Debug)
+	# Camera Settings Hotkeys (Debug - and Scroll)
 	if Input.is_key_pressed(KEY_COMMA): # Decrease Zoom (Zoom IN)
-		_zoom = max(100.0, _zoom - 100.0 * delta)
-		_camera.size = _zoom
-		print("Zoom: ", _zoom)
+		_zoom = max(10.0, _zoom - 200.0 * delta)
 	if Input.is_key_pressed(KEY_PERIOD): # Increase Zoom (Zoom OUT)
-		_zoom = min(500.0, _zoom + 100.0 * delta)
-		_camera.position.z = _zoom
-		print("Zoom: ", _zoom)
+		_zoom = min(1500.0, _zoom + 200.0 * delta)
 	
-	# Rotation Control
+	_camera.position.z = _zoom
+	
+	# Manual Camera Flip / Rotate (fine)
 	if Input.is_key_pressed(KEY_Q): _yaw -= 90.0 * delta
 	if Input.is_key_pressed(KEY_E): _yaw += 90.0 * delta
-	if Input.is_key_pressed(KEY_R): _pitch += 45.0 * delta
-	if Input.is_key_pressed(KEY_F): _pitch -= 45.0 * delta
+
+	# Manual WASD Movement
+	if _is_debug_cam:
+		var move_speed = _zoom * delta * 0.5 # Scale speed by zoom
+		var move_dir = Vector3.ZERO
+		
+		# Movement is relative to current view
+		# If Yaw is 0 (looking -Z), W is -Z.
+		# If Yaw is 180 (looking +Z), W is +Z.
+		var forward = Vector3(0, 0, -1).rotated(Vector3.UP, deg_to_rad(_yaw))
+		var right = Vector3(1, 0, 0).rotated(Vector3.UP, deg_to_rad(_yaw))
+		
+		if Input.is_key_pressed(KEY_W): move_dir += forward
+		if Input.is_key_pressed(KEY_S): move_dir -= forward
+		if Input.is_key_pressed(KEY_A): move_dir -= right
+		if Input.is_key_pressed(KEY_D): move_dir += right
+		
+		if move_dir.length() > 0:
+			_debug_cam_pos += move_dir.normalized() * move_speed
+		
+		_camera_rig.position = _debug_cam_pos
 	
 	_camera_rig.rotation_degrees.y = _yaw
 	_camera_rig.get_node("Pitch").rotation_degrees.x = _pitch
+	
+	if Input.is_key_pressed(KEY_F12):
+		_take_screenshot()
+
+func _take_screenshot(custom_name: String = ""):
+	print("[MainSimple] Attempting to capture screenshot...")
+	if not DirAccess.dir_exists_absolute(SCREENSHOT_DIR):
+		var err = DirAccess.make_dir_recursive_absolute(SCREENSHOT_DIR)
+		print("[MainSimple] Created screenshot dir. Error code: ", err)
+		
+	var viewport = get_viewport()
+	if not viewport:
+		print("[MainSimple] ERROR: Viewport not found!")
+		return
+		
+	var texture = viewport.get_texture()
+	if not texture:
+		print("[MainSimple] ERROR: Texture not found!")
+		return
+		
+	var image = texture.get_image()
+	if not image:
+		print("[MainSimple] ERROR: Image is null!")
+		return
+		
+	var name_part = custom_name
+	if name_part.is_empty():
+		name_part = "screenshot_" + Time.get_datetime_string_from_system().replace(":", "-")
+		
+	var file_path = SCREENSHOT_DIR.path_join(name_part + ".png")
+	var err = image.save_png(file_path)
+	if err == OK:
+		print("[MainSimple] Screenshot SUCCESSFULLY saved to: ", ProjectSettings.globalize_path(file_path))
+		# Print name for agent detection
+		print("IMAGE_SAVED: ", ProjectSettings.globalize_path(file_path))
+	else:
+		print("[MainSimple] FAILED to save screenshot. Error code: ", err)
 
 
 func _notification(what):
@@ -424,30 +551,34 @@ func _save_state():
 	if not _character: return
 	
 	var data = {
-		"x": _character.position.x,
-		"y": _character.position.y,
-		"z": _character.position.z
+		"player_x": _character.position.x,
+		"player_y": _character.position.y,
+		"player_z": _character.position.z,
+		"cam_x": _debug_cam_pos.x,
+		"cam_z": _debug_cam_pos.z,
+		"cam_zoom": _zoom,
+		"cam_yaw": _yaw
 	}
 	
 	var file = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if file:
 		file.store_string(JSON.stringify(data))
 		_last_saved_pos = _character.position
-		# print("[MainSimple] Saved state: ", _character.position)
+		# print("[MainSimple] Saved state (including camera)")
 
-func _load_state() -> Vector3:
+func _load_state() -> Dictionary:
 	if not FileAccess.file_exists(SAVE_PATH):
-		return Vector3.ZERO
+		return {}
 		
 	var file = FileAccess.open(SAVE_PATH, FileAccess.READ)
-	if not file: return Vector3.ZERO
+	if not file: return {}
 	
 	var content = file.get_as_text()
 	var json = JSON.new()
 	if json.parse(content) == OK:
 		var data = json.get_data()
-		if data and data.has("x") and data.has("y") and data.has("z"):
-			return Vector3(data["x"], data["y"], data["z"])
+		if data is Dictionary:
+			return data
 	
-	return Vector3.ZERO
+	return {}
 

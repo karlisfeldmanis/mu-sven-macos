@@ -9,52 +9,38 @@ class_name MUCoordinateUtils
 const SCALE_FACTOR = 0.01
 
 static func convert_position(mu_pos: Vector3) -> Vector3:
-	# Direct Identity Mapping:
-	# MU-X (Col) -> Godot X
-	# MU-Y (Row) -> Godot Z
-	# MU-Z (Up)  -> Godot Y
+	# Linear 1:1 Mapping: MU-X (Col) -> Godot X, MU-Y (Row) -> Godot Z, MU-Z (Up) -> Godot Y
 	return Vector3(mu_pos.x, mu_pos.z, mu_pos.y) * SCALE_FACTOR
 
 const HEIGHT_FACTOR = 1.0
 
-## Converts MU object position to Direct Identity world space
+## Converts MU object position to 1:1 world space
 static func convert_object_position(mu_pos: Vector3) -> Vector3:
-	# (X=Col, Y=Row, Z=Height) -> (X=Col, Height=Y, Row=Z)
-	# Terrain logic uses Image.flip_y(), so we must invert the Row (Y) coordinate.
-	# Terrain is 256x256. Scale factor 0.01.
-	# Inverted Row = 255 - Row (in tiles). In world units: 256.0 - RowVal.
-	# We use 256.0 effectively because Image flip is symmetric around center.
-	
-	var gx = mu_pos.x * SCALE_FACTOR
-	var gy = mu_pos.z * SCALE_FACTOR # Height
-	var gz = (TERRAIN_SIZE * 1.0) - (mu_pos.y * SCALE_FACTOR) # Inverted Row
-	
-	return Vector3(gx, gy, gz)
+	# Linear 1:1 Mapping with 0.5m (50 MU units) centering offset.
+	return Vector3(mu_pos.x * SCALE_FACTOR + 0.5, mu_pos.z * SCALE_FACTOR, mu_pos.y * SCALE_FACTOR + 0.5)
 
-## Converts MU rotation matrix/basis to Godot Direct Identity space
 static func convert_basis(mu_basis: Basis) -> Basis:
-	# Godot.x = MU.x, Godot.y = MU.z, Godot.z = MU.y
-	var g_x = Vector3(mu_basis.x.x, mu_basis.x.z, mu_basis.x.y)
-	var g_y = Vector3(mu_basis.z.x, mu_basis.z.z, mu_basis.z.y)
-	var g_z = Vector3(mu_basis.y.x, mu_basis.y.z, mu_basis.y.y)
+	# Similarity Transform: R_g = M * R_m * M^-1
+	# M = [-1, 0, 0; 0, 0, 1; 0, 1, 0] (Permutation + Reflection/Rotation)
+	# This correctly maps MU rotation into Godot space while preserving Det=1.
+	
+	var x = mu_basis.x
+	var y = mu_basis.y
+	var z = mu_basis.z
+	
+	var g_x = Vector3(x.x, -x.z, -x.y)
+	var g_y = Vector3(-z.x, z.z, z.y)
+	var g_z = Vector3(-y.x, y.z, y.y)
 	
 	return Basis(g_x, g_y, g_z)
 
 ## Converts MU object rotation to Transpose (Mode 4) world space
 static func convert_object_rotation(mu_euler: Vector3) -> Quaternion:
-	# Convert MU Euler (X=Pitch, Y=Roll, Z=Yaw) to Matrix.
-	# World Reflection (Z-Flip) requires flipping angles for axes perpendicular to reflection normal (Z).
-	# X-axis (Pitch) is perpendicular to Z. -> Negate X.
-	# Y-axis (Vertical/Yaw in Godot, MU Z?) -> MU Z is Vertical. Perpendicular to World Z. -> Negate Z.
-	# MU Y (Roll) matches World Z axis. Reflection along axis preserves chirality? No, axis inverts.
-	# Let's try Negating X (Pitch) and Z (Yaw).
-	
-	var adjusted_euler = Vector3(-mu_euler.x, mu_euler.y, -mu_euler.z)
-	
-	var q_mu = bmd_angle_to_quaternion(adjusted_euler)
+	# BMD Euler (X=Pitch, Y=Roll, Z=Yaw) to Matrix.
+	var q_mu = bmd_angle_to_quaternion(mu_euler)
 	var b_mu = Basis(q_mu)
 	
-	# 2. Permute and rotate to Godot space
+	# Permute and rotate to Godot space (90-deg X rotation)
 	return convert_basis(b_mu).get_rotation_quaternion()
 
 ## Converts a MuOnline normal vector to Godot (scaling only)
@@ -88,7 +74,7 @@ static func get_root_rotation() -> Vector3:
 const TERRAIN_SIZE = 256
 
 static func tile_to_world(tile_x: int, tile_y: int, height: float = 0.0) -> Vector3:
-	# Direct Identity Mapping:
+	# Linear 1:1 Mapping:
 	# MU-Col (tile_x) -> Godot X
 	# MU-Row (tile_y) -> Godot Z
 	return Vector3(

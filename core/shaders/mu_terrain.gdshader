@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_disabled;
+render_mode cull_back;
 
 uniform sampler2DArray tile_textures : source_color;
 uniform sampler2D layer1_map : filter_nearest; // R8 texture containing tile indices
@@ -9,26 +9,29 @@ uniform sampler2D grass_offset_map : filter_nearest; // R8 random UV offsets
 uniform float lightmap_intensity : hint_range(0.0, 5.0) = 1.0;
 
 void fragment() {
-	// Global UVs (0 to 1 over the whole terrain)
-	vec2 global_uv = UV2;
+	// Calculate discrete UV for index lookup (prevents index bleeding)
+	vec2 index_uv = (floor(UV) + 0.5) / 256.0;
+	// Calculate continuous UV for smooth alpha blending
+	vec2 blend_uv = UV / 256.0;
+	
+	// Read indices from maps
+	float idx1 = texture(layer1_map, index_uv).r * 255.0;
+	float idx2 = texture(layer2_map, index_uv).r * 255.0;
+	
+	// Blend based on alpha-map (sampled linearly for smoothness)
+	float alpha = texture(alpha_map, blend_uv).r;
 	
 	// Tile UVs (0 to 1 per tile)
 	vec2 tile_uv = fract(UV);
 	
-	// Read indices from maps
-	float idx1 = texture(layer1_map, global_uv).r * 255.0;
-	float idx2 = texture(layer2_map, global_uv).r * 255.0;
-	
 	// Reverted to simple mapping for visual clarity
-	float grass_offset = texture(grass_offset_map, global_uv).r;
-	vec2 layer1_uv = vec2(fract(UV.x) + grass_offset, fract(UV.y));
+	float grass_offset = texture(grass_offset_map, index_uv).r;
+	vec2 layer1_uv = vec2(tile_uv.x + grass_offset, tile_uv.y);
 	
 	// Sample both layers from the TextureArray
 	vec3 tex1 = texture(tile_textures, vec3(layer1_uv, idx1)).rgb;
 	vec3 tex2 = texture(tile_textures, vec3(tile_uv, idx2)).rgb;
 	
-	// Blend based on alpha
-	float alpha = texture(alpha_map, global_uv).r;
 	vec3 final_color = mix(tex1, tex2, alpha);
 	
 	// ALBEDO-only lighting for shadow testing

@@ -64,9 +64,9 @@ var lightmap: Image
 
 func _ready():
 	load_world()
-	_setup_environment() # Apply Hardcoded Sven Logic (Light, Fog)
+	# _setup_environment() # Disabled: Let MainSimple handle lighting/environment
 
-func _process(delta):
+func _process(_delta):
 	_update_uv_scrolling()
 	_update_transparency()
 
@@ -78,8 +78,9 @@ func _update_transparency():
 	
 	var char_pos = character.global_position
 	# Convert Godot Pos to Terrain Grid
-	var tx = int(char_pos.x / 1.0) # Scale is 1.0 in Simple. Base scale 100cm = 1m.
-	var tz = int(char_pos.z / 1.0)
+	# Mirror-X Mapping:
+	var tx = int(255.0 - char_pos.x) 
+	var tz = int(char_pos.z)
 	
 	if tx < 0 or tx >= 256 or tz < 0 or tz >= 256: return
 	
@@ -220,11 +221,12 @@ func load_world():
 	var light_tex = MUTextureLoader.load_mu_texture(ProjectSettings.globalize_path(light_file))
 	if light_tex:
 		lightmap = light_tex.get_image()
-		# Flip Lightmap Y to align with Z-flipped Terrain
-		lightmap.flip_y()
+		# NOTE: flip_y() removed to test alignment. 
+		# If layers are flipped in parser, we need to decide if Lightmap follows.
+		# lightmap.flip_y() 
 
 	# 3. Create Single Terrain Mesh
-	var mesh = mesh_builder.build_terrain_array_mesh(heightmap, lightmap, Rect2i(0, 0, TERRAIN_SIZE, TERRAIN_SIZE))
+	var mesh = mesh_builder.build_terrain_array_mesh(heightmap, lightmap)
 	var terrain_mi = MeshInstance3D.new()
 	terrain_mi.mesh = mesh
 	
@@ -307,6 +309,7 @@ func _setup_material(mesh_instance: MeshInstance3D):
 		for y in range(TERRAIN_SIZE):
 			for x in range(TERRAIN_SIZE):
 				var idx = y * TERRAIN_SIZE + x
+				# No mirroring here because UVs follow the array indices (cx, cy)
 				l1.set_pixel(x, y, Color(map_data.layer1[idx] / 255.0, 0, 0))
 				l2.set_pixel(x, y, Color(map_data.layer2[idx] / 255.0, 0, 0))
 				alpha.set_pixel(x, y, Color(map_data.alpha[idx], 0, 0))
@@ -372,12 +375,23 @@ func _spawn_objects():
 			parent_node.name = bmd_name + "_" + str(spawned_count)
 			add_child(parent_node)
 			
-			parent_node.position = obj.position
-			parent_node.quaternion = obj.rotation
-			# Apply Scale. 
-			# We MUST apply Negative Z Scale to match the World Reflection (Heightmap Flip).
-			# This corrects both the Facing Direction (Z+ -> Z-) and Handedness.
-			parent_node.scale = Vector3(1.0, 1.0, -1.0) * obj.scale
+			# Mirror-X Mapping via Reflection:
+			# Godot X = 255 - MU Column / 100
+			# Mirror-X Mapping via Reflection:
+			# Godot X = 255 - MU Column / 100
+			# Mirror-X Mapping via Reflection:
+			# Godot X = 255 - MU Column / 100
+			# Universal Math: Restoring Stable Baseline (Scale X = -1 + 180 Rot).
+			# This ensures visibility. We will debug Chirality separately.
+			
+			parent_node.position.x = 255.0 - (obj.mu_pos_raw.x / 100.0)
+			parent_node.position.y = obj.mu_pos_raw.z / 100.0
+			parent_node.position.z = obj.mu_pos_raw.y / 100.0
+			
+			# MU objects typically use static scaling
+			# Apply Mirror-X reflection at the scale level
+			parent_node.transform.basis = Basis(obj.rotation)
+			parent_node.scale = Vector3(-1.0, 1.0, 1.0) * obj.scale
 			
 			for mesh_idx in range(parser.get_mesh_count()):
 				var bmd_mesh = parser.get_mesh(mesh_idx)
@@ -385,8 +399,9 @@ func _spawn_objects():
 					bmd_mesh, null, abs_path, parser, true
 				)
 				if mesh_instance:
+					# Verify Shadow Casting is ON
+					mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 					parent_node.add_child(mesh_instance)
-					
 					var type = obj.type
 					# Sven Logic: HiddenMesh == -2 hides the model (replaced by effects)
 					# Objects 130-132 (Lights), 90 (Streetlight), 52 (Bonfire), 150 (Candle)
@@ -469,10 +484,16 @@ func _create_water_mesh():
 		var h = (h_raw * 1.5) / 100.0
 		h += 0.15
 		
-		var v0 = Vector3(float(x), h, float(y))
-		var v1 = Vector3(float(x) + 1.0, h, float(y))
-		var v2 = Vector3(float(x) + 1.0, h, float(y) + 1.0)
-		var v3 = Vector3(float(x), h, float(y) + 1.0)
+		# Mirror-X Mapping:
+		var gx = 255.0 - float(x)
+		var gx_prev = 255.0 - (float(x) + 1.0)
+		var gz = float(y)
+		var gz_next = float(y) + 1.0
+		
+		var v0 = Vector3(gx, h, gz)
+		var v1 = Vector3(gx_prev, h, gz)
+		var v2 = Vector3(gx_prev, h, gz_next)
+		var v3 = Vector3(gx, h, gz_next)
 		
 		# Quad (v0, v2, v1) and (v0, v3, v2)
 		st.set_uv(Vector2(0,0)); st.add_vertex(v0)
@@ -545,8 +566,9 @@ func _create_grass_mesh_simple():
 			for k in range(8):
 				var sub_x = 0.5 + randf_range(-0.4, 0.4)
 				var sub_y = 0.5 + randf_range(-0.4, 0.4) # logic approx
+				# Mirror-X Mapping:
 				var gpos = Vector3(
-					float(x) + sub_x, 
+					255.0 - (float(x) + sub_x), 
 					h_base, 
 					float(y) + sub_y
 				)
