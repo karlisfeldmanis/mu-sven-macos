@@ -136,9 +136,7 @@ func load_world():
 	# 6. Setup Material
 	_setup_material()
 	
-	# 7. Create Water Mesh
-	_create_water_mesh()
-	
+
 	# 8. Create Grass Mesh
 	_create_grass_mesh()
 	
@@ -313,110 +311,7 @@ func _load_tile_image(tex_name: String) -> Image:
 	return null
 
 
-func _create_water_mesh():
-	if not map_data or map_data.water_tiles.is_empty():
-		return
-	
-	print("[MUTerrain] Creating water mesh with %d tiles..." % map_data.water_tiles.size())
-	
-	var st = SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	
-	for tile in map_data.water_tiles:
-		var x = tile.x
-		var y = tile.y
-		
-		# Get height at this position
-		var idx = y * TERRAIN_SIZE + x
-		var h = heightmap[idx] if idx < heightmap.size() else 0.0
-		
-		# Raise water slightly above terrain
-		h += 0.15
-		
-		# Create water quad (two triangles)
-		# Create water quad (two triangles)
-		# Aligned with New Terrain & Objects:
-		# Godot X = MU Row (y)
-		# Godot Z = MU Col (x) - 255
-		var v0 = Vector3(float(y), h, float(x) - (TERRAIN_SIZE - 1.0))
-		var v1 = Vector3(float(y) + 1.0, h, float(x) - (TERRAIN_SIZE - 1.0))
-		var v2 = Vector3(float(y) + 1.0, h, float(x) - (TERRAIN_SIZE - 1.0) + 1.0)
-		var v3 = Vector3(float(y), h, float(x) - (TERRAIN_SIZE - 1.0) + 1.0)
-		
-		# Sample heights for all 4 corners for better leveling (or just use center)
-		# For now, stay simple but aligned
-		
-		var uv0 = Vector2(0, 0)
-		var uv1 = Vector2(1, 0)
-		var uv2 = Vector2(1, 1)
-		var uv3 = Vector2(0, 1)
-		
-		var normal = Vector3.UP
-		var color = Color.WHITE  # White vertex color for proper lighting
-		
-		# Triangle 1 (v0, v2, v1 for CCW)
-		st.set_normal(normal)
-		st.set_color(color)
-		st.set_uv(uv0)
-		st.add_vertex(v0)
-		st.set_uv(uv2)
-		st.add_vertex(v2)
-		st.set_uv(uv1)
-		st.add_vertex(v1)
-		
-		# Triangle 2 (v0, v3, v2 for CCW)
-		st.set_uv(uv0)
-		st.add_vertex(v0)
-		st.set_uv(uv3)
-		st.add_vertex(v3)
-		st.set_uv(uv2)
-		st.add_vertex(v2)
-	
-	var mesh = st.commit()
-	
-	# Load water texture - try multiple paths
-	var water_tex: Texture2D = null
-	
-	# Determine if data_path already includes the world directory
-	var world_dir = "World" + str(world_id)
-	var base_data_path = data_path
-	if data_path.get_file() == world_dir:
-		base_data_path = data_path.get_base_dir()
-		
-	var tex_paths = [
-		base_data_path.path_join(world_dir).path_join("TileWater01.OZJ"),
-		base_data_path.path_join(world_dir).path_join("TileWater01.OZT"),
-		base_data_path.path_join("TileWater01.OZJ"), # Try root data dir too
-		base_data_path.path_join("TileWater01.OZT"),
-	]
-	
-	for path in tex_paths:
-		var resolved_path = MUFileUtil.resolve_case(path)
-		if MUFileUtil.file_exists(resolved_path):
-			var tex = MUTextureLoader.load_mu_texture(resolved_path)
-			if tex:
-				water_tex = tex
-				print("  Loaded water texture: %s" % path)
-				break
-	
-	# Create water material with animated shader
-	var mat = ShaderMaterial.new()
-	mat.shader = load("res://core/shaders/water_shader.gdshader")
-	mat.render_priority = 1  # Render after terrain
-	if water_tex:
-		mat.set_shader_parameter("water_texture", water_tex)
-	else:
-		print("  Using fallback blue color for water")
-	
 
-	water_mesh = MeshInstance3D.new()
-	water_mesh.name = "WaterMesh"
-	water_mesh.mesh = mesh
-	water_mesh.material_override = mat
-	water_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(water_mesh)
-	
-	print("[MUTerrain] Water mesh created!")
 
 func _create_grass_mesh():
 	if not map_data or map_data.grass_tiles.is_empty():
@@ -530,10 +425,11 @@ func _create_grass_mesh():
 				var sub_x = 0.15 + grid_x * 0.35 + randf_range(-0.1, 0.1)
 				var sub_y = 0.15 + grid_y * 0.35 + randf_range(-0.1, 0.1)
 				
+				# Standard Row-Major Alignment: GodotX = x, GodotZ = y
 				var pos_vec = Vector3(
-					float(y) + sub_y, 
+					float(x) + sub_x, 
 					h_base, 
-					float(x) + sub_x - (TERRAIN_SIZE - 1.0)
+					float(y) + sub_y
 				)
 				
 				var random_scale = 0.6 + randf() * 0.6 # 0.6 to 1.2
@@ -675,7 +571,7 @@ func _spawn_objects():
 			for mesh_idx in range(parser.get_mesh_count()):
 				var bmd_mesh = parser.get_mesh(mesh_idx)
 				var mesh_instance = MUMeshBuilder.create_mesh_instance(
-					bmd_mesh, null, abs_path, parser, true
+					bmd_mesh, null, abs_path, parser, true, false, false, mesh_idx
 				)
 				if mesh_instance:
 					parent_node.add_child(mesh_instance)

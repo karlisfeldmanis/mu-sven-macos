@@ -8,37 +8,66 @@ class_name MUMeshBuilder
 
 const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
 const MULogger = preload("res://addons/mu_tools/mu_logger.gd")
+const BMDParser = preload("res://addons/mu_tools/bmd_parser.gd")
+const MUTransformPipeline = preload("res://addons/mu_tools/core/mu_transform_pipeline.gd")
+const MUModelRegistry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
+const MUTextureResolver = preload("res://addons/mu_tools/mu_texture_resolver.gd")
+const MUMaterialFactory = preload("res://addons/mu_tools/mu_material_factory.gd")
+
+static var _mesh_cache: Dictionary = {} # String (path_idx_bake) -> ArrayMesh
 
 ## Build a Godot ArrayMesh from BMD mesh data
 static func build_mesh(bmd_mesh: BMDParser.BMDMesh, 
-		skeleton: Skeleton3D = null, 
+		_skeleton: Skeleton3D = null, 
 		bmd_path: String = "",
-		parser: BMDParser = null,
+		_parser: BMDParser = null,
 		bake_pose: bool = false,
-		debug: bool = false) -> ArrayMesh:
+		_debug: bool = false,
+		no_texture: bool = false,
+		surface_index: int = 0) -> ArrayMesh:
 	if not bmd_mesh or bmd_mesh.vertices.is_empty():
-		MULogger.error("[Mesh Builder] Invalid or empty mesh data")
 		return null
 	
-	# Pre-calculate global bone transforms (Action 0, Frame 0) if baking pose
+	var cache_key = ""
+	if not bmd_path.is_empty():
+		cache_key = bmd_path + "_" + str(bmd_mesh.get_instance_id()) + "_" + str(bake_pose)
+		if _mesh_cache.has(cache_key):
+			return _mesh_cache[cache_key]
+	
+	# Pre-calculate global bone transforms (Bind Pose)
 	var bone_transforms: Array[Transform3D] = []
-	if bake_pose and parser and not parser.bones.is_empty():
-		bone_transforms.resize(parser.bones.size())
-		var action0 = parser.actions[0] if not parser.actions.is_empty() else null
+	if bake_pose and _parser and not _parser.bones.is_empty():
+		# Resolve Bind Pose Selection
+		var forced_action = MUModelRegistry.get_bind_pose_action(bmd_path)
+		var action_to_use = null
 		
-		for i in range(parser.bones.size()):
-			var bone = parser.bones[i]
+		if forced_action != -1 and _parser.actions.size() > forced_action:
+			action_to_use = _parser.actions[forced_action]
+		else:
+			# Fallback to Origin-Proximity Heuristic
+			if _parser.actions.size() > 0:
+				action_to_use = _parser.actions[0]
+				if _parser.actions.size() > 1:
+					var keys0 = _parser.actions[0].keys
+					var keys1 = _parser.actions[1].keys
+					if keys0.size() > 0 and keys1.size() > 0 and not keys0[0].is_empty() and not keys1[0].is_empty():
+						var p0 = keys0[0][0].position
+						var p1 = keys1[0][0].position
+						if p1.length() < p0.length() - 10.0 or (p0.length() > 50.0 and p1.length() < 10.0):
+							action_to_use = _parser.actions[1]
+		
+		for i in range(_parser.bones.size()):
+			var bone = _parser.bones[i]
 			var pos = bone.position
 			var rot = bone.rotation
 			
-			if action0 and action0.keys.size() > i and action0.keys[i] != null and not action0.keys[i].is_empty():
-				var key0 = action0.keys[i][0]
+			if action_to_use and action_to_use.keys.size() > i and action_to_use.keys[i] != null and not action_to_use.keys[i].is_empty():
+				var key0 = action_to_use.keys[i][0]
 				pos = key0.position
 				rot = key0.rotation
 			
-			# Create MU-space transform (Z-up)
-			var mu_quat = MUCoordinateUtils.bmd_angle_to_quaternion(rot)
-			var local_transform = Transform3D(Basis(mu_quat), pos)
+			# Build Authoritative Godot-space transform
+			var local_transform = MUTransformPipeline.build_local_transform(pos, rot)
 			
 			if bone.parent_index != -1:
 				bone_transforms[i] = bone_transforms[bone.parent_index] * local_transform
@@ -48,7 +77,7 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	
-	# MU uses 0-2-1 winding (Phase 2 fix)
+	# MU uses CW winding, Godot uses CCW. Swap 1 and 2 (0-2-1).
 	for tri in bmd_mesh.triangles:
 		for i in [0, 2, 1]:
 			var v_idx = tri.vertex_indices[i]
@@ -58,36 +87,38 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 			var raw_pos = bmd_mesh.vertices[v_idx]
 			var raw_normal = bmd_mesh.normals[n_idx]
 			var node = bmd_mesh.vertex_nodes[v_idx]
+			var normal_node = bmd_mesh.normal_nodes[n_idx] if n_idx < bmd_mesh.normal_nodes.size() else node
 			
-			# Static Transform Baking (MU Space)
+			# CENTRAL TRANSFORMATION (Godot-space Frame)
+			var pos = MUTransformPipeline.local_mu_to_godot(raw_pos)
+			var normal = MUTransformPipeline.mu_normal_to_godot(raw_normal)
+			
 			if bake_pose and node < bone_transforms.size():
-				raw_pos = bone_transforms[node] * raw_pos
-				raw_normal = bone_transforms[node].basis * raw_normal
-			
-			# Convert to Godot space (Y-up)
-			var pos = MUCoordinateUtils.convert_position(raw_pos)
-			var normal = MUCoordinateUtils.convert_normal(raw_normal)
+				pos = bone_transforms[node] * pos
+				if normal_node < bone_transforms.size():
+					normal = (bone_transforms[normal_node].basis * normal).normalized()
 			
 			var uv = bmd_mesh.uv_coords[uv_idx]
 			
-			st.set_normal(normal.normalized())
+			st.set_normal(normal)
 			st.set_uv(uv)
 			st.set_color(Color.WHITE)
 			
-			# Single-bone skinning (if not baked, or for consistency)
+			# Single-bone skinning
 			st.set_bones(PackedInt32Array([node, 0, 0, 0]))
 			st.set_weights(PackedFloat32Array([1.0, 0.0, 0.0, 0.0]))
 			
 			st.add_vertex(pos)
 	
-	# Optimize and generate attributes
-	st.generate_normals()
+	# Optimize
+	# NOTE: We preserve original BMD normals, do not call generate_normals()
+	
 	st.generate_tangents()
 	st.index()
 	var mesh = st.commit()
 	
 	# Automated Texture Resolution
-	if not bmd_path.is_empty() and bmd_mesh.texture_filename:
+	if not no_texture and not bmd_path.is_empty() and bmd_mesh.texture_filename:
 		var tex_path = MUTextureResolver.resolve_texture_path(bmd_path, bmd_mesh.texture_filename)
 		if not tex_path.is_empty():
 			var texture: Texture2D = null
@@ -95,7 +126,7 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 			var is_mu_format = ext in ["ozj", "ozt", "ozb"]
 			
 			# Only try Godot's load if it exists and is a standard format
-			if not is_mu_format and FileAccess.file_exists(tex_path):
+			if not is_mu_format and ResourceLoader.exists(tex_path):
 				texture = load(tex_path)
 			
 			# Fallback: MU formats or failed standard load
@@ -103,31 +134,35 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 				texture = _direct_load_mu_texture(tex_path)
 				
 			if texture:
-				print("  [Mesh Builder] Texture loaded successfully: ", tex_path, " (", texture.get_width(), "x", texture.get_height(), ")")
-				var material = MUMaterialFactory.create_material(texture, bmd_mesh.flags, bmd_mesh.texture_filename)
+				var material = MUMaterialFactory.create_material(
+						texture, bmd_mesh.flags, bmd_mesh.texture_filename,
+						bmd_path, surface_index)
 				mesh.surface_set_material(0, material)
-				print("  [Mesh Builder] Material applied to surface 0")
 			else:
-				print("  [Mesh Builder] FAILED to load texture: ", tex_path)
-		else:
-			print("  [Mesh Builder] Could not resolve texture path for: ", bmd_mesh.texture_filename)
-	elif bmd_path.is_empty():
-		print("  [Mesh Builder] No BMD path provided, skipping texture resolution")
+				# MULogger.error("[Mesh Builder] FAILED to load texture")
+				pass
+	# elif bmd_path.is_empty():
+	# 	print("  [Mesh Builder] No BMD path provided, skipping texture resolution")
 	
-	if debug:
-		print("[Mesh Builder] Created mesh:")
-		print("  Vertices: ", bmd_mesh.vertex_count)
-		print("  Triangles: ", bmd_mesh.triangle_count)
+	# if debug:
+	# 	print("[Mesh Builder] Created mesh:")
+	# 	print("  Vertices: ", bmd_mesh.vertex_count)
+	# 	print("  Triangles: ", bmd_mesh.triangle_count)
 	
+	if not cache_key.is_empty():
+		_mesh_cache[cache_key] = mesh
 	return mesh
 
 ## Create a MeshInstance3D node with the built mesh
 static func create_mesh_instance(bmd_mesh: BMDParser.BMDMesh, 
 		skeleton: Skeleton3D = null, 
-		bmd_path: String = "",
+		path: String = "",
 		parser: BMDParser = null,
-		bake_pose: bool = false) -> MeshInstance3D:
-	var mesh = build_mesh(bmd_mesh, skeleton, bmd_path, parser, bake_pose)
+		bake_pose: bool = false,
+		no_skin: bool = false,
+		no_texture: bool = false,
+		surface_index: int = 0) -> MeshInstance3D:
+	var mesh = build_mesh(bmd_mesh, skeleton, path, parser, bake_pose, false, no_texture, surface_index)
 	if not mesh:
 		return null
 	
@@ -138,12 +173,15 @@ static func create_mesh_instance(bmd_mesh: BMDParser.BMDMesh,
 	mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	
 	# Ensure the mesh has a skin if skeleton is provided
-	if skeleton:
+	if skeleton and not no_skin:
 		var skin = Skin.new()
 		skin.set_bind_count(skeleton.get_bone_count())
 		for j in range(skeleton.get_bone_count()):
 			skin.set_bind_bone(j, j)
-			skin.set_bind_pose(j, Transform3D.IDENTITY)
+			# MU vertices are baked into Model-Space (Global Rest),
+			# so BindPose = GlobalRest.affine_inverse()
+			var inv_rest = skeleton.get_bone_global_rest(j).affine_inverse()
+			skin.set_bind_pose(j, inv_rest)
 		mesh_instance.skin = skin
 		
 		# Set skeleton path (caller must add to tree for this to be absolute)
