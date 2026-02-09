@@ -1,8 +1,8 @@
 extends SceneTree
 # Automated test suite for SVEN-to-Godot coordinate transformation verification
 
-const MUTerrainParser = preload("res://addons/mu_tools/mu_terrain_parser.gd")
-const MUTerrainScript = preload("res://addons/mu_tools/mu_terrain.gd")
+const MUTerrainParser = preload("res://addons/mu_tools/core/mu_terrain_parser.gd")
+const MUTerrainScript = preload("res://addons/mu_tools/nodes/mu_terrain.gd")
 
 var parser: MUTerrainParser
 var world_id = 1

@@ -6,7 +6,14 @@ class_name MUMaterialHelper
 ## Centralized utility for MU Online material effects.
 ## Bridges the gap between raw BMD textures and Godot material properties.
 
-const MUModelRegistry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
+
+# const MUModelRegistry = preload("res://addons/mu_tools/core/mu_model_registry.gd") # Dynamic load
+
+static var _Registry = null
+static func get_registry():
+	if not _Registry:
+		_Registry = load("res://addons/mu_tools/core/mu_model_registry.gd")
+	return _Registry
 
 ## Configures a material with MU-standard effects (Transparency, Blending, Scrolling).
 ## Works with both StandardMaterial3D (Viewer) and ShaderMaterial (Game).
@@ -17,8 +24,9 @@ static func setup_material(mat: Material, surface_index: int, model_path: String
 	var texture_name_lower = texture_name.to_lower()
 	var mesh_name_lower = mat.resource_name.to_lower()
 	
+	
 	# 1. Resolve Metadata from Registry
-	var meta = MUModelRegistry.get_metadata(model_path)
+	var meta = get_registry().get_metadata(model_path)
 	var scroll_uv = meta.get("scroll_uv", [])
 	var scroll_index = int(meta.get("scroll_uv_index", -1))
 	
@@ -32,25 +40,25 @@ static func setup_material(mat: Material, surface_index: int, model_path: String
 	
 	# 3. Effect Detection (Heuristics)
 	var is_effect = false
-	for kw in MUModelRegistry.EFFECT_KEYWORDS:
+	for kw in get_registry().EFFECT_KEYWORDS:
 		if kw in texture_name_lower:
 			is_effect = true
 			break
 	
 	var is_shadow = false
-	for kw in MUModelRegistry.SHADOW_KEYWORDS:
+	for kw in get_registry().SHADOW_KEYWORDS:
 		if kw in texture_name_lower:
 			is_shadow = true
 			break
 			
 	var is_cutout = false
-	for kw in MUModelRegistry.CUTOUT_KEYWORDS:
+	for kw in get_registry().CUTOUT_KEYWORDS:
 		if kw in texture_name_lower:
 			is_cutout = true
 			break
 			
 	var is_ignored = false
-	for kw in MUModelRegistry.IGNORE_ALPHA_KEYWORDS:
+	for kw in get_registry().IGNORE_ALPHA_KEYWORDS:
 		if kw in texture_name_lower:
 			is_ignored = true
 			break
@@ -72,7 +80,7 @@ static func setup_material(mat: Material, surface_index: int, model_path: String
 		})
 	
 	# 6. Apply Manual Tweaks from Registry
-	var mat_tweak = MUModelRegistry.get_material_tweak(texture_name_lower)
+	var mat_tweak = get_registry().get_material_tweak(texture_name_lower)
 	if not mat_tweak.is_empty():
 		_apply_manual_tweaks(mat, mat_tweak)
 
