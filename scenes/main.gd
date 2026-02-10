@@ -127,10 +127,10 @@ func _input(event):
 					else Input.MOUSE_MODE_VISIBLE
 				
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			target_zoom = clamp(target_zoom - 10.0, 2.0, 1000.0)
+			target_zoom = clamp(target_zoom * 0.9, 2.0, 1000.0)
 			_config_dirty = true
 		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			target_zoom = clamp(target_zoom + 10.0, 2.0, 1000.0)
+			target_zoom = clamp(target_zoom * 1.1, 2.0, 1000.0)
 			_config_dirty = true
 
 	if event is InputEventMouseMotion and is_right_click_down:
