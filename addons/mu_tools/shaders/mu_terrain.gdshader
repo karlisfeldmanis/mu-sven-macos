@@ -1,19 +1,17 @@
 shader_type spatial;
 render_mode cull_disabled, unshaded;
 
-uniform sampler2DArray tile_textures : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D terrain_data_lut : filter_nearest; 
+uniform sampler2DArray tile_textures : source_color, filter_nearest, repeat_enable;
+uniform sampler2D terrain_data_lut : filter_nearest;
 uniform sampler2D layer1_map : filter_nearest;
 uniform sampler2D layer2_map : filter_nearest;
 uniform sampler2D alpha_map : filter_linear;
 uniform sampler2D lightmap_map : filter_linear;
-uniform sampler2D grass_offset_map : filter_nearest;
-uniform sampler2D water_map : filter_nearest;
-uniform sampler2D shadow_map : source_color, filter_linear, repeat_disable;
-uniform int debug_mode : hint_range(0, 10) = 0;
-uniform int highlight_index : hint_range(-1, 255) = -1;
+uniform sampler2D symmetry_map : filter_nearest;
+uniform int debug_view = 0; // 0: Normal, 1: Layer1 Index, 6: Alpha, 7: Lightmap
 global uniform float mu_world_time;
 global uniform float mu_water_move_uv;
+global uniform float mu_wind_speed;
 
 varying vec3 v_world_pos;
 varying vec3 v_color;
@@ -25,101 +23,137 @@ void vertex() {
 	v_normal = (MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz;
 }
 
-uniform sampler2D symmetry_tile_map : filter_nearest;
-uniform int debug_view = 0; // Default: Normal Render
-
-// 🟢 SVEN D4 Tile Symmetry Logic
-// orientation: 0-7 (from attribute high byte)
-// scale: tile tiling factor
-vec2 apply_tile_symmetry(vec2 uv_fract, int orientation) {
-	vec2 res = uv_fract;
-	// SVEN Parity: D4 Group orientations
-	if (orientation == 1) res.x = 1.0 - res.x;
-	else if (orientation == 2) res.y = 1.0 - res.y;
-	else if (orientation == 3) res = vec2(1.0) - res;
-	else if (orientation >= 4) {
-		res = vec2(res.y, 1.0 - res.x); // 90 CW
-		int sub = orientation - 4;
-		if (sub == 1) res.x = 1.0 - res.x;
-		else if (sub == 2) res.y = 1.0 - res.y;
-		else if (sub == 3) res = vec2(1.0) - res;
+// SVEN ATT symmetry: transform tile-local UV using bit flags
+// Bit 0 (1): Flip X, Bit 1 (2): Flip Y, Bit 2 (4): Rotate 90 CW
+vec2 apply_symmetry(vec2 tile_local, int sym) {
+	vec2 r = tile_local;
+	if ((sym & 1) != 0) r.x = 1.0 - r.x;
+	if ((sym & 2) != 0) r.y = 1.0 - r.y;
+	if ((sym & 4) != 0) {
+		float tmp = r.x;
+		r.x = 1.0 - r.y;
+		r.y = tmp;
 	}
-	return res;
+	return r;
 }
 
 void fragment() {
-	// 🟢 Absolute SVEN Stable Sync (Coordinate Indexing)
-	// Standard World-Space Mapping (X=U, Z=V)
-	vec2 base_uv = floor(v_world_pos.xz + 0.001); 
-	
-	// 🟢 Absolute Pivot-256 Mapping Sync (Transposed Parity)
-	// Godot X [0, 256] mirrors to MU Row [0, 256] at pivot 256.
-	// Godot Z [0, 256] maps to MU Column [0, 256].
-	vec2 mu_coords = vec2(floor(v_world_pos.z), floor(256.0 - v_world_pos.x - 0.001));
-	vec2 map_uv_stable = (mu_coords + 0.5) / 256.0;
-	
-	// Smooth sample for blend mask (Transposed)
-	vec2 map_uv_smooth = vec2(v_world_pos.z, 256.0 - v_world_pos.x) / 256.0;
-	
+	// UV mapped 0-1 across the 256x256 grid.
+	vec2 uv_base = UV * 256.0;
+	vec2 uv_floor = floor(uv_base + 0.0001);
+
+	// Stable sampling coords for 256x256 maps
+	vec2 map_uv_stable = (uv_floor + 0.5) / 256.0;
+	// Smooth sampling for alpha/lightmaps
+	vec2 map_uv_smooth = UV;
+
+	// 1. Sample Layer Indices
 	float h_idx1 = floor(texture(layer1_map, map_uv_stable).r * 255.0 + 0.1);
 	float h_idx2 = floor(texture(layer2_map, map_uv_stable).r * 255.0 + 0.1);
-	int tile_sym = int(texture(symmetry_tile_map, map_uv_stable).r * 255.0 + 0.1);
-	
-	// Data LUT (Data is always 256x1, no mesh dependency)
+
+	// 2. Sample Data LUT (R = scale factor = 64.0 / tex_width, G = unused, B = category)
 	vec4 d1 = texture(terrain_data_lut, vec2((h_idx1 + 0.5) / 256.0, 0.5));
 	vec4 d2 = texture(terrain_data_lut, vec2((h_idx2 + 0.5) / 256.0, 0.5));
-	float s1 = d1.r; float sym1 = d1.g; int cat1 = int(d1.b + 0.1);
-	float s2 = d2.r; float sym2 = d2.g; int cat2 = int(d2.b + 0.1);
+	float s1 = d1.r;
+	int cat1 = int(d1.b + 0.1);
+	float s2 = d2.r;
+	int cat2 = int(d2.b + 0.1);
 
-	vec2 dX = dFdx(v_world_pos.xz);
-	vec2 dY = dFdy(v_world_pos.xz);
+	// 3. Bilinear Alpha Mask Sampling (SVEN VertexAlpha0-3 parity)
+	vec2 a_uv = uv_base - 0.5;
+	vec2 a_uv_fract = fract(a_uv);
+	vec2 a_uv_floor = floor(a_uv);
+	float a00 = texture(alpha_map, (a_uv_floor + vec2(0.5, 0.5)) / 256.0).r;
+	float a10 = texture(alpha_map, (a_uv_floor + vec2(1.5, 0.5)) / 256.0).r;
+	float a01 = texture(alpha_map, (a_uv_floor + vec2(0.5, 1.5)) / 256.0).r;
+	float a11 = texture(alpha_map, (a_uv_floor + vec2(1.5, 1.5)) / 256.0).r;
+	float a_val = mix(mix(a00, a10, a_uv_fract.x), mix(a01, a11, a_uv_fract.x), a_uv_fract.y);
 
-	float a_val = texture(alpha_map, map_uv_smooth).r;
-	vec2 uv_base = vec2(v_world_pos.z, 256.0 - v_world_pos.x);
-	vec2 uv_fract = fract(uv_base);
-	vec2 uv_floor = floor(uv_base);
-	
-	// 🟢 Layer 1 UV (Transposed + Per-Tile Symmetry)
-	vec2 uv1_fract = apply_tile_symmetry(uv_fract, tile_sym);
-	vec2 uv1 = (uv_floor + uv1_fract) * s1;
-	float real_idx1 = h_idx1;
-	
-	vec3 tex1 = texture(tile_textures, vec3(uv1, real_idx1)).rgb;
-	
-	// 🟢 Layer 2 UV
-	vec3 tex2 = tex1;
-	float real_idx2 = h_idx2;
-	if (h_idx2 < 254.1) {
-		vec2 uv2_fract = apply_tile_symmetry(uv_fract, tile_sym);
-		vec2 uv2 = (uv_floor + uv2_fract) * s2;
-		tex2 = texture(tile_textures, vec3(uv2, real_idx2)).rgb;
-	}
-	
-	vec3 lightmap_color = texture(lightmap_map, map_uv_smooth).rgb;
-	vec3 final_color = mix(tex1, tex2, a_val);
+	// 4. Per-tile symmetry from ATT data (SVEN flip/rotate for road textures)
+	float sym_raw = texture(symmetry_map, map_uv_stable).r * 255.0;
+	int sym = int(sym_raw + 0.5);
 
-	// SVEN Parity: High-Visibility Base Lighting
-	// The lightmap is often dark in MU assets and needs a significant boost in Godot.
-	vec3 light_dir = normalize(vec3(0.5, 1.0, 0.5)); 
-	float diff = dot(normalize(v_normal), light_dir);
-	
-	// Ultra-Bright Sven Lighting (Fixed High Ambient)
-	float luminosity = clamp(diff * 0.2 + 1.5, 1.2, 2.0);
-	vec3 light_v = max(lightmap_color * 1.5, vec3(0.6)) * luminosity;
+	// Compute symmetry-transformed UV for discrete textures (cat 0 = roads)
+	vec2 tile_local = fract(uv_base);
+	vec2 sym_local = apply_symmetry(tile_local, sym);
+	vec2 uv_sym = floor(uv_base) + sym_local;
 
-	// Water
+	// 5. Layer 1 UV — C++ Parity: uv = tile_pos * (64.0 / tex_width)
+	// s1 is pre-computed as 64.0 / tex_width in the LUT.
+	vec2 dX = dFdx(uv_base);
+	vec2 dY = dFdy(uv_base);
+
+	// Roads (cat 0) use per-tile symmetry, others use raw UV
+	vec2 uv1_base = (cat1 == 0) ? uv_sym : uv_base;
+	vec2 uv1 = uv1_base * s1;
+	vec2 dX1 = dX * s1;
+	vec2 dY1 = dY * s1;
+
+	// Water: C++ adds WaterMove to U, TerrainGrassWind wave to V
 	if (cat1 == 2) {
-		vec2 w_uv_fract = apply_tile_symmetry(uv_fract, tile_sym);
-		vec2 w_uv = (uv_floor + w_uv_fract) * 2.0;
-		w_uv.x += mu_world_time * 0.1;
-		w_uv.y += sin(mu_world_time * 2.0 + v_world_pos.z * 0.1) * 0.02;
-		final_color = textureGrad(tile_textures, vec3(w_uv, h_idx1), dX, dY).rgb;
+		uv1.x += mu_water_move_uv;
+		// SVEN: TerrainGrassWind = sin(WindSpeed + xf*5) * 10; svf += wind * 0.002
+		float grass_wind1 = sin(mu_wind_speed + uv_base.x * 5.0) * 10.0;
+		uv1.y += grass_wind1 * 0.002;
+	}
+	vec3 tex1 = textureGrad(tile_textures, vec3(uv1, h_idx1), dX1, dY1).rgb;
+
+	// 6. Layer 2 UV — Same logic with symmetry
+	vec3 tex2 = tex1;
+	if (h_idx2 < 254.1) {
+		vec2 uv2_base = (cat2 == 0) ? uv_sym : uv_base;
+		vec2 uv2 = uv2_base * s2;
+		vec2 dX2 = dX * s2;
+		vec2 dY2 = dY * s2;
+
+		if (cat2 == 2) {
+			uv2.x += mu_water_move_uv;
+			float grass_wind2 = sin(mu_wind_speed + uv_base.x * 5.0) * 10.0;
+			uv2.y += grass_wind2 * 0.002;
+		}
+		tex2 = textureGrad(tile_textures, vec3(uv2, h_idx2), dX2, dY2).rgb;
 	}
 
+	// 7. SVEN Advanced Lighting Parity
+	// Formula: FinalLight = Lightmap * (Dot(Normal, LightDir) + 0.5)
+	// SVEN LightDir is (0.5, -0.5, 0.5) in MU coords.
+	// In Godot (Y-up), this maps roughly to (0.5, 0.5, 0.5) or tailored to scene light.
+	vec3 lightmap_color = texture(lightmap_map, map_uv_smooth).rgb;
+	vec3 sven_light_dir = normalize(vec3(0.5, 1.0, 0.5)); 
+	float diff = dot(normalize(v_normal), sven_light_dir);
+	
+	// SVEN uses a clamp/lerp for luminosity: (diff + 0.5)
+	float luminosity = clamp(diff + 0.5, 0.0, 1.0);
+	
+	// BackTerrainLight = TerrainLight * Luminosity
+	vec3 final_light = lightmap_color * luminosity;
+
+	// Global intensity adjustment for Godot visibility
+	final_light = clamp(final_light * 1.5, vec3(0.3), vec3(2.0));
+
+	// 8. Final Blending & Glow (SVEN RenderFaceAlpha vs RenderFaceBlend)
+	// Base layer is always modulated by lightmap.
+	vec3 base_color = tex1 * final_light;
+	vec3 final_color;
+	
+	if (cat2 == 2) {
+		// Glow/Water Pass (Additive: GL_ONE, GL_ONE)
+		// Unshaded by terrain lightmap (fullbright alpha-tinted)
+		final_color = base_color + (tex2 * a_val);
+	} else {
+		// Normal Transition (Interpolated: GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		// Both layers modulated by lightmap.
+		final_color = mix(tex1, tex2, a_val) * final_light;
+	}
+
+	// 9. Debug Views
 	if (debug_view != 0) {
-        // Debug views removed
-    }
-	ALBEDO = final_color * light_v;
-	// Gamma Correction (SVEN is vibrant)
-	ALBEDO = pow(ALBEDO, vec3(0.8)); 
+		if (debug_view == 1) final_color = vec3(h_idx1 / 255.0);
+		if (debug_view == 6) final_color = vec3(a_val);
+		if (debug_view == 7) final_color = lightmap_color;
+		if (debug_view == 9) final_color = vec3(float(cat1) / 5.0, 0.0, 1.0 - float(cat1) / 5.0);
+		if (debug_view == 10) final_color = vec3(sym_raw / 7.0, 0.0, 0.0);
+	}
+	
+	ALBEDO = final_color;
 }

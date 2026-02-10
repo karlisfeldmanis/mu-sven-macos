@@ -111,7 +111,8 @@ func load_world():
 	object_data = parser.parse_objects_file(objects_file)
 	
 	# 4. Load Attributes
-	attributes = parser.parse_attributes_file(att_file)
+	var att_data: Dictionary = parser.parse_attributes_file(att_file)
+	attributes = att_data.collision as PackedByteArray
 	print("[MUTerrain] Loaded attributes: %d bytes" % attributes.size())
 	
 	# 5. Load Lightmap (TerrainLight.OZJ)
@@ -140,13 +141,16 @@ func load_world():
 	# 8. Create Grass Mesh
 	_create_grass_mesh()
 	
-	_spawn_objects()
+	# _spawn_objects() # Reverted per user request
 	
 	# 9. Initialize Environment Controller
 	if not env_controller:
 		env_controller = MUEnvironmentScript.new()
 		env_controller.name = "MUEnvironment"
 		add_child(env_controller)
+		env_controller.setup_environment(world_id)
+		if light_tex:
+			env_controller.set_lightmap(light_tex)
 		
 	print("[MUTerrain] World load complete with objects and environment.")
 
@@ -247,13 +251,20 @@ func _setup_material():
 	print("[MUTerrain] Finalizing terrain material with Parity LUT...")
 	
 	var render_api = preload("res://addons/mu_tools/core/mu_render_api.gd").new()
+
+	# Pass lightmap to material if loaded
+	var lightmap_tex = null
+	if lightmap:
+		lightmap_tex = ImageTexture.create_from_image(lightmap)
+
 	var mat = render_api.create_terrain_material(
-		tex_array, 
-		ImageTexture.create_from_image(layer1_img), 
-		ImageTexture.create_from_image(layer2_img), 
+		tex_array,
+		ImageTexture.create_from_image(layer1_img),
+		ImageTexture.create_from_image(layer2_img),
 		ImageTexture.create_from_image(alpha_img),
 		ImageTexture.create_from_image(grass_offset_img),
-		4 # Enable Arrows Debug View
+		lightmap_tex, # lightmap (Texture2D or null)
+		1 # debug_view
 	)
 	
 	terrain_mesh.material_override = mat
@@ -731,7 +742,6 @@ func _hide_meshes(parent: Node3D):
 	for child in parent.get_children():
 		if child is MeshInstance3D:
 			child.visible = false
-
 
 func _find_case_insensitive_path(path: String) -> String:
 	return MUFileUtil.resolve_case(path)
