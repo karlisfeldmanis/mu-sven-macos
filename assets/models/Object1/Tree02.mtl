@@ -1,0 +1,16 @@
+newmtl tree
+map_Kd tree.png
+map_d tree.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl Tree_a
+map_Kd Tree_a.png
+map_d Tree_a.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

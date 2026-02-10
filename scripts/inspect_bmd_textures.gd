@@ -18,7 +18,7 @@ func _init():
 	dir.list_dir_begin()
 	var filename = dir.get_next()
 	
-	var BMDParser = load("res://addons/mu_tools/bmd_parser.gd")
+	var BMDParser = load("res://addons/mu_tools/core/bmd_parser.gd")
 	
 	while filename != "":
 		if filename.to_lower().ends_with(".bmd"):

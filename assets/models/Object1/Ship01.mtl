@@ -1,0 +1,49 @@
+newmtl TileGround03
+map_Kd TileGround03.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl ship01
+map_Kd ship01.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl ship03
+map_Kd ship03.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl ship04
+map_Kd ship04.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl ship07
+map_Kd ship07.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl ship05
+map_Kd ship05.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl ship06
+map_Kd ship06.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

@@ -3,7 +3,7 @@ extends Node3D
 ## Skeleton-Only Test Scene
 ## Loads BMD skeleton and visualizes it to verify humanoid structure
 
-const MUSkeletonVisualizer = preload("res://addons/mu_tools/skeleton_visualizer.gd")
+const MUSkeletonVisualizer = preload("res://addons/mu_tools/ui/skeleton_visualizer.gd")
 
 @export_file("*.bmd") var bmd_file_path: String = "res://raw_data/Player/Player.bmd"
 @export var debug_output: bool = true

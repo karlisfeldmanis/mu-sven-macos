@@ -1,6 +1,6 @@
 extends SceneTree
 
-const MUTerrainParser = preload("res://addons/mu_tools/mu_terrain_parser.gd")
+const MUTerrainParser = preload("res://addons/mu_tools/core/mu_terrain_parser.gd")
 
 func _init():
 	var parser = MUTerrainParser.new()

@@ -1,70 +1,42 @@
+@tool
 extends SceneTree
 
-## Debug bone transforms to identify the issue
+const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
 
 func _init():
-	var path = "raw_data/Player/Player.bmd"
+	var args = OS.get_cmdline_user_args()
+	if args.is_empty(): quit(); return
 	
-	if not FileAccess.file_exists(path):
-		print("✗ File not found")
-		quit()
-		return
-	
-	print("=".repeat(60))
-	print("BONE TRANSFORM DEBUG")
-	print("=".repeat(60))
-	
-	# Parse BMD
+	var path = args[0]
 	var parser = BMDParser.new()
 	if not parser.parse_file(path, false):
-		print("✗ Failed to parse")
-		quit()
-		return
-	
-	# Build skeleton
-	var skeleton = MUSkeletonBuilder.build_skeleton(parser.bones, parser.actions)
-	if not skeleton:
-		print("✗ Failed to build skeleton")
-		quit()
-		return
-	
-	print("\n✓ Skeleton built: %d bones\n" % skeleton.get_bone_count())
-	
-	# Check first 10 bones in detail
-	for i in range(min(10, skeleton.get_bone_count())):
-		var bone_name = skeleton.get_bone_name(i)
-		var parent_idx = skeleton.get_bone_parent(i)
-		var local_rest = skeleton.get_bone_rest(i)
-		var global_rest = skeleton.get_bone_global_rest(i)
+		print("Failed to parse: ", path)
+		quit(); return
 		
-		print("[%d] %s (parent: %d)" % [i, bone_name, parent_idx])
-		print("  Local REST:")
-		print("    Origin: %s" % local_rest.origin)
-		print("    Basis.x: %s" % local_rest.basis.x)
-		print("    Basis.y: %s" % local_rest.basis.y)
-		print("    Basis.z: %s" % local_rest.basis.z)
-		print("  Global REST:")
-		print("    Origin: %s" % global_rest.origin)
-		print("")
-	
-	# Check the raw BMD data
-	print("\n" + "=".repeat(60))
-	print("RAW BMD DATA (Action 0, Frame 0)")
-	print("=".repeat(60))
-	
+	print("BMD: ", path.get_file())
+	print("Bones: ", parser.bones.size())
+	for i in range(parser.bones.size()):
+		var b = parser.bones[i]
+		print("Bone[%d]: parent=%d pos=%s rot=%s" % [i, b.parent_index, b.position, b.rotation])
+		
+	print("\nMeshes: ", parser.meshes.size())
+	for m_idx in range(parser.meshes.size()):
+		var mesh = parser.meshes[m_idx]
+		var nodes = mesh.vertex_nodes
+		var unique_nodes = {}
+		for n in nodes: unique_nodes[n] = true
+		var node_keys = unique_nodes.keys()
+		node_keys.sort()
+		
+		var first_v = mesh.vertices[0] if mesh.vertices.size() > 0 else Vector3.ZERO
+		print("  Mesh[%d]: tex=%s bone_indices=%s v_sample[0]=%s" % [m_idx, mesh.texture_filename, node_keys, first_v])
+		
 	if not parser.actions.is_empty():
-		var action = parser.actions[0]
-		for i in range(min(10, parser.bones.size())):
-			var bone = parser.bones[i]
-			print("\n[%d] %s" % [i, bone.name])
-			
-			if action.keys[i] != null and not action.keys[i].is_empty():
-				var key = action.keys[i][0]
-				print("  RAW Position: %s" % key.position)
-				print("  RAW Rotation: %s (radians)" % key.rotation)
-				print("  Converted Pos: %s" % MUCoordinateUtils.convert_position(key.position))
-				var quat = MUCoordinateUtils.bmd_angle_to_quaternion(key.rotation)
-				print("  Converted Quat: %s" % quat)
+		print("\nAction 0 Keys:")
+		var act0 = parser.actions[0]
+		for i in range(min(act0.keys.size(), parser.bones.size())):
+			var keys = act0.keys[i]
+			if keys != null and not keys.is_empty():
+				print("  Key[%d]: pos=%s rot=%s" % [i, keys[0].position, keys[0].rotation])
 	
-	print("\n" + "=".repeat(60))
 	quit()

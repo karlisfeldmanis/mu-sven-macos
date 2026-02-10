@@ -1,0 +1,16 @@
+newmtl bridge_01
+map_Kd bridge_01.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl bridge_shadow01
+map_Kd bridge_shadow01.png
+d 0.7
+map_d bridge_shadow01.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

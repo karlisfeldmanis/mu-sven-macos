@@ -1,0 +1,28 @@
+newmtl tile_ston05
+map_Kd tile_ston05.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl tile_ston04
+map_Kd tile_ston04.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl tile_house01
+map_Kd tile_house01.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl tile_ston06
+map_Kd tile_ston06.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

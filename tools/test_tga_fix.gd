@@ -3,7 +3,7 @@ extends SceneTree
 func _init():
 	print("=== Verifying TGA Fix ===\n")
 	
-	var loader = preload("res://addons/mu_tools/mu_texture_loader.gd")
+	var loader = preload("res://addons/mu_tools/util/mu_texture_loader.gd")
 	var test_file = "/Users/karlisfeldmanis/Desktop/mu_remaster/reference/MuMain/src/bin/Data/Object1/tree_08.OZT"
 	
 	if not FileAccess.file_exists(test_file):

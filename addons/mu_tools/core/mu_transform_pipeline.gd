@@ -10,8 +10,9 @@ class_name MUTransformPipeline
 # Godot default Meter = 1.0
 const MU_SCALE = 0.01
 
-# Standard Euler order (mapped from MU Z*Y*X to Godot YZX)
-const MU_EULER_ORDER = EULER_ORDER_YZX
+# Standard Euler order (mapped from MU Z*Y*X to Godot YXZ)
+# MU: Yaw(Z) -> Godot Pitch(Y), MU: Pitch(X) -> Godot Yaw(X), MU: Roll(Y) -> Godot Roll(Z)
+const MU_EULER_ORDER = EULER_ORDER_YXZ
 
 enum Space {
 	MU_LOCAL,    # Raw BMD vertex/bone data (centimeters)
@@ -21,18 +22,18 @@ enum Space {
 }
 
 ## Converts a local MU vector (raw BMD) to a local Godot vector (meters, swizzled).
-## Swizzle: MU(X, Y, Z) -> Godot(-X, Z, -Y) [Mirror-X included]
+## Swizzle: MU(X, Y, Z) -> Godot(-X, Z, -Y) [Mirror-X restored]
 static func local_mu_to_godot(v: Vector3) -> Vector3:
-	return Vector3(v.x, v.z, -v.y) * MU_SCALE
+	return Vector3(-v.x, v.z, -v.y) * MU_SCALE
 
 ## Converts a world MU vector (map data) to a world Godot vector (Y-up, Z-flipped).
-## Parity with SVEN: Z = 255.0 - (Y / 100.0)
-## Mirror Logic: X = 255.0 - (X / 100.0)
+## Parity with SVEN: Z = 256.0 - (Y / 100.0)
+## Mirror Logic: X = 256.0 - (X / 100.0)
 static func world_mu_to_godot(v: Vector3) -> Vector3:
 	return Vector3(
 		v.x * MU_SCALE,
 		v.z * MU_SCALE,
-		255.0 - (v.y * MU_SCALE)
+		256.0 - (v.y * MU_SCALE)
 	)
 
 ## Converts a local MU rotation (Euler radians) to a Godot Quaternion.

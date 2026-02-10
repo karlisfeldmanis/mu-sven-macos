@@ -1,0 +1,28 @@
+newmtl pot
+map_Kd pot.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl pot2
+map_Kd pot2.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl bookshelf
+map_Kd bookshelf.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl bottle
+map_Kd bottle.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

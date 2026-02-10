@@ -21,7 +21,7 @@ static func mu_to_godot(mu_x: float, mu_y: float, mu_height_byte: float = 0.0) -
 	return Vector3(
 		mu_x,
 		(mu_height_byte * HEIGHT_SCALE) / MU_SCALE, # byte * 1.5 / 100.0
-		255.0 - mu_y
+		256.0 - mu_y
 	)
 
 ## Variant where height is already scaled to Godot meters
@@ -29,7 +29,7 @@ static func mu_to_godot_scaled(mu_x: float, mu_y: float, godot_y: float) -> Vect
 	return Vector3(
 		mu_x,
 		godot_y,
-		255.0 - mu_y # SVEN Parity: Godot Z = 255 - Mu Y
+		256.0 - mu_y # SVEN Parity: Godot Z = 256 - Mu Y
 	)
 
 ## Converts MU world-space units (100 = 1 meter) to Godot space.
@@ -120,4 +120,4 @@ static func mu_to_godot_position(mu_pos: Vector3) -> Vector3:
 	return mu_to_godot(mu_pos.x / 100.0, mu_pos.y / 100.0, mu_pos.z)
 
 static func godot_to_mu_position(godot_pos: Vector3) -> Vector3:
-	return Vector3(godot_pos.x * 100.0, (255.0 - godot_pos.z) * 100.0, (godot_pos.y * 100.0) / 1.5)
+	return Vector3(godot_pos.x * 100.0, (256.0 - godot_pos.z) * 100.0, (godot_pos.y * 100.0) / 1.5)

@@ -26,6 +26,7 @@ var _animated_materials: Array[Dictionary] = [] # Stores {material: Material, sp
 
 const MUMaterialHelper = preload("res://addons/mu_tools/core/mu_material_helper.gd")
 const MUModelRegistry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
+const MUObjLoader = preload("res://addons/mu_tools/core/mu_obj_loader.gd")
 
 func _ready():
 	_setup_scene()
@@ -83,27 +84,31 @@ func _setup_ui():
 	container.add_child(_model_selector)
 	
 	# Scan for models
-	var dir = DirAccess.open("res://extracted_data/object_models")
-	if dir:
-		dir.list_dir_begin()
-		var file_name = dir.get_next()
-		var models = []
-		while file_name != "":
-			if not dir.current_is_dir() and (file_name.ends_with(".obj") or file_name.ends_with(".bmd")):
-				models.append(file_name)
-			file_name = dir.get_next()
+	var scan_dirs = ["res://assets/lorencia", "res://extracted_data/object_models"]
+	var models = []
+	
+	for d_path in scan_dirs:
+		var dir = DirAccess.open(d_path)
+		if dir:
+			dir.list_dir_begin()
+			var file_name = dir.get_next()
+			while file_name != "":
+				if not dir.current_is_dir() and (file_name.ends_with(".obj") or file_name.ends_with(".bmd")):
+					# Store full path or relative? 
+					# Storing full path is safer if we have multiple source dirs
+					models.append(d_path.path_join(file_name))
+				file_name = dir.get_next()
 		
-		models.sort()
-		
-		_model_selector.add_item("Select Model...", -1)
-		for model in models:
-			_model_selector.add_item(model)
+	models.sort()
+	
+	_model_selector.add_item("Select Model...", -1)
+	for model in models:
+		_model_selector.add_item(model)
 			
 		# Select current model if applicable
 		if not _current_model_path.is_empty():
-			var current_name = _current_model_path.get_file()
 			for i in range(_model_selector.item_count):
-				if _model_selector.get_item_text(i) == current_name:
+				if _model_selector.get_item_text(i) == _current_model_path:
 					_model_selector.select(i)
 					break
 
@@ -114,10 +119,8 @@ func _on_model_selected(index):
 		return
 		
 	if index > 0: # 0 is "Select Model..."
-		var model_name = _model_selector.get_item_text(index)
-		print("[Debugger] Selected Model Name: ", model_name)
-		var path = "res://extracted_data/object_models/" + model_name
-		print("[Debugger] Path: ", path)
+		var path = _model_selector.get_item_text(index)
+		print("[Debugger] Selected Model Path: ", path)
 		load_model(path, !_show_skin, !_show_textures)
 
 func _setup_scene():
@@ -393,9 +396,9 @@ func _load_bmd(path: String, _no_skin: bool = false, _no_texture: bool = false):
 		_model_container.add_child(instance)
 	else:
 		# Fallback to manual parsing if import plugin isn't active/cached
-		var BMDParserClass = load("res://addons/mu_tools/bmd_parser.gd")
-		var MUMeshBuilderClass = load("res://addons/mu_tools/mesh_builder.gd")
-		var MUSkeletonBuilderClass = load("res://addons/mu_tools/skeleton_builder.gd")
+		var BMDParserClass = load("res://addons/mu_tools/core/bmd_parser.gd")
+		var MUMeshBuilderClass = load("res://addons/mu_tools/nodes/mesh_builder.gd")
+		var MUSkeletonBuilderClass = load("res://addons/mu_tools/ui/skeleton_builder.gd")
 		
 		var parser = BMDParserClass.new()
 		if not parser.parse_file(path, false):
@@ -410,6 +413,7 @@ func _load_bmd(path: String, _no_skin: bool = false, _no_texture: bool = false):
 			var mi = MUMeshBuilderClass.create_mesh_instance(
 					bmd_mesh, skeleton, path, parser, false, _no_skin, _no_texture)
 			if mi:
+				mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 				skeleton.add_child(mi)
 				mi.skeleton = mi.get_path_to(skeleton)
 				
@@ -423,81 +427,24 @@ func _load_bmd(path: String, _no_skin: bool = false, _no_texture: bool = false):
 
 func _load_obj(path: String, no_texture: bool = false):
 	_animated_materials.clear()
-	var MUModelRegistry = load("res://addons/mu_tools/core/mu_model_registry.gd")
-	var metadata = MUModelRegistry.get_metadata(path)
-	
-	# Godot 4 Load OBJ
-	var mesh = load(path)
-	if mesh is Mesh:
-		var mi = MeshInstance3D.new()
-		mi.mesh = mesh
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		
-		# Check for global model unshaded override
-		var model_unshaded = metadata.get("unshaded", false)
-		var model_scroll_uv = metadata.get("scroll_uv", null)
-		var model_scroll_uv_index = metadata.get("scroll_uv_index", -1)
-		
-		if no_texture:
-			var mat = StandardMaterial3D.new()
-			mat.albedo_color = Color.GRAY
-			mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-			mi.material_override = mat
-		else:
-			# Force double-sided rendering for all imported materials
-			# MU models often rely on it (e.g. open cups/pots)
-			print("  [Debugger] Processing Mesh Surfaces: ", mesh.get_surface_count())
-			for i in range(mesh.get_surface_count()):
-				var mat = mesh.surface_get_material(i)
-				var s_name = mesh.surface_get_name(i)
-				print("  [Debugger] Surface %d: Name='%s' Material=%s" % [i, s_name, mat])
-				
-				if mat is BaseMaterial3D:
-					# Ensure mat.resource_name is populated
-					if mat.resource_name.is_empty():
-						mat.resource_name = s_name
-					
-					var tex_name = ""
-					if mat.albedo_texture:
-						tex_name = mat.albedo_texture.resource_path.get_file()
-					else:
-						# LATE DISCOVERY FALLBACK
-						var mesh_dir = path.get_base_dir()
-						var possible_names = [
-							mat.resource_name + ".png",
-							mat.resource_name + ".PNG",
-							mat.resource_name.to_lower() + ".png"
-						]
-						
-						for pn in possible_names:
-							var tex_path = mesh_dir.path_join(pn)
-							if FileAccess.file_exists(tex_path):
-								var fallback_img = Image.load_from_file(ProjectSettings.globalize_path(tex_path))
-								if fallback_img:
-									mat.albedo_texture = ImageTexture.create_from_image(fallback_img)
-									tex_name = pn
-									print("  [Debugger] ✓ Late Discovery: ", pn)
-									break
-					
-					# [Antigravity] Centralized Material Setup
-					MUMaterialHelper.setup_material(mat, i, _current_model_path, tex_name, _animated_materials)
-					
-					# Viewer Overrides
-					if model_unshaded:
-						mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-					
-					if not mat.albedo_texture:
-						mat.albedo_color = Color.MAGENTA
-						print("  [Debugger] ✗ Texture Missing: ", mat.resource_name)
-			
-		_model_container.add_child(mi)
-		
-		# [Antigravity] Diagnostic Dump
-		var aabb = mesh.get_aabb()
-		print("[Debugger] Mesh AABB: ", aabb)
-		print("[Debugger]   Size: ", aabb.size)
-		print("[Debugger]   Center: ", aabb.get_center())
-		
+
+	var mi = MUObjLoader.build_mesh_instance(path, _animated_materials)
+	if not mi:
+		push_warning("[Debugger] Failed to load OBJ: %s" % path)
+		return
+
+	if no_texture:
+		var mat = StandardMaterial3D.new()
+		mat.albedo_color = Color.GRAY
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mi.material_override = mat
+
+	_model_container.add_child(mi)
+
+	if mi.mesh:
+		var aabb = mi.mesh.get_aabb()
+		print("[Debugger] OBJ AABB: ", aabb, " Size: ", aabb.size)
+
 	_center_model()
 
 func _center_model():

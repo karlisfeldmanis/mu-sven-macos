@@ -1,0 +1,31 @@
+newmtl tree_04
+map_Kd tree_04.png
+map_d tree_04.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl tile_ston06
+map_Kd tile_ston06.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl tile_wood02
+map_Kd tile_wood02.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl bridge_shadow01
+map_Kd bridge_shadow01.png
+d 0.7
+map_d bridge_shadow01.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

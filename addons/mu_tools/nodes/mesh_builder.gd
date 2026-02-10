@@ -45,6 +45,7 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 		# Resolve Bind Pose Selection
 		var forced_action = get_registry().get_bind_pose_action(bmd_path)
 		var action_to_use = null
+		bone_transforms.resize(_parser.bones.size())
 		
 		if forced_action != -1 and _parser.actions.size() > forced_action:
 			action_to_use = _parser.actions[forced_action]
@@ -140,7 +141,7 @@ static func build_mesh(bmd_mesh: BMDParser.BMDMesh,
 				
 			if texture:
 				var material = MUMaterialFactory.create_material(
-						texture, bmd_mesh.flags, bmd_mesh.texture_filename,
+						texture, 0, bmd_mesh.texture_filename,
 						bmd_path, surface_index)
 				mesh.surface_set_material(0, material)
 			else:

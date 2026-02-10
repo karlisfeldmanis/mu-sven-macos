@@ -1,0 +1,14 @@
+newmtl merchant_moster_a01
+map_Kd merchant_moster_a01.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl merchant_moster_a02
+map_Kd merchant_moster_a02.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

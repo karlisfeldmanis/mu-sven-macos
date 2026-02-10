@@ -18,7 +18,7 @@ func _ready():
 	add_child(sun)
 	
 	# Instantiate Terrain
-	var mut_script = load("res://addons/mu_tools/mu_terrain.gd")
+	var mut_script = load("res://addons/mu_tools/nodes/mu_terrain.gd")
 	var terrain = mut_script.new()
 	terrain.world_id = 1 # Lorencia (World1)
 	# Use the relative path for the reference assets

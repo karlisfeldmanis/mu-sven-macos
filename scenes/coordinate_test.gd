@@ -2,11 +2,11 @@ extends Node3D
 
 ## Simple test scene to verify coordinate system and terrain+character integration
 
-const MUCoordinates = preload("res://addons/mu_tools/mu_coordinates.gd")
-const MUTerrain = preload("res://addons/mu_tools/mu_terrain.gd")
-const BMDParser = preload("res://addons/mu_tools/bmd_parser.gd")
-const MUMeshBuilder = preload("res://addons/mu_tools/mesh_builder.gd")
-const MUAnimationBuilder = preload("res://addons/mu_tools/animation_builder.gd")
+const MUCoordinates = preload("res://addons/mu_tools/core/mu_coordinate_utils.gd")
+const MUTerrain = preload("res://addons/mu_tools/nodes/mu_terrain.gd")
+const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
+const MUMeshBuilder = preload("res://addons/mu_tools/nodes/mesh_builder.gd")
+const MUAnimationBuilder = preload("res://addons/mu_tools/core/animation_builder.gd")
 
 var terrain: MUTerrain
 var character_root: Node3D

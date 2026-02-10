@@ -99,7 +99,7 @@ func _setup_environment() -> void:
 func _load_world() -> void:
 	print("Loading World %d..." % _world_id)
 	
-	var mut_script = load("res://addons/mu_tools/mu_terrain.gd")
+	var mut_script = load("res://addons/mu_tools/nodes/mu_terrain.gd")
 	if not mut_script:
 		push_error("Failed to load mu_terrain.gd")
 		return

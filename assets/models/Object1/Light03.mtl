@@ -1,0 +1,7 @@
+newmtl ston03
+map_Kd ston03.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

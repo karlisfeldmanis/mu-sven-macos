@@ -1,54 +1,18 @@
 extends SceneTree
 
-## MU Online Remaster - Preflight Check (Phase 5)
-## Validates all project scripts and scenes to ensure no parse errors exist.
+## MU Online Remaster - Preflight Check (Headless Launcher)
+## Legacy wrapper for the robust PreflightValidator class.
 
 func _init():
-	print("\n[PREFLIGHT] Starting project validation...")
-	var errors = 0
-	var total_checked = 0
+	var Validator = load("res://addons/mu_tools/util/preflight_validator.gd")
+	var errors = Validator.run_full_check()
 	
-	errors += _check_directory("res://addons/mu_tools/")
-	errors += _check_directory("res://core/")
-	errors += _check_directory("res://scripts/")
-	errors += _check_directory("res://scenes/")
-	
+	print("\n" + "=".repeat(60))
 	if errors > 0:
-		printerr("\n[PREFLIGHT] FAILED: Found ", errors, " validation errors.")
+		printerr("[PREFLIGHT] FAILED: Found ", errors, " validation errors.")
+		print("=".repeat(60) + "\n")
 		quit(1)
 	else:
-		print("\n[PREFLIGHT] SUCCESS: All scripts and resources passed validation.")
+		print("[PREFLIGHT] SUCCESS: All scripts and resources passed validation.")
+		print("=".repeat(60) + "\n")
 		quit(0)
-
-func _check_directory(path: String) -> int:
-	var dir = DirAccess.open(path)
-	if not dir:
-		return 0
-		
-	var err_count = 0
-	dir.list_dir_begin()
-	var file_name = dir.get_next()
-	
-	while file_name != "":
-		var full_path = path.path_join(file_name)
-		if dir.current_is_dir():
-			if not file_name.begins_with("."):
-				err_count += _check_directory(full_path + "/")
-		else:
-			if file_name.ends_with(".gd") or file_name.ends_with(".tscn") or file_name.ends_with(".tres"):
-				err_count += _validate_resource(full_path)
-		
-		file_name = dir.get_next()
-		
-	return err_count
-
-func _validate_resource(path: String) -> int:
-	# Attempt to load the resource. 
-	# If there's a parse error, Godot will print it to stderr and load() will fail.
-	var res = load(path)
-	if res == null:
-		printerr("  [!] Validation Failed: ", path)
-		return 1
-	else:
-		print("  [✓] Validated: ", path)
-		return 0

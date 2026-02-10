@@ -1,0 +1,18 @@
+newmtl fire_01
+map_Kd fire_01.png
+d 0.5
+map_d fire_01.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl fire_02
+map_Kd fire_02.png
+d 0.5
+map_d fire_02.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

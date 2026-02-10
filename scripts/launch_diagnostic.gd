@@ -7,14 +7,14 @@ func _init():
 	print("============================================================\n")
 	
 	var critical_resources = [
-		"res://addons/mu_tools/mu_terrain.gd",
-		"res://addons/mu_tools/mu_terrain_parser.gd",
-		"res://addons/mu_tools/coordinate_utils.gd",
-		"res://addons/mu_tools/mu_texture_loader.gd",
-		"res://addons/mu_tools/mesh_builder.gd",
-		"res://addons/mu_tools/mu_preflight.gd",
-		"res://core/shaders/mu_terrain.gdshader",
-		"res://core/shaders/mu_character.gdshader",
+		"res://addons/mu_tools/nodes/mu_terrain.gd",
+		"res://addons/mu_tools/core/mu_terrain_parser.gd",
+		"res://addons/mu_tools/core/mu_coordinate_utils.gd",
+		"res://addons/mu_tools/core/mu_texture_loader.gd",
+		"res://addons/mu_tools/nodes/mesh_builder.gd",
+		"res://addons/mu_tools/ui/mu_preflight.gd",
+		"res://addons/mu_tools/shaders/mu_terrain.gdshader",
+		"res://addons/mu_tools/shaders/mu_character.gdshader",
 		"res://scenes/lorencia_effects/mu_fire.gd",
 		"res://scenes/lorencia_effects/shaders/mu_fire.gdshader",
 		"res://scenes/lorencia_effects/shaders/leaf_flutter.gdshader",

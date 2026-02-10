@@ -5,100 +5,169 @@ extends Node3D
 ## This is the entry point for the standalone Godot application
 ## Runs without the editor, loads assets at runtime
 
-@export_group("Asset Paths")
-@export var character_mesh_dir: String = "res://assets/players/meshes"
-@export var character_texture_dir: String = "res://assets/players/textures"
+const MUHeightmap = preload("res://addons/mu_tools/nodes/mu_heightmap.gd")
 
-@export_group("Runtime Settings")
-@export var auto_load_character: bool = true
-@export var default_character: String = "Player"
+var _terrain: MUHeightmap
+var _camera_rig: Node3D
+var _camera: Camera3D
 
-var loaded_character: Node3D = null
+const SAVE_PATH = "user://camera_view.cfg"
+
+# Camera Settings
+var _yaw: float = 0.0 
+var _pitch: float = -45.0 
+var _zoom: float = 100.0 
+var _target_zoom: float = 100.0
 
 func _ready() -> void:
-	print("[MU Remaster] Starting standalone application...")
+	print("[MU Remaster] Starting standalone application (Terrain Only)...")
 	print("  Godot Version: ", Engine.get_version_info().string)
-	print("  Platform: ", OS.get_name())
 	
-	# Setup camera and lighting (already in scene)
-	setup_environment()
+	_setup_environment()
+	_setup_camera()
+	_load_terrain()
 	
-	# Load character if auto-load is enabled
-	if auto_load_character:
-		load_character(default_character)
-	
-	print("[MU Remaster] Ready!")
+	# Load saved camera view
+	_load_camera_view()
 
-func setup_environment() -> void:
-	# Additional environment setup if needed
-	RenderingServer.set_default_clear_color(Color(0.1, 0.1, 0.15))
+func _capture_screenshot(fname: String) -> void:
+	var img = get_viewport().get_texture().get_image()
+	var path = "user://" + fname
+	img.save_png(path)
+	print("[MU Remaster] Saved: ", OS.get_user_data_dir() + "/" + fname)
 
-func load_character(character_name: String) -> void:
-	print("[Character Loader] Loading character: ", character_name)
-	
-	# Clear existing character
-	if loaded_character:
-		loaded_character.queue_free()
-		loaded_character = null
-	
-	# Create character root
-	var character_root = Node3D.new()
-	character_root.name = character_name
-	add_child(character_root)
-	
-	# Load meshes
-	var mesh_count = 0
-	var mesh_dir = DirAccess.open(character_mesh_dir)
-	
-	if mesh_dir:
-		mesh_dir.list_dir_begin()
-		var file_name = mesh_dir.get_next()
-		
-		while file_name != "":
-			if file_name.ends_with(".res") and character_name.to_lower() in file_name.to_lower():
-				var mesh_path = character_mesh_dir.path_join(file_name)
-				var mesh = load(mesh_path)
-				
-				if mesh is ArrayMesh:
-					var mesh_instance = MeshInstance3D.new()
-					mesh_instance.mesh = mesh
-					mesh_instance.name = file_name.get_basename()
-					character_root.add_child(mesh_instance)
-					mesh_count += 1
-					print("  ✓ Loaded mesh: ", file_name)
+func _notification(what):
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_camera_view()
+
+func _save_camera_view() -> void:
+	var config = ConfigFile.new()
+	config.set_value("camera", "position", _camera_rig.position)
+	config.set_value("camera", "yaw", _yaw)
+	config.set_value("camera", "pitch", _pitch)
+	config.set_value("camera", "zoom", _target_zoom)
+	var err = config.save(SAVE_PATH)
+	if err == OK:
+		print("[MU Remaster] Camera view saved to: ", SAVE_PATH)
+
+func _load_camera_view() -> void:
+	var config = ConfigFile.new()
+	var err = config.load(SAVE_PATH)
+	if err == OK:
+		_camera_rig.position = config.get_value("camera", "position", _camera_rig.position)
+		_yaw = config.get_value("camera", "yaw", _yaw)
+		_pitch = config.get_value("camera", "pitch", _pitch)
+		_target_zoom = config.get_value("camera", "zoom", _target_zoom)
+		_zoom = _target_zoom
+		print("[MU Remaster] Camera view loaded from: ", SAVE_PATH)
+
+func _setup_environment() -> void:
+	# Clean up existing environment
+	for child in get_children():
+		if child is WorldEnvironment:
+			child.queue_free()
+		if child is DirectionalLight3D:
+			child.queue_free()
 			
-			file_name = mesh_dir.get_next()
-		
-		mesh_dir.list_dir_end()
+	var env = Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.1, 0.1, 0.12)
 	
-	if mesh_count > 0:
-		loaded_character = character_root
-		print("[Character Loader] Successfully loaded ", mesh_count, " meshes")
-	else:
-		# FALLBACK: Create a dummy cube if no meshes found so the user sees SOMETHING
-		var dummy = MeshInstance3D.new()
-		dummy.mesh = BoxMesh.new()
-		var mat = StandardMaterial3D.new()
-		mat.albedo_color = Color.RED
-		dummy.mesh.material = mat
-		character_root.add_child(dummy)
-		loaded_character = character_root
-		
-		print("[Character Loader] WARNING: No meshes found. Displaying dummy cube.")
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.3, 0.3, 0.35)
+	env.ambient_light_energy = 0.8
+	
+	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.ssao_enabled = true
+	
+	var world_env = WorldEnvironment.new()
+	world_env.environment = env
+	add_child(world_env)
+	
+	# Add Directional Light
+	var sun = DirectionalLight3D.new()
+	sun.name = "Sun"
+	sun.rotation_degrees = Vector3(-60, 45, 0)
+	sun.light_energy = 1.0
+	sun.shadow_enabled = true
+	add_child(sun)
+
+func _setup_camera() -> void:
+	# Clear existing camera if any
+	for child in get_children():
+		if child is Camera3D:
+			child.queue_free()
+
+	_camera_rig = Node3D.new()
+	_camera_rig.name = "CameraRig"
+	add_child(_camera_rig)
+	
+	var pitch_node = Node3D.new()
+	pitch_node.name = "Pitch"
+	_camera_rig.add_child(pitch_node)
+	
+	_camera = Camera3D.new()
+	_camera.name = "MainCamera"
+	_camera.current = true 
+	_camera.position.z = _zoom
+	_camera.far = 2000.0 
+	
+	pitch_node.add_child(_camera)
+	
+	# Initial Position (Center of 256x256 terrain)
+	_camera_rig.position = Vector3(150, 0, 150)
+	_camera_rig.rotation_degrees.y = _yaw
+	pitch_node.rotation_degrees.x = _pitch
+
+func _load_terrain() -> void:
+	_terrain = MUHeightmap.new()
+	_terrain.name = "Terrain"
+	_terrain.world_id = 0
+	_terrain.data_path = "res://reference/MuMain/src/bin/Data" 
+	add_child(_terrain)
 
 func _input(event: InputEvent) -> void:
-	# Simple controls for testing
+	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			_target_zoom = max(10.0, _target_zoom - 10.0)
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_target_zoom = min(300.0, _target_zoom + 10.0)
+	
+	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
+		_yaw -= event.relative.x * 0.25
+		_pitch -= event.relative.y * 0.25
+		_pitch = clamp(_pitch, -89.0, -5.0)
+			
 	if event is InputEventKey and event.pressed:
-		match event.keycode:
-			KEY_R:
-				# Reload character
-				if loaded_character:
-					load_character(default_character)
-			KEY_ESCAPE:
-				# Quit application
-				get_tree().quit()
+		if event.keycode == KEY_ESCAPE:
+			_save_camera_view()
+			get_tree().quit()
 
 func _process(delta: float) -> void:
-	# Rotate character for demonstration
-	if loaded_character:
-		loaded_character.rotate_y(delta * 0.5)
+	# Simple smooth zoom
+	_zoom = lerp(_zoom, _target_zoom, 5.0 * delta)
+	if _camera:
+		_camera.position.z = _zoom
+		
+	# Update Rotation
+	if _camera_rig:
+		var pitch_node = _camera_rig.get_node("Pitch")
+		# Smoothly interpolate or direct set? Direct set for responsiveness is fine for now, 
+		# but let's use standard lerp for smoothness if desired. 
+		# For now, distinct controls: direct set from mouse, smooth zoom.
+		# To avoid jitter, we can just set it.
+		_camera_rig.rotation_degrees.y = _yaw
+		pitch_node.rotation_degrees.x = _pitch
+		
+	# Simple WASD movement
+	var speed = 50.0 * delta
+	var move_vec = Vector3.ZERO
+	if Input.is_key_pressed(KEY_W): move_vec.z -= 1
+	if Input.is_key_pressed(KEY_S): move_vec.z += 1
+	if Input.is_key_pressed(KEY_A): move_vec.x -= 1
+	if Input.is_key_pressed(KEY_D): move_vec.x += 1
+	
+	if move_vec.length() > 0:
+		move_vec = move_vec.rotated(Vector3.UP, deg_to_rad(_yaw))
+		_camera_rig.position += move_vec * speed
+

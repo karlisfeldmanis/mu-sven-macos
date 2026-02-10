@@ -5,6 +5,7 @@ extends Node
 const MUTerrainMeshBuilder = preload("res://addons/mu_tools/nodes/mu_terrain_mesh_builder.gd")
 const MUMeshBuilder = preload("res://addons/mu_tools/nodes/mesh_builder.gd")
 const MUBMDRegistry = preload("res://addons/mu_tools/util/mu_bmd_registry.gd")
+const MUObjLoader = preload("res://addons/mu_tools/core/mu_obj_loader.gd")
 
 ## Build a terrain mesh from height and light data
 func build_terrain_mesh(heightmap: PackedFloat32Array, lightmap: Image) -> ArrayMesh:
@@ -29,3 +30,7 @@ func build_complex_bmd_node(bmd_path: String) -> Node3D:
 		var mi = build_bmd_mesh_instance(bmd_path, i)
 		if mi: root.add_child(mi)
 	return root
+
+## Load an OBJ file as a MeshInstance3D with auto-resolved materials
+func build_obj_mesh_instance(obj_path: String) -> MeshInstance3D:
+	return MUObjLoader.build_mesh_instance(obj_path)

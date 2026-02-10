@@ -49,12 +49,12 @@ func _get_v_data(x: int, y: int, heights: PackedFloat32Array, lightmap: Image) -
 	var h_idx = mu_y * 256 + mu_x
 	var h = float(heights[h_idx])
 	
-	# 🟢 Pivot-256 Canonical Sync (Transposed MU -> Godot)
+	# 🟢 Pivot-256 Canonical Sync (Aligned with MUCoordinateUtils)
 	# MU(x, y) where x=Col, y=Row.
-	# Godot Z = MU X (Col)
-	# Godot X = 256.0 - MU Y (Row)
-	var pos_x = 256.0 - float(y)
-	var pos_z = float(x)
+	# Godot X = MU X (Col)
+	# Godot Z = 256.0 - MU Y (Row)
+	var pos_x = float(x)
+	var pos_z = 256.0 - float(y)
 	var pos = Vector3(pos_x, h, pos_z)
 	
 	# UVs: We want the shader to see MU coordinates.

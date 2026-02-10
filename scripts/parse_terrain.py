@@ -74,16 +74,20 @@ class MUTerrainParser:
             
         data = self.decrypt_map_file(raw_data)
         
-        # Valid sizes: Dungeon (196610 - 2 header), Lorencia (196609 - 1 header)
-        # We dynamic skip to get the last 3 * 256*256 bytes
+        # SVEN C++ OpenTerrainMapping() exact logic:
+        #   DataPtr = 0; DataPtr += 1;  // skip version byte
+        #   iMapNumber = Data[DataPtr]; DataPtr += 1;  // skip map number byte
+        #   memcpy(Layer1, Data+DataPtr, 256*256); DataPtr += 256*256;
+        #   memcpy(Layer2, Data+DataPtr, 256*256); DataPtr += 256*256;
+        #   Alpha bytes follow
         layer_size = self.TERRAIN_SIZE * self.TERRAIN_SIZE
-        expected_data_size = layer_size * 3
+        expected_data_size = 2 + layer_size * 3  # 2-byte header + 3 layers
         
         if len(data) < expected_data_size:
-             print(f"[ERROR] Map file too small after decryption")
+             print(f"[ERROR] Map file too small after decryption: {len(data)} < {expected_data_size}")
              return None
              
-        start_ptr = len(data) - expected_data_size
+        start_ptr = 2  # Skip 1-byte version + 1-byte map number
         
         layer1 = data[start_ptr : start_ptr + layer_size]
         layer2 = data[start_ptr + layer_size : start_ptr + layer_size * 2]
@@ -120,23 +124,25 @@ class MUTerrainParser:
         # Original code checks if size is 131076 (65536 * 2 + 4) -> WORD
         # Or 65540 -> BYTE
         
-        attr_map = []
+        collision = []
+        symmetry = []
         if len(data) == 131076:
-            # Word format, skip 4 bytes header, read every 2nd byte (low byte)
+            # Word format, skip 4 bytes header
             ptr = 4
             for _ in range(self.TERRAIN_SIZE * self.TERRAIN_SIZE):
-                 attr_map.append(data[ptr]) # Low byte
+                 collision.append(data[ptr])   # Byte 0: Flags
+                 symmetry.append(data[ptr+1]) # Byte 1: Symmetry
                  ptr += 2
         elif len(data) >= 65536:
-             # Byte format or fallback
              offset = len(data) - 65536
-             attr_map = list(data[offset:])
+             collision = list(data[offset:])
+             symmetry = [0] * 65536
         else:
              print("[ERROR] Unknown attribute file size")
              return None
              
-        print(f"[PARSER] Attributes parsed. Size: {len(attr_map)}")
-        return attr_map
+        print(f"[PARSER] Attributes parsed. Size: {len(collision)}")
+        return {"collision": collision, "symmetry": symmetry}
 
     def parse_objects(self, filename=None):
         if not filename:

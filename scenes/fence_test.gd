@@ -1,6 +1,6 @@
 extends Node3D
 
-const MUCoordinates = preload("res://addons/mu_tools/mu_coordinates.gd")
+const MUCoordinates = preload("res://addons/mu_tools/core/mu_coordinate_utils.gd")
 
 func _ready():
 	print("=== Fence/World Object Orientation Test ===")

@@ -1,6 +1,6 @@
 [gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://addons/mu_tools/mu_character.gd" id="1_char"]
+[ext_resource type="Script" path="res://addons/mu_tools/nodes/mu_character.gd" id="1_char"]
 
 [sub_resource type="GDScript" id="GDScript_preview"]
 script/source = "extends Node

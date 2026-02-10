@@ -8,7 +8,7 @@ extends SceneTree
 ## Example:
 ##   godot --headless --script scripts/convert_textures.gd -- raw_data/Player assets/players/textures
 
-const TextureConverter = preload("res://addons/mu_tools/texture_converter_headless.gd")
+const TextureConverter = preload("res://addons/mu_tools/util/texture_converter_headless.gd")
 
 func _init() -> void:
 	var args = OS.get_cmdline_user_args()

@@ -4,7 +4,7 @@ func _init():
 	var BMD_PATH = "reference/MuMain/src/bin/Data/Object1/PoseBox01.bmd"
 	var TEX_NAME = "ston03.jpg"
 	
-	var resolver = load("res://addons/mu_tools/mu_texture_resolver.gd")
+	var resolver = load("res://addons/mu_tools/util/mu_texture_resolver.gd")
 	var path = resolver.resolve_texture_path(BMD_PATH, TEX_NAME)
 	
 	print("BMD Path: ", BMD_PATH)

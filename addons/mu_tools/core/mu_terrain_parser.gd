@@ -145,24 +145,15 @@ func parse_mapping_file(path: String, encrypted: bool = true) -> MapData:
 	for mu_y in range(TERRAIN_SIZE):
 		for mu_x in range(TERRAIN_SIZE):
 			var idx = mu_y * TERRAIN_SIZE + mu_x
-			
-			# res.layer1[idx] is already set via data.slice()
-			# res.layer2[idx] is already set via data.slice()
 			if raw_alpha_start + idx < data.size():
-				res.alpha[idx] = float(data[raw_alpha_start + idx]) / 255.0
+				var val = float(data[raw_alpha_start + idx]) / 255.0
+				res.alpha[idx] = val
 			else:
 				res.alpha[idx] = 0.0
 
 	ptr += TERRAIN_SIZE * TERRAIN_SIZE # Advance past alpha block
 	
-	# DEBUG: Print all unique values in layer1
-	var unique_layer1 = {}
-	for val in res.layer1:
-		if not unique_layer1.has(val):
-			unique_layer1[val] = 0
-		unique_layer1[val] += 1
-	print("Unique values in Layer 1: ", unique_layer1)
-	
+
 	# Post-Process: Apply Shoreline Overrides (Sven Parity)
 	# MOVED: Now called explicitly via apply_attributes() after attributes are loaded.
 
@@ -227,7 +218,9 @@ func parse_attributes_file(path: String) -> Dictionary:
 		return {"collision": PackedByteArray(), "symmetry": PackedByteArray()}
 	
 	var encrypted_data = file.get_buffer(file.get_length())
+	print("[Terrain Parser] ATT Raw Size: %d Path: %s" % [encrypted_data.size(), path])
 	var data = decrypt_map_file(encrypted_data)
+	print("[Terrain Parser] ATT Decrypted Size: %d" % data.size())
 	
 	# Apply BuxConvert (Additional XOR for .att files)
 	var bux_code = [0xFC, 0xCF, 0xAB]
@@ -249,10 +242,11 @@ func parse_attributes_file(path: String) -> Dictionary:
 			collision[i] = data[4 + i * 2]
 			symmetry[i] = data[5 + i * 2]
 	elif data.size() >= TERRAIN_SIZE * TERRAIN_SIZE:
-		# Fallback: BYTE format (last 65536 bytes)
+		# Fallback: BYTE format (Lorencia/World 1)
+		# Size matches 1 byte per tile + 1 header (65537) or similar.
 		var offset = data.size() - TERRAIN_SIZE * TERRAIN_SIZE
 		collision = data.slice(offset)
-		symmetry.fill(0) # Default to no symmetry
+		symmetry.fill(0) # Definitive: World 1 has no tile symmetry
 		
 	print("[Terrain Parser] Loaded %d attribute bytes (Parity: WORD=%s)" % [collision.size(), data.size() == expected_word_size])
 	return {"collision": collision, "symmetry": symmetry}

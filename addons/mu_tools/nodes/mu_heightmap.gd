@@ -67,7 +67,11 @@ func load_heightmap():
 	# 4. Setup Material
 	_setup_material(_mapping_data, l_tex, world_data.attributes.symmetry)
 
-func _setup_material(map_data: MUTerrainParser.MapData, l_tex: Texture2D, symmetry_data: PackedByteArray):
+func _setup_material(
+	map_data: MUTerrainParser.MapData, 
+	_l_tex: Texture2D, 
+	symmetry_data: PackedByteArray
+):
 	var textures: Array[Image] = []
 	for i in range(256):
 		var p = Image.create(256, 256, true, Image.FORMAT_RGBA8)
@@ -91,20 +95,22 @@ func _setup_material(map_data: MUTerrainParser.MapData, l_tex: Texture2D, symmet
 				var lower = file_name.to_lower()
 				var idx = -1
 				
-				if lower.begins_with("tilegrass01"): idx = 0
-				elif lower.begins_with("tilegrass02"): idx = 1
-				elif lower.begins_with("tileground01"): idx = 2
-				elif lower.begins_with("tileground02"): idx = 3
-				elif lower.begins_with("tileground03"): idx = 4
-				elif lower.begins_with("tilewater01"): idx = 5
-				elif lower.begins_with("tilewood01"): idx = 6
-				elif lower.begins_with("tilerock01"): idx = 7
-				elif lower.begins_with("tilerock02"): idx = 8
-				elif lower.begins_with("tilerock03"): idx = 9
-				elif lower.begins_with("tilerock04"): idx = 10
-				elif lower.begins_with("tilerock05"): idx = 11
-				elif lower.begins_with("tilerock06"): idx = 12
-				elif lower.begins_with("tilerock07"): idx = 13
+				var base_name = lower.get_basename()
+				
+				if base_name == "tilegrass01": idx = 0
+				elif base_name == "tilegrass02": idx = 1
+				elif base_name == "tileground01": idx = 2
+				elif base_name == "tileground02": idx = 3
+				elif base_name == "tileground03": idx = 4
+				elif base_name == "tilewater01": idx = 5
+				elif base_name == "tilewood01": idx = 6
+				elif base_name == "tilerock01": idx = 7
+				elif base_name == "tilerock02": idx = 8
+				elif base_name == "tilerock03": idx = 9
+				elif base_name == "tilerock04": idx = 10
+				elif base_name == "tilerock05": idx = 11
+				elif base_name == "tilerock06": idx = 12
+				elif base_name == "tilerock07": idx = 13
 				elif lower.begins_with("exttile"):
 					var num_str = lower.trim_prefix("exttile").get_basename()
 					idx = 14 + (num_str.to_int() - 1)
@@ -157,12 +163,17 @@ func _setup_material(map_data: MUTerrainParser.MapData, l_tex: Texture2D, symmet
 		var off = float(rng.randi() % 4) * 0.25
 		grass_off_img.set_pixel(y, 0, Color(off, 0, 0, 1.0))
  
+	var non_zero_alpha = 0
 	for y in range(256):
 		for x in range(256):
 			var tile_idx = y * 256 + x
 			l1_img.set_pixel(x, y, Color(float(map_data.layer1[tile_idx])/255.0, 0, 0, 1.0))
 			l2_img.set_pixel(x, y, Color(float(map_data.layer2[tile_idx])/255.0, 0, 0, 1.0))
-			alpha_img.set_pixel(x, y, Color(map_data.alpha[tile_idx], 0, 0, 1.0))
+			var a = map_data.alpha[tile_idx]
+			alpha_img.set_pixel(x, y, Color(a, 0, 0, 1.0))
+			if a > 0.01: non_zero_alpha += 1
+  
+	print("[MUHeightmap] Alpha Mask populated with %d non-zero pixels" % non_zero_alpha)
  
 	var l1_tex = ImageTexture.create_from_image(l1_img)
 	var l2_tex = ImageTexture.create_from_image(l2_img)
@@ -193,49 +204,52 @@ func _setup_material(map_data: MUTerrainParser.MapData, l_tex: Texture2D, symmet
 	for i in range(textures.size()):
 		var w = float(original_widths.get(i, textures[i].get_width()))
 		if w > 0:
-			scale_map[i] = 64.0 / w
-			var t_name = idx_to_name.get(i, "TileIndex_%d" % i)
-			category_map[i] = _categorize_texture(t_name)
+			var t_name = idx_to_name.get(i, "TileIndex_%d" % i).to_lower()
+			var cat = _categorize_texture(t_name)
+			category_map[i] = cat
 			
-	# 1. SVEN Terrain Parity (Dynamic Metadata)
-	# Logic:
-	# - Scale = 64.0 / texture_width (Normalizing to 64px virtual tiles)
-	# - Category = Derived from filename (Nature vs Stone)
-	# - Symmetry = Default to None (0.0) unless nature logic requires otherwise
+			# 🟢 1:1 MIGRATION LOGIC (Legit MU Parity)
+			# SVEN: Width = 64.0 / BitmapWidth
+			if w > 0:
+				scale_map[i] = 64.0 / w
+			else:
+				scale_map[i] = 1.0 # Fallback
+				
+			# Category 0: Discrete Detail (Roads) - Use map symmetry.
+			# Category 4: Discrete Ground (City Floors) - Force Rotation (Sym 4) + Checkerboard.
+			# Categories 1-3: Seamless Floors - Symmetry is ignored by shader.
+			var actual_symmetry = 0
+			if cat == 0.0:
+				actual_symmetry = symmetry_data[i]
+			elif cat == 4.0:
+				actual_symmetry = 4 # Force Rotation
+			
+			category_map[i] = cat
+			symmetry_map[i] = actual_symmetry
 	
-	# Scale/Category/Symmetry maps are already populated above.
-	# We just ensure water (Index 5) is correctly categorized and scaled for flow animation.
+	# Explicit Water Fix
 	scale_map[5] = 1.0; 
 	category_map[5] = 2.0; 
 	symmetry_map[5] = 0.0;
 	
 	var mat = _api.render().create_terrain_material(
-		tex_array, l1_tex, l2_tex, a_tex, g_tex, l_tex, 0,
+		tex_array, l1_tex, l2_tex, a_tex, g_tex, _l_tex, 0,
 		scale_map, symmetry_map, category_map, sym_tex
 	)
 	_terrain_mi.material_override = mat
-	print("✓ MUHeightmap: Hybrid Seamless Active (Grass=Nature, Stone=Mirror).")
+	print("✓ MUHeightmap: 1:1 Migration Logic Active (City=Horizontal, Nature=Seamless).")
 
 func _categorize_texture(tex_name: String) -> float:
 	var n = tex_name.to_lower()
-	if n.contains("grass"): return 1.0
+	if n.contains("grass") or n.contains("wood"): return 1.0 # Seamless Nature
 	if n.contains("water"): return 2.0
-	if n.contains("wood") or n.contains("stone") or \
-	   n.contains("ground02") or n.contains("ground03"): 
-		return 3.0
-	if n.contains("ground01"): return 4.0
-	return 0.0
+	if n.contains("stone") or n.contains("rock"): return 3.0 # Seamless Floor
+	if n.contains("ground"): return 4.0 # Discrete Ground (Forced Horizontal)
+	if n.contains("exttile"): return 0.0 # Discrete Detail (Roads)
+	return 0.0 # Default fallback
 
 func set_debug_mode(mode: int):
 	if _terrain_mi and _terrain_mi.material_override:
 		_terrain_mi.material_override.set_shader_parameter("debug_mode", mode)
-
-func _process(_delta: float):
-	# SVEN Parity: Update global time for shaders
-	var time = Time.get_ticks_msec() / 1000.0
-	# Standard global uniforms for MU shaders
-	RenderingServer.global_shader_parameter_set("mu_world_time", time)
-	# Water flow (64.0 / texture_width * WaterMove)
-	# Standard water move is roughly 0.001 per frame at 30fps
-	var water_move = time * 0.05 
-	RenderingServer.global_shader_parameter_set("mu_water_move_uv", water_move)
+	# Note: Global shader uniforms (mu_wind_speed, mu_water_move_uv, mu_world_time)
+	# are handled by MUEnvironment._process() with SVEN-parity formulas.

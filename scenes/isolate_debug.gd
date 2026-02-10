@@ -86,6 +86,8 @@ func _setup_ui() -> void:
 	vbox.add_child(bake_check)
 	
 	var objects_dir = "res://reference/MuMain/src/bin/Data/Object1/"
+	var houses = ["House01", "House02", "House03", "House04", "House05", 
+		"HouseEtc01", "HouseEtc02", "HouseEtc03", "Straw01", "Straw02"]
 	
 	for h in houses:
 		var btn = Button.new()

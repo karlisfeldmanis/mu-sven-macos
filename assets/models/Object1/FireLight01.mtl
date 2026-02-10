@@ -1,0 +1,27 @@
+newmtl light
+map_Kd light.png
+d 0.5
+map_d light.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl light2
+map_Kd light2.png
+d 0.5
+map_d light2.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1
+newmtl light3
+map_Kd light3.png
+d 0.5
+map_d light3.png
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 10.0
+illum 1

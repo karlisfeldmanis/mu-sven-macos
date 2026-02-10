@@ -1,7 +1,7 @@
 extends GPUParticles3D
 
-const MUTextureLoader = preload("res://addons/mu_tools/mu_texture_loader.gd")
-const MUFileUtil = preload("res://addons/mu_tools/mu_file_util.gd")
+const MUTextureLoader = preload("res://addons/mu_tools/core/mu_texture_loader.gd")
+const MUFileUtil = preload("res://addons/mu_tools/core/mu_file_util.gd")
 
 func _ready() -> void:
 	name = "FallingLeaves"

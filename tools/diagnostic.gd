@@ -2,8 +2,8 @@ extends SceneTree
 
 func _init():
 	var data_path = "res://reference/MuMain/src/bin/Data/World1"
-	var tex_loader = preload("res://addons/mu_tools/mu_texture_loader.gd")
-	var parser_script = preload("res://addons/mu_tools/mu_terrain_parser.gd")
+	var tex_loader = preload("res://addons/mu_tools/util/mu_texture_loader.gd")
+	var parser_script = preload("res://addons/mu_tools/core/mu_terrain_parser.gd")
 	var parser = parser_script.new()
 	
 	print("=== MU Texture Diagnostic ===")
