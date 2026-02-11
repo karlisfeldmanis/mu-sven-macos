@@ -16,7 +16,9 @@ func load_world_data(world_id: int, base_path: String) -> Dictionary:
 	var data = {
 		"heightmap": parser.parse_height_file(world_path.path_join("TerrainHeight.OZB")),
 		"mapping": _load_mapping(parser, world_path, world_id),
-		"objects": parser.parse_objects_file(world_path.path_join("EncTerrain" + str(world_id + 1) + ".obj")),
+		"objects": parser.parse_objects_file(
+			world_path.path_join("EncTerrain" + str(world_id + 1) + ".obj"),
+			world_id),
 		"attributes": parser.parse_attributes_file(world_path.path_join("EncTerrain" + str(world_id + 1) + ".att"))
 	}
 	return data

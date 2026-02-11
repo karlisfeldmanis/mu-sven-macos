@@ -39,43 +39,37 @@ static func resolve_texture_path(bmd_path: String, internal_name: String) -> Str
 		result = _search_texture(base_dir, raw_name)
 		
 	if result.is_empty():
-		var dir = DirAccess.open(base_dir)
-		var files = []
-		if dir:
-			dir.list_dir_begin()
-			var fn = dir.get_next()
-			while fn != "":
-				files.append(fn)
-				fn = dir.get_next()
-		print("  [TextureResolver] FAILED to find: '%s' for internal '%s' in %s" % 
+		push_warning("  [TextureResolver] FAILED to find: '%s' (internal '%s') in %s" % 
 				[search_name, internal_name, base_dir])
-		print("    Files in dir: ", files)
 	return result
 
 ## Searches for a texture in the BMD directory and common subfolders (Case-Insensitive)
 static func _search_texture(base_dir: String, filename: String) -> String:
-	# 1. Proactively resolve case using our robust utility.
-	# This handles both directory and file case mismatches from the root.
+	# 1. Direct check in current directory
 	var full_path = base_dir.path_join(filename)
 	var resolved = MUFileUtil.resolve_case(full_path)
-	
 	if MUFileUtil.file_exists(resolved):
 		return resolved
 			
 	# 2. Check common alternative locations
-	if base_dir.contains("/Object"):
-		# Try looking in sister Object folders or base Data folder
-		var data_dir = base_dir.get_base_dir()
-		var alt_path = data_dir.path_join(filename)
-		var resolved_alt = MUFileUtil.resolve_case(alt_path)
-		if MUFileUtil.file_exists(resolved_alt): 
-			return resolved_alt
+	# MU often places textures in "Item" folder even if model is in "ObjectX"
+	if base_dir.contains("/Data/"):
+		var data_root = base_dir.split("/Data/")[0] + "/Data/"
+		var common_folders = ["Item", "Object1", "Object2", "Object3", "Player", "Texture"]
 		
-	# 3. Check "Data" root if we can find it
-	if base_dir.contains("/raw_data/"):
-		var data_root = base_dir.split("/raw_data/")[0] + "/raw_data/"
-		if data_root != base_dir:
-			var res = _search_texture(data_root, filename)
-			if not res.is_empty(): return res
+		for folder in common_folders:
+			var alt_dir = data_root.path_join(folder)
+			var alt_path = alt_dir.path_join(filename)
+			var resolved_alt = MUFileUtil.resolve_case(alt_path)
+			if MUFileUtil.file_exists(resolved_alt): 
+				return resolved_alt
+		
+	# 3. Check for specific "Texture" subfolders within Objects
+	if base_dir.contains("/Object"):
+		var obj_dir = base_dir.split("/Object")[0] + "/Object"
+		var alt_path = obj_dir.path_join("Texture").path_join(filename)
+		var resolved_alt = MUFileUtil.resolve_case(alt_path)
+		if MUFileUtil.file_exists(resolved_alt):
+			return resolved_alt
 			
 	return ""

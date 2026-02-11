@@ -7,8 +7,7 @@ uniform float alpha_test_threshold : hint_range(0.0, 1.0) = 0.5;
 uniform bool is_additive = false;
 uniform bool black_is_transparent = false;
 
-uniform bool use_wind = false;
-uniform float wind_strength = 1.0;
+uniform bool use_wave = false;
 
 // Global shader parameters
 global uniform float mu_world_time;
@@ -21,18 +20,11 @@ varying vec4 v_color;
 void vertex() {
 	v_color = COLOR; // Capture MU vertex colors for Glow/Reinforcement
 	
-	if (use_wind) {
-		// Only sway vertices that are above the origin (y > 0)
-		float sway_mask = max(0.0, VERTEX.y);
-		
-		// Align with Sven grass sway logic
-		float xf = NODE_POSITION_WORLD.x * 0.01;
-		float sway = sin(mu_wind_speed + xf * 5.0) * mu_wind_scale;
-		
-		// Apply wind direction and strength
-		// Note: Using 0.005 multiplier (5cm max) for generic world objects 
-		// to feel localized and synchronized without being over-the-top.
-		VERTEX.xz += mu_wind_direction.xz * sway * sway_mask * wind_strength * 0.005;
+	if (use_wave) {
+		// SVEN Parity (ZzzBMD.cpp:1354)
+		// float time_sin = sinf((float)((int)WorldTime + source_vertex_index * 931) * 0.007f) * 28.0f;
+		float time_sin = sin((mu_world_time + float(VERTEX_ID) * 931.0) * 0.007) * 28.0 * 0.01;
+		VERTEX += NORMAL * time_sin;
 	}
 }
 
@@ -47,6 +39,12 @@ void fragment() {
 	float alpha_val = tex_color.a;
 	if (black_is_transparent && length(tex_color.rgb) < 0.1) {
 		alpha_val = 0.0;
+	}
+	
+	// Simulation of additive blending in blend_mix mode
+	if (is_additive) {
+		EMISSION = ALBEDO;
+		alpha_val = length(tex_color.rgb);
 	}
 	
 	if (use_alpha_scissor) {

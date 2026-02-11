@@ -122,14 +122,14 @@ void fragment() {
 	vec3 sven_light_dir = normalize(vec3(0.5, 1.0, 0.5)); 
 	float diff = dot(normalize(v_normal), sven_light_dir);
 	
-	// SVEN uses a clamp/lerp for luminosity: (diff + 0.5)
-	float luminosity = clamp(diff + 0.5, 0.0, 1.0);
+	// SVEN uses a clamp/lerp for luminosity: (diff * 0.15 + 1.0)
+	float luminosity = clamp(diff * 0.15 + 1.0, 0.8, 1.3);
 	
 	// BackTerrainLight = TerrainLight * Luminosity
 	vec3 final_light = lightmap_color * luminosity;
 
 	// Global intensity adjustment for Godot visibility
-	final_light = clamp(final_light * 1.5, vec3(0.3), vec3(2.0));
+	final_light = clamp(final_light * 1.2, vec3(0.4), vec3(1.8));
 
 	// 8. Final Blending & Glow (SVEN RenderFaceAlpha vs RenderFaceBlend)
 	// Base layer is always modulated by lightmap.

@@ -6,7 +6,8 @@ class_name MUCoordinateUtils
 ## MuOnline: Z-up, 100 world units = 1 tile/meter. Vertex Y and Z are often swapped or require flip.
 ## Godot: Y-up, standard scale.
 ##
-## SVEN Parity: Godot Z = 255 - Mu Y
+## SVEN Parity: cyclic permutation (Y, Z, X) [Det=+1]
+## Godot X = MU Y, Godot Y = MU Z, Godot Z = MU X
 
 const MUTransformPipeline = preload("res://addons/mu_tools/core/mu_transform_pipeline.gd")
 
@@ -19,17 +20,17 @@ const MU_EULER_ORDER = MUTransformPipeline.MU_EULER_ORDER
 
 static func mu_to_godot(mu_x: float, mu_y: float, mu_height_byte: float = 0.0) -> Vector3:
 	return Vector3(
-		mu_x,
-		(mu_height_byte * HEIGHT_SCALE) / MU_SCALE, # byte * 1.5 / 100.0
-		256.0 - mu_y
+		mu_y,  # Godot X = MU Y (Row)
+		(mu_height_byte * HEIGHT_SCALE) / MU_SCALE,
+		mu_x   # Godot Z = MU X (Col)
 	)
 
 ## Variant where height is already scaled to Godot meters
 static func mu_to_godot_scaled(mu_x: float, mu_y: float, godot_y: float) -> Vector3:
 	return Vector3(
-		mu_x,
+		mu_y,     # Godot X = MU Y
 		godot_y,
-		256.0 - mu_y # SVEN Parity: Godot Z = 256 - Mu Y
+		mu_x      # Godot Z = MU X
 	)
 
 ## Converts MU world-space units (100 = 1 meter) to Godot space.
@@ -53,37 +54,36 @@ static func convert_object_position(mu_pos: Vector3) -> Vector3:
 	return mu_world_to_godot(mu_pos)
 
 static func convert_scale(mu_scale: float) -> Vector3:
-	# Reflect objects on X? Some MU clients reflect world objects.
-	# For now, uniform scale is safest unless parity check fails.
-	return Vector3(mu_scale, mu_scale, mu_scale)
+	# Mirror Godot Z (MU X) to correct chirality without flipping Forward heading.
+	return Vector3(mu_scale, mu_scale, -mu_scale)
 
 static func convert_normal(mu_normal: Vector3) -> Vector3:
 	return MUTransformPipeline.mu_normal_to_godot(mu_normal)
 
 static func convert_basis(mu_basis: Basis) -> Basis:
-	# Similarity Transform for MU orientation logic
+	# Similarity Transform for MU orientation logic: M_godot = W · M_mu · Wᵀ
+	# Row/Col mapping: 0→1, 1→2, 2→0
 	var x = mu_basis.x
 	var y = mu_basis.y
 	var z = mu_basis.z
-	# Mapping (x,y,z) to Godot Y-up (X, Z, Y) 
-	var g_x = Vector3(x.x, x.z, x.y)
-	var g_y = Vector3(z.x, z.z, z.y)
-	var g_z = Vector3(y.x, y.z, y.y)
-	# Apply SVEN orientation flip for Z alignment?
-	# Standard MU rotation results in objects facing -Z or +Z.
-	return Basis(g_x, g_y, g_z)
+	
+	# Godot Frame elements from MU basis
+	var g00 = y.y; var g01 = y.z; var g02 = y.x
+	var g10 = z.y; var g11 = z.z; var g12 = z.x
+	var g20 = x.y; var g21 = x.z; var g22 = x.x
+	
+	return Basis(
+		Vector3(g00, g10, g20),
+		Vector3(g01, g11, g21),
+		Vector3(g02, g12, g22)
+	)
 
 static func convert_object_rotation(mu_euler: Vector3) -> Quaternion:
 	# euler is in raw MU radians (swizzled in mu_rotation_to_quaternion)
 	return bmd_angle_to_quaternion(mu_euler)
 
 ## Converts MU bone rotation (Euler radians) to Godot Quaternion.
-##
-## Correct Mapping (Mu -> Godot):
-##   Mu X (Side) -> Godot X
-##   Mu Z (Up)   -> Godot Y
-##   Mu Y (Back) -> Godot -Z
-## Order: YZX (mapped from MU's Z * Y * X)
+## Order: ZYX (mapped from SVEN's AngleMatrix)
 static func bmd_angle_to_quaternion(euler: Vector3) -> Quaternion:
 	return MUTransformPipeline.mu_rotation_to_quaternion(euler)
 
@@ -91,7 +91,7 @@ static func bmd_angle_to_quaternion(euler: Vector3) -> Quaternion:
 static func get_mu_transform(pos: Vector3, rot: Vector3) -> Transform3D:
 	var q = bmd_angle_to_quaternion(rot)
 	# Position mapping matches mu_model_to_godot (convert MU units to meters)
-	var p = Vector3(pos.x, pos.z, -pos.y) * SCALE_FACTOR
+	var p = Vector3(pos.y, pos.z, pos.x) * SCALE_FACTOR
 	return Transform3D(Basis(q), p)
 
 const TERRAIN_SIZE = 256
@@ -114,10 +114,12 @@ static func mu_angle_to_godot_rotation(mu_angle: Vector3) -> Vector3:
 	return bmd_angle_to_quaternion(mu_angle).get_euler(EULER_ORDER_XZY)
 
 static func world_to_tile(world_pos: Vector3) -> Vector2i:
-	return Vector2i(int(floor(world_pos.x)), int(floor(world_pos.z)))
+	# Inverse of transpose: MU_X = G_Z, MU_Y = G_X
+	return Vector2i(int(floor(world_pos.z)), int(floor(world_pos.x)))
 
 static func mu_to_godot_position(mu_pos: Vector3) -> Vector3:
 	return mu_to_godot(mu_pos.x / 100.0, mu_pos.y / 100.0, mu_pos.z)
 
 static func godot_to_mu_position(godot_pos: Vector3) -> Vector3:
-	return Vector3(godot_pos.x * 100.0, (256.0 - godot_pos.z) * 100.0, (godot_pos.y * 100.0) / 1.5)
+	# Inverse of (G_X = MU_Y, G_Y = MU_Z, G_Z = MU_X)
+	return Vector3(godot_pos.z * 100.0, godot_pos.x * 100.0, godot_pos.y * 100.0)

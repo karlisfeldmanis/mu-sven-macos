@@ -1,481 +1,180 @@
 {
-    "Bird01": {
-        "description": "Bird - Native Bone Count 20"
-    },
-    "BridgeStone01": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Cannon01": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Cannon02": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Cannon03": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Carriage01": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Carriage02": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Carriage03": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Carriage04": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Fence01": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Fence02": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Fence03": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "Fence04": {
-        "description": "Fixed rotation for alignment",
-        "rotation_override": [
-            0.0,
-            -90.0,
-            0.0
-        ]
-    },
-    "MerchantAnimal01": {
-        "description": "Fix exploded mesh",
-        "forced_bind_pose_action": 0
-    },
-    "MerchantAnimal02": {
-        "description": "Fix exploded mesh",
-        "forced_bind_pose_action": 0
-    },
+    "Bird01": {},
+    "BridgeStone01": {},
+    "Cannon01": {},
+    "Cannon02": {},
+    "Cannon03": {},
+    "Carriage01": {},
+    "Carriage02": {},
+    "Carriage03": {},
+    "Carriage04": {},
+    "Fence01": {},
+    "Fence02": {},
+    "Fence03": {},
+    "Fence04": {},
+    "MerchantAnimal01": {},
+    "MerchantAnimal02": {},
     "Waterspout01": {
-        "scroll_uv": [
-            0.0,
-            -1.0
-        ],
-        "scroll_uv_index": 3,
-        "transparency": "alpha_blend",
-        "unshaded": true
+        "blend_mesh_index": 3
     },
-    "FireLight01": {
-        "description": "Lorencia Asset - Colorkey/Additive likely needed"
-    },
-    "FireLight02": {
-        "description": "Lorencia Asset - Colorkey/Additive likely needed"
-    },
+    "FireLight01": {},
+    "FireLight02": {},
     "Bonfire": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 1
     },
     "Candle": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 1,
+        "velocity": 0.3
     },
     "StreetLight": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 1,
+        "velocity": 0.3
     },
-    "Light01": {
-        "description": "Lorencia Asset"
+    "Light01": {},
+    "Light02": {},
+    "Light03": {},
+    "Tree01": {},
+    "Tree02": {},
+    "Tree03": {},
+    "Tree04": {},
+    "Tree05": {},
+    "Tree06": {},
+    "Tree07": {},
+    "Tree08": {},
+    "Tree09": {},
+    "Tree10": {},
+    "Tree11": {},
+    "Tree12": {},
+    "Tree13": {},
+    "Grass01": {},
+    "Grass02": {},
+    "Grass03": {},
+    "Grass04": {},
+    "Grass05": {},
+    "Grass06": {},
+    "Grass07": {},
+    "Grass08": {},
+    "Stone01": {},
+    "Stone02": {},
+    "Stone03": {},
+    "Stone04": {},
+    "Stone05": {},
+    "StoneStatue01": {},
+    "StoneStatue02": {},
+    "StoneStatue03": {},
+    "SteelStatue": {},
+    "Tomb01": {},
+    "Tomb02": {},
+    "Tomb03": {},
+    "DoungeonGate01": {
+        "bind_pose_action": 1
     },
-    "Light02": {
-        "description": "Lorencia Asset"
-    },
-    "Light03": {
-        "description": "Lorencia Asset"
-    },
-    "Tree01": {
-        "description": "Lorencia Asset"
-    },
-    "Tree02": {
-        "description": "Lorencia Asset"
-    },
-    "Tree03": {
-        "description": "Lorencia Asset"
-    },
-    "Tree04": {
-        "description": "Lorencia Asset"
-    },
-    "Tree05": {
-        "description": "Lorencia Asset"
-    },
-    "Tree06": {
-        "description": "Lorencia Asset"
-    },
-    "Tree07": {
-        "description": "Lorencia Asset"
-    },
-    "Tree08": {
-        "description": "Lorencia Asset"
-    },
-    "Tree09": {
-        "description": "Lorencia Asset"
-    },
-    "Tree10": {
-        "description": "Lorencia Asset"
-    },
-    "Tree11": {
-        "description": "Lorencia Asset"
-    },
-    "Tree12": {
-        "description": "Lorencia Asset"
-    },
-    "Tree13": {
-        "description": "Lorencia Asset"
-    },
-    "Grass01": {
-        "description": "Lorencia Asset"
-    },
-    "Grass02": {
-        "description": "Lorencia Asset"
-    },
-    "Grass03": {
-        "description": "Lorencia Asset"
-    },
-    "Grass04": {
-        "description": "Lorencia Asset"
-    },
-    "Grass05": {
-        "description": "Lorencia Asset"
-    },
-    "Grass06": {
-        "description": "Lorencia Asset"
-    },
-    "Grass07": {
-        "description": "Lorencia Asset"
-    },
-    "Grass08": {
-        "description": "Lorencia Asset"
-    },
-    "Stone01": {
-        "description": "Lorencia Asset"
-    },
-    "Stone02": {
-        "description": "Lorencia Asset"
-    },
-    "Stone03": {
-        "description": "Lorencia Asset"
-    },
-    "Stone04": {
-        "description": "Lorencia Asset"
-    },
-    "Stone05": {
-        "description": "Lorencia Asset"
-    },
-    "StoneStatue01": {
-        "description": "Lorencia Asset"
-    },
-    "StoneStatue02": {
-        "description": "Lorencia Asset"
-    },
-    "StoneStatue03": {
-        "description": "Lorencia Asset"
-    },
-    "SteelStatue": {
-        "description": "Lorencia Asset"
-    },
-    "Tomb01": {
-        "description": "Lorencia Asset"
-    },
-    "Tomb02": {
-        "description": "Lorencia Asset"
-    },
-    "Tomb03": {
-        "description": "Lorencia Asset"
-    },
-    "DungeonGate": {
-        "description": "Lorencia Asset"
-    },
-    "TreasureDrum": {
-        "description": "Lorencia Asset"
-    },
+    "TreasureDrum": {},
     "TreasureChest": {
-        "description": "Lorencia Asset"
+        "velocity": 0.0
     },
-    "Ship": {
-        "description": "Lorencia Asset"
-    },
+    "Ship": {},
     "StoneWall01": {
-        "description": "Lorencia Asset"
+        "bind_pose_action": 0
     },
     "StoneWall02": {
-        "description": "Lorencia Asset"
+        "bind_pose_action": 0
     },
     "StoneWall03": {
-        "description": "Lorencia Asset"
+        "bind_pose_action": 0
     },
     "StoneWall04": {
-        "description": "Lorencia Asset"
+        "bind_pose_action": 0
     },
     "StoneWall05": {
-        "description": "Lorencia Asset"
+        "bind_pose_action": 0
     },
     "StoneWall06": {
-        "description": "Lorencia Asset"
+        "bind_pose_action": 0
     },
-    "MuWall01": {
-        "description": "Lorencia Asset"
+    "StoneMuWall01": {
+        "bind_pose_action": 0
     },
-    "MuWall02": {
-        "description": "Lorencia Asset"
+    "StoneMuWall02": {
+        "bind_pose_action": 0
     },
-    "MuWall03": {
-        "description": "Lorencia Asset"
+    "StoneMuWall03": {
+        "bind_pose_action": 0
     },
-    "MuWall04": {
-        "description": "Lorencia Asset"
+    "StoneMuWall04": {
+        "bind_pose_action": 0
     },
-    "SteelWall01": {
-        "description": "Lorencia Asset"
-    },
-    "SteelWall02": {
-        "description": "Lorencia Asset"
-    },
-    "SteelWall03": {
-        "description": "Lorencia Asset"
-    },
-    "SteelDoor": {
-        "description": "Lorencia Asset"
-    },
+    "SteelWall01": {},
+    "SteelWall02": {},
+    "SteelWall03": {},
+    "SteelDoor": {},
     "Bridge": {
-        "description": "Lorencia Asset"
+        "collision_range": -50.0
     },
-    "Curtain": {
-        "description": "Lorencia Asset"
-    },
-    "Straw01": {
-        "description": "Lorencia Asset"
-    },
-    "Straw02": {
-        "description": "Lorencia Asset"
-    },
+    "Curtain": {},
+    "Straw01": {},
+    "Straw02": {},
     "Sign01": {
-        "description": "Lorencia Asset"
+        "velocity": 0.3
     },
     "Sign02": {
-        "description": "Lorencia Asset"
+        "velocity": 0.3
     },
-    "Well01": {
-        "description": "Lorencia Asset"
-    },
-    "Well02": {
-        "description": "Lorencia Asset"
-    },
-    "Well03": {
-        "description": "Lorencia Asset"
-    },
-    "Well04": {
-        "description": "Lorencia Asset"
-    },
-    "Hanging": {
-        "description": "Lorencia Asset"
-    },
-    "House01": {
-        "description": "Lorencia Asset"
-    },
-    "House02": {
-        "description": "Lorencia Asset"
-    },
+    "Well01": {},
+    "Well02": {},
+    "Well03": {},
+    "Well04": {},
+    "Hanging": {},
+    "House01": {},
+    "House02": {},
     "House03": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 4
     },
     "House04": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 8
     },
     "House05": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 2
     },
-    "Tent": {
-        "description": "Lorencia Asset"
-    },
-    "Stair": {
-        "description": "Lorencia Asset"
-    },
-    "HouseWall01": {
-        "description": "Lorencia Asset"
-    },
+    "Tent": {},
+    "Stair": {},
+    "HouseWall01": {},
     "HouseWall02": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 4
     },
-    "HouseWall03": {
-        "description": "Lorencia Asset"
-    },
-    "HouseWall04": {
-        "description": "Lorencia Asset"
-    },
-    "HouseWall05": {
-        "description": "Lorencia Asset"
-    },
-    "HouseWall06": {
-        "description": "Lorencia Asset"
-    },
-    "HouseEtc01": {
-        "description": "Lorencia Asset"
-    },
-    "HouseEtc02": {
-        "description": "Lorencia Asset"
-    },
-    "HouseEtc03": {
-        "description": "Lorencia Asset"
-    },
+    "HouseWall03": {},
+    "HouseWall04": {},
+    "HouseWall05": {},
+    "HouseWall06": {},
+    "HouseEtc01": {},
+    "HouseEtc02": {},
+    "HouseEtc03": {},
     "PoseBox": {
-        "description": "Lorencia Asset"
+        "hidden_mesh": -2
     },
-    "Furniture01": {
-        "description": "Lorencia Asset"
-    },
-    "Furniture02": {
-        "description": "Lorencia Asset"
-    },
-    "Furniture03": {
-        "description": "Lorencia Asset"
-    },
-    "Furniture04": {
-        "description": "Lorencia Asset"
-    },
+    "Furniture01": {},
+    "Furniture02": {},
+    "Furniture03": {},
+    "Furniture04": {},
     "Furniture05": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 2
     },
     "Furniture06": {
-        "description": "Lorencia Asset"
+        "blend_mesh_index": 2
     },
-    "Furniture07": {
-        "description": "Lorencia Asset"
-    },
-    "Beer01": {
-        "description": "Lorencia Asset"
-    },
-    "Beer02": {
-        "description": "Lorencia Asset"
-    },
-    "Beer03": {
-        "description": "Lorencia Asset"
-    },
+    "Furniture07": {},
+    "Beer01": {},
+    "Beer02": {},
+    "Beer03": {},
     "material_tweaks": {
-        "bridge_shadow01.png": {
-            "description": "Use Alpha Blending instead of Scissor",
-            "transparency": 1.0
+        "ston02": {
+            "transparency": 1,
+            "alpha_scissor_threshold": 0.5
+        },
+        "ston03": {
+            "transparency": 1,
+            "alpha_scissor_threshold": 0.5
         }
     },
-    "texture_tweaks": {
-        "fire_01.jpg": {
-            "colorkey": true,
-            "description": "Fire needs black alpha"
-        },
-        "fire_02.jpg": {
-            "colorkey": true,
-            "description": "Fire needs black alpha"
-        },
-        "horse_drawn_01.jpg": {
-            "description": "Revert default OZJ flip (Specific Logic)",
-            "flip_y": true
-        },
-        "merchant_moster_a01.jpg": {
-            "description": "Fix texture alignment",
-            "flip_y": true
-        },
-        "merchant_moster_b01.jpg": {
-            "description": "Fix texture alignment",
-            "flip_y": true
-        },
-        "reagon_waterspout.jpg": {
-            "colorkey": true,
-            "description": "Water needs black alpha"
-        },
-        "streetlight.jpg": {
-            "colorkey": true,
-            "description": "Light needs black alpha"
-        },
-        "streetlight_brightness2.jpg": {
-            "colorkey": true,
-            "description": "Light needs black alpha"
-        },
-        "tree.jpg": {
-            "colorkey": true,
-            "description": "Leaves need black alpha"
-        },
-        "tree_01.jpg": {
-            "colorkey": true,
-            "description": "Leaves need black alpha"
-        },
-        "tree_02.jpg": {
-            "colorkey": true,
-            "description": "Leaves need black alpha"
-        },
-        "tree_03.jpg": {
-            "colorkey": true,
-            "description": "Leaves need black alpha"
-        },
-        "tree_04.jpg": {
-            "colorkey": true,
-            "description": "Leaves need black alpha"
-        },
-        "tree_05.jpg": {
-            "colorkey": true,
-            "description": "Leaves need black alpha"
-        },
-        "tree_06.jpg": {
-            "colorkey": true,
-            "description": "Leaves need black alpha"
-        },
-        "tree_07.jpg": {
-            "colorkey": true,
-            "description": "Leaves need black alpha"
-        }
-    }
+    "texture_tweaks": {}
 }

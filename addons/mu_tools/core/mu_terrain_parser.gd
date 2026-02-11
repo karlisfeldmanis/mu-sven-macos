@@ -103,7 +103,7 @@ func parse_height_file(path: String) -> PackedFloat32Array:
 			# Standard MU scaling: 1.5 units per byte
 			# SVEN Parity: Apply -500.0 MU unit offset (g_fMinHeight = -500.f)
 			# (1.5 * raw - 500.0) / 100.0 = (1.5 * raw / 100.0) - 5.0
-			heights[idx] = (float(raw_heights[idx]) * 1.5 - 500.0) / 100.0
+			heights[idx] = (float(raw_heights[idx]) * 1.5) / 100.0
 			
 	return heights
 
@@ -251,24 +251,35 @@ func parse_attributes_file(path: String) -> Dictionary:
 	print("[Terrain Parser] Loaded %d attribute bytes (Parity: WORD=%s)" % [collision.size(), data.size() == expected_word_size])
 	return {"collision": collision, "symmetry": symmetry}
 
-func parse_objects_file(path: String) -> Array[ObjectData]:
+func parse_objects_file(path: String, world_id: int = -1) -> Array[ObjectData]:
 	var file = MUFileUtil.open_file(path, FileAccess.READ)
 	if not file:
 		return []
-		
+
 	var encrypted_data = file.get_buffer(file.get_length())
 	var data = decrypt_map_file(encrypted_data)
-	
+
 	var objects: Array[ObjectData] = []
 	var ptr = 0
-	
-	# Skip version/map number
-	ptr += 2
-	
+
+	# OpenObjectsEnc header (SVEN ZzzObject.cpp:4944-4948):
+	# Byte 0: Version (BYTE)
+	# Byte 1: MapNumber (BYTE)
+	# Bytes 2-3: Count (short)
+	var version = data[0]
+	var map_number = data[1]
+	ptr = 2
+
+	if world_id >= 0 and map_number != (world_id + 1):
+		push_warning(
+			"[Terrain Parser] Object file map number %d != expected %d"
+			% [map_number, world_id + 1])
+
 	var count = data.decode_s16(ptr)
 	ptr += 2
-	
-	print("[Terrain Parser] Loading %d objects from %s" % [count, path.get_file()])
+
+	print("[Terrain Parser] Loading %d objects from %s (v%d, map %d)"
+		% [count, path.get_file(), version, map_number])
 	
 	for i in range(count):
 		var obj = ObjectData.new()
@@ -306,11 +317,13 @@ func parse_objects_file(path: String) -> Array[ObjectData]:
 		if obj.type == 133: # MODEL_POSE_BOX
 			obj.hidden_mesh = -2
 		
-		# Diagnostic logging for rotation issues
+		# Diagnostic logging for placement issues
 		if i < 3000:
-			print("  [Object Parser] Obj %d Type=%d Rot=%.2f,%.2f,%.2f Scale=%.2f" % [
-				i, obj.type, mu_angle.x, mu_angle.y, mu_angle.z, obj.scale
-			])
+			print("  [OBJ] %d T=%d MU=(%.0f,%.0f,%.0f) G=(%.1f,%.1f,%.1f) R=(%.0f,%.0f,%.0f) S=%.2f"
+				% [i, obj.type,
+				mu_pos.x, mu_pos.y, mu_pos.z,
+				obj.position.x, obj.position.y, obj.position.z,
+				mu_angle.x, mu_angle.y, mu_angle.z, obj.scale])
 		
 		objects.append(obj)
 		

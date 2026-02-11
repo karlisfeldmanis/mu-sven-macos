@@ -11,14 +11,14 @@ static func create_material(
 		_flags: int = 0, 
 		texture_name: String = "",
 		model_path: String = "",
-		surface_index: int = 0) -> ShaderMaterial:
-	var mat = ShaderMaterial.new()
-	mat.shader = load("res://addons/mu_tools/shaders/mu_character.gdshader")
+		surface_index: int = 0,
+		animated_materials: Array = []) -> StandardMaterial3D:
+	var mat = StandardMaterial3D.new()
 	mat.resource_name = texture_name
-	
-	mat.set_shader_parameter("albedo_texture", texture)
+	mat.albedo_texture = texture
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	
 	# Use centralized helper for all effect logic
-	MUMaterialHelper.setup_material(mat, surface_index, model_path, texture_name)
+	MUMaterialHelper.setup_material(mat, surface_index, model_path, texture_name, animated_materials)
 	
 	return mat

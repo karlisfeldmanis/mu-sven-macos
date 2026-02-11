@@ -23,13 +23,13 @@ func build_terrain_array_mesh(heights: PackedFloat32Array, lightmap: Image) -> A
 			var i01 = (y + 1) * v_count + x
 			var i11 = (y + 1) * v_count + (x + 1)
 			
-			# MU Tiling Parity: Triangulation Fan (Corrected for X-Mirroring CCW)
+			# Godot CCW Standard: (0,0) -> (1,0) -> (1,1)
 			st.add_index(i00)
-			st.add_index(i11)
 			st.add_index(i10)
-			st.add_index(i00)
-			st.add_index(i01)
 			st.add_index(i11)
+			st.add_index(i00)
+			st.add_index(i11)
+			st.add_index(i01)
 				
 	st.generate_normals()
 	st.generate_tangents()
@@ -49,12 +49,11 @@ func _get_v_data(x: int, y: int, heights: PackedFloat32Array, lightmap: Image) -
 	var h_idx = mu_y * 256 + mu_x
 	var h = float(heights[h_idx])
 	
-	# 🟢 Pivot-256 Canonical Sync (Aligned with MUCoordinateUtils)
-	# MU(x, y) where x=Col, y=Row.
-	# Godot X = MU X (Col)
-	# Godot Z = 256.0 - MU Y (Row)
-	var pos_x = float(x)
-	var pos_z = 256.0 - float(y)
+	# 🟢 Proven Mapping (Transpose)
+	# Godot X = MU Y (Row)
+	# Godot Z = MU X (Col)
+	var pos_x = float(y)
+	var pos_z = float(x)
 	var pos = Vector3(pos_x, h, pos_z)
 	
 	# UVs: We want the shader to see MU coordinates.

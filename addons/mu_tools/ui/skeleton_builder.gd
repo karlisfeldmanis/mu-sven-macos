@@ -37,10 +37,11 @@ static func build_skeleton(bmd_bones: Array, bmd_actions: Array = []) -> Skeleto
 			var action = bmd_actions[0]
 			if action.keys.size() > i and action.keys[i] != null and not action.keys[i].is_empty():
 				var key = action.keys[i][0]
-				rest_pos = MUCoordinateUtils.convert_position(key.position)
-				# Use explicit quaternion conversion and permute to Godot basis
-				var q_mu = MUCoordinateUtils.bmd_angle_to_quaternion(key.rotation)
-				rest_basis = MUCoordinateUtils.convert_basis(Basis(q_mu))
+				# 🔴 FIX: Use LOCAL coordinate mapping for bones, NOT world mirroring
+				rest_pos = MUTransformPipeline.local_mu_to_godot(key.position)
+				# 🔴 FIX: Use authoritative rotation conversion
+				var q = MUTransformPipeline.mu_rotation_to_quaternion(key.rotation)
+				rest_basis = Basis(q)
 		
 		var rest_transform = Transform3D()
 		rest_transform.origin = rest_pos

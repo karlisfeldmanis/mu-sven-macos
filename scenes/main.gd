@@ -29,8 +29,8 @@ var target_pitch: float = -45.0
 var target_zoom: float = 180.0
 var yaw: float = 0.0
 var pitch: float = -45.0
-var zoom_distance: float = 180.0
-var focus_point: Vector3 = Vector3(128, 0, 128)
+var zoom_distance: float = 80.0
+var focus_point: Vector3 = Vector3(122.0, 2.5, 129.0) # Corrected Fountain (G_X=MU_Y, G_Z=MU_X)
 
 var is_right_click_down: bool = false
 var _config_dirty: bool = false
@@ -38,9 +38,9 @@ var _save_timer: float = 0.0
 var _inspect_label: Label3D
 
 func _ready():
-	get_window().size = Vector2i(1280, 720)
+	get_window().size = Vector2i(1600, 900)
 	get_window().mode = Window.MODE_WINDOWED
-	print("[MU] Launching Modern Main Scene...")
+	print("[MU] Launching Interactive High-Res Scene...")
 
 	# 1. Initialize API
 	api = MUAPI_CLASS.new()
@@ -59,28 +59,26 @@ func _ready():
 	camera.far = 2000.0
 	camera.make_current()
 	
+	# 4. Trigger Object Spawning (City Center Only)
+	var obj_manager = load("res://addons/mu_tools/nodes/mu_object_manager.gd")
+	if obj_manager:
+		# City center bounding box in Godot coords (G_X=MU_Y, G_Z=MU_X)
+		# MU city center: roughly X=9500-17000, Y=9500-17000 (cm)
+		# -> Godot: X=95-170, Z=95-170
+		var city_filter = Rect2(95, 95, 75, 75)
+		obj_manager.load_objects(
+			self, 
+			heightmap_node.get_objects_data(), 
+			false, # show_debug
+			heightmap_node.get_height_data(),
+			false, # show_hidden
+			world_id,
+			city_filter
+		)
+	
 	_load_camera_config()
 	
-	# Disable Debug Mode
-	heightmap_node.set_debug_mode(0)
-	
-	_inspect_label = Label3D.new()
-	_inspect_label.name = "InspectLabel"
-	_inspect_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	_inspect_label.no_depth_test = true
-	_inspect_label.font_size = 32
-	_inspect_label.outline_size = 8
-	_inspect_label.pixel_size = 0.01
-	_inspect_label.visible = false
-	add_child(_inspect_label)
-
-	print("✓ Main Scene Ready (Unified API).")
-
-	# Auto-capture screenshot after scene loads (Skip in headless)
-	if DisplayServer.get_name() != "headless":
-		await get_tree().create_timer(3.0).timeout
-		take_screenshot_to("main_screenshot.png")
-		print("[Screenshot] Auto-screenshot saved")
+	print("✓ Main Scene Ready (Interactive Mode).")
 
 func _process(delta):
 	# 1. Smooth Camera Transition

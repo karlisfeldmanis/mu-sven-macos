@@ -6,10 +6,15 @@ extends Node3D
 ## Runs without the editor, loads assets at runtime
 
 const MUHeightmap = preload("res://addons/mu_tools/nodes/mu_heightmap.gd")
+const MUModelRegistry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
+const MUMeshBuilder = preload("res://addons/mu_tools/nodes/mesh_builder.gd")
+const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
 
 var _terrain: MUHeightmap
+var _objects_parent: Node3D
 var _camera_rig: Node3D
 var _camera: Camera3D
+var _animated_materials: Array = []
 
 const SAVE_PATH = "user://camera_view.cfg"
 
@@ -27,8 +32,15 @@ func _ready() -> void:
 	_setup_camera()
 	_load_terrain()
 	
+	# Wait for terrain to be ready before spawning objects
+	await get_tree().process_frame
+	_spawn_city_objects()
+	
 	# Load saved camera view
 	_load_camera_view()
+	
+	# Handle CLI arguments
+	_handle_cli_args()
 
 func _capture_screenshot(fname: String) -> void:
 	var img = get_viewport().get_texture().get_image()
@@ -142,6 +154,8 @@ func _input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE:
 			_save_camera_view()
 			get_tree().quit()
+		if event.keycode == KEY_R: # Refresh objects
+			_spawn_city_objects()
 
 func _process(delta: float) -> void:
 	# Simple smooth zoom
@@ -170,4 +184,108 @@ func _process(delta: float) -> void:
 	if move_vec.length() > 0:
 		move_vec = move_vec.rotated(Vector3.UP, deg_to_rad(_yaw))
 		_camera_rig.position += move_vec * speed
+
+func _handle_cli_args() -> void:
+	var args = OS.get_cmdline_args()
+	var out_path = ""
+	
+	for i in range(args.size()):
+		if args[i] == "--out" and i + 1 < args.size():
+			out_path = args[i+1]
+		if args[i] == "--camera" and i + 1 < args.size():
+			var c_args = args[i+1].split(",")
+			if c_args.size() >= 3:
+				_camera_rig.position = Vector3(float(c_args[0]), float(c_args[1]), float(c_args[2]))
+			if c_args.size() >= 6:
+				_yaw = float(c_args[3])
+				_pitch = float(c_args[4])
+				_target_zoom = float(c_args[5])
+				_zoom = _target_zoom
+				
+	if out_path != "":
+		# Wait for render
+		await get_tree().process_frame
+		await get_tree().process_frame
+		
+		var img = get_viewport().get_texture().get_image()
+		img.save_png(out_path)
+		print("[MU Remaster] CLI Screenshot saved to: ", out_path)
+		get_tree().quit()
+
+func _spawn_city_objects() -> void:
+	if not _terrain: return
+	
+	print("[MU Remaster] Spawning objects in city center...")
+	
+	# 1. Setup Container
+	if _objects_parent:
+		_objects_parent.queue_free()
+	_objects_parent = Node3D.new()
+	_objects_parent.name = "Objects"
+	add_child(_objects_parent)
+	
+	# 2. Get Data
+	var objects = _terrain.get_objects_data()
+	var city_center = Vector3(128, 0, 128) # MU Transposed
+	var radius = 64.0 # Range around center
+	
+	var spawn_count = 0
+	var model_cache = {} # path -> {parser, skeleton?}
+	
+	for obj in objects:
+		var dist = obj.position.distance_to(city_center)
+		if dist > radius: continue
+		
+		# 3. Resolve Path
+		var bmd_path = MUModelRegistry.get_object_path(obj.type, _terrain.world_id)
+		if bmd_path == "": continue
+		
+		# 4. Load/Cache Model
+		if not model_cache.has(bmd_path):
+			var parser = BMDParser.new()
+			if parser.parse_file(bmd_path, false):
+				model_cache[bmd_path] = parser
+			else:
+				model_cache[bmd_path] = null
+				
+		var parser = model_cache[bmd_path]
+		if not parser: continue
+		
+		# 5. Instantiate Meshes (Bake Pose for performance in static scene)
+		var obj_node = Node3D.new()
+		obj_node.name = "Obj_%d_T%d" % [spawn_count, obj.type]
+		obj_node.position = obj.position
+		obj_node.quaternion = obj.rotation
+		obj_node.scale = Vector3(obj.scale, obj.scale, obj.scale)
+		_objects_parent.add_child(obj_node)
+		
+		# Apply registry overrides
+		var rot_override = MUModelRegistry.get_rotation_override(bmd_path)
+		if rot_override != Vector3.ZERO:
+			obj_node.rotation_degrees += rot_override
+		
+		var bind_pose = MUModelRegistry.get_bind_pose_action(bmd_path, 0)
+		
+		for i in range(parser.meshes.size()):
+			var mesh_instance = MUMeshBuilder.create_mesh_instance_v2(
+				parser.meshes[i], null, bmd_path, parser, true, true, false, i, bind_pose, _animated_materials
+			)
+			if mesh_instance:
+				var mat = mesh_instance.get_active_material(0)
+				# 🔴 FIX: PARITY MESH HIDING (Phase 2)
+				if mat and mat.get_meta("mu_script_hidden", false):
+					mesh_instance.free()
+					continue
+					
+				obj_node.add_child(mesh_instance)
+				
+				# Apply BlendMesh logic
+				var blend_idx = MUModelRegistry.get_blend_mesh_index(bmd_path)
+				if i == blend_idx and mat is StandardMaterial3D:
+					mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		
+		spawn_count += 1
+		
+	print("  ✓ Spawned %d objects in city radius." % spawn_count)
 

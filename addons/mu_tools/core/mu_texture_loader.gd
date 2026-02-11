@@ -33,21 +33,19 @@ static func load_mu_texture(path: String) -> ImageTexture:
 	if ext == "OZJ":
 		if buffer.size() > 24:
 			img_data = buffer.slice(24)
-			# print("    [MUTextureLoader] OZJ: Skipping 24 bytes header (Strict SVEN Parity)")
-	elif ext == "OZT":
+	elif ext == "OZT" or ext == "OZB":
 		if buffer.size() > 4:
 			img_data = buffer.slice(4)
-			# print("    [MUTextureLoader] OZT: Skipping 4 bytes header (Strict SVEN Parity)")
 	
 	# Decrypt if needed (OZJ/OZT usually need XOR unless already raw JPG/TGA)
 	if not _is_raw_jpg(img_data) and not _is_raw_tga(img_data):
-		img_data = MUDecryptor.decrypt_texture(img_data)
+		img_data = MUDecryptor.decrypt_texture(img_data, ext)
 	
 	# Load image
 	var image = Image.new()
 	var err = ERR_INVALID_DATA
 	
-	if ext == "OZT" or _is_raw_tga(img_data):
+	if ext == "OZT" or ext == "OZB" or _is_raw_tga(img_data):
 		# Try Godot's native TGA loader first (it supports 24/32-bit but not all flips)
 		err = image.load_tga_from_buffer(img_data)
 		# If Godot fails, use our custom decoder which is more robust for MU's BGRA TGAs
@@ -59,9 +57,9 @@ static func load_mu_texture(path: String) -> ImageTexture:
 		err = image.load_jpg_from_buffer(img_data)
 	
 	if err != OK:
-		MULogger.error("[MUTextureLoader] FAILED to load buffer for %s: %d" % [path, err])
+		push_error("[MUTextureLoader] FAILED to load %s (Error: %d). Data size: %d" % 
+				[path.get_file(), err, img_data.size()])
 		return null
-		
 	# Apply common MU heuristics (Alpha channel corrections)
 	_apply_alpha_heuristics(image, path)
 	
@@ -80,14 +78,16 @@ static func _apply_alpha_heuristics(image: Image, path: String):
 	# 1. Black Color-Key Transparency
 	# Many older MU assets use pure black (0,0,0) as transparency.
 	# We only apply this to images that aren't terrain tiles (terrain blended in shader)
-	if lower_name.contains("/object") or lower_name.contains("/player"):
-		image.convert(Image.FORMAT_RGBA8)
-		# This is a bit slow for every texture, but necessary for legacy look
-		for y in range(image.get_height()):
-			for x in range(image.get_width()):
-				var c = image.get_pixel(x, y)
-				if c.r < 0.01 and c.g < 0.01 and c.b < 0.01:
-					image.set_pixel(x, y, Color(0, 0, 0, 0))
+	# and don't already have a meaningful alpha channel (e.g. 32-bit bird textures).
+	if (lower_name.contains("/object") or lower_name.contains("/player")) and not lower_name.contains("bird"):
+		# If the image already has some transparency, don't force black-keying
+		if image.detect_alpha() == Image.ALPHA_NONE:
+			image.convert(Image.FORMAT_RGBA8)
+			for y in range(image.get_height()):
+				for x in range(image.get_width()):
+					var c = image.get_pixel(x, y)
+					if c.r < 0.01 and c.g < 0.01 and c.b < 0.01:
+						image.set_pixel(x, y, Color(0, 0, 0, 0))
 					
 	# 2. Binary Alpha Fix
 	# Some OZT files have broken 1-bit alpha that Godot treats as white.

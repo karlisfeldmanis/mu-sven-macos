@@ -21,6 +21,7 @@ var _api: Node # Using Node as base type to avoid circular preloads if any
 var _terrain_mi: MeshInstance3D
 var _heightmap_data: PackedFloat32Array
 var _mapping_data: Variant
+var _objects_data: Array = []
 
 func _ready():
 	_api = load("res://addons/mu_tools/core/mu_api.gd").new()
@@ -42,6 +43,7 @@ func load_heightmap():
 		
 	_heightmap_data = world_data.heightmap
 	_mapping_data = world_data.mapping
+	_objects_data = world_data.objects
 
 	# 2. Setup Environment
 	_api.render().setup_world_environment(self, world_id)
@@ -241,12 +243,73 @@ func _setup_material(
 
 func _categorize_texture(tex_name: String) -> float:
 	var n = tex_name.to_lower()
-	if n.contains("grass") or n.contains("wood"): return 1.0 # Seamless Nature
-	if n.contains("water"): return 2.0
-	if n.contains("stone") or n.contains("rock"): return 3.0 # Seamless Floor
-	if n.contains("ground"): return 4.0 # Discrete Ground (Forced Horizontal)
-	if n.contains("exttile"): return 0.0 # Discrete Detail (Roads)
-	return 0.0 # Default fallback
+	
+	# Category 1: Seamless Nature (Scale 0.25)
+	if n.contains("grass") or n.contains("leaf") or n.contains("wood"): 
+		return 1.0
+		
+	# Category 2: Water (Scale 1.0)
+	if n.contains("water"): 
+		return 2.0
+		
+	# Category 3: Seamless Floor (Scale 0.25)
+	if n.contains("rock"): 
+		return 3.0
+		
+	# Category 4: Discrete Ground (Scale 1.0)
+	if n.contains("ground") or n.contains("stone") or n.contains("mstone"):
+		return 4.0
+		
+	# Category 0: Discrete Detail / Roads (Scale 1.0)
+	return 0.0
+
+func get_height_data() -> PackedFloat32Array:
+	return _heightmap_data
+
+func get_objects_data() -> Array:
+	return _objects_data
+
+## Bilinear height query for world positions (Authentic MU Parity)
+func get_height_at_world(world_pos: Vector3) -> float: 
+	# Proven Transpose Mapping
+	# Godot X = MU Y, Godot Z = MU X → inverse: MU X = G_Z, MU Y = G_X
+	const TERRAIN_SIZE = 256
+	var mu_x = world_pos.z
+	var mu_y = world_pos.x
+	
+	# Bounds check
+	if mu_x < 0 or mu_x >= TERRAIN_SIZE or mu_y < 0 or mu_y >= TERRAIN_SIZE:
+		return 0.0
+	
+	# Get integer tile and decimal fraction
+	var xi = int(mu_x)
+	var yi = int(mu_y)
+	var xd = mu_x - float(xi)
+	var yd = mu_y - float(yi)
+	
+	# Clamp to valid sampling range
+	xi = clampi(xi, 0, TERRAIN_SIZE - 2)
+	yi = clampi(yi, 0, TERRAIN_SIZE - 2)
+	
+	# Sample 4 corners (Row-major: idx = y * SIZE + x)
+	var idx1 = yi * TERRAIN_SIZE + xi           # (xi, yi)
+	var idx2 = yi * TERRAIN_SIZE + (xi + 1)     # (xi+1, yi)  
+	var idx3 = (yi + 1) * TERRAIN_SIZE + xi     # (xi, yi+1)
+	var idx4 = (yi + 1) * TERRAIN_SIZE + (xi + 1)  # (xi+1, yi+1)
+	
+	if idx4 >= _heightmap_data.size():
+		return 0.0
+		
+	var h1 = _heightmap_data[idx1]
+	var h2 = _heightmap_data[idx2]
+	var h3 = _heightmap_data[idx3]
+	var h4 = _heightmap_data[idx4]
+	
+	# Interpolate along Y on left edge (xi), then right edge (xi+1)
+	var left = h1 + (h3 - h1) * yd
+	var right = h2 + (h4 - h2) * yd
+	# Then interpolate along X
+	return left + (right - left) * xd
 
 func set_debug_mode(mode: int):
 	if _terrain_mi and _terrain_mi.material_override:

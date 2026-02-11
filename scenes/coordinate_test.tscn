@@ -1,6 +1,0 @@
-[gd_scene load_steps=2 format=3 uid="uid://c6hy8qkxqvnmr"]
-
-[ext_resource type="Script" path="res://scenes/coordinate_test.gd" id="1_coordinate_test"]
-
-[node name="CoordinateTest" type="Node3D"]
-script = ExtResource("1_coordinate_test")

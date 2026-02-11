@@ -6,8 +6,10 @@ class_name MUDecryptor
 ## Handles XOR and Cyclic keys used in MuOnline clients.
 ## Based on MapFile and Bmd_Decrypt logic in ZzzBMD.cpp.
 
-const XOR_KEY_BMD = [0x2F, 0x52, 0x4D, 0x51, 0x34] # Example key, often varies
-const XOR_KEY_TEXTURE = 0x5E
+const XOR_KEY_BMD = [0x2F, 0x52, 0x4D, 0x51, 0x34]
+const XOR_KEY_OZJ = 0x54 # Strict Project Parity
+const XOR_KEY_OZT = 0x5E # Strict Project Parity
+const XOR_KEY_OZB = 0x5E
 
 ## Decrypts a BMD buffer starting from an offset (Version 12 / MapFileDecrypt)
 static func decrypt_bmd_v12(buffer: PackedByteArray, start_offset: int) -> PackedByteArray:
@@ -48,18 +50,22 @@ static func decrypt_bmd(buffer: PackedByteArray, version: int,
 	return decrypt_bmd_v10(buffer, start_offset)
 
 ## Decrypts texture files (.ozj, .ozt)
-static func decrypt_texture(buffer: PackedByteArray) -> PackedByteArray:
+static func decrypt_texture(buffer: PackedByteArray, type_ext: String = "") -> PackedByteArray:
 	# 1. If it's already a valid image, don't decrypt
 	if is_jpg(buffer) or is_tga(buffer):
 		return buffer
 		
-	# 2. Try XORing
+	# 2. Select key based on extension
+	var key = 0x5E # Default
+	var ext = type_ext.to_upper()
+	if ext == "OZJ": key = XOR_KEY_OZJ
+	elif ext == "OZT" or ext == "OZB": key = XOR_KEY_OZT
+	
+	# 3. Try XORing
 	var decrypted = buffer.duplicate()
 	for i in range(decrypted.size()):
-		decrypted[i] = decrypted[i] ^ XOR_KEY_TEXTURE
+		decrypted[i] = decrypted[i] ^ key
 		
-	# 3. If still not valid after XOR, it might be a different encryption 
-	# or just raw data we don't recognize. Return decrypt for now.
 	return decrypted
 
 ## Detects if a buffer is a JPG after decryption

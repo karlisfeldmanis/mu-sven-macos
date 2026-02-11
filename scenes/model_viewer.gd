@@ -16,17 +16,24 @@ var _target_distance: float = 5.0
 
 # Debug State
 var _show_wireframe: bool = false
-var _show_normals: bool = false
+var _show_normals: bool = true
 var _show_skin: bool = true
 var _show_textures: bool = true
 var _center_model_enabled: bool = true
+var _show_bone_labels: bool = false
 var _current_model_path: String = ""
 var _model_selector: OptionButton
+var _texture_checkbox: CheckBox
+var _pose_selector: OptionButton
+var _current_pose_idx: int = 0
 var _animated_materials: Array[Dictionary] = [] # Stores {material: Material, speed: Vector2}
+var _debug_nodes: Array[Node] = []
 
 const MUMaterialHelper = preload("res://addons/mu_tools/core/mu_material_helper.gd")
 const MUModelRegistry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
+const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
 const MUObjLoader = preload("res://addons/mu_tools/core/mu_obj_loader.gd")
+const MUTextureLoader = preload("res://addons/mu_tools/core/mu_texture_loader.gd")
 
 func _ready():
 	_setup_scene()
@@ -53,14 +60,31 @@ func _ready():
 			_show_textures = false
 		if args[i] == "--no-center":
 			_center_model_enabled = false
+		if args[i] == "--no-labels":
+			_show_bone_labels = false
 	
 	if not model_to_load.is_empty():
+		# Resolve short names (Object1/Stone01) to full paths
+		if not model_to_load.begins_with("res://"):
+			var candidates = MUModelRegistry.get_all_available_models()
+			for c in candidates:
+				if model_to_load in c:
+					model_to_load = c
+					break
+		
 		_model_container.scale = Vector3(model_scale, model_scale, model_scale)
+		_current_pose_idx = MUModelRegistry.get_bind_pose_action(model_to_load, 0)
 		load_model(model_to_load, no_skin, !_show_textures)
+		
+		# Update UI selection to match
+		for idx in range(_model_selector.item_count):
+			if _model_selector.get_item_metadata(idx) == model_to_load:
+				_model_selector.select(idx)
+				break
 		
 		if not screenshot_path.is_empty():
 			# Wait for frames to render and animations to settle
-			await get_tree().create_timer(2.0).timeout 
+			await get_tree().create_timer(2.0).timeout
 			take_automated_screenshot(screenshot_path)
 			await get_tree().process_frame
 			get_tree().quit()
@@ -83,34 +107,41 @@ func _setup_ui():
 	_model_selector.item_selected.connect(_on_model_selected)
 	container.add_child(_model_selector)
 	
-	# Scan for models
-	var scan_dirs = ["res://assets/lorencia", "res://extracted_data/object_models"]
-	var models = []
+	# Texture Toggle
+	_texture_checkbox = CheckBox.new()
+	_texture_checkbox.text = "Show Textures"
+	_texture_checkbox.button_pressed = _show_textures
+	_texture_checkbox.toggled.connect(_on_texture_toggled)
+	container.add_child(_texture_checkbox)
 	
-	for d_path in scan_dirs:
-		var dir = DirAccess.open(d_path)
-		if dir:
-			dir.list_dir_begin()
-			var file_name = dir.get_next()
-			while file_name != "":
-				if not dir.current_is_dir() and (file_name.ends_with(".obj") or file_name.ends_with(".bmd")):
-					# Store full path or relative? 
-					# Storing full path is safer if we have multiple source dirs
-					models.append(d_path.path_join(file_name))
-				file_name = dir.get_next()
-		
-	models.sort()
+	# Bind Pose Selector
+	var pose_container = HBoxContainer.new()
+	container.add_child(pose_container)
+	
+	var pose_label = Label.new()
+	pose_label.text = "Bind Pose: "
+	pose_container.add_child(pose_label)
+	
+	_pose_selector = OptionButton.new()
+	for i in range(10): # Initial buffer, will be updated on load
+		_pose_selector.add_item("Action %d" % i, i)
+	_pose_selector.item_selected.connect(_on_pose_selected)
+	pose_container.add_child(_pose_selector)
+	
+	# 2. Automated Model Discovery (Centralized via Registry)
+	var models = MUModelRegistry.get_all_available_models()
 	
 	_model_selector.add_item("Select Model...", -1)
-	for model in models:
-		_model_selector.add_item(model)
+	for path in models:
+		# Show folder prefix for clarity (e.g. "Object1/Stone01")
+		var folder = path.get_base_dir().get_file()
+		var display_name = folder + "/" + path.get_file().get_basename()
+		_model_selector.add_item(display_name)
+		_model_selector.set_item_metadata(_model_selector.get_item_count() - 1, path)
 			
 		# Select current model if applicable
-		if not _current_model_path.is_empty():
-			for i in range(_model_selector.item_count):
-				if _model_selector.get_item_text(i) == _current_model_path:
-					_model_selector.select(i)
-					break
+		if not _current_model_path.is_empty() and path == _current_model_path:
+			_model_selector.select(_model_selector.get_item_count() - 1)
 
 func _on_model_selected(index):
 	print("[Debugger] Item Selected: ", index)
@@ -119,9 +150,33 @@ func _on_model_selected(index):
 		return
 		
 	if index > 0: # 0 is "Select Model..."
-		var path = _model_selector.get_item_text(index)
-		print("[Debugger] Selected Model Path: ", path)
+		var path = _model_selector.get_item_metadata(index)
+		print("[Debugger] Selected Model Path (from metadata): ", path)
+		_current_pose_idx = MUModelRegistry.get_bind_pose_action(path, 0)
+		_update_pose_selector_count(path)
 		load_model(path, !_show_skin, !_show_textures)
+
+func _on_texture_toggled(pressed: bool):
+	_show_textures = pressed
+	if not _current_model_path.is_empty():
+		load_model(_current_model_path, !_show_skin, !_show_textures)
+
+func _on_pose_selected(index: int):
+	_current_pose_idx = index
+	if not _current_model_path.is_empty():
+		load_model(_current_model_path, !_show_skin, !_show_textures)
+
+func _update_pose_selector_count(path: String):
+	if not path.ends_with(".bmd"):
+		return
+	
+	var parser = BMDParser.new()
+	if parser.parse_file(path, false):
+		_pose_selector.clear()
+		for i in range(parser.actions.size()):
+			_pose_selector.add_item("Action %d" % i, i)
+		if _current_pose_idx < _pose_selector.item_count:
+			_pose_selector.select(_current_pose_idx)
 
 func _setup_scene():
 	# Pivot for orbital camera
@@ -155,6 +210,10 @@ func _setup_scene():
 	env.fog_enabled = false
 	env.glow_enabled = false
 	
+	# No directional light (Sun) for flat "unlit" look, rely on Ambient
+	
+	# 2. Environment (Neutral Studio -> Matches Main.tscn)
+	
 	# Background & Ambient
 	get_viewport().transparent_bg = false # Disabled for visibility
 	
@@ -172,7 +231,7 @@ func _setup_scene():
 	# Directional Light (Matches main.tscn)
 	var sun = DirectionalLight3D.new()
 	sun.name = "Sun"
-	sun.light_energy = 1.2
+	sun.light_energy = 1.0
 	sun.shadow_enabled = false
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 	sun.transform = Transform3D(
@@ -186,11 +245,15 @@ func _setup_scene():
 	# --- Grid (Visual Helper) ---
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_LINES)
-	var grid_size = 10
-	var step = 10.0
+	var grid_size = 50
+	var step = 1.0
 	for i in range(-grid_size, grid_size + 1):
-		# LINES
-		st.set_color(Color(0.3, 0.3, 0.3))
+		# Grid lines every 1m
+		var color = Color(0.3, 0.3, 0.3)
+		if i % 10 == 0: color = Color(0.5, 0.5, 0.5) # Major lines every 10m
+		if i == 0: color = Color(0.8, 0.2, 0.2) if i == 0 else color # Origin
+		
+		st.set_color(color)
 		st.add_vertex(Vector3(i * step, 0, -grid_size * step))
 		st.add_vertex(Vector3(i * step, 0, grid_size * step))
 		st.add_vertex(Vector3(-grid_size * step, 0, i * step))
@@ -263,7 +326,7 @@ func _input(event):
 			KEY_G: _grid.visible = !_grid.visible
 			KEY_S: toggle_skinning()
 			KEY_T: toggle_textures()
-			KEY_X: 
+			KEY_X:
 				var axis = get_node_or_null("AxisMarker")
 				if axis: axis.visible = !axis.visible
 
@@ -301,7 +364,7 @@ func toggle_skinning():
 				else:
 					# Force a reload or store the skin? 
 					# Simpler: just reload model without skin if toggled?
-					pass 
+					pass
 	print("[Debugger] Skinning: ", _show_skin)
 	load_model(_current_model_path, !_show_skin, !_show_textures)
 
@@ -344,7 +407,7 @@ func _create_normal_visualization():
 func _setup_axis_marker():
 	var container = Node3D.new()
 	container.name = "AxisMarker"
-	container.visible = false # Focus on mesh by default
+	container.visible = true # Focus on mesh by default
 	add_child(container)
 	
 	var create_line = func(to: Vector3, color: Color):
@@ -360,9 +423,9 @@ func _setup_axis_marker():
 		mi.material_override = mat
 		return mi
 		
-	container.add_child(create_line.call(Vector3(1, 0, 0), Color.RED))   # X
+	container.add_child(create_line.call(Vector3(1, 0, 0), Color.RED)) # X
 	container.add_child(create_line.call(Vector3(0, 1, 0), Color.GREEN)) # Y
-	container.add_child(create_line.call(Vector3(0, 0, 1), Color.BLUE))  # Z
+	container.add_child(create_line.call(Vector3(0, 0, 1), Color.BLUE)) # Z
 	
 	# Add negative axes for completeness
 	container.add_child(create_line.call(Vector3(-1, 0, 0), Color.MAROON))
@@ -381,49 +444,135 @@ func load_model(path: String, no_skin: bool = false, no_texture: bool = false):
 		child.queue_free()
 	var old_normals = get_node_or_null("NormalDebug")
 	if old_normals: old_normals.queue_free()
+	for n in _debug_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_debug_nodes.clear()
 	
 	if path.ends_with(".bmd"):
 		_load_bmd(path, no_skin, no_texture)
 	elif path.ends_with(".obj"):
 		_load_obj(path, no_texture)
+		
+	# Apply optional rotation override from registry
+	var rot_override = MUModelRegistry.get_rotation_override(path)
+	if rot_override != Vector3.ZERO:
+		_model_container.rotation_degrees = rot_override
+		print("[Debugger] Applied Rotation Override: ", rot_override)
+	else:
+		_model_container.rotation = Vector3.ZERO
 
 func _load_bmd(path: String, _no_skin: bool = false, _no_texture: bool = false):
-	# Try loading as a native Godot resource (verifies the EditorImportPlugin)
-	var scene = load(path)
-	if scene is PackedScene:
-		print("[Debugger] Loaded BMD as Native PackedScene")
-		var instance = scene.instantiate()
-		_model_container.add_child(instance)
-	else:
-		# Fallback to manual parsing if import plugin isn't active/cached
-		var BMDParserClass = load("res://addons/mu_tools/core/bmd_parser.gd")
-		var MUMeshBuilderClass = load("res://addons/mu_tools/nodes/mesh_builder.gd")
-		var MUSkeletonBuilderClass = load("res://addons/mu_tools/ui/skeleton_builder.gd")
+	# Fallback to manual parsing if import plugin isn't active/cached
+	var MUMeshBuilderClass = load("res://addons/mu_tools/nodes/mesh_builder.gd")
+	var MUSkeletonBuilderClass = load("res://addons/mu_tools/ui/skeleton_builder.gd")
+	
+	var parser = BMDParser.new()
+	if not parser.parse_file(path, false):
+		print("❌ BMD Parse Failed")
+		return
 		
-		var parser = BMDParserClass.new()
-		if not parser.parse_file(path, false):
-			print("❌ BMD Parse Failed")
-			return
+	var skeleton = MUSkeletonBuilderClass.build_skeleton(parser.bones, parser.actions)
+	_model_container.add_child(skeleton)
+	
+	var hidden_mesh_idx = MUModelRegistry.get_hidden_mesh(path)
+	var meta = MUModelRegistry.get_metadata(path)
+	var alpha = meta.get("alpha", 1.0)
+	
+	for i in range(parser.meshes.size()):
+		if i == hidden_mesh_idx:
+			print("[Debugger] Skipping Hidden Mesh: %d" % i)
+			continue
 			
-		var skeleton = MUSkeletonBuilderClass.build_skeleton(parser.bones, parser.actions)
-		_model_container.add_child(skeleton)
-		
-		for i in range(parser.meshes.size()):
-			var bmd_mesh = parser.meshes[i]
-			var mi = MUMeshBuilderClass.create_mesh_instance(
-					bmd_mesh, skeleton, path, parser, false, _no_skin, _no_texture)
-			if mi:
-				mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-				skeleton.add_child(mi)
-				mi.skeleton = mi.get_path_to(skeleton)
+		var bmd_mesh = parser.meshes[i]
+		# 🟢 UI Support: Use _current_pose_idx instead of hardcoded Action 0
+		var mi = MUMeshBuilderClass.create_mesh_instance_v2(
+				bmd_mesh, skeleton, path, parser, true, _no_skin, _no_texture, i, _current_pose_idx, _animated_materials)
+		if mi:
+			var mat = mi.get_active_material(0)
+			if mat and mat.get_meta("mu_script_hidden", false):
+				print("[Debugger] Skipping Script-Hidden Mesh: %d (%s)" % [i, bmd_mesh.texture_filename])
+				mi.free()
+				continue
 				
-				# [Antigravity] Diagnostic Dump
-				var aabb = mi.mesh.get_aabb()
-				print("[Debugger] Mesh AABB: ", aabb)
-				print("[Debugger]   Size: ", aabb.size)
-				print("[Debugger]   Center: ", aabb.get_center())
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			_model_container.add_child(mi)
+			
+			# Apply BlendMesh logic (Additive)
+			var blend_mesh_idx = MUModelRegistry.get_blend_mesh_index(path)
+			if i == blend_mesh_idx:
+				if mat is StandardMaterial3D:
+					mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA # Ensure alpha support
+					print("[Debugger] Applied Additive Blending to BlendMesh: %d" % i)
+			
+			# Apply Object Alpha & Light
+			var light = meta.get("light", [1.0, 1.0, 1.0])
+			
+			if alpha < 1.0 or light[0] < 1.0 or light[1] < 1.0 or light[2] < 1.0:
+				if mat is StandardMaterial3D:
+					if alpha < 1.0:
+						mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+					mat.albedo_color = Color(light[0], light[1], light[2], alpha)
+			var aabb = mi.mesh.get_aabb()
+			print("[Debugger] Mesh %d AABB: %s" % [i, aabb])
+	
+	# Visualize Skeleton Bones
+	if skeleton and _show_bone_labels:
+		for j in range(skeleton.get_bone_count()):
+			var b_pos = skeleton.get_bone_global_pose(j).origin
+			var lbl = Label3D.new()
+			lbl.text = "%d: %s" % [j, skeleton.get_bone_name(j)]
+			lbl.pixel_size = 0.002
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			lbl.position = b_pos
+			_model_container.add_child(lbl)
+			_debug_nodes.append(lbl)
 	
 	_center_model()
+
+func _draw_mesh_debug(mi: MeshInstance3D):
+	if not mi or not mi.mesh: return
+	
+	# 1. Bounding Box
+	var aabb = mi.mesh.get_aabb()
+	var box_instance = MeshInstance3D.new()
+	var box_mesh = BoxMesh.new()
+	box_mesh.size = aabb.size
+	var box_mat = StandardMaterial3D.new()
+	box_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	box_mat.albedo_color = Color(1, 1, 0, 0.2)
+	box_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	box_instance.mesh = box_mesh
+	box_instance.material_override = box_mat
+	box_instance.position = aabb.get_center()
+	mi.add_child(box_instance)
+	_debug_nodes.append(box_instance)
+	
+	# 2. Normals (Cyan lines)
+	if _show_normals:
+		var imm = ImmediateMesh.new()
+		var mdt = MeshDataTool.new()
+		mdt.create_from_surface(mi.mesh, 0)
+		
+		imm.surface_begin(Mesh.PRIMITIVE_LINES)
+		imm.surface_set_color(Color.CYAN)
+		for i in range(mdt.get_vertex_count()):
+			var v = mdt.get_vertex(i)
+			var n = mdt.get_normal(i)
+			imm.surface_add_vertex(v)
+			imm.surface_add_vertex(v + n * 0.2)
+		imm.surface_end()
+		
+		var normal_mi = MeshInstance3D.new()
+		normal_mi.mesh = imm
+		var norm_mat = StandardMaterial3D.new()
+		norm_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		norm_mat.no_depth_test = true
+		norm_mat.vertex_color_use_as_albedo = true
+		normal_mi.material_override = norm_mat
+		mi.add_child(normal_mi)
+		_debug_nodes.append(normal_mi)
 
 func _load_obj(path: String, no_texture: bool = false):
 	_animated_materials.clear()
@@ -462,6 +611,7 @@ func _center_model():
 		var local_aabb = mi.mesh.get_aabb()
 		# Transform local AABB to world space based on the mesh instance's transform
 		var global_aabb = mi.global_transform * local_aabb
+		print("[Debugger] Mesh '%s' AABB: %s" % [mi.name, global_aabb])
 		
 		if not started:
 			full_aabb = global_aabb
@@ -472,7 +622,6 @@ func _center_model():
 	if started:
 		var center = full_aabb.get_center()
 		
-		# 1. Normalize Model Position: Move children to origin
 		# This ensures the model is centered on the origin grid/axes.
 		for child in _model_container.get_children():
 			child.position -= center / _model_container.scale

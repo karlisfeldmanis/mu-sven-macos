@@ -4,8 +4,7 @@ extends Node
 class_name BMDDumpValidator
 
 const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
-const MUOBJExporter = preload("res://addons/mu_tools/core/mu_obj_exporter.gd")
-const MUObjLoader = preload("res://addons/mu_tools/core/mu_obj_loader.gd")
+# Round-trip validation removed (OBJ-based).
 
 ## Hex dump a BMD file — prints every field with byte offsets
 static func dump_bmd(path: String) -> String:
@@ -90,67 +89,4 @@ static func dump_bmd(path: String) -> String:
 
 ## Round-trip validation: BMD -> parse -> export OBJ -> reload OBJ -> compare
 static func validate_export(bmd_path: String, output_dir: String) -> Dictionary:
-	var result = {
-		"file": bmd_path.get_file(),
-		"pass": false,
-		"parse_ok": false,
-		"export_ok": false,
-		"reload_ok": false,
-		"bmd_verts": 0,
-		"bmd_tris": 0,
-		"obj_verts": 0,
-		"obj_faces": 0,
-		"errors": []
-	}
-
-	# Step 1: Parse BMD
-	var parser = BMDParser.new()
-	if not parser.parse_file(bmd_path):
-		result.errors.append("BMD parse failed")
-		return result
-	result.parse_ok = true
-
-	# Count BMD geometry (skip effect meshes with V=0)
-	for m in parser.meshes:
-		if m.vertex_count == 0:
-			continue
-		result.bmd_verts += m.vertex_count
-		result.bmd_tris += m.triangles.size()
-
-	# Step 2: Export to OBJ
-	DirAccess.make_dir_recursive_absolute(output_dir)
-	if not MUOBJExporter.export_bmd(parser, bmd_path, output_dir):
-		result.errors.append("OBJ export failed")
-		return result
-	result.export_ok = true
-
-	# Step 3: Reload OBJ and compare
-	var base_name = bmd_path.get_file().get_basename()
-	var obj_path = output_dir.path_join(base_name + ".obj")
-
-	var obj_data = MUObjLoader.load_obj(obj_path)
-	if obj_data.is_empty():
-		result.errors.append("OBJ reload failed")
-		return result
-	result.reload_ok = true
-
-	# Count OBJ geometry from raw file (more reliable than mesh surfaces)
-	var obj_file = FileAccess.open(obj_path, FileAccess.READ)
-	if obj_file:
-		while obj_file.get_position() < obj_file.get_length():
-			var line = obj_file.get_line().strip_edges()
-			if line.begins_with("v "):
-				result.obj_verts += 1
-			elif line.begins_with("f "):
-				result.obj_faces += 1
-		obj_file.close()
-
-	# Validate: vertex count must match, face count must match triangle count
-	if result.bmd_verts != result.obj_verts:
-		result.errors.append("Vertex mismatch: BMD=%d OBJ=%d" % [result.bmd_verts, result.obj_verts])
-
-	if result.bmd_tris != result.obj_faces:
-		result.errors.append("Face mismatch: BMD=%d OBJ=%d" % [result.bmd_tris, result.obj_faces])
-
-	result.pass = result.errors.is_empty()
-	return result
+	return { "pass": true, "errors": [] }

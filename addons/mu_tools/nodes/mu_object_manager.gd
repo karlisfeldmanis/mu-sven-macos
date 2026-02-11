@@ -7,122 +7,108 @@ const ParserClass = preload("res://addons/mu_tools/core/mu_terrain_parser.gd")
 const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
 const MUMeshBuilder = preload("res://addons/mu_tools/nodes/mesh_builder.gd")
 const MUSkeletonBuilder = preload("res://addons/mu_tools/ui/skeleton_builder.gd")
-# const DebugAxes = preload("res://addons/mu_tools/debug_axes.gd") # Missing
+const MUObjLoader = preload("res://addons/mu_tools/core/mu_obj_loader.gd")
 
 ## Spawns all objects defined in the map's object placement file
-static func load_objects(parent: Node3D, objects: Array, show_debug: bool = false, heights: PackedFloat32Array = PackedFloat32Array(), show_hidden: bool = false, world_id: int = 1) -> void:
-	print("[Object Manager] Spawning %d world objects with Robust Logic (World %d)..." % [objects.size(), world_id])
+static func load_objects(parent: Node3D, objects: Array, show_debug: bool = false, heights: PackedFloat32Array = PackedFloat32Array(), show_hidden: bool = false, world_id: int = 1, filter_rect: Rect2 = Rect2()) -> void:
+	print("[Object Manager] Spawning objects (World %d)..." % world_id)
 	
 	var count = 0
 	var missing = {}
 	var broken = {}
-	var MUModelRegistry = load("res://addons/mu_tools/core/mu_model_registry.gd")
+	
+	# Use explicit preload to ensure static function access
+	const Registry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
 	
 	for obj_data in objects:
-		var path = MUModelRegistry.get_object_path(obj_data.type, world_id)
+		var pos = obj_data.position
+		
+		# Spatial Filter check
+		if filter_rect != Rect2() and not filter_rect.has_point(Vector2(pos.x, pos.z)):
+			continue
+			
+		var path = Registry.get_object_path(obj_data.type, world_id)
 		if path == "":
 			if not missing.has(obj_data.type):
 				missing[obj_data.type] = true
 				print("  [Object Manager] WARNING: Unmapped Object Type: ", obj_data.type)
 			continue
 			
+		# Spawning ALL objects for full city center comparison
+		# var is_wall = Registry.is_wall(obj_data.type, world_id)
+		# if not is_wall:
+		# 	continue
+			
 		var instance: Node3D = null
-		var ext = path.get_extension().to_lower()
-		
-		if ext == "obj":
-			instance = _load_obj(path)
-		elif ext == "bmd":
-			instance = _load_bmd(path)
-		
-		if not instance:
-			if not broken.has(path):
-				broken[path] = true
-				print("  [Object Manager] ERROR: Failed to load asset: ", path)
-			continue
+		if path.to_lower().ends_with("bmd"):
+			instance = _load_bmd(path, false)
+		else:
+			push_error("[Object Manager] Unsupported asset format: " + path)
 			
 		instance.name = "Obj_%d_%d" % [obj_data.type, count]
 		parent.add_child(instance)
 		
 		# Apply Transforms
-		var pos = obj_data.position
+		# Position X/Z are correct from MUTerrainParser.
+		# Height (Y) needs terrain snapping — parsed MU Z uses raw cm/100 scale,
+		# but the terrain mesh uses (raw * 1.5 - 500) / 100 scale.
+		var godot_pos = obj_data.position
 		
-		# Terrain Snapping Logic
+		# 🟢 Absolute Height Resolution
+		# Only snap to terrain if the object is clearly meant to be ground-based (height < threshold)
+		# MU city center floor is ~165. Roofs are >400.
 		if not heights.is_empty():
-			# Map Godot World Position back to MU Tile Indices
-			# GodotX = mu_x | GodotZ = 255 - mu_y
-			var mu_x = int(clamp(floor(pos.x), 0, 255))
-			var mu_y = int(clamp(floor(255.0 - pos.z), 0, 255))
-			
-			var h_idx = mu_y * 256 + mu_x
+			var tile_x = int(clamp(floor(godot_pos.z), 0, 255))
+			var tile_y = int(clamp(floor(godot_pos.x), 0, 255))
+			var h_idx = tile_y * 256 + tile_x
 			if h_idx < heights.size():
-				pos.y = heights[h_idx]
+				var ground_h = heights[h_idx]
+				# If object is significantly above ground (> 1.0m), keep its original height.
+				# Otherwise, snap to terrain for perfect alignment.
+				if godot_pos.y < ground_h + 1.0:
+					godot_pos.y = ground_h
+				
+		instance.position = godot_pos
 		
-		instance.position = pos
-		instance.quaternion = obj_data.rotation
-		instance.scale = Vector3(obj_data.scale, obj_data.scale, obj_data.scale)
+		# Log placement removed
+		
+		# 🟢 APPLY ROTATION OVERRIDES (Centralized Registry)
+		var base_rot = obj_data.rotation
+		# [/] Refine mirroring: Debug wall corner with logging.
+		var override_deg = Registry.get_rotation_override(path)
+		if show_debug:
+			print("  [Object Manager Debug] Model Path: %s, Override: %s" % [path, override_deg])
+		if override_deg != Vector3.ZERO:
+			var ov_rad = Vector3(deg_to_rad(override_deg.x), deg_to_rad(override_deg.y), deg_to_rad(override_deg.z))
+			var ov_q = MUTransformPipeline.mu_rotation_to_quaternion(ov_rad)
+			# Combine: Raw * Override (Local offset)
+			instance.quaternion = base_rot * ov_q
+		else:
+			instance.quaternion = base_rot
+
+		# Restore mirroring via MUCoordinateUtils to fix chirality/swastika artifacts.
+		instance.scale = MUCoordinateUtils.convert_scale(obj_data.scale)
+		
+		# Diagnostic for specific area
+		if pos.x > 12000 and pos.x < 13000 and pos.z > 12000 and pos.z < 13000:
+			print("  [DEBUG AREA] Obj %d type %d at %s: MapPath=%s Override=%s" % [count, obj_data.type, pos, path.get_file(), override_deg])
 		
 		# Visibility Logic (Sven Parity)
 		if obj_data.hidden_mesh == -2:
-			instance.visible = show_hidden # Forced by user or standard SVEN logic
+			instance.visible = show_hidden 
 		else:
 			instance.visible = true
-		
-		# Debug Visuals
-		if show_debug:
-			pass
-			# var axes = DebugAxes.new()
-			# axes.axis_length = 5.0 # Large enough to see
-			# instance.add_child(axes)
 			
 		count += 1
 			
 	print("✓ Robust Spawn Complete. %d objects placed." % count)
 
 static func _load_obj(path: String) -> Node3D:
-	var res = load(path)
-	if res and res is Mesh:
-		var instance = MeshInstance3D.new()
-		instance.mesh = res
-		
-		# LATE DISCOVERY FALLBACK (Same as Model Viewer)
-		# Path is extracted_data/object_models/SomeModel.obj
-		var mesh_dir = path.get_base_dir()
-		
-		for i in range(res.get_surface_count()):
-			var mat = res.surface_get_material(i)
-			if mat is BaseMaterial3D:
-				# Double-sided is essential for MU objects
-				mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-				
-				# If we have no texture, try to find it
-				if not mat.albedo_texture:
-					var s_name = res.surface_get_name(i)
-					if s_name.is_empty():
-						s_name = mat.resource_name
-						
-					if not s_name.is_empty():
-						var possible_names = [
-							s_name + ".png",
-							s_name + ".PNG",
-							s_name.to_lower() + ".png"
-						]
-						for pn in possible_names:
-							var tex_path = mesh_dir.path_join(pn)
-							if FileAccess.file_exists(tex_path):
-								var global_path = ProjectSettings.globalize_path(tex_path)
-								var img = Image.load_from_file(global_path)
-								if img:
-									var tex = ImageTexture.create_from_image(img)
-									mat.albedo_texture = tex
-									# print("  [Object Manager] ✓ Patching: ", pn)
-									break
-		
-		return instance
-	return null
+	return MUObjLoader.build_mesh_instance(path)
 
-static func _load_bmd(path: String) -> Node3D:
+static func _load_bmd(path: String, debug: bool = false) -> Node3D:
 	var parser = BMDParser.new()
-	if not parser.parse_file(path):
+	if not parser.parse_file(path, debug):
 		return null
 		
 	var root = Node3D.new()
@@ -133,10 +119,11 @@ static func _load_bmd(path: String) -> Node3D:
 		root.add_child(skeleton)
 		
 	for bmd_mesh in parser.meshes:
-		var mi = MUMeshBuilder.create_mesh_instance(bmd_mesh, skeleton, path, parser)
+		# 🔴 Enable bake_pose (5th arg) for static world objects to avoid skinning artifacts
+		var mi = MUMeshBuilder.create_mesh_instance(bmd_mesh, skeleton, path, parser, true, false, false, 0)
 		if mi:
 			if skeleton:
-				skeleton.add_child(mi)
+				root.add_child(mi) # Parent to root instead of skeleton for bake_pose parity
 			else:
 				root.add_child(mi)
 				

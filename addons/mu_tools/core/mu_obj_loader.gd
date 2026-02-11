@@ -169,7 +169,7 @@ static func build_mesh_instance(
 		var mat_info = mtl_textures.get(mat_name, {"tex": "", "color": Color.WHITE, "alpha": 1.0})
 		
 		var mat = StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		# mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mat.albedo_color = mat_info["color"]
 		mat.albedo_color.a = mat_info["alpha"]
@@ -181,30 +181,42 @@ static func build_mesh_instance(
 		if tex_file != "":
 			var tex_path = obj_path.get_base_dir().path_join(tex_file)
 			
-			# 1. Try Godot's ResourceLoader FIRST (Fixes cyclic inclusion + uses cache)
-			if ResourceLoader.exists(tex_path):
-				var tex = ResourceLoader.load(tex_path)
-				mat.albedo_texture = tex
-				MUMaterialHelper.setup_material(mat, 0, obj_path, tex_path, [])
-			# 2. Fallback to manual file loading if not a resource
-			elif FileAccess.file_exists(tex_path):
-				var img = Image.load_from_file(ProjectSettings.globalize_path(tex_path))
-				if img:
-					var tex = ImageTexture.create_from_image(img)
-					tex.resource_path = tex_path # Key for MUMaterialHelper
-					mat.albedo_texture = tex
-					
-					# Delegate effects
-					MUMaterialHelper.setup_material(mat, 0, obj_path, tex_path, [])
-					
-					# Force Alpha Scissor override for foliage
-					var low_tex = tex_path.to_lower()
-					if "grass" in low_tex or "bush" in low_tex or "leaf" in low_tex:
-						mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-						mat.alpha_scissor_threshold = 0.05
+			# 1. Smarter Case-Insensitive Extension Resolution
+			var extensions = ["", ".png", ".ozj", ".ozt", ".jpg", ".tga", ".OZJ", ".OZT", ".PNG", ".JPG", ".TGA"]
+			var resolved_path = ""
+			
+			for ext_suffix in extensions:
+				var trial_path = tex_path
+				if ext_suffix != "":
+					trial_path = tex_path.get_basename() + ext_suffix
+				
+				if ResourceLoader.exists(trial_path):
+					resolved_path = trial_path
+					mat.albedo_texture = ResourceLoader.load(resolved_path)
+					break
+				elif tex_path.get_extension().to_upper() in ["OZJ", "OZT", "JPG", "TGA"] or ext_suffix.to_upper() in [".OZJ", ".OZT"]:
+					var trial_tex = MUTextureLoader.load_mu_texture(trial_path)
+					if trial_tex:
+						resolved_path = trial_path
+						mat.albedo_texture = trial_tex
+						break
+				elif FileAccess.file_exists(trial_path):
+					var img = Image.load_from_file(ProjectSettings.globalize_path(trial_path))
+					if img:
+						resolved_path = trial_path
+						mat.albedo_texture = ImageTexture.create_from_image(img)
+						break
+			
+			if resolved_path != "":
+				MUMaterialHelper.setup_material(mat, 0, obj_path, resolved_path, [])
+				# Force Alpha Scissor override for foliage
+				var low_tex = resolved_path.to_lower()
+				if "grass" in low_tex or "bush" in low_tex or "leaf" in low_tex:
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+					mat.alpha_scissor_threshold = 0.05
 			else:
-				if mat.albedo_texture == null:
-					mat.albedo_color = Color.MAGENTA
+				print("[MUObjLoader] FAILED to resolve texture: ", tex_path, " for ", obj_path)
+				mat.albedo_color = Color.MAGENTA
 		elif mat_info["color"] == Color.WHITE and mat_info["alpha"] == 1.0:
 			# If no color and no texture, it's a fallback error
 			mat.albedo_color = Color.MAGENTA
