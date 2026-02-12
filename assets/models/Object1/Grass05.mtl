@@ -1,8 +1,0 @@
-newmtl tree_09
-map_Kd tree_09.png
-map_d tree_09.png
-Ka 1.0 1.0 1.0
-Kd 1.0 1.0 1.0
-Ks 0.0 0.0 0.0
-Ns 10.0
-illum 1

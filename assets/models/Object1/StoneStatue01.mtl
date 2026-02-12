@@ -1,7 +1,0 @@
-newmtl stone_statue02
-map_Kd stone_statue02.png
-Ka 1.0 1.0 1.0
-Kd 1.0 1.0 1.0
-Ks 0.0 0.0 0.0
-Ns 10.0
-illum 1

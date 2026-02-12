@@ -1,7 +1,0 @@
-newmtl tile_wood01
-map_Kd tile_wood01.png
-Ka 1.0 1.0 1.0
-Kd 1.0 1.0 1.0
-Ks 0.0 0.0 0.0
-Ns 10.0
-illum 1

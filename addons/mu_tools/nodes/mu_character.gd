@@ -6,7 +6,7 @@ extends Node3D
 ## MUCharacter (Phase 6)
 ## Manages a master skeleton and multiple skinned mesh parts.
 
-@export_file("*.tscn") var master_skeleton_path: String = "res://assets/converted/players/Player.tscn"
+@export_file("*.tscn") var master_skeleton_path: String = ""
 
 var master_skeleton: Skeleton3D
 var animation_player: AnimationPlayer

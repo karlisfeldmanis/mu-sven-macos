@@ -42,7 +42,7 @@ func _ready() -> void:
 	
 	# Try standard MU paths first
 	var tex_paths = [
-		"res://assets/lorencia/textures/leaf01.png", # Custom asset?
+		"res://reference/MuMain/src/bin/Data/World1/leaf01.tga",
 		"res://reference/MuMain/src/bin/Data/World1/leaf01.tga",
 		"res://reference/MuMain/src/bin/Data/World1/leaf01.ozj"
 	]

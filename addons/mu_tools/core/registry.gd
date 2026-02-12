@@ -319,21 +319,11 @@ static func get_object_path(type: int, world_id: int = 1) -> String:
 		# Construct absolute resource path
 		var dir_idx = world_id + 1
 		
-		# 1. Try Source BMD (Original Assets - Source of Truth)
+		# Only use Source BMD (Original Assets - Source of Truth)
 		var bmd_path = "res://reference/MuMain/src/bin/Data/Object%d/%s.bmd" % [dir_idx, pattern]
 		if FileAccess.file_exists(bmd_path):
 			return bmd_path
 			
-		# 2. Try exported TSCN (Pre-baked Godot Cache) - Fallback
-		var tscn_path = "res://assets/models/Object%d/%s.tscn" % [dir_idx, pattern]
-		if FileAccess.file_exists(tscn_path):
-			return tscn_path
-			
-		# 3. Try exported OBJ (Legacy Export)
-		var obj_path = "res://assets/models/Object%d/%s.obj" % [dir_idx, pattern]
-		if FileAccess.file_exists(obj_path):
-			return obj_path
-		
 	return ""
 
 static func is_batchable(type: int) -> bool:

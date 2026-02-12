@@ -16,11 +16,12 @@ func setup(type: int):
 	var mat = ShaderMaterial.new()
 	mat.shader = load("res://scenes/lorencia_effects/shaders/mu_fire.gdshader")
 	
-	var tex_path = "res://assets/lorencia/textures/fire01.png"
+	var tex_path = "res://reference/MuMain/src/bin/Data/Object1/fire01.ozj"
 	if type == 1:
-		tex_path = "res://assets/lorencia/textures/fire02.png"
+		tex_path = "res://reference/MuMain/src/bin/Data/Object1/fire02.ozj"
 	
-	var tex: Texture2D = load(tex_path)
+	const MUTextureLoader = preload("res://addons/mu_tools/rendering/texture_loader.gd")
+	var tex: Texture2D = MUTextureLoader.load_mu_texture(tex_path)
 	mat.set_shader_parameter("fire_texture", tex)
 	
 	# Process Material (Particles behavior) - Balanced settings
