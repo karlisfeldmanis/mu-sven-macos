@@ -107,11 +107,10 @@ Created `scripts/analyze_tileground03.py` to:
 - Verified texture files are correct (World1/TileGround03.OZJ)
 
 ## References
-- `scripts/parse_terrain.py`: Core SVEN data parser
-- `scripts/terrain_sandbox/fix_tiling.py`: Comprehensive rendering simulation
-- `scripts/analyze_tileground03.py`: Focused TileGround03 analysis
-- `addons/mu_tools/shaders/mu_terrain.gdshader`: Godot shader implementation
-- `addons/mu_tools/nodes/mu_heightmap.gd`: Godot terrain loader
+- `addons/mu_tools/parsers/mu_terrain_parser.gd`: Core SVEN data parser
+- `addons/mu_tools/rendering/material_helper.gd`: Comprehensive rendering simulation
+- `addons/mu_tools/rendering/bmd_mesh_builder.gd`: Godot mesh implementation
+- `addons/mu_tools/world/heightmap_node.gd`: Godot terrain loader
 
 ## Conclusion
 The Godot implementation now matches SVEN's terrain rendering with correct texture mapping, scaling, and lighting. The "rock texture problem" was solved by fixing the over-bright lighting that was washing out the diagonal stone patterns in TileGround03.
