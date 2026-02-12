@@ -226,15 +226,15 @@ func _spawn_city_objects() -> void:
 	
 	# 2. Get Data
 	var objects = _terrain.get_objects_data()
-	var city_center = Vector3(128, 0, 128) # MU Transposed
-	var radius = 64.0 # Range around center
+	# var city_center = Vector3(128, 0, 128) # MU Transposed
+	# var radius = 64.0 # Range around center
 	
 	var spawn_count = 0
 	var model_cache = {} # path -> {parser, skeleton?}
 	
 	for obj in objects:
-		var dist = obj.position.distance_to(city_center)
-		if dist > radius: continue
+		# var dist = obj.position.distance_to(city_center)
+		# if dist > radius: continue
 		
 		# 3. Resolve Path
 		var bmd_path = MUModelRegistry.get_object_path(obj.type, _terrain.world_id)

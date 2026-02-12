@@ -23,6 +23,8 @@ var _terrain_mi: MeshInstance3D
 var _heightmap_data: PackedFloat32Array
 var _mapping_data: Variant
 var _objects_data: Array = []
+var _grass_offset_texture: ImageTexture
+var _lightmap_texture: Texture2D
 
 func _ready():
 	load_heightmap()
@@ -56,6 +58,7 @@ func load_heightmap():
 	
 	var lightmap: Image = null
 	var l_tex = MUAPI.render().load_mu_texture(ProjectSettings.globalize_path(light_path))
+	_lightmap_texture = l_tex
 	if l_tex:
 		lightmap = l_tex.get_image()
 	
@@ -181,7 +184,8 @@ func _setup_material(
 	var l2_tex = ImageTexture.create_from_image(l2_img)
 	var a_tex = ImageTexture.create_from_image(alpha_img)
 	var g_tex = ImageTexture.create_from_image(grass_off_img)
-	
+	_grass_offset_texture = g_tex
+
 	# Symmetry Map (SVEN Rotation Parity)
 	var s_img = Image.create(256, 256, false, Image.FORMAT_R8)
 	var raw_sym = symmetry_data
@@ -272,6 +276,22 @@ func get_objects_data() -> Array:
 ## Bilinear height query for world positions (Authentic MU Parity)
 func get_height_at_world(world_pos: Vector3) -> float: 
 	return MUCoordinateUtils.sample_height_bilinear(world_pos, _heightmap_data)
+
+func get_grass_tiles() -> Dictionary:
+	if _mapping_data and _mapping_data is MUTerrainParser.MapData:
+		return _mapping_data.grass_tiles
+	return {}
+
+func get_grass_offset_texture() -> ImageTexture:
+	return _grass_offset_texture
+
+func get_lightmap_texture() -> Texture2D:
+	return _lightmap_texture
+
+func get_mapping_alpha() -> PackedFloat32Array:
+	if _mapping_data and _mapping_data is MUTerrainParser.MapData:
+		return _mapping_data.alpha
+	return PackedFloat32Array()
 
 func set_debug_mode(mode: int):
 	if _terrain_mi and _terrain_mi.material_override:
