@@ -1,5 +1,5 @@
 @tool
-class_name MUAnimationConverter
+# class_name MUAnimationConverter
 
 ## Animation Converter (Phase 4)
 ## Translates MU BMD Actions to Godot AnimationLibrary.

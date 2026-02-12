@@ -1,6 +1,6 @@
 extends Node
 
-class_name MUObjectEffectManager
+# class_name MUObjectEffectManager
 
 # Model IDs for Lorencia
 const MODEL_WATERSPOUT = 105
@@ -9,19 +9,13 @@ const MODEL_HOUSE_01 = 115 # Base for House01-05
 const MODEL_STREET_LIGHT = 90
 const MODEL_CANDLE = 150
 
+const MU_FIRE_SCRIPT = preload("res://scenes/lorencia_effects/mu_fire.gd")
 const UV_SCROLLER_SCRIPT = preload("res://addons/mu_tools/effects/uv_scroller.gd")
 const LIGHT_FLICKER_SCRIPT = preload("res://addons/mu_tools/effects/light_flicker.gd")
 const ADDITIVE_SHADER = preload("res://addons/mu_tools/shaders/mu_additive.gdshader")
-const WIND_SHADER = preload("res://addons/mu_tools/shaders/mu_wind.gdshader")
 
-static func update_globals(player_node: Node3D):
-	if player_node:
-		RenderingServer.global_shader_parameter_set(
-			"mu_player_position", player_node.global_position
-		)
-	else:
-		# Fallback to a far away position if no player
-		RenderingServer.global_shader_parameter_set("mu_player_position", Vector3(9999, 9999, 9999))
+static func update_globals(_player_node: Node3D):
+	pass # Global uniforms handled by MUEnvironment
 
 static func apply_effects(node: Node3D, type: int, world_id: int):
 	# Default: Apply full opacity
@@ -44,6 +38,32 @@ static func apply_effects(node: Node3D, type: int, world_id: int):
 			_setup_light(node, Color(1.0, 0.6, 0.2), 3.0)
 		20, 21, 22, 23, 24, 25, 26, 27: # Grass01 - Grass08
 			_setup_grass(node)
+		50: # FireLight01 (Torch)
+			_setup_fire(node, [Vector3(0, 2.0, 0)], 0)
+		51: # FireLight02 (Wall Torch)
+			_setup_fire(node, [Vector3(-0.3, 0.6, 0)], 0)
+		52: # Bonfire01
+			_setup_fire(node, [Vector3(0, 0.6, 0)], 1)
+		130: # Light01 (Fire without mesh)
+			_setup_fire(node, [Vector3.ZERO], 0)
+			_hide_meshes(node)
+		80: # Bridge01
+			_setup_fire(node, [Vector3(-2.0, 0.3, 0.9), Vector3(2.0, 0.3, 0.9)], 0)
+		55: # DungeonGate01
+			_setup_fire(node, [Vector3(-1.5, 1.4, -1.5), Vector3(-1.5, 1.4, 1.5)], 0)
+
+static func _setup_fire(parent: Node3D, offsets: Array[Vector3], fire_type: int):
+	if MU_FIRE_SCRIPT:
+		for offset in offsets:
+			var fire_pos = parent.global_transform.origin + parent.global_transform.basis * offset
+			MU_FIRE_SCRIPT.create(parent, fire_pos, fire_type)
+
+static func _hide_meshes(parent: Node3D):
+	for child in parent.get_children():
+		if child is MeshInstance3D:
+			child.visible = false
+		elif child.get_child_count() > 0:
+			_hide_meshes(child)
 
 static func _setup_grass(node: Node3D):
 	# Adjust scale - User requested grass to be smaller

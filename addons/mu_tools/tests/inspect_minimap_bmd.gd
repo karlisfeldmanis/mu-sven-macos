@@ -1,7 +1,7 @@
 @tool
 extends SceneTree
 
-const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
+const BMDParser = preload("res://addons/mu_tools/parsers/bmd_parser.gd")
 
 func _init():
 	print("\n======================================================================")

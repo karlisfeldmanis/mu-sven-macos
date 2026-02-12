@@ -1,6 +1,6 @@
 extends SceneTree
 
-const MUFileUtil = preload("res://addons/mu_tools/core/mu_file_util.gd")
+const MUFileUtil = preload("res://addons/mu_tools/core/file_util.gd")
 
 ## Pre-flight Check Script
 ## Run with: godot --path . --headless -s addons/mu_tools/preflight_check.gd
@@ -22,7 +22,7 @@ func _init() -> void:
 			
 	# 2. Check Essential Scripts (Parse Check)
 	var scripts = [
-		"res://addons/mu_tools/core/bmd_parser.gd",
+		"res://addons/mu_tools/parsers/bmd_parser.gd",
 		"res://addons/mu_tools/util/mu_animation_registry.gd",
 		"res://addons/mu_tools/core/mu_state_machine.gd",
 		"res://addons/mu_tools/core/animation_builder.gd",
@@ -47,7 +47,7 @@ func _init() -> void:
 	print("\n--- Testing BMD Parser ---")
 	var bmd_path = "res://raw_data/Player/player.bmd"
 	if MUFileUtil.file_exists(bmd_path):
-		var parser = load("res://addons/mu_tools/core/bmd_parser.gd").new()
+		var parser = load("res://addons/mu_tools/parsers/bmd_parser.gd").new()
 		if parser.parse_file(bmd_path, false):
 			print("[✓] BMD Parser successfully read player.bmd")
 			print(

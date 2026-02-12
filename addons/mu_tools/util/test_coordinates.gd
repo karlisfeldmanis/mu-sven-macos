@@ -2,7 +2,7 @@ extends SceneTree
 
 ## Test script to verify MUCoordinates conversion functions
 
-const MUCoordinates = preload("res://addons/mu_tools/core/mu_coordinate_utils.gd")
+const MUCoordinates = preload("res://addons/mu_tools/core/coordinate_utils.gd")
 
 func _init():
 	print("=== MUCoordinates Test ===\n")

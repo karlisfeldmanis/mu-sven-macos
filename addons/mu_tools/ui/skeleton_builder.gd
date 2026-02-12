@@ -1,10 +1,11 @@
 @tool
-class_name MUSkeletonBuilder
+# class_name MUSkeletonBuilder
 
 ## Skeleton Builder (Phase 3)
 ## Translates MU bone hierarchy to Godot Skeleton3D.
 
-const MUCoordinateUtils = preload("res://addons/mu_tools/core/mu_coordinate_utils.gd")
+const MUCoordinateUtils = preload("res://addons/mu_tools/core/coordinate_utils.gd")
+const MUTransformPipeline = preload("res://addons/mu_tools/core/transform.gd")
 
 static func build_skeleton(bmd_bones: Array, bmd_actions: Array = []) -> Skeleton3D:
 	var skeleton = Skeleton3D.new()

@@ -1,5 +1,5 @@
 @tool
-class_name MUStateMachine
+# class_name MUStateMachine
 extends Node
 
 ## Character State Machine

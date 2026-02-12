@@ -29,11 +29,11 @@ var _current_pose_idx: int = 0
 var _animated_materials: Array[Dictionary] = [] # Stores {material: Material, speed: Vector2}
 var _debug_nodes: Array[Node] = []
 
-const MUMaterialHelper = preload("res://addons/mu_tools/core/mu_material_helper.gd")
-const MUModelRegistry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
-const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
-const MUObjLoader = preload("res://addons/mu_tools/core/mu_obj_loader.gd")
-const MUTextureLoader = preload("res://addons/mu_tools/core/mu_texture_loader.gd")
+const MUMaterialHelper = preload("res://addons/mu_tools/rendering/material_helper.gd")
+const MUModelRegistry = preload("res://addons/mu_tools/core/registry.gd")
+const BMDParser = preload("res://addons/mu_tools/parsers/bmd_parser.gd")
+const MUObjLoader = preload("res://addons/mu_tools/parsers/obj_loader.gd")
+const MUTextureLoader = preload("res://addons/mu_tools/rendering/texture_loader.gd")
 
 func _ready():
 	_setup_scene()
@@ -464,7 +464,7 @@ func load_model(path: String, no_skin: bool = false, no_texture: bool = false):
 
 func _load_bmd(path: String, _no_skin: bool = false, _no_texture: bool = false):
 	# Fallback to manual parsing if import plugin isn't active/cached
-	var MUMeshBuilderClass = load("res://addons/mu_tools/nodes/mesh_builder.gd")
+	var MUMeshBuilderClass = load("res://addons/mu_tools/rendering/bmd_mesh_builder.gd")
 	var MUSkeletonBuilderClass = load("res://addons/mu_tools/ui/skeleton_builder.gd")
 	
 	var parser = BMDParser.new()

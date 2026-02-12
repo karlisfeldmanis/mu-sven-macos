@@ -1,9 +1,9 @@
 @tool
 extends Node
 
-class_name BMDDumpValidator
+# class_name BMDDumpValidator
 
-const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
+const BMDParser = preload("res://addons/mu_tools/parsers/bmd_parser.gd")
 # Round-trip validation removed (OBJ-based).
 
 ## Hex dump a BMD file — prints every field with byte offsets

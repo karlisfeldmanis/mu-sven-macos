@@ -1,5 +1,5 @@
 @tool
-class_name MUPreflight
+# class_name MUPreflight
 extends RefCounted
 
 ## MU Online Map Pre-flight Diagnostic Tool
@@ -7,11 +7,11 @@ extends RefCounted
 ## Validates all required assets for a world before loading.
 ## Checks for terrain files, BMD models, and texture resolution.
 
-const MUTextureResolver = preload("res://addons/mu_tools/util/mu_texture_resolver.gd")
-const BMDParserResource = preload("res://addons/mu_tools/core/bmd_parser.gd")
-const MUTerrainParser = preload("res://addons/mu_tools/core/mu_terrain_parser.gd")
+const MUTextureResolver = preload("res://addons/mu_tools/rendering/texture_resolver.gd")
+const BMDParserResource = preload("res://addons/mu_tools/parsers/bmd_parser.gd")
+const MUTerrainParser = preload("res://addons/mu_tools/parsers/terrain_parser.gd")
 const MULogger = preload("res://addons/mu_tools/util/mu_logger.gd")
-const MUFileUtil = preload("res://addons/mu_tools/core/mu_file_util.gd")
+const MUFileUtil = preload("res://addons/mu_tools/core/file_util.gd")
 
 class PreflightReport:
 	var success: bool = true

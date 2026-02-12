@@ -1,11 +1,12 @@
 @tool
-class_name MUAnimationBuilder
+# class_name MUAnimationBuilder
 
 ## Helper to build Godot Animation resources from BMD actions
 ##
 ## Converts MU's bone-local keyframes into Godot skeletal animation tracks.
+const MUCoordinateUtils = preload("res://addons/mu_tools/core/coordinate_utils.gd")
 
-static func build_animation_library(path: String, actions: Array[BMDParser.BMDAction], 
+static func build_animation_library(path: String, actions: Array, 
 		skeleton: Skeleton3D) -> AnimationLibrary:
 	var library = AnimationLibrary.new()
 	
@@ -23,7 +24,7 @@ static func build_animation_library(path: String, actions: Array[BMDParser.BMDAc
 			
 	return library
 
-static func build_animation(action: BMDParser.BMDAction, 
+static func build_animation(action: Variant, 
 		skeleton: Skeleton3D, 
 		looping: bool = true,
 		play_speed: float = 1.0) -> Animation:

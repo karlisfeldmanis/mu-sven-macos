@@ -3,7 +3,7 @@ extends SceneTree
 # Rotation Parity Test Script
 # Verifies MU Euler -> Godot Quaternion conversion logic
 
-const MUTransformPipeline = preload("res://addons/mu_tools/core/mu_transform_pipeline.gd")
+const MUTransformPipeline = preload("res://addons/mu_tools/core/transform.gd")
 
 func _init():
 	print("======================================================================")

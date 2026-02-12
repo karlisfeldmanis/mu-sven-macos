@@ -1,7 +1,7 @@
 @tool
 extends SceneTree
 
-const MUTextureLoader = preload("res://addons/mu_tools/core/mu_texture_loader.gd")
+const MUTextureLoader = preload("res://addons/mu_tools/rendering/texture_loader.gd")
 
 func _init():
 	print("\n======================================================================")

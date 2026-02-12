@@ -1,5 +1,5 @@
 @tool
-class_name MUAnimationRegistry
+# class_name MUAnimationRegistry
 
 ## Animation Name Registry
 ## Maps BMD action indices to human-readable names based on source code enums.

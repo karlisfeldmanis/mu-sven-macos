@@ -12,7 +12,7 @@ extends EditorImportPlugin
 
 enum Presets { DEFAULT }
 
-const MUFileUtil = preload("res://addons/mu_tools/core/mu_file_util.gd")
+const MUFileUtil = preload("res://addons/mu_tools/core/file_util.gd")
 const MUDecryptor = preload("res://addons/mu_tools/core/mu_decryptor.gd")
 
 ## Texture format constants (from MuMain)

@@ -1,7 +1,7 @@
 extends SceneTree
 
 func _init():
-	var parser = preload("res://addons/mu_tools/core/mu_terrain_parser.gd").new()
+	var parser = preload("res://addons/mu_tools/parsers/terrain_parser.gd").new()
 	var file = FileAccess.open("reference/MuMain/src/bin/Data/World1/Terrain1.att", FileAccess.READ)
 	if file:
 		var raw = file.get_buffer(file.get_length())

@@ -1,8 +1,8 @@
 @tool
 extends SceneTree
 
-const MUTransformPipeline = preload("res://addons/mu_tools/core/mu_transform_pipeline.gd")
-const MUCoordUtils = preload("res://addons/mu_tools/core/mu_coordinate_utils.gd")
+const MUTransformPipeline = preload("res://addons/mu_tools/core/transform.gd")
+const MUCoordUtils = preload("res://addons/mu_tools/core/coordinate_utils.gd")
 
 func _init():
 	print("\n======================================================================")

@@ -5,10 +5,10 @@ extends Node3D
 ## This is the entry point for the standalone Godot application
 ## Runs without the editor, loads assets at runtime
 
-const MUHeightmap = preload("res://addons/mu_tools/nodes/mu_heightmap.gd")
-const MUModelRegistry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
-const MUMeshBuilder = preload("res://addons/mu_tools/nodes/mesh_builder.gd")
-const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
+const MUHeightmap = preload("res://addons/mu_tools/world/heightmap_node.gd")
+const MUModelRegistry = preload("res://addons/mu_tools/core/registry.gd")
+const MUMeshBuilder = preload("res://addons/mu_tools/rendering/bmd_mesh_builder.gd")
+const BMDParser = preload("res://addons/mu_tools/parsers/bmd_parser.gd")
 
 var _terrain: MUHeightmap
 var _objects_parent: Node3D

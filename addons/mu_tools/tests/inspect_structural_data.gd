@@ -23,7 +23,7 @@ func _init():
 		var ty = int(obj.mu_pos_raw.y / 100.0)
 		
 		if abs(tx - 120) < 5 and abs(ty - 128) < 10:
-			const Registry = preload("res://addons/mu_tools/core/mu_model_registry.gd")
+			const Registry = preload("res://addons/mu_tools/core/registry.gd")
 			var model_path = Registry.get_object_path(obj.type, world_id)
 			if "Wall" in model_path:
 				var model_name = model_path.get_file().get_basename()

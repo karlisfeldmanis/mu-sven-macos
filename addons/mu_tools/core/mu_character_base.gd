@@ -1,5 +1,5 @@
 extends Node3D
-class_name MUCharacterBase
+# class_name MUCharacterBase
 
 ## Modular Equipment System (Phase 3)
 ## Handles sharing a single Skeleton3D across multiple MeshInstance3Ds.

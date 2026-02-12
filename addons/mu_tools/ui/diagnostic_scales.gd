@@ -1,9 +1,9 @@
 extends SceneTree
 
 func _init():
-	var MUTerrainParser = load("res://addons/mu_tools/core/mu_terrain_parser.gd")
+	var MUTerrainParser = load("res://addons/mu_tools/parsers/terrain_parser.gd")
 	var parser = MUTerrainParser.new()
-	var MUFileUtil = load("res://addons/mu_tools/core/mu_file_util.gd")
+	var MUFileUtil = load("res://addons/mu_tools/core/file_util.gd")
 	var objects_path = MUFileUtil.resolve_case(
 			"res://reference/MuMain/src/bin/Data/World1/EncTerrain1.obj")
 	if not MUFileUtil.file_exists(objects_path):

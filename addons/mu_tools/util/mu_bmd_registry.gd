@@ -1,5 +1,5 @@
 @tool
-class_name MUBMDRegistry
+# class_name MUBMDRegistry
 extends Node
 
 ## Global BMD Registry
@@ -8,11 +8,13 @@ extends Node
 ## This significantly improves performance for frequently spawned effects
 ## or objects like the "Move Target" mark.
 
-static var _bmd_cache: Dictionary = {} # Path (String) -> BMDParser
+const BMDParser = preload("res://addons/mu_tools/parsers/bmd_parser.gd")
+
+static var _bmd_cache: Dictionary = {} # Path (String) -> Object
 
 ## Returns a parsed BMDParser instance for the given path.
 ## If the BMD is not in the cache, it will be parsed and stored.
-static func get_bmd(path: String, debug: bool = false) -> BMDParser:
+static func get_bmd(path: String, debug: bool = false) -> Object:
 	if _bmd_cache.has(path):
 		return _bmd_cache[path]
 	

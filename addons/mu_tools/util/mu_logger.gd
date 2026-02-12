@@ -1,7 +1,7 @@
 @tool
 extends RefCounted
 
-class_name MULogger
+# class_name MULogger
 
 const LOG_PATH_USER = "user://mu_launch.log"
 const LOG_PATH_RES = "res://mu_launch.log"

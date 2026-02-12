@@ -1,5 +1,5 @@
-class_name TextureConverterHeadless
-const MUFileUtil = preload("res://addons/mu_tools/core/mu_file_util.gd")
+# class_name TextureConverterHeadless
+const MUFileUtil = preload("res://addons/mu_tools/core/file_util.gd")
 
 ## Headless Texture Converter
 ##

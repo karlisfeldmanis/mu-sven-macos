@@ -4,8 +4,7 @@ extends Node3D
 ## Entry point for the MU Online Remaster.
 ## Orhcestrates the world loading via MUAPI and MUHeightmap.
 
-const MUAPI_CLASS = preload("res://addons/mu_tools/core/mu_api.gd")
-const MUHeightmapClass = preload("res://addons/mu_tools/nodes/mu_heightmap.gd")
+const MUHeightmapClass = preload("res://addons/mu_tools/world/heightmap_node.gd")
 
 @export var world_id: int = 0:
 	set(val):
@@ -20,7 +19,6 @@ const MUHeightmapClass = preload("res://addons/mu_tools/nodes/mu_heightmap.gd")
 @export var zoom_smoothing_speed: float = 8.0
 @export var config_save_path: String = "user://camera_config.json"
 
-var api: MUAPI_CLASS
 var heightmap_node: MUHeightmapClass
 var camera: Camera3D
 
@@ -42,14 +40,10 @@ func _ready():
 	get_window().mode = Window.MODE_WINDOWED
 	print("[MU] Launching Interactive High-Res Scene...")
 
-	# 1. Initialize API
-	api = MUAPI_CLASS.new()
-	
-	# 2. Setup Heightmap Node
-	heightmap_node = MUHeightmapClass.new()
-	heightmap_node.world_id = world_id
-	heightmap_node.data_path = data_path
-	add_child(heightmap_node)
+	# 1. Setup World (Terrain, Objects, Grass)
+	# This single call orchestrates everything via the modular API
+	var world_data = MUAPI.world().load_world(self, world_id, data_path)
+	heightmap_node = world_data.heightmap
 	
 	# 3. Setup Perspective Camera
 	camera = Camera3D.new()
@@ -58,23 +52,6 @@ func _ready():
 	camera.fov = 60.0
 	camera.far = 2000.0
 	camera.make_current()
-	
-	# 4. Trigger Object Spawning (City Center Only)
-	var obj_manager = load("res://addons/mu_tools/nodes/mu_object_manager.gd")
-	if obj_manager:
-		# City center bounding box in Godot coords (G_X=MU_Y, G_Z=MU_X)
-		# MU city center: roughly X=9500-17000, Y=9500-17000 (cm)
-		# -> Godot: X=95-170, Z=95-170
-		var city_filter = Rect2(95, 95, 75, 75)
-		obj_manager.load_objects(
-			self, 
-			heightmap_node.get_objects_data(), 
-			false, # show_debug
-			heightmap_node.get_height_data(),
-			false, # show_hidden
-			world_id,
-			city_filter
-		)
 	
 	_load_camera_config()
 	

@@ -1,11 +1,11 @@
-class_name BMDConverterHeadless
+# class_name BMDConverterHeadless
 
 ## Headless BMD Converter
 ##
 ## Converts MuOnline .bmd files to Godot resources without editor dependencies
 
-const BMDParser = preload("res://addons/mu_tools/core/bmd_parser.gd")
-const MUMeshBuilder = preload("res://addons/mu_tools/nodes/mesh_builder.gd")
+const BMDParser = preload("res://addons/mu_tools/parsers/bmd_parser.gd")
+const MUMeshBuilder = preload("res://addons/mu_tools/rendering/bmd_mesh_builder.gd")
 
 func convert_file(input_path: String, output_dir: String) -> Dictionary:
 	var result = {

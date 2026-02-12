@@ -1,5 +1,5 @@
 @tool
-class_name MUDecryptor
+# class_name MUDecryptor
 
 ## MU Online Decryption Utility (Phase 0)
 ##

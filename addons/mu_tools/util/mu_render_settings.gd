@@ -1,4 +1,4 @@
-class_name MURenderSettings
+# class_name MURenderSettings
 extends Node
 
 ## FSR 2.2 Settings Manager

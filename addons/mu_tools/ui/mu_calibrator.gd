@@ -1,6 +1,6 @@
 extends Node3D
 
-class_name MUCalibrator
+# class_name MUCalibrator
 
 var terrain_node: Node3D # MUTerrainSimple
 var selected_obj_idx: int = -1

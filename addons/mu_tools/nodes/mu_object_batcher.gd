@@ -1,11 +1,11 @@
 @tool
 extends Node3D
 
-class_name MUObjectBatcher
+# class_name MUObjectBatcher
 
 ## Manages MultiMeshInstance3D for repetitive map objects (walls, fences, etc.)
 
-const MUObjLoaderClass = preload("res://addons/mu_tools/core/mu_obj_loader.gd")
+const MUObjLoaderClass = preload("res://addons/mu_tools/parsers/obj_loader.gd")
 
 # Internal map: mesh_path -> { mesh: Mesh, transforms: Array[Transform3D], materials: Array[Material] }
 var _batches: Dictionary = {}

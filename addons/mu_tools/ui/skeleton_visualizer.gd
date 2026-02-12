@@ -1,5 +1,5 @@
 @tool
-class_name MUSkeletonVisualizer
+# class_name MUSkeletonVisualizer
 extends Node3D
 
 ## Skeleton Visualizer Tool

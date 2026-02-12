@@ -1,7 +1,7 @@
 @tool
 extends Node3D
 
-class_name MUCharacter
+# class_name MUCharacter
 
 ## MUCharacter (Phase 6)
 ## Manages a master skeleton and multiple skinned mesh parts.

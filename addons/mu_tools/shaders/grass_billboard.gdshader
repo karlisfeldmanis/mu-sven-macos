@@ -19,11 +19,9 @@ void vertex() {
 	
 	// 4. Windy Grass Patterns (SVEN High-Frequency Jitter)
 	// MU X maps to Godot Z, MU Y maps to Godot X
-	vec3 world_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	float mu_x = world_origin.z + 255.0;
-	float mu_y = world_origin.x;
-	
-	// Output UV for lightmap sampling in fragment shader
+	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float mu_x = world_pos.z; // Godot Z = MU X
+	float mu_y = world_pos.x; // Godot X = MU YV for lightmap sampling in fragment shader
 	v_map_uv = vec2(mu_x / 256.0, mu_y / 256.0);
 	
 	// SVEN uses sinf(WindSpeed + xf * 50.f) for high-freq flutter

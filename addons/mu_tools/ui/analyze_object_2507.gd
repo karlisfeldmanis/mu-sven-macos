@@ -1,7 +1,7 @@
 extends SceneTree
 
-const MU_TERRAIN_PARSER_CLASS = preload("res://addons/mu_tools/core/mu_terrain_parser.gd")
-const MUCoordinateUtils = preload("res://addons/mu_tools/core/mu_coordinate_utils.gd")
+const MU_TERRAIN_PARSER_CLASS = preload("res://addons/mu_tools/parsers/terrain_parser.gd")
+const MUCoordinateUtils = preload("res://addons/mu_tools/core/coordinate_utils.gd")
 
 func _init():
 	print("[Analysis] Checking StoneWall01_2507...")

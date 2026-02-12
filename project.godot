@@ -15,6 +15,10 @@ config/description="MuOnline Classic"
 run/main_scene="res://scenes/bootstrap.tscn"
 config/features=PackedStringArray("4.3")
 
+[autoload]
+
+MUAPI="*res://addons/mu_tools/core/mu_api.gd"
+
 [display]
 
 window/size/viewport_width=1920

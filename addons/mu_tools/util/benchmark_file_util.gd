@@ -3,7 +3,7 @@ extends SceneTree
 func _init():
 	print("\n=== MUFileUtil Caching Benchmark ===\n")
 	
-	var MUFileUtil = load("res://addons/mu_tools/core/mu_file_util.gd")
+	var MUFileUtil = load("res://addons/mu_tools/core/file_util.gd")
 	var test_path = "res://reference/MuMain/src/bin/Data/World1/EncTerrain1.obj"
 	
 	# Warm up (resolve once to fill cache if we want to test pure cache speed)

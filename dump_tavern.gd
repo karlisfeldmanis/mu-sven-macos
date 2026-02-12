@@ -1,6 +1,6 @@
 extends SceneTree
 func _init():
-    var parser = load("res://addons/mu_tools/core/mu_terrain_parser.gd").new()
+    var parser = load("res://addons/mu_tools/parsers/terrain_parser.gd").new()
     var mapping = parser.parse_mapping_file("reference/MuMain/src/bin/Data/World1/EncTerrain1.map", true)
     var att_res = parser.parse_attributes_file("reference/MuMain/src/bin/Data/World1/Terrain1.att")
     var sym = att_res.symmetry

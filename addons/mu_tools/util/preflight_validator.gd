@@ -1,5 +1,5 @@
 @tool
-class_name PreflightValidator
+# class_name PreflightValidator
 extends Object
 
 ## Preflight Validator Utility
