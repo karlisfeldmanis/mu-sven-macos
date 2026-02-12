@@ -9,6 +9,7 @@ const MUHeightmap = preload("res://addons/mu_tools/world/heightmap_node.gd")
 const MUModelRegistry = preload("res://addons/mu_tools/core/registry.gd")
 const MUMeshBuilder = preload("res://addons/mu_tools/rendering/bmd_mesh_builder.gd")
 const BMDParser = preload("res://addons/mu_tools/parsers/bmd_parser.gd")
+const MUGrassSystem = preload("res://addons/mu_tools/world/grass_system.gd")
 
 var _terrain: MUHeightmap
 var _objects_parent: Node3D
@@ -35,6 +36,7 @@ func _ready() -> void:
 	# Wait for terrain to be ready before spawning objects
 	await get_tree().process_frame
 	_spawn_city_objects()
+	_spawn_grass_system()
 	
 	# Load saved camera view
 	_load_camera_view()
@@ -288,4 +290,14 @@ func _spawn_city_objects() -> void:
 		spawn_count += 1
 		
 	print("  ✓ Spawned %d objects in city radius." % spawn_count)
+
+
+func _spawn_grass_system() -> void:
+	if not _terrain:
+		return
+	print("[MU Remaster] Initializing Grass System...")
+	var grass = MUGrassSystem.new()
+	grass.name = "GrassSystem"
+	add_child(grass)
+	grass.spawn_grass(_terrain)
 
