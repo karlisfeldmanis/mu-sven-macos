@@ -1,0 +1,249 @@
+#include "TerrainParser.hpp"
+#include "TextureLoader.hpp"
+#include <algorithm>
+#include <fstream>
+#include <iostream>
+
+const uint8_t MAP_XOR_KEY[16] = {0xD1, 0x73, 0x52, 0xF6, 0xD2, 0x9A,
+                                 0xCB, 0x27, 0x3E, 0xAF, 0x59, 0x31,
+                                 0x37, 0xB3, 0xE7, 0xA2};
+
+TerrainData TerrainParser::LoadWorld(int world_id,
+                                     const std::string &data_path) {
+  TerrainData result;
+  std::string world_dir = "World" + std::to_string(world_id);
+  std::string base_path = data_path + "/" + world_dir + "/";
+
+  // 1. Heightmap - Try TerrainHeight.OZB, then TerrainH.ozh, etc.
+  std::string height_path = base_path + "TerrainHeight.OZB";
+  {
+    std::ifstream check(height_path);
+    if (!check.good()) {
+      height_path =
+          base_path + "Terrain" + std::to_string(world_id + 1) + ".ozh";
+    }
+  }
+  result.heightmap = ParseHeightFile(height_path);
+
+  // 2. Mapping - Try EncTerrainX.map, then TerrainX.map, then Terrain.map
+  std::string map_path =
+      base_path + "EncTerrain" + std::to_string(world_id) + ".map";
+  {
+    std::ifstream check(map_path);
+    if (!check.good()) {
+      map_path = base_path + "Terrain" + std::to_string(world_id) + ".map";
+      std::ifstream check2(map_path);
+      if (!check2.good()) {
+        map_path = base_path + "Terrain.map";
+      }
+    }
+  }
+  result.mapping = ParseMappingFile(map_path);
+
+  // 3. Attributes - Try EncTerrainX.att, then TerrainX.att, then Terrain.att
+  std::string att_path =
+      base_path + "EncTerrain" + std::to_string(world_id) + ".att";
+  {
+    std::ifstream check(att_path);
+    if (!check.good()) {
+      att_path = base_path + "Terrain" + std::to_string(world_id) + ".att";
+      std::ifstream check2(att_path);
+      if (!check2.good()) {
+        att_path = base_path + "Terrain.att";
+      }
+    }
+  }
+  auto att_res = ParseAttributesFile(att_path);
+  result.mapping.attributes = att_res.first;
+  result.mapping.symmetry = att_res.second;
+
+  // 4. Objects - Try EncTerrainX.obj, then TerrainX.obj
+  std::string obj_path =
+      base_path + "EncTerrain" + std::to_string(world_id) + ".obj";
+  {
+    std::ifstream check(obj_path);
+    if (!check.good()) {
+      obj_path = base_path + "Terrain" + std::to_string(world_id) + ".obj";
+    }
+  }
+  result.objects = ParseObjectsFile(obj_path);
+
+  // 5. Lightmap - Try TerrainLight.OZJ
+  std::string light_path = base_path + "TerrainLight.OZJ";
+  result.lightmap = ParseLightFile(light_path);
+
+  return result;
+}
+
+std::vector<uint8_t>
+TerrainParser::DecryptMapFile(const std::vector<uint8_t> &data) {
+  std::vector<uint8_t> decrypted(data.size());
+  uint8_t map_key = 0x5E;
+
+  for (size_t i = 0; i < data.size(); ++i) {
+    uint8_t src_byte = data[i];
+    uint8_t xor_byte = MAP_XOR_KEY[i % 16];
+    uint8_t val = (src_byte ^ xor_byte) - map_key;
+    decrypted[i] = val;
+    map_key = src_byte + 0x3D;
+  }
+  return decrypted;
+}
+
+std::vector<float> TerrainParser::ParseHeightFile(const std::string &path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    std::cerr << "Cannot open height file: " << path << std::endl;
+    return std::vector<float>(TERRAIN_SIZE * TERRAIN_SIZE, 0.0f);
+  }
+
+  file.seekg(0, std::ios::end);
+  size_t size = file.tellg();
+  size_t expected_size = TERRAIN_SIZE * TERRAIN_SIZE;
+  file.seekg(size - expected_size, std::ios::beg);
+
+  std::vector<uint8_t> raw_heights(expected_size);
+  file.read((char *)raw_heights.data(), expected_size);
+
+  std::vector<float> heights(expected_size);
+  for (size_t i = 0; i < expected_size; ++i) {
+    heights[i] = static_cast<float>(raw_heights[i]) * 1.5f;
+  }
+  return heights;
+}
+
+MapData TerrainParser::ParseMappingFile(const std::string &path) {
+  std::ifstream file(path, std::ios::binary);
+  MapData res;
+  if (!file) {
+    std::cerr << "[TerrainParser] Cannot open mapping file: " << path
+              << std::endl;
+    return res;
+  }
+
+  std::vector<uint8_t> raw_data((std::istreambuf_iterator<char>(file)),
+                                std::istreambuf_iterator<char>());
+  std::vector<uint8_t> data = DecryptMapFile(raw_data);
+
+  // Sven format (OpenTerrainMapping in ZzzLodTerrain.cpp):
+  //   Byte 0: Version
+  //   Byte 1: Map Number
+  //   Bytes 2..65537: Layer1 (256x256)
+  //   Bytes 65538..131073: Layer2 (256x256)
+  //   Bytes 131074..196609: Alpha (256x256 bytes, each /255 -> float)
+  const size_t cells = TERRAIN_SIZE * TERRAIN_SIZE;
+  const size_t expected_size = 2 + cells * 3;
+
+  if (data.size() < expected_size) {
+    std::cerr << "[TerrainParser] Mapping file too small: " << data.size()
+              << " bytes (expected " << expected_size << ")" << std::endl;
+    return res;
+  }
+
+  res.map_number = static_cast<int>(data[1]);
+  size_t ptr = 2; // Skip version + map number
+
+  res.layer1.assign(data.begin() + ptr, data.begin() + ptr + cells);
+  ptr += cells;
+
+  res.layer2.assign(data.begin() + ptr, data.begin() + ptr + cells);
+  ptr += cells;
+
+  res.alpha.resize(cells);
+  for (size_t i = 0; i < cells; ++i) {
+    res.alpha[i] = static_cast<float>(data[ptr + i]) / 255.0f;
+  }
+
+  std::cout << "[TerrainParser] Loaded mapping: map_number=" << res.map_number
+            << ", " << data.size() << " bytes" << std::endl;
+
+  return res;
+}
+
+std::pair<std::vector<uint8_t>, std::vector<uint8_t>>
+TerrainParser::ParseAttributesFile(const std::string &path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    std::cerr << "[TerrainParser] Cannot open attribute file: " << path
+              << std::endl;
+    return {{}, {}};
+  }
+
+  std::vector<uint8_t> raw_data((std::istreambuf_iterator<char>(file)),
+                                std::istreambuf_iterator<char>());
+
+  // Sven's OpenTerrainAttribute: decrypt then BuxConvert
+  std::vector<uint8_t> data = DecryptMapFile(raw_data);
+
+  uint8_t bux_code[3] = {0xFC, 0xCF, 0xAB};
+  for (size_t i = 0; i < data.size(); ++i) {
+    data[i] ^= bux_code[i % 3];
+  }
+
+  const size_t cells = TERRAIN_SIZE * TERRAIN_SIZE;
+  std::vector<uint8_t> attributes(cells, 0);
+  std::vector<uint8_t> symmetry(cells, 0);
+
+  // Sven format: 4-byte header (version, map, width, height)
+  // Then either BYTE[cells] or WORD[cells] attribute data
+  const size_t byte_format_size = 4 + cells;
+  const size_t word_format_size = 4 + cells * sizeof(uint16_t);
+
+  if (data.size() >= word_format_size) {
+    // WORD format: 2 bytes per cell (low byte = attributes, high byte = extra)
+    for (size_t i = 0; i < cells; ++i) {
+      attributes[i] = data[4 + i * 2];
+      symmetry[i] = data[5 + i * 2];
+    }
+    std::cout << "[TerrainParser] Loaded attributes (WORD format): "
+              << data.size() << " bytes" << std::endl;
+  } else if (data.size() >= byte_format_size) {
+    // BYTE format: 1 byte per cell
+    for (size_t i = 0; i < cells; ++i) {
+      attributes[i] = data[4 + i];
+    }
+    std::cout << "[TerrainParser] Loaded attributes (BYTE format): "
+              << data.size() << " bytes" << std::endl;
+  } else {
+    std::cerr << "[TerrainParser] Attribute file too small: " << data.size()
+              << " bytes" << std::endl;
+  }
+
+  return {attributes, symmetry};
+}
+
+// Minimal placeholder for objects for now
+std::vector<ObjectData>
+TerrainParser::ParseObjectsFile(const std::string &path) {
+  return std::vector<ObjectData>();
+}
+
+std::vector<glm::vec3> TerrainParser::ParseLightFile(const std::string &path) {
+  int w, h;
+  auto raw_data = TextureLoader::LoadOZJRaw(path, w, h);
+
+  std::vector<glm::vec3> lightmap(TERRAIN_SIZE * TERRAIN_SIZE, glm::vec3(1.0f));
+
+  if (raw_data.empty() || w != TERRAIN_SIZE || h != TERRAIN_SIZE) {
+    if (!raw_data.empty()) {
+      std::cerr << "[TerrainParser] Lightmap size mismatch: " << w << "x" << h
+                << " (expected 256x256)" << std::endl;
+    }
+    return lightmap;
+  }
+
+  // LoadOZJRaw now uses TJFLAG_BOTTOMUP (matching Sven's OpenJpegBuffer),
+  // so the decoded data is already in bottom-to-top order matching OpenGL.
+  // No manual row flip needed.
+  for (int z = 0; z < TERRAIN_SIZE; ++z) {
+    for (int x = 0; x < TERRAIN_SIZE; ++x) {
+      int src_idx = (z * TERRAIN_SIZE + x) * 3;
+      lightmap[z * TERRAIN_SIZE + x] =
+          glm::vec3(static_cast<float>(raw_data[src_idx + 0]) / 255.0f,
+                    static_cast<float>(raw_data[src_idx + 1]) / 255.0f,
+                    static_cast<float>(raw_data[src_idx + 2]) / 255.0f);
+    }
+  }
+
+  return lightmap;
+}

@@ -1,0 +1,182 @@
+{
+    "Bird01": {},
+    "BridgeStone01": {},
+    "Cannon01": {},
+    "Cannon02": {},
+    "Cannon03": {},
+    "Carriage01": {
+        "blend_mesh_index": 2
+    },
+    "Carriage02": {},
+    "Carriage03": {},
+    "Carriage04": {},
+    "Fence01": {},
+    "Fence02": {},
+    "Fence03": {},
+    "Fence04": {},
+    "MerchantAnimal01": {},
+    "MerchantAnimal02": {},
+    "Waterspout01": {
+        "blend_mesh_index": 3
+    },
+    "FireLight01": {},
+    "FireLight02": {},
+    "Bonfire01": {
+        "blend_mesh_index": 1
+    },
+    "Candle01": {
+        "blend_mesh_index": 1,
+        "velocity": 0.3
+    },
+    "StreetLight01": {
+        "blend_mesh_index": 1,
+        "velocity": 0.3
+    },
+    "Light01": {},
+    "Light02": {},
+    "Light03": {},
+    "Tree01": {},
+    "Tree02": {},
+    "Tree03": {},
+    "Tree04": {},
+    "Tree05": {},
+    "Tree06": {},
+    "Tree07": {},
+    "Tree08": {},
+    "Tree09": {},
+    "Tree10": {},
+    "Tree11": {},
+    "Tree12": {},
+    "Tree13": {},
+    "Grass01": {},
+    "Grass02": {},
+    "Grass03": {},
+    "Grass04": {},
+    "Grass05": {},
+    "Grass06": {},
+    "Grass07": {},
+    "Grass08": {},
+    "Stone01": {},
+    "Stone02": {},
+    "Stone03": {},
+    "Stone04": {},
+    "Stone05": {},
+    "StoneStatue01": {},
+    "StoneStatue02": {},
+    "StoneStatue03": {},
+    "SteelStatue01": {},
+    "Tomb01": {},
+    "Tomb02": {},
+    "Tomb03": {},
+    "DoungeonGate01": {
+        "bind_pose_action": 1
+    },
+    "TreasureDrum01": {},
+    "TreasureChest01": {
+        "velocity": 0.0
+    },
+    "Ship01": {},
+    "StoneWall01": {
+        "bind_pose_action": 0
+    },
+    "StoneWall02": {
+        "bind_pose_action": 0
+    },
+    "StoneWall03": {
+        "bind_pose_action": 0
+    },
+    "StoneWall04": {
+        "bind_pose_action": 0
+    },
+    "StoneWall05": {
+        "bind_pose_action": 0
+    },
+    "StoneWall06": {
+        "bind_pose_action": 0
+    },
+    "StoneMuWall01": {
+        "bind_pose_action": 0
+    },
+    "StoneMuWall02": {
+        "bind_pose_action": 0
+    },
+    "StoneMuWall03": {
+        "bind_pose_action": 0
+    },
+    "StoneMuWall04": {
+        "bind_pose_action": 0
+    },
+    "SteelWall01": {},
+    "SteelWall02": {},
+    "SteelWall03": {},
+    "SteelDoor01": {},
+    "Bridge01": {
+        "collision_range": -50.0
+    },
+    "Curtain01": {},
+    "Straw01": {},
+    "Straw02": {},
+    "Sign01": {
+        "velocity": 0.3
+    },
+    "Sign02": {
+        "velocity": 0.3
+    },
+    "Well01": {},
+    "Well02": {},
+    "Well03": {},
+    "Well04": {},
+    "Hanging01": {},
+    "House01": {},
+    "House02": {},
+    "House03": {
+        "blend_mesh_index": 4
+    },
+    "House04": {
+        "blend_mesh_index": 8
+    },
+    "House05": {
+        "blend_mesh_index": 2
+    },
+    "Tent01": {},
+    "Stair01": {},
+    "HouseWall01": {},
+    "HouseWall02": {
+        "blend_mesh_index": 4
+    },
+    "HouseWall03": {},
+    "HouseWall04": {},
+    "HouseWall05": {},
+    "HouseWall06": {},
+    "HouseEtc01": {},
+    "HouseEtc02": {},
+    "HouseEtc03": {},
+    "PoseBox01": {
+        "hidden_mesh": -2
+    },
+    "Furniture01": {},
+    "Furniture02": {},
+    "Furniture03": {},
+    "Furniture04": {},
+    "Furniture05": {
+        "blend_mesh_index": 2
+    },
+    "Furniture06": {
+        "blend_mesh_index": 2
+    },
+    "Furniture07": {},
+    "Beer01": {},
+    "Beer02": {},
+    "Beer03": {},
+    "material_tweaks": {
+        "ston02": {
+            "transparency": 1,
+            "alpha_scissor_threshold": 0.5
+        },
+        "ston03": {
+            "transparency": 1,
+            "alpha_scissor_threshold": 0.5
+        }
+    },
+    "texture_tweaks": {}
+}

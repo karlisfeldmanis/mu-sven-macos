@@ -1,0 +1,5 @@
+[gd_scene load_steps=2 format=3 uid="uid://capture_scene_minimal"]
+[ext_resource type="Script" path="res://addons/mu_tools/tests/capture_scene.gd" id="1_script"]
+
+[node name="CaptureScene" type="Node3D"]
+script = ExtResource("1_script")
