@@ -1,41 +1,35 @@
-# MU Online Remaster - Godot 4 Engine
+# MU Online Remaster - C++ Edition
 
-A high-fidelity migration of the MU Online engine to Godot 4, focused on high-performance rendering and authentic visual parity.
+A high-performance, native C++ restoration of the MU Online engine, built with focus on rendering fidelity, smooth terrain blending, and direct legacy format compatibility.
 
-## Core Architecture
+## Core Features
 
-The engine has been restructured into a clean, modular API that loads original MU Online assets directly from the source.
+- **High-Fidelity Rendering**: Custom OpenGL 3.3+ renderer designed for modern macOS (Metal-compatible via MoltenVK/GLFW).
+- **4-Tap Smooth Blending**: Advanced terrain shader that eliminates jagged tile boundaries through 4-tap bilinear index and attribute interpolation.
+- **Direct Asset Loading**: Native C++ parsers for `.bmd` (models), `.ozt/.ozj` (decrypted textures), `.map` (heightmaps), and `.att` (world mapping).
+- **Authentic Visuals**: Restored lightmap integration and world-specific atmosphere settings.
 
-- **100% Original Source Loading**: No pre-conversion step required. The engine parses `.bmd`, `.ozt`, `.ozj`, and `.att` files at runtime.
-- **MUAPI Facade**: A centralized singleton for decoupled access to all subsystems (Data, Render, Mesh, World, Coords).
-- **Forward+ Rendering**: Optimized for macOS (Metal) and modern GPUs, featuring cascaded shadows and atmospheric fog.
+## Getting Started
 
-## Subsystems
+### Prerequisites
+- CMake 3.15+
+- C++17 Compiler
+- OpenGL 3.3 compatible drivers
+- Original MU Online client data (World1 for Lorencia)
 
-- **[api/](file:///Users/karlisfeldmanis/Desktop/mu_remaster/addons/mu_tools/api/)**: Clean interfaces for engine features.
-- **[parsers/](file:///Users/karlisfeldmanis/Desktop/mu_remaster/addons/mu_tools/parsers/)**: Native GDScript decrypter and parsers for MU legacy formats.
-- **[rendering/](file:///Users/karlisfeldmanis/Desktop/mu_remaster/addons/mu_tools/rendering/)**: Specialized BMD mesh construction and texture management.
-- **[world/](file:///Users/karlisfeldmanis/Desktop/mu_remaster/addons/mu_tools/world/)**: Heightmap rendering, global object spawning, and environment control.
-
-## Visual Fidelity
-
-- **Bilinear Snapping**: All objects and grass instances use interpolated terrain sampling for perfect ground alignment.
-- **Authentic Atmosphere**: Pitch-black sky and fog parity matching the original "dark" MU aesthetics.
-- **Global Spawning**: Procedural restoration of all 2,800+ original map objects.
-
-## Quick Start
-
-1. Place your original MU Online client files in `res://reference/MuMain/src/bin/Data/`.
-2. Open the project in Godot 4.3+.
-3. Launch `res://scenes/bootstrap.tscn`.
+### Quick Start
+See [QUICKSTART.md](QUICKSTART.md) for build and run instructions.
 
 ## Controls
 - **WASD**: Move camera
-- **Shift**: Speed up movement
-- **Right Mouse**: Rotate camera
+- **Shift**: Speed up camera (Turbo)
+- **Right Mouse**: Rotate camera (Hold)
 - **Mouse Wheel**: Zoom
+- **F11**: Capture Screenshot
 
-## Documentation
-- [Quick Start Guide](file:///Users/karlisfeldmanis/Desktop/mu_remaster/QUICKSTART.md)
-- [Terrain Rendering Findings](file:///Users/karlisfeldmanis/Desktop/mu_remaster/SVEN_TERRAIN_FINDINGS.md)
-- [Project Walkthrough (Refactor History)](file:///Users/karlisfeldmanis/.gemini/antigravity/brain/095a990b-287b-4760-b0ec-9d695da14e40/walkthrough.md)
+## Project Structure
+- `src/`: Core implementation files (`main.cpp`, `Terrain.cpp`, etc.)
+- `include/`: Header files and data structures
+- `external/`: Dependencies (ImGui, GLM, etc.)
+- `references/godot/`: Original Godot implementation (for logic reference)
+- `references/other/MuMain/`: Source of truth client data

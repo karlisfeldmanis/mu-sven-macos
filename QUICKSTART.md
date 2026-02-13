@@ -1,34 +1,34 @@
-# MU Online Remaster - Quick Start
+# Quick Start Guide
 
-## Running the Engine
+## Building the Remaster
 
-1. **Bootstrap the World**:
-   Open the project in Godot and launch the main entry point:
+The project uses CMake for build management. 
+
+1. **Configure and Build**:
    ```bash
-   godot res://scenes/bootstrap.tscn
-   ```
-   *This scene initializes the modular API and loads the world directly from original sources.*
-
-2. **Standalone Mode**:
-   For a streamlined experience without the editor UI, run:
-   ```bash
-   godot res://main.tscn
+   mkdir -p build
+   cd build
+   cmake ..
+   make -j4
    ```
 
-## Key Features
-- **Zero Build Time**: Direct parsing of `.bmd`, `.ozt`, and `.ozj` files.
-- **2,800+ Objects**: Global restoration of all world assets.
-- **Visual Parity**: Pitch-black sky, volumetric fog, and bilinear terrain snapping.
+2. **Run**:
+   ```bash
+   ./MuRemaster
+   ```
 
-## Controls
-- **WASD**: Move camera
-- **Shift**: Move faster (Turbo)
-- **Right Mouse**: Rotate camera (Hold)
-- **Mouse Wheel**: Zoom In/Out
-- **ESC**: Quit Application
+## Configuration
 
-## Directory Guide
-- `addons/mu_tools/`: The core engine logic and parsers.
-- `reference/`: Place your original MU Data files here.
-- `scenes/`: Contains entry points and visual effects.
-- `main.gd`: The standalone application controller.
+- **Data Path**: The application looks for original MU Data in `/Users/karlisfeldmanis/Desktop/mu_remaster/references/other/MuMain/src/bin/Data`.
+- **World Loading**: Currently defaults to World 1 (Lorencia). To change worlds, modify `main.cpp`.
+- **Camera State**: The camera position is saved to `camera_save.txt` on exit and restored on startup.
+
+## Common Tasks
+
+- **Take Screenshot**: Press `F11` or let the diagnostic timers trigger a capture. Screenshots are saved to `build/screenshots/`.
+- **Debug View**: Toggle debug visualizations (Alpha, Lightmap, indices) via the ImGui overlay.
+- **Clean Build**: 
+  ```bash
+  rm -rf build/
+  mkdir build && cd build && cmake .. && make -j4
+  ```
