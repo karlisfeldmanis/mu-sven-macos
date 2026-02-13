@@ -74,6 +74,35 @@ static void activateMacOSApp() {
 }
 #endif
 
+// BlendMesh texture ID lookup by BMD filename (model viewer has no type IDs)
+static int GetBlendMeshTexIdFromFilename(const std::string &filename) {
+  if (filename == "House03.bmd")
+    return 4;
+  if (filename == "House04.bmd")
+    return 8;
+  if (filename == "House05.bmd")
+    return 2;
+  if (filename == "HouseWall02.bmd")
+    return 4;
+  if (filename == "Bonfire01.bmd")
+    return 1;
+  if (filename == "StreetLight01.bmd")
+    return 1;
+  if (filename == "Candle01.bmd")
+    return 1;
+  if (filename == "Carriage01.bmd")
+    return 2;
+  if (filename == "Waterspout01.bmd")
+    return 3;
+  return -1;
+}
+
+// UV scroll animation for specific models
+static bool HasUVScrollAnimation(const std::string &filename) {
+  return filename == "House04.bmd" || filename == "House05.bmd" ||
+         filename == "Waterspout01.bmd";
+}
+
 namespace fs = std::filesystem;
 
 static const std::string DATA_PATH =
@@ -120,14 +149,7 @@ public:
       glfwPollEvents();
       RenderScene(shader);
 
-      if (isRecordingGif) {
-        Screenshot::AddGifFrame(window);
-        gifFrameCurrent++;
-        if (gifFrameCurrent >= gifFrameTarget) {
-          isRecordingGif = false;
-          Screenshot::SaveGif("screenshots/capture.gif", 100 / gifFpsSetting);
-        }
-      }
+      Screenshot::TickRecording(window);
 
       RenderUI();
       glfwSwapBuffers(window);
@@ -185,10 +207,19 @@ private:
   // Fire effects
   FireEffect fireEffect;
 
-  // GIF recording
-  bool isRecordingGif = false;
+  // BlendMesh: per-model window light state
+  int blendMeshTexId = -1;
+  bool hasUVScroll = false;
+
+  // Animation state
+  bool currentIsAnimated = false;
+  int currentNumKeys = 0;
+  float currentAnimFrame = 0.0f;
+  bool animationEnabled = true;
+  float animSpeed = 4.0f; // keyframes/sec (reference: 0.16 * 25fps)
+
+  // GIF recording (state managed by Screenshot module)
   int gifFrameTarget = 72;
-  int gifFrameCurrent = 0;
   float gifScaleSetting = 0.5f;
   int gifFpsSetting = 12;
   int gifSkipSetting = 1; // 1 means 12.5fps if render is 25fps
@@ -337,10 +368,31 @@ private:
     // Compute bone world matrices for rest pose
     boneMatrices = ComputeBoneMatrices(currentBMD.get());
 
+    // Detect animated models (>1 keyframe in first action)
+    currentIsAnimated = false;
+    currentNumKeys = 0;
+    currentAnimFrame = 0.0f;
+    if (!currentBMD->Actions.empty() &&
+        currentBMD->Actions[0].NumAnimationKeys > 1) {
+      currentIsAnimated = true;
+      currentNumKeys = currentBMD->Actions[0].NumAnimationKeys;
+    }
+
     // Upload meshes with bone-transformed vertices
     currentAABB = AABB{};
     for (auto &mesh : currentBMD->Meshes) {
-      UploadMesh(mesh, DATA_PATH);
+      UploadMesh(mesh, DATA_PATH, currentIsAnimated);
+    }
+
+    // Resolve BlendMesh for this model
+    blendMeshTexId = GetBlendMeshTexIdFromFilename(bmdFiles[index]);
+    hasUVScroll = HasUVScrollAnimation(bmdFiles[index]);
+    if (blendMeshTexId >= 0) {
+      for (auto &mb : meshBuffers) {
+        if (mb.bmdTextureId == blendMeshTexId) {
+          mb.isWindowLight = true;
+        }
+      }
     }
 
     AutoFrame();
@@ -365,7 +417,8 @@ private:
     glfwSetWindowTitle(window, title.c_str());
   }
 
-  void UploadMesh(const Mesh_t &mesh, const std::string &baseDir) {
+  void UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
+                  bool dynamic = false) {
     MeshBuffers mb;
     mb.texture = 0;
 
@@ -436,10 +489,14 @@ private:
     }
 
     mb.indexCount = indices.size();
+    mb.vertexCount = vertices.size();
+    mb.isDynamic = dynamic;
     if (mb.indexCount == 0) {
       meshBuffers.push_back(mb);
       return;
     }
+
+    GLenum usage = dynamic ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
 
     glGenVertexArrays(1, &mb.vao);
     glGenBuffers(1, &mb.vbo);
@@ -448,7 +505,7 @@ private:
     glBindVertexArray(mb.vao);
     glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
     glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex),
-                 vertices.data(), GL_STATIC_DRAW);
+                 vertices.data(), usage);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mb.ebo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int),
@@ -474,6 +531,8 @@ private:
     mb.hidden = scriptFlags.hidden;
     mb.bright = scriptFlags.bright;
 
+    mb.bmdTextureId = mesh.Texture; // Store BMD texture slot for BlendMesh matching
+
     meshBuffers.push_back(mb);
   }
 
@@ -492,6 +551,73 @@ private:
 
     axisLength = radius * 0.5f;
     UpdateAxisGeometry();
+  }
+
+  // --- Animation ---
+
+  void RetransformMeshLocal(const Mesh_t &mesh,
+                            const std::vector<BoneWorldMatrix> &bones,
+                            MeshBuffers &mb) {
+    if (!mb.isDynamic || mb.vertexCount == 0 || mb.vbo == 0)
+      return;
+
+    struct Vertex {
+      glm::vec3 pos;
+      glm::vec3 normal;
+      glm::vec2 tex;
+    };
+    std::vector<Vertex> vertices;
+    vertices.reserve(mb.vertexCount);
+
+    for (int i = 0; i < mesh.NumTriangles; ++i) {
+      auto &tri = mesh.Triangles[i];
+      int steps = (tri.Polygon == 3) ? 3 : 4;
+      for (int v = 0; v < 3; ++v) {
+        Vertex vert;
+        auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+        auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
+        int boneIdx = srcVert.Node;
+        if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
+          const auto &bm = bones[boneIdx];
+          vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
+                                            srcVert.Position);
+          vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
+                                             srcNorm.Normal);
+        } else {
+          vert.pos = srcVert.Position;
+          vert.normal = srcNorm.Normal;
+        }
+        vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                              mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+        vertices.push_back(vert);
+      }
+      if (steps == 4) {
+        int quadIndices[3] = {0, 2, 3};
+        for (int v : quadIndices) {
+          Vertex vert;
+          auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+          auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
+          int boneIdx = srcVert.Node;
+          if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
+            const auto &bm = bones[boneIdx];
+            vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
+                                              srcVert.Position);
+            vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
+                                               srcNorm.Normal);
+          } else {
+            vert.pos = srcVert.Position;
+            vert.normal = srcNorm.Normal;
+          }
+          vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                                mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+          vertices.push_back(vert);
+        }
+      }
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(Vertex),
+                    vertices.data());
   }
 
   // --- Orbit camera ---
@@ -521,6 +647,21 @@ private:
     if (meshBuffers.empty())
       return;
 
+    // Advance skeletal animation if model is animated
+    if (currentIsAnimated && animationEnabled && currentBMD) {
+      currentAnimFrame += animSpeed * deltaTime;
+      if (currentAnimFrame >= (float)currentNumKeys)
+        currentAnimFrame = std::fmod(currentAnimFrame, (float)currentNumKeys);
+
+      auto bones =
+          ComputeBoneMatricesInterpolated(currentBMD.get(), 0, currentAnimFrame);
+      for (int mi = 0;
+           mi < (int)meshBuffers.size() && mi < (int)currentBMD->Meshes.size();
+           ++mi) {
+        RetransformMeshLocal(currentBMD->Meshes[mi], bones, meshBuffers[mi]);
+      }
+    }
+
     shader.use();
 
     int fbWidth, fbHeight;
@@ -542,6 +683,16 @@ private:
     shader.setVec3("lightColor", 1.0f, 1.0f, 1.0f);
     shader.setVec3("viewPos", eye);
     shader.setBool("useFog", false);
+    shader.setFloat("blendMeshLight", 1.0f);
+    shader.setVec2("texCoordOffset", glm::vec2(0.0f));
+    shader.setInt("numPointLights", 0);
+
+    // BlendMesh animation state
+    float currentTime = (float)glfwGetTime();
+    float flickerBase =
+        0.55f + 0.15f * std::sin(currentTime * 7.3f) *
+                    std::sin(currentTime * 11.1f + 2.0f);
+    float uvScroll = -std::fmod(currentTime, 1.0f);
 
     for (auto &mb : meshBuffers) {
       if (mb.indexCount == 0 || mb.hidden)
@@ -550,7 +701,23 @@ private:
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
 
-      if (mb.noneBlend) {
+      if (mb.isWindowLight && blendMeshTexId >= 0) {
+        // BlendMesh: additive blending with intensity flicker
+        shader.setFloat("blendMeshLight", flickerBase);
+        if (hasUVScroll)
+          shader.setVec2("texCoordOffset", glm::vec2(0.0f, uvScroll));
+        else
+          shader.setVec2("texCoordOffset", glm::vec2(0.0f));
+
+        glBlendFunc(GL_ONE, GL_ONE);
+        glDepthMask(GL_FALSE);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        glDepthMask(GL_TRUE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        shader.setFloat("blendMeshLight", 1.0f);
+        shader.setVec2("texCoordOffset", glm::vec2(0.0f));
+      } else if (mb.noneBlend) {
         glDisable(GL_BLEND);
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
         glEnable(GL_BLEND);
@@ -642,24 +809,38 @@ private:
       ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Failed to load");
     }
 
+    // Animation controls
+    if (currentIsAnimated) {
+      ImGui::Separator();
+      ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Animated");
+      ImGui::Text("Keyframes: %d", currentNumKeys);
+      ImGui::Checkbox("Play", &animationEnabled);
+      ImGui::SliderFloat("Speed", &animSpeed, 0.5f, 20.0f, "%.1f k/s");
+      float frameVal = currentAnimFrame;
+      if (ImGui::SliderFloat("Frame", &frameVal, 0.0f,
+                              (float)(currentNumKeys - 1), "%.1f")) {
+        currentAnimFrame = frameVal;
+      }
+    }
+
     ImGui::Separator();
     ImGui::Text("GIF Recording:");
     ImGui::SliderFloat("Scale", &gifScaleSetting, 0.1f, 1.0f, "%.2f");
     ImGui::SliderInt("FPS", &gifFpsSetting, 5, 25);
     ImGui::SliderInt("Frames", &gifFrameTarget, 10, 200);
 
-    if (isRecordingGif) {
-      float progress = (float)gifFrameCurrent / gifFrameTarget;
-      ImGui::ProgressBar(progress, ImVec2(-1, 0), "Recording...");
+    if (Screenshot::IsRecording()) {
+      float progress = Screenshot::GetProgress();
+      const char *label =
+          Screenshot::IsWarmingUp() ? "Warming up..." : "Recording...";
+      ImGui::ProgressBar(progress, ImVec2(-1, 0), label);
     } else {
       if (ImGui::Button("Capture GIF", ImVec2(-1, 0))) {
-        int winW, winH;
-        glfwGetFramebufferSize(window, &winW, &winH);
         gifSkipSetting =
             25 / gifFpsSetting; // Assume 25fps render for skip calculation
-        Screenshot::BeginGif(winW, winH, gifScaleSetting, gifSkipSetting - 1);
-        gifFrameCurrent = 0;
-        isRecordingGif = true;
+        Screenshot::StartRecording(window, "screenshots/capture.gif",
+                                   gifFrameTarget, 100 / gifFpsSetting,
+                                   gifScaleSetting, gifSkipSetting - 1);
       }
     }
 

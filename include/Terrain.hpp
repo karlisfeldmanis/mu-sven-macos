@@ -16,9 +16,13 @@ public:
   void Init(); // Added Init for OpenGL setup
   void Load(const TerrainData &data, int worldID,
             const std::string &data_path);
-  void Render(const glm::mat4 &view, const glm::mat4 &projection, float time);
+  void Render(const glm::mat4 &view, const glm::mat4 &projection, float time,
+              const glm::vec3 &viewPos = glm::vec3(0.0f));
   void SetDebugMode(int mode) { debugMode = mode; }
   int GetDebugMode() const { return debugMode; }
+  void SetPointLights(const std::vector<glm::vec3> &positions,
+                      const std::vector<glm::vec3> &colors,
+                      const std::vector<float> &ranges);
 
 private:
   void setupMesh(const std::vector<float> &heightmap,
@@ -27,6 +31,9 @@ private:
   void setupTextures(const TerrainData &data, const std::string &base_path);
 
   int debugMode = 0;
+  std::vector<glm::vec3> plPositions, plColors;
+  std::vector<float> plRanges;
+  int plCount = 0;
   GLuint VAO, VBO, EBO;
   GLuint shaderProgram;
   GLuint tileTextureArray;

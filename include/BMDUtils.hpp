@@ -45,6 +45,11 @@ std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd,
                                                   int action = 0,
                                                   int frame = 0);
 
+// Compute bone world matrices with fractional frame interpolation (slerp)
+// Uses pre-computed quaternions for smooth animation between keyframes
+std::vector<BoneWorldMatrix>
+ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame);
+
 // Compute AABB from bone-transformed vertices
 AABB ComputeTransformedAABB(const BMDData *bmd,
                              const std::vector<BoneWorldMatrix> &bones);

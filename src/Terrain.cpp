@@ -11,15 +11,18 @@ layout (location = 2) in vec3 aColor;
 
 out vec2 TexCoord;
 out vec3 VertColor;
+out vec3 FragPos;
 
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 
 void main() {
-    gl_Position = projection * view * model * vec4(aPos, 1.0);
+    vec4 worldPos = model * vec4(aPos, 1.0);
+    gl_Position = projection * view * worldPos;
     TexCoord = aTexCoord;
     VertColor = aColor;
+    FragPos = worldPos.xyz;
 }
 )glsl";
 
@@ -29,7 +32,9 @@ out vec4 FragColor;
 
 in vec2 TexCoord;
 in vec3 VertColor;
+in vec3 FragPos;
 
+uniform vec3 viewPos;
 uniform sampler2DArray tileTextures;
 uniform sampler2D layer1Map;
 uniform sampler2D layer2Map;
@@ -39,6 +44,13 @@ uniform usampler2D symmetryMap;
 uniform sampler2D lightMap;
 uniform float uTime;
 uniform int debugMode;
+
+// Point lights
+const int MAX_POINT_LIGHTS = 64;
+uniform int numPointLights;
+uniform vec3 pointLightPos[MAX_POINT_LIGHTS];
+uniform vec3 pointLightColor[MAX_POINT_LIGHTS];
+uniform float pointLightRange[MAX_POINT_LIGHTS];
 
 vec2 applySymmetry(vec2 uv, uint symmetry) {
     uint rot = symmetry & 3u;
@@ -51,6 +63,17 @@ vec2 applySymmetry(vec2 uv, uint symmetry) {
     else if (rot == 2u) res = vec2(1.0 - res.x, 1.0 - res.y);
     else if (rot == 3u) res = vec2(res.y, 1.0 - res.x);
     return res;
+}
+
+// Edge fog: darken fragments near terrain boundaries
+// edgeMargin pushes full-opacity fog inward so map borders are fully hidden
+float computeEdgeFog(vec3 worldPos) {
+    float edgeWidth = 2500.0;
+    float edgeMargin = 500.0;
+    float terrainMax = 25600.0;
+    float dEdge = min(min(worldPos.x, terrainMax - worldPos.x),
+                      min(worldPos.z, terrainMax - worldPos.z));
+    return smoothstep(edgeMargin, edgeMargin + edgeWidth, dEdge);
 }
 
 vec4 sampleLayerSmooth(sampler2D layerMap, vec2 uv, vec2 uvBase) {
@@ -110,6 +133,15 @@ void main() {
     vec3 lightColor = texture(lightMap, TexCoord).rgb;
     finalColor *= lightColor;
     
+    // Accumulate point lights on terrain
+    for (int i = 0; i < numPointLights; ++i) {
+        vec3 toLight = pointLightPos[i] - FragPos;
+        float dist = length(toLight);
+        float atten = max(1.0 - dist / pointLightRange[i], 0.0);
+        atten *= atten; // Quadratic falloff
+        finalColor += atten * pointLightColor[i] * finalColor;
+    }
+
     // Water blue highlight (smooth bit check)
     vec2 f = fract(uvBase - 0.5);
     vec2 i = floor(uvBase - 0.5);
@@ -121,6 +153,18 @@ void main() {
     }
     float waterMask = mix(mix(w[0], w[1], f.x), mix(w[2], w[3], f.x), f.y);
     finalColor += waterMask * vec3(0.0, 0.05, 0.1);
+
+    // Fog: match original engine (CameraViewFar=2000, dark brown fog color)
+    float dist = length(FragPos - viewPos);
+    float fogNear = 1500.0;
+    float fogFar = 3500.0;
+    float fogFactor = clamp((fogFar - dist) / (fogFar - fogNear), 0.0, 1.0);
+    vec3 fogColor = vec3(0.117, 0.078, 0.039); // 30/256, 20/256, 10/256
+    finalColor = mix(fogColor, finalColor, fogFactor);
+
+    // Edge fog: darken toward black at map boundaries
+    float edgeFactor = computeEdgeFog(FragPos);
+    finalColor = mix(vec3(0.0), finalColor, edgeFactor);
 
     FragColor = vec4(finalColor, 1.0);
 
@@ -165,8 +209,17 @@ void Terrain::Load(const TerrainData &data, int worldID,
   setupTextures(data, worldDir);
 }
 
+void Terrain::SetPointLights(const std::vector<glm::vec3> &positions,
+                             const std::vector<glm::vec3> &colors,
+                             const std::vector<float> &ranges) {
+  plCount = std::min((int)positions.size(), 64);
+  plPositions.assign(positions.begin(), positions.begin() + plCount);
+  plColors.assign(colors.begin(), colors.begin() + plCount);
+  plRanges.assign(ranges.begin(), ranges.begin() + plCount);
+}
+
 void Terrain::Render(const glm::mat4 &view, const glm::mat4 &projection,
-                     float time) {
+                     float time, const glm::vec3 &viewPos) {
   if (indexCount == 0)
     return;
 
@@ -181,6 +234,26 @@ void Terrain::Render(const glm::mat4 &view, const glm::mat4 &projection,
                      GL_FALSE, glm::value_ptr(projection));
   glUniform1f(glGetUniformLocation(shaderProgram, "uTime"), time);
   glUniform1i(glGetUniformLocation(shaderProgram, "debugMode"), debugMode);
+  glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1,
+               glm::value_ptr(viewPos));
+
+  // Set point light uniforms
+  glUniform1i(glGetUniformLocation(shaderProgram, "numPointLights"), plCount);
+  for (int i = 0; i < plCount; ++i) {
+    std::string idx = std::to_string(i);
+    glUniform3fv(
+        glGetUniformLocation(shaderProgram,
+                             ("pointLightPos[" + idx + "]").c_str()),
+        1, glm::value_ptr(plPositions[i]));
+    glUniform3fv(
+        glGetUniformLocation(shaderProgram,
+                             ("pointLightColor[" + idx + "]").c_str()),
+        1, glm::value_ptr(plColors[i]));
+    glUniform1f(
+        glGetUniformLocation(shaderProgram,
+                             ("pointLightRange[" + idx + "]").c_str()),
+        plRanges[i]);
+  }
 
   glBindVertexArray(VAO);
 

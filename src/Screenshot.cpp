@@ -20,6 +20,16 @@ static float gifScale = 1.0f;
 static int gifSkipCount = 0;
 static int gifFrameCounter = 0;
 
+// Static members for high-level recording
+bool Screenshot::recording = false;
+bool Screenshot::warmingUp = false;
+int Screenshot::recFrameTarget = 72;
+int Screenshot::recFrameCurrent = 0;
+int Screenshot::recWarmupTarget = 30;
+int Screenshot::recWarmupCurrent = 0;
+int Screenshot::recDelayCs = 4;
+std::string Screenshot::recSavePath;
+
 void Screenshot::Capture(GLFWwindow *window,
                          const std::string &customFilename) {
   int width, height;
@@ -161,7 +171,7 @@ void Screenshot::AddGifFrame(GLFWwindow *window) {
   gifFrames.push_back(std::move(frame));
 }
 
-// Median-cut color quantization: reduce RGB image to 256-color palette
+// Median-cut color quantization: reduce RGB image to palette
 namespace {
 
 struct ColorBox {
@@ -208,10 +218,9 @@ struct ColorBox {
   }
 };
 
-void medianCutQuantize(const unsigned char *pixels, int pixelCount,
-                       GifColorType palette[256],
-                       unsigned char *indexedOutput) {
-  // Build initial box with all pixel indices (sample if too many)
+// Phase 1: Build palette from pixel data via median-cut (up to maxColors)
+void medianCutBuildPalette(const unsigned char *pixels, int pixelCount,
+                           GifColorType palette[256], int maxColors = 256) {
   ColorBox initial;
   initial.pixels = pixels;
   int step = std::max(1, pixelCount / 50000); // sample for speed
@@ -223,9 +232,7 @@ void medianCutQuantize(const unsigned char *pixels, int pixelCount,
   std::vector<ColorBox> boxes;
   boxes.push_back(std::move(initial));
 
-  // Split until we have 256 boxes
-  while ((int)boxes.size() < 256) {
-    // Find box with largest range
+  while ((int)boxes.size() < maxColors) {
     int bestIdx = 0;
     int bestRange = 0;
     for (int i = 0; i < (int)boxes.size(); ++i) {
@@ -247,7 +254,6 @@ void medianCutQuantize(const unsigned char *pixels, int pixelCount,
     if (bestRange == 0)
       break;
 
-    // Split best box along its longest axis
     ColorBox &box = boxes[bestIdx];
     int axis = box.longestAxis();
     std::sort(box.indices.begin(), box.indices.end(), [&](int a, int b) {
@@ -265,7 +271,6 @@ void medianCutQuantize(const unsigned char *pixels, int pixelCount,
     boxes.push_back(std::move(newBox));
   }
 
-  // Build palette from box averages
   for (int i = 0; i < 256; ++i) {
     if (i < (int)boxes.size()) {
       auto avg = boxes[i].average();
@@ -276,9 +281,12 @@ void medianCutQuantize(const unsigned char *pixels, int pixelCount,
       palette[i].Red = palette[i].Green = palette[i].Blue = 0;
     }
   }
+}
 
-  // Map each pixel to nearest palette entry
-  // Build a lookup for speed: use 5-bit truncated RGB as hash
+// Phase 2: Map each pixel to nearest palette entry
+void quantizeToPalette(const unsigned char *pixels, int pixelCount,
+                       const GifColorType palette[256], int paletteSize,
+                       unsigned char *indexedOutput) {
   for (int i = 0; i < pixelCount; ++i) {
     int r = pixels[i * 3 + 0];
     int g = pixels[i * 3 + 1];
@@ -286,8 +294,7 @@ void medianCutQuantize(const unsigned char *pixels, int pixelCount,
 
     int bestDist = INT_MAX;
     int bestPal = 0;
-    int numPal = std::min(256, (int)boxes.size());
-    for (int p = 0; p < numPal; ++p) {
+    for (int p = 0; p < paletteSize; ++p) {
       int dr = r - palette[p].Red;
       int dg = g - palette[p].Green;
       int db = b - palette[p].Blue;
@@ -299,6 +306,38 @@ void medianCutQuantize(const unsigned char *pixels, int pixelCount,
     }
     indexedOutput[i] = (unsigned char)bestPal;
   }
+}
+
+// Build a global palette from sampled pixels across ALL frames.
+// Uses 255 colors, reserving index 255 for transparency.
+void buildGlobalPalette(const std::vector<Screenshot::GifFrame> &frames,
+                        GifColorType palette[256]) {
+  // Collect proportional samples from all frames
+  long long totalPixels = 0;
+  for (auto &f : frames)
+    totalPixels += f.width * f.height;
+
+  const int sampleTarget = 60000;
+  std::vector<unsigned char> sampleBuf;
+  sampleBuf.reserve(sampleTarget * 3);
+
+  for (auto &f : frames) {
+    int framePixels = f.width * f.height;
+    int frameSamples =
+        std::max(1, (int)((long long)sampleTarget * framePixels / totalPixels));
+    int step = std::max(1, framePixels / frameSamples);
+    for (int i = 0; i < framePixels; i += step) {
+      sampleBuf.push_back(f.pixels[i * 3 + 0]);
+      sampleBuf.push_back(f.pixels[i * 3 + 1]);
+      sampleBuf.push_back(f.pixels[i * 3 + 2]);
+    }
+  }
+
+  int sampleCount = (int)sampleBuf.size() / 3;
+  medianCutBuildPalette(sampleBuf.data(), sampleCount, palette, 255);
+
+  // Index 255 reserved for transparency (set to black, never displayed)
+  palette[255].Red = palette[255].Green = palette[255].Blue = 0;
 }
 
 } // namespace
@@ -325,8 +364,15 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
   int canvasW = gifFrames[0].width;
   int canvasH = gifFrames[0].height;
 
-  if (EGifPutScreenDesc(gif, canvasW, canvasH, 8, 0, nullptr) == GIF_ERROR) {
+  // Build global palette from all frames (255 colors + 1 transparent)
+  GifColorType globalPalette[256];
+  buildGlobalPalette(gifFrames, globalPalette);
+  ColorMapObject *globalColorMap = GifMakeMapObject(256, globalPalette);
+
+  if (EGifPutScreenDesc(gif, canvasW, canvasH, 8, 0, globalColorMap) ==
+      GIF_ERROR) {
     std::cerr << "[GIF] Failed to write screen descriptor" << std::endl;
+    GifFreeMapObject(globalColorMap);
     EGifCloseFile(gif, &err);
     return;
   }
@@ -339,10 +385,11 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
   EGifPutExtensionTrailer(gif);
 
   std::cout << "[GIF] Encoding " << gifFrames.size() << " frames (" << canvasW
-            << "x" << canvasH << ")..." << std::endl;
+            << "x" << canvasH << ") with global palette..." << std::endl;
 
   std::vector<unsigned char> prevPixels;
   const int transIndex = 255;
+  const int DIFF_THRESHOLD = 12; // sum of abs channel differences
 
   for (int f = 0; f < (int)gifFrames.size(); ++f) {
     auto &frame = gifFrames[f];
@@ -352,7 +399,7 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
     int minX = 0, minY = 0, maxX = w - 1, maxY = h - 1;
     bool isDiff = false;
 
-    // Frame diffing: find bounding box of changes
+    // Frame diffing: find bounding box of changes (with tolerance)
     if (f > 0 && prevPixels.size() == frame.pixels.size()) {
       minX = w;
       minY = h;
@@ -361,9 +408,12 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
       for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
           int idx = (y * w + x) * 3;
-          if (frame.pixels[idx] != prevPixels[idx] ||
-              frame.pixels[idx + 1] != prevPixels[idx + 1] ||
-              frame.pixels[idx + 2] != prevPixels[idx + 2]) {
+          int dr = std::abs((int)frame.pixels[idx] - (int)prevPixels[idx]);
+          int dg =
+              std::abs((int)frame.pixels[idx + 1] - (int)prevPixels[idx + 1]);
+          int db =
+              std::abs((int)frame.pixels[idx + 2] - (int)prevPixels[idx + 2]);
+          if (dr + dg + db > DIFF_THRESHOLD) {
             minX = std::min(minX, x);
             minY = std::min(minY, y);
             maxX = std::max(maxX, x);
@@ -373,8 +423,6 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
         }
       }
       if (!isDiff) {
-        // No changes, still need to add a frame for delay (or skip? let's just
-        // add minimal)
         minX = minY = 0;
         maxX = maxY = 0;
       }
@@ -390,30 +438,29 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
              &frame.pixels[((minY + y) * w + minX) * 3], diffW * 3);
     }
 
-    GifColorType palette[256];
+    // Quantize using global palette
     std::vector<unsigned char> indexed(diffW * diffH);
-
-    // Reserve index 255 for transparency if this is a diff frame
-    medianCutQuantize(dirtyPixels.data(), diffW * diffH, palette,
+    quantizeToPalette(dirtyPixels.data(), diffW * diffH, globalPalette, 255,
                       indexed.data());
 
-    // If diffing, we set pixels that match previous frame to transIndex
+    // Mark unchanged pixels as transparent (with tolerance)
     if (f > 0 && isDiff) {
       for (int y = 0; y < diffH; ++y) {
         for (int x = 0; x < diffW; ++x) {
           int fx = minX + x;
           int fy = minY + y;
           int idx = (fy * w + fx) * 3;
-          if (frame.pixels[idx] == prevPixels[idx] &&
-              frame.pixels[idx + 1] == prevPixels[idx + 1] &&
-              frame.pixels[idx + 2] == prevPixels[idx + 2]) {
+          int dr = std::abs((int)frame.pixels[idx] - (int)prevPixels[idx]);
+          int dg =
+              std::abs((int)frame.pixels[idx + 1] - (int)prevPixels[idx + 1]);
+          int db =
+              std::abs((int)frame.pixels[idx + 2] - (int)prevPixels[idx + 2]);
+          if (dr + dg + db <= DIFF_THRESHOLD) {
             indexed[y * diffW + x] = (unsigned char)transIndex;
           }
         }
       }
     }
-
-    ColorMapObject *colorMap = GifMakeMapObject(256, palette);
 
     GraphicsControlBlock gcb;
     gcb.DisposalMode = DISPOSE_DO_NOT;
@@ -425,11 +472,11 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
     EGifGCBToExtension(&gcb, gcbBytes);
     EGifPutExtension(gif, GRAPHICS_EXT_FUNC_CODE, 4, gcbBytes);
 
-    if (EGifPutImageDesc(gif, minX, minY, diffW, diffH, false, colorMap) ==
+    // No local color map — uses global palette (saves ~768 bytes per frame)
+    if (EGifPutImageDesc(gif, minX, minY, diffW, diffH, false, nullptr) ==
         GIF_ERROR) {
       std::cerr << "[GIF] Failed to write image descriptor for frame " << f
                 << std::endl;
-      GifFreeMapObject(colorMap);
       break;
     }
 
@@ -437,7 +484,6 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
       EGifPutLine(gif, indexed.data() + y * diffW, diffW);
     }
 
-    GifFreeMapObject(colorMap);
     prevPixels = frame.pixels;
 
     if ((f + 1) % 10 == 0 || f == (int)gifFrames.size() - 1) {
@@ -445,6 +491,8 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
                 << std::endl;
     }
   }
+
+  GifFreeMapObject(globalColorMap);
 
   if (EGifCloseFile(gif, &err) == GIF_ERROR) {
     std::cerr << "[GIF] Error closing file: " << GifErrorString(err)
@@ -456,4 +504,67 @@ void Screenshot::SaveGif(const std::string &path, int delayCs) {
   }
 
   gifFrames.clear();
+}
+
+// --- High-level GIF recording with warmup ---
+
+void Screenshot::StartRecording(GLFWwindow *window, const std::string &savePath,
+                                int frameCount, int delayCs, float scale,
+                                int skipCount, int warmupFrames) {
+  int w, h;
+  glfwGetFramebufferSize(window, &w, &h);
+  BeginGif(w, h, scale, skipCount);
+
+  recSavePath = savePath;
+  recFrameTarget = frameCount;
+  recFrameCurrent = 0;
+  recDelayCs = delayCs;
+  recWarmupTarget = warmupFrames;
+  recWarmupCurrent = 0;
+  warmingUp = (warmupFrames > 0);
+  recording = !warmingUp;
+}
+
+bool Screenshot::TickRecording(GLFWwindow *window) {
+  if (warmingUp) {
+    recWarmupCurrent++;
+    if (recWarmupCurrent >= recWarmupTarget) {
+      warmingUp = false;
+      recording = true;
+    }
+    return false;
+  }
+
+  if (!recording)
+    return false;
+
+  AddGifFrame(window);
+  recFrameCurrent++;
+
+  if (recFrameCurrent >= recFrameTarget) {
+    recording = false;
+    std::filesystem::create_directories(
+        std::filesystem::path(recSavePath).parent_path());
+    SaveGif(recSavePath, recDelayCs);
+    return true; // finished
+  }
+  return false;
+}
+
+bool Screenshot::IsRecording() { return recording || warmingUp; }
+
+bool Screenshot::IsWarmingUp() { return warmingUp; }
+
+float Screenshot::GetProgress() {
+  if (warmingUp) {
+    return recWarmupTarget > 0
+               ? (float)recWarmupCurrent / recWarmupTarget * 0.1f
+               : 0.0f; // warmup is ~10% of progress bar
+  }
+  if (recording) {
+    return recFrameTarget > 0
+               ? 0.1f + (float)recFrameCurrent / recFrameTarget * 0.9f
+               : 0.0f;
+  }
+  return 0.0f;
 }

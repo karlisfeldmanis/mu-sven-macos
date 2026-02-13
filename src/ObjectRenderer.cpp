@@ -1,8 +1,39 @@
 #include "ObjectRenderer.hpp"
 #include "TextureLoader.hpp"
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
+
+// BlendMesh texture ID lookup — returns the BMD texture slot index
+// that identifies the "window light" mesh for each object type.
+// Returns -1 if the object type has no BlendMesh.
+// Source: reference ZzzObject.cpp OpenObjectsEnc / CreateObject
+static int GetBlendMeshTexId(int type) {
+  switch (type) {
+  case 117:
+    return 4; // House03 — window glow (flicker)
+  case 118:
+    return 8; // House04 — window glow (flicker + UV scroll)
+  case 119:
+    return 2; // House05 — window glow (flicker + UV scroll)
+  case 122:
+    return 4; // HouseWall02 — window glow (flicker)
+  case 52:
+    return 1; // Bonfire01 — fire glow
+  case 90:
+    return 1; // StreetLight01 — lamp glow
+  case 150:
+    return 1; // Candle01 — candle glow
+  case 98:
+    return 2; // Carriage01 — lantern glow
+  case 105:
+    return 3; // Waterspout01 — water UV scroll
+  default:
+    return -1;
+  }
+}
 
 // Type-to-filename mapping based on reference _enum.h + MapManager.cpp
 // AccessModel(TYPE, dir, "BaseName", index):
@@ -92,7 +123,7 @@ void ObjectRenderer::Init() {
 
 void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
                                 const std::vector<BoneWorldMatrix> &bones,
-                                std::vector<MeshBuffers> &out) {
+                                std::vector<MeshBuffers> &out, bool dynamic) {
   MeshBuffers mb;
   mb.texture = 0;
 
@@ -158,10 +189,14 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
   }
 
   mb.indexCount = indices.size();
+  mb.vertexCount = vertices.size();
+  mb.isDynamic = dynamic;
   if (mb.indexCount == 0) {
     out.push_back(mb);
     return;
   }
+
+  GLenum usage = dynamic ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
 
   glGenVertexArrays(1, &mb.vao);
   glGenBuffers(1, &mb.vbo);
@@ -170,7 +205,7 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
   glBindVertexArray(mb.vao);
   glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
   glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex),
-               vertices.data(), GL_STATIC_DRAW);
+               vertices.data(), usage);
 
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mb.ebo);
   glBufferData(GL_ELEMENT_ARRAY_BUFFER,
@@ -195,6 +230,8 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
   mb.noneBlend = scriptFlags.noneBlend;
   mb.hidden = scriptFlags.hidden;
   mb.bright = scriptFlags.bright;
+
+  mb.bmdTextureId = mesh.Texture; // Store BMD texture slot for BlendMesh matching
 
   out.push_back(mb);
 }
@@ -223,11 +260,52 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
 
       ModelCache cache;
       cache.boneMatrices = ComputeBoneMatrices(bmd.get());
+      cache.blendMeshTexId = GetBlendMeshTexId(obj.type);
+
+      // Detect animated models (>1 keyframe in first action)
+      // Only enable CPU re-skinning for select types — trees (0-19) and
+      // stone walls have too many instances for per-frame vertex transforms.
+      auto shouldAnimate = [](int t) {
+        // Cloth, signs, animals, mechanical, decorative — low instance count
+        return t == 56 || t == 57 ||  // MerchantAnimal01-02
+               t == 59 ||             // TreasureChest01
+               t == 60 ||             // Ship01
+               t == 90 ||             // StreetLight01
+               t == 95 ||             // Curtain01
+               t == 96 ||             // Sign01
+               t == 98 ||             // Carriage01
+               t == 105 ||            // Waterspout01
+               t == 110 ||            // Hanging01
+               t == 118 || t == 119 || // House04-05
+               t == 120 ||            // Tent01
+               t == 150;              // Candle01
+      };
+      if (!bmd->Actions.empty() && bmd->Actions[0].NumAnimationKeys > 1 &&
+          shouldAnimate(obj.type)) {
+        cache.isAnimated = true;
+        cache.numAnimationKeys = bmd->Actions[0].NumAnimationKeys;
+      }
 
       for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
         auto &mesh = bmd->Meshes[mi];
         UploadMesh(mesh, objectDir + "/", cache.boneMatrices,
-                   cache.meshBuffers);
+                   cache.meshBuffers, cache.isAnimated);
+      }
+
+      // Mark BlendMesh meshes (window light / glow)
+      if (cache.blendMeshTexId >= 0) {
+        for (auto &mb : cache.meshBuffers) {
+          if (mb.bmdTextureId == cache.blendMeshTexId) {
+            mb.isWindowLight = true;
+          }
+        }
+      }
+
+      // Retain BMD data for animated types (needed for per-frame re-skinning)
+      if (cache.isAnimated) {
+        cache.bmdData = std::move(bmd);
+        std::cout << "  [Animated] type " << obj.type << " keys="
+                  << cache.numAnimationKeys << std::endl;
       }
 
       modelCache[obj.type] = std::move(cache);
@@ -267,8 +345,86 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
             << " unique models, skipped " << skipped << std::endl;
 }
 
+void ObjectRenderer::SetPointLights(
+    const std::vector<glm::vec3> &positions,
+    const std::vector<glm::vec3> &colors, const std::vector<float> &ranges) {
+  plCount = std::min((int)positions.size(), 64);
+  plPositions.assign(positions.begin(), positions.begin() + plCount);
+  plColors.assign(colors.begin(), colors.begin() + plCount);
+  plRanges.assign(ranges.begin(), ranges.begin() + plCount);
+}
+
+void ObjectRenderer::RetransformMesh(const Mesh_t &mesh,
+                                     const std::vector<BoneWorldMatrix> &bones,
+                                     MeshBuffers &mb) {
+  if (!mb.isDynamic || mb.vertexCount == 0 || mb.vbo == 0)
+    return;
+
+  struct Vertex {
+    glm::vec3 pos;
+    glm::vec3 normal;
+    glm::vec2 tex;
+  };
+  std::vector<Vertex> vertices;
+  vertices.reserve(mb.vertexCount);
+
+  for (int i = 0; i < mesh.NumTriangles; ++i) {
+    auto &tri = mesh.Triangles[i];
+    int steps = (tri.Polygon == 3) ? 3 : 4;
+    for (int v = 0; v < 3; ++v) {
+      Vertex vert;
+      auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+      auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
+
+      int boneIdx = srcVert.Node;
+      if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
+        const auto &bm = bones[boneIdx];
+        vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
+                                          srcVert.Position);
+        vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
+                                           srcNorm.Normal);
+      } else {
+        vert.pos = srcVert.Position;
+        vert.normal = srcNorm.Normal;
+      }
+
+      vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                            mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+      vertices.push_back(vert);
+    }
+    if (steps == 4) {
+      int quadIndices[3] = {0, 2, 3};
+      for (int v : quadIndices) {
+        Vertex vert;
+        auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+        auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
+
+        int boneIdx = srcVert.Node;
+        if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
+          const auto &bm = bones[boneIdx];
+          vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
+                                            srcVert.Position);
+          vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
+                                             srcNorm.Normal);
+        } else {
+          vert.pos = srcVert.Position;
+          vert.normal = srcNorm.Normal;
+        }
+
+        vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                              mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+        vertices.push_back(vert);
+      }
+    }
+  }
+
+  glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
+  glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(Vertex),
+                  vertices.data());
+}
+
 void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
-                            const glm::vec3 &cameraPos) {
+                            const glm::vec3 &cameraPos, float currentTime) {
   if (instances.empty() || !shader)
     return;
 
@@ -281,7 +437,53 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   shader->setVec3("lightPos", cameraPos + glm::vec3(0, 8000, 0));
   shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   shader->setVec3("viewPos", cameraPos);
-  shader->setBool("useFog", false);
+  shader->setBool("useFog", true);
+  shader->setFloat("blendMeshLight", 1.0f);
+  shader->setVec2("texCoordOffset", glm::vec2(0.0f));
+
+  // Set point light uniforms
+  shader->setInt("numPointLights", plCount);
+  for (int i = 0; i < plCount; ++i) {
+    std::string idx = std::to_string(i);
+    shader->setVec3("pointLightPos[" + idx + "]", plPositions[i]);
+    shader->setVec3("pointLightColor[" + idx + "]", plColors[i]);
+    shader->setFloat("pointLightRange[" + idx + "]", plRanges[i]);
+  }
+
+  // Advance skeletal animation for animated model types
+  {
+    const float ANIM_SPEED = 4.0f; // keyframes/sec (reference: 0.16 * 25fps)
+    float dt = (lastAnimTime > 0.0f) ? (currentTime - lastAnimTime) : 0.0f;
+    if (dt > 0.0f && dt < 1.0f) { // clamp to avoid huge jumps
+      for (auto &[type, cache] : modelCache) {
+        if (!cache.isAnimated || !cache.bmdData)
+          continue;
+        auto &state = animStates[type];
+        state.frame += ANIM_SPEED * dt;
+        if (state.frame >= (float)cache.numAnimationKeys)
+          state.frame = std::fmod(state.frame, (float)cache.numAnimationKeys);
+
+        auto bones = ComputeBoneMatricesInterpolated(cache.bmdData.get(), 0,
+                                                     state.frame);
+        for (int mi = 0;
+             mi < (int)cache.meshBuffers.size() &&
+             mi < (int)cache.bmdData->Meshes.size();
+             ++mi) {
+          RetransformMesh(cache.bmdData->Meshes[mi], bones,
+                          cache.meshBuffers[mi]);
+        }
+      }
+    }
+    lastAnimTime = currentTime;
+  }
+
+  // Compute BlendMesh animation state from time
+  // Flicker: random-ish intensity between 0.4 and 0.7 (like original rand()%4+4)
+  float flickerBase =
+      0.55f + 0.15f * std::sin(currentTime * 7.3f) *
+                  std::sin(currentTime * 11.1f + 2.0f);
+  // UV scroll: 1-second cycle for animated window meshes
+  float uvScroll = -std::fmod(currentTime, 1.0f);
 
   for (auto &inst : instances) {
     // PoseBox (type 133) is an NPC interaction trigger, not a visible object
@@ -294,18 +496,46 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
 
     shader->setMat4("model", inst.modelMatrix);
 
+    // Check if this model type has BlendMesh animation
+    bool hasBlendMesh = it->second.blendMeshTexId >= 0;
+    bool hasUVScroll = (inst.type == 118 || inst.type == 119 || inst.type == 105);
+
     for (auto &mb : it->second.meshBuffers) {
       if (mb.indexCount == 0 || mb.hidden)
         continue;
-      // Skip meshes with no texture — these are interaction/collision volumes
-      // not meant to be rendered (gameplay triggers, collision boxes, etc.)
       if (mb.texture == 0)
         continue;
 
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
 
-      if (mb.noneBlend) {
+      if (mb.isWindowLight && hasBlendMesh) {
+        // BlendMesh: additive blending with intensity flicker
+        float intensity = flickerBase;
+        // Bonfire has wider flicker range (0.4-0.9)
+        if (inst.type == 52)
+          intensity = 0.65f + 0.25f * std::sin(currentTime * 9.0f) *
+                                  std::sin(currentTime * 13.7f);
+        // Static glow for streetlights, candles, carriages
+        if (inst.type == 90 || inst.type == 150 || inst.type == 98)
+          intensity = 1.0f;
+
+        shader->setFloat("blendMeshLight", intensity);
+        if (hasUVScroll)
+          shader->setVec2("texCoordOffset", glm::vec2(0.0f, uvScroll));
+        else
+          shader->setVec2("texCoordOffset", glm::vec2(0.0f));
+
+        glBlendFunc(GL_ONE, GL_ONE);
+        glDepthMask(GL_FALSE);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        glDepthMask(GL_TRUE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Reset uniforms for next mesh
+        shader->setFloat("blendMeshLight", 1.0f);
+        shader->setVec2("texCoordOffset", glm::vec2(0.0f));
+      } else if (mb.noneBlend) {
         glDisable(GL_BLEND);
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
         glEnable(GL_BLEND);

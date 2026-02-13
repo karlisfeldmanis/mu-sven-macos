@@ -261,8 +261,10 @@ TerrainParser::ParseObjectsFile(const std::string &path) {
   size_t ptr = 4;
 
   for (int i = 0; i < count; ++i) {
-    ObjectData obj;
-    memcpy(&obj.type, data.data() + ptr, 2);
+    ObjectData obj{};
+    short rawType;
+    memcpy(&rawType, data.data() + ptr, 2);
+    obj.type = rawType;
     ptr += 2;
 
     float mu_pos[3], mu_angle[3];

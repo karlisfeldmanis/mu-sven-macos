@@ -118,6 +118,94 @@ std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd,
   return world;
 }
 
+// Quaternion spherical linear interpolation (shortest path)
+static glm::vec4 QuaternionSlerp(const glm::vec4 &q1, const glm::vec4 &q2,
+                                  float t) {
+  float dot = q1.x * q2.x + q1.y * q2.y + q1.z * q2.z + q1.w * q2.w;
+  glm::vec4 q2adj = q2;
+  if (dot < 0.0f) {
+    dot = -dot;
+    q2adj = -q2adj;
+  }
+  if (dot > 0.9999f) {
+    // Nearly identical — lerp and normalize
+    return glm::normalize(q1 * (1.0f - t) + q2adj * t);
+  }
+  float theta = acosf(dot);
+  float sinTheta = sinf(theta);
+  float w1 = sinf((1.0f - t) * theta) / sinTheta;
+  float w2 = sinf(t * theta) / sinTheta;
+  return q1 * w1 + q2adj * w2;
+}
+
+std::vector<BoneWorldMatrix>
+ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame) {
+  int numBones = (int)bmd->Bones.size();
+  std::vector<BoneWorldMatrix> world(numBones);
+
+  // Identity init
+  for (int i = 0; i < numBones; ++i)
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 4; ++c)
+        world[i][r][c] = (r == c) ? 1.0f : 0.0f;
+
+  if (bmd->Actions.empty() || action >= (int)bmd->Actions.size())
+    return world;
+
+  int numKeys = bmd->Actions[action].NumAnimationKeys;
+  if (numKeys <= 0)
+    return world;
+
+  // Decompose float frame into integer indices + interpolation factor
+  int frame0 = (int)frame;
+  int frame1 = frame0 + 1;
+  float t = frame - (float)frame0;
+
+  frame0 = frame0 % numKeys;
+  frame1 = frame1 % numKeys;
+  if (frame0 < 0)
+    frame0 = 0;
+  if (frame1 < 0)
+    frame1 = 0;
+
+  for (int i = 0; i < numBones; ++i) {
+    auto &bone = bmd->Bones[i];
+    if (bone.Dummy)
+      continue;
+    if (action >= (int)bone.BoneMatrixes.size())
+      continue;
+    auto &bm = bone.BoneMatrixes[action];
+    if (bm.Position.empty() || bm.Quaternion.empty())
+      continue;
+
+    int f0 = (frame0 < (int)bm.Position.size()) ? frame0 : 0;
+    int f1 = (frame1 < (int)bm.Position.size()) ? frame1 : 0;
+
+    // Slerp pre-computed quaternions
+    glm::vec4 qInterp = QuaternionSlerp(bm.Quaternion[f0], bm.Quaternion[f1], t);
+    float quat[4] = {qInterp.x, qInterp.y, qInterp.z, qInterp.w};
+    float local[3][4];
+    MuMath::QuaternionMatrix(quat, local);
+
+    // Lerp positions
+    glm::vec3 pos = bm.Position[f0] * (1.0f - t) + bm.Position[f1] * t;
+    local[0][3] = pos.x;
+    local[1][3] = pos.y;
+    local[2][3] = pos.z;
+
+    if (bone.Parent == -1) {
+      memcpy(world[i].data(), local, sizeof(float) * 12);
+    } else if (bone.Parent >= 0 && bone.Parent < numBones) {
+      float result[3][4];
+      MuMath::ConcatTransforms((const float(*)[4])world[bone.Parent].data(),
+                                local, result);
+      memcpy(world[i].data(), result, sizeof(float) * 12);
+    }
+  }
+
+  return world;
+}
+
 AABB ComputeTransformedAABB(const BMDData *bmd,
                              const std::vector<BoneWorldMatrix> &bones) {
   AABB box;

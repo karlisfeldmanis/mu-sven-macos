@@ -4,14 +4,14 @@
 #include <iostream>
 
 Camera::Camera(glm::vec3 position)
-    : Position(position), WorldUp(0.0f, 1.0f, 0.0f), Yaw(0.0f), Pitch(-35.0f),
-      Zoom(8000.0f), TargetZoom(8000.0f), MovementSpeed(10000.0f),
+    : Position(position), WorldUp(0.0f, 1.0f, 0.0f), Yaw(-45.0f),
+      Pitch(-48.5f), Zoom(1000.0f), TargetZoom(1000.0f), MovementSpeed(2000.0f),
       MouseSensitivity(0.25f) {
   updateCameraVectors();
 }
 
 void Camera::ProcessKeyboard(int direction, float deltaTime) {
-  float velocity = MovementSpeed * (std::max(Zoom, 500.0f) / 8000.0f) * deltaTime;
+  float velocity = MovementSpeed * deltaTime;
 
   // Direction: 0=Forward, 1=Backward, 2=Left, 3=Right (WASD)
   // Movement is relative to Yaw (horizontal plane)
@@ -47,9 +47,9 @@ void Camera::ProcessMouseRotation(float xoffset, float yoffset) {
 }
 
 void Camera::ProcessMouseScroll(float yoffset) {
-  // Scale scroll step proportionally to current zoom (20% per tick)
-  TargetZoom -= yoffset * TargetZoom * 0.2f;
-  TargetZoom = std::clamp(TargetZoom, 1.0f, 12000.0f);
+  // MU Online zoom levels: 1000-1400 (5 steps of 100)
+  TargetZoom -= yoffset * 100.0f;
+  TargetZoom = std::clamp(TargetZoom, 800.0f, 1400.0f);
 }
 
 void Camera::Update(float deltaTime) {
@@ -65,7 +65,7 @@ glm::mat4 Camera::GetViewMatrix() {
 }
 
 glm::mat4 Camera::GetProjectionMatrix(float width, float height) {
-  return glm::perspective(glm::radians(45.0f), width / height, 1.0f,
+  return glm::perspective(glm::radians(55.0f), width / height, 1.0f,
                           100000.0f);
 }
 

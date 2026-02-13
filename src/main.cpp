@@ -1,7 +1,9 @@
 #include "Camera.hpp"
 #include "FireEffect.hpp"
+#include "GrassRenderer.hpp"
 #include "ObjectRenderer.hpp"
 #include "Screenshot.hpp"
+#include "Sky.hpp"
 #include "Terrain.hpp"
 #include "TerrainParser.hpp"
 #include "imgui.h"
@@ -32,30 +34,67 @@ Camera g_camera(glm::vec3(12800.0f, 0.0f, 12800.0f));
 Terrain g_terrain;
 ObjectRenderer g_objectRenderer;
 FireEffect g_fireEffect;
-bool g_firstMouse = true;
-float g_lastX = 1280.0f / 2.0f;
-float g_lastY = 720.0f / 2.0f;
+Sky g_sky;
+GrassRenderer g_grass;
+
+// Point lights collected from light-emitting world objects
+static const int MAX_POINT_LIGHTS = 64;
+struct PointLight {
+  glm::vec3 position;
+  glm::vec3 color;
+  float range;
+};
+static std::vector<PointLight> g_pointLights;
+
+struct LightTemplate {
+  glm::vec3 color;
+  float range;
+  float heightOffset; // Y offset above object base for emission point
+};
+
+// Returns light properties for a given object type, or nullptr if not a light
+static const LightTemplate *GetLightProperties(int type) {
+  static const LightTemplate fireLightProps = {
+      glm::vec3(1.5f, 0.9f, 0.5f), 800.0f, 150.0f};
+  static const LightTemplate bonfireProps = {
+      glm::vec3(1.5f, 0.75f, 0.3f), 1000.0f, 100.0f};
+  static const LightTemplate gateProps = {
+      glm::vec3(1.5f, 0.9f, 0.5f), 800.0f, 200.0f};
+  static const LightTemplate bridgeProps = {
+      glm::vec3(1.2f, 0.7f, 0.4f), 700.0f, 50.0f};
+  static const LightTemplate streetLightProps = {
+      glm::vec3(1.5f, 1.2f, 0.75f), 800.0f, 250.0f};
+  static const LightTemplate candleProps = {
+      glm::vec3(1.2f, 0.7f, 0.3f), 600.0f, 80.0f};
+  static const LightTemplate lightFixtureProps = {
+      glm::vec3(1.2f, 0.85f, 0.5f), 700.0f, 150.0f};
+
+  switch (type) {
+  case 50:
+  case 51:
+    return &fireLightProps;
+  case 52:
+    return &bonfireProps;
+  case 55:
+    return &gateProps;
+  case 80:
+    return &bridgeProps;
+  case 90:
+    return &streetLightProps;
+  case 130:
+  case 131:
+  case 132:
+    return &lightFixtureProps;
+  case 150:
+    return &candleProps;
+  default:
+    return nullptr;
+  }
+}
 
 void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
   ImGui_ImplGlfw_CursorPosCallback(window, xpos, ypos);
-
-  if (g_firstMouse) {
-    g_lastX = xpos;
-    g_lastY = ypos;
-    g_firstMouse = false;
-  }
-
-  float xoffset = xpos - g_lastX;
-  float yoffset =
-      g_lastY - ypos; // reversed since y-coordinates go from bottom to top
-
-  g_lastX = xpos;
-  g_lastY = ypos;
-
-  if (!ImGui::GetIO().WantCaptureMouse &&
-      glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-    g_camera.ProcessMouseRotation(xoffset, yoffset);
-  }
+  // Camera rotation disabled — fixed isometric angle like original MU
 }
 
 void scroll_callback(GLFWwindow *window, double xoffset, double yoffset) {
@@ -165,6 +204,13 @@ int main(int argc, char **argv) {
   std::string object1_path = data_path + "/Object1";
   g_objectRenderer.LoadObjects(terrainData.objects, object1_path);
 
+  // Initialize grass billboards
+  g_grass.Init();
+  g_grass.Load(terrainData, 1, data_path);
+
+  // Initialize sky
+  g_sky.Init(data_path + "/");
+
   // Initialize fire effects and register emitters from fire-type objects
   g_fireEffect.Init(data_path + "/Effect");
   for (auto &inst : g_objectRenderer.GetInstances()) {
@@ -177,14 +223,36 @@ int main(int argc, char **argv) {
   }
   std::cout << "[FireEffect] Registered " << g_fireEffect.GetEmitterCount()
             << " fire emitters" << std::endl;
-
-  // Set a reasonable initial camera position if no state loaded
-  if (g_camera.GetPosition().y < 1.0f) {
-    g_camera.SetPosition(glm::vec3(12750.0f, 1000.0f, 12750.0f));
+  // Print fire-type objects for debugging/testing
+  for (int i = 0; i < (int)terrainData.objects.size(); ++i) {
+    int t = terrainData.objects[i].type;
+    if (t == 50 || t == 51 || t == 52 || t == 55 || t == 80)
+      std::cout << "  fire obj idx=" << i << " type=" << t << std::endl;
   }
 
-  // Load camera state if exists
-  g_camera.LoadState("camera_save.txt");
+  // Collect point lights from light-emitting objects
+  g_pointLights.clear();
+  for (auto &inst : g_objectRenderer.GetInstances()) {
+    const LightTemplate *props = GetLightProperties(inst.type);
+    if (!props)
+      continue;
+    // Extract world position from model matrix translation column
+    glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+    PointLight light;
+    light.position = worldPos + glm::vec3(0.0f, props->heightOffset, 0.0f);
+    light.color = props->color;
+    light.range = props->range;
+    g_pointLights.push_back(light);
+  }
+  // Cap at shader maximum
+  if ((int)g_pointLights.size() > MAX_POINT_LIGHTS)
+    g_pointLights.resize(MAX_POINT_LIGHTS);
+  std::cout << "[Lights] Collected " << g_pointLights.size()
+            << " point lights from world objects" << std::endl;
+
+  // Fixed isometric camera at Lorencia town center (simulates character standing)
+  // Position is the "character" location; camera orbits at MU angle + distance
+  g_camera.SetPosition(glm::vec3(13000.0f, 350.0f, 13500.0f));
 
   // Auto-diagnostic mode: --diag flag captures all debug views and exits
   bool autoDiag = false;
@@ -194,6 +262,9 @@ int main(int argc, char **argv) {
   int gifDelay = 4;       // centiseconds between frames (4cs = 25fps)
   int objectDebugIdx = -1;
   std::string objectDebugName;
+  bool hasCustomPos = false;
+  float customX = 0, customY = 0, customZ = 0;
+  std::string outputName;
   for (int i = 1; i < argc; ++i) {
     if (std::string(argv[i]) == "--diag")
       autoDiag = true;
@@ -203,6 +274,17 @@ int main(int argc, char **argv) {
       autoGif = true;
     if (std::string(argv[i]) == "--gif-frames" && i + 1 < argc) {
       gifFrameCount = std::atoi(argv[i + 1]);
+      ++i;
+    }
+    if (std::string(argv[i]) == "--pos" && i + 3 < argc) {
+      customX = std::atof(argv[i + 1]);
+      customY = std::atof(argv[i + 2]);
+      customZ = std::atof(argv[i + 3]);
+      hasCustomPos = true;
+      i += 3;
+    }
+    if (std::string(argv[i]) == "--output" && i + 1 < argc) {
+      outputName = argv[i + 1];
       ++i;
     }
     if (std::string(argv[i]) == "--object-debug" && i + 1 < argc) {
@@ -217,10 +299,14 @@ int main(int argc, char **argv) {
     g_camera.SetZoom(3000.0f);
   }
   if (autoScreenshot || autoGif) {
-    // Overview of Lorencia town center
-    g_camera.SetPosition(glm::vec3(13500.0f, 1500.0f, 14000.0f));
-    g_camera.SetAngles(-150.0f, -30.0f);
-    g_camera.SetZoom(1500.0f);
+    // Lorencia town center at original MU isometric angle (default)
+    g_camera.SetPosition(glm::vec3(13000.0f, 350.0f, 13500.0f));
+  }
+  // --pos X Y Z: override camera position with exact coordinates
+  if (hasCustomPos) {
+    g_camera.SetPosition(glm::vec3(customX, customY, customZ));
+    std::cout << "[camera] Position set to (" << customX << ", " << customY
+              << ", " << customZ << ")" << std::endl;
   }
   // --object-debug <index>: position camera to look at a specific object
   if (objectDebugIdx >= 0 &&
@@ -240,14 +326,15 @@ int main(int argc, char **argv) {
       g_camera.SetAngles(0.0f, -89.0f);
       g_camera.SetZoom(1500.0f);
     } else {
-      g_camera.SetPosition(
-          glm::vec3(objPos.x + 600.0f, objPos.y + 700.0f, objPos.z + 600.0f));
-      g_camera.SetAngles(-135.0f, -35.0f);
-      g_camera.SetZoom(900.0f);
+      // Position camera at the object using the fixed isometric angle
+      g_camera.SetPosition(glm::vec3(objPos.x, objPos.y, objPos.z));
     }
     objectDebugName = "obj_type" + std::to_string(debugObj.type) + "_idx" +
                       std::to_string(objectDebugIdx);
-    autoScreenshot = true;
+    if (autoGif)
+      ; // keep autoGif, skip autoScreenshot
+    else
+      autoScreenshot = true;
     std::cout << "[object-debug] Targeting object " << objectDebugIdx
               << " type=" << debugObj.type << " at gl_pos=(" << objPos.x
               << ", " << objPos.y << ", " << objPos.z << ")" << std::endl;
@@ -256,9 +343,22 @@ int main(int argc, char **argv) {
   const char *diagNames[] = {"normal", "tileindex", "tileuv",
                              "alpha",  "lightmap",  "nolightmap"};
 
+  // Pass point lights to renderers
+  {
+    std::vector<glm::vec3> lightPos, lightCol;
+    std::vector<float> lightRange;
+    for (auto &pl : g_pointLights) {
+      lightPos.push_back(pl.position);
+      lightCol.push_back(pl.color);
+      lightRange.push_back(pl.range);
+    }
+    g_objectRenderer.SetPointLights(lightPos, lightCol, lightRange);
+    g_terrain.SetPointLights(lightPos, lightCol, lightRange);
+  }
+
   glEnable(GL_DEPTH_TEST);
 
-  ImVec4 clear_color = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
+  ImVec4 clear_color = ImVec4(0.0f, 0.0f, 0.0f, 1.00f); // Black: matches edge fog at map boundaries
   float lastFrame = 0.0f;
   while (!glfwWindowShouldClose(window)) {
     float currentFrame = glfwGetTime();
@@ -282,67 +382,45 @@ int main(int argc, char **argv) {
 
     glm::mat4 projection = g_camera.GetProjectionMatrix(1280.0f, 720.0f);
     glm::mat4 view = g_camera.GetViewMatrix();
-    g_terrain.Render(view, projection, currentFrame);
+    glm::vec3 camPos = g_camera.GetPosition();
+
+    // Sky renders first (behind everything, no depth write)
+    g_sky.Render(view, projection, camPos);
+
+    g_terrain.Render(view, projection, currentFrame, camPos);
+
+    // Render grass billboards (after terrain, before objects)
+    g_grass.Render(view, projection, currentFrame, camPos);
 
     // Render world objects
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    g_objectRenderer.Render(view, projection, g_camera.GetPosition());
+    g_objectRenderer.Render(view, projection, g_camera.GetPosition(),
+                            currentFrame);
 
     // Update and render fire effects
     g_fireEffect.Update(deltaTime);
     g_fireEffect.Render(view, projection);
 
-    // Start the Dear ImGui frame
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-
-    // Add some debug info
-    ImGui::Begin("Terrain Debug");
-    glm::vec3 camPos = g_camera.GetPosition();
-    ImGui::Text("Camera Pos: %.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
-    ImGui::Text("Zoom: %.1f", g_camera.GetZoom());
-    ImGui::Text("Objects: %d instances, %d models",
-                g_objectRenderer.GetInstanceCount(),
-                g_objectRenderer.GetModelCount());
-    ImGui::Text("Fire: %d emitters, %d particles",
-                g_fireEffect.GetEmitterCount(),
-                g_fireEffect.GetParticleCount());
-
-    static int debugMode = 0;
-    const char *debugModes[] = {"Normal",     "Tile Index", "Tile UV",
-                                "Alpha",      "Lightmap",   "No Lightmap",
-                                "Layer1 Only"};
-    if (ImGui::Combo("Debug View", &debugMode, debugModes, 7)) {
-      g_terrain.SetDebugMode(debugMode);
+    // Auto-GIF: capture with warmup for fire particle buildup
+    // Capture BEFORE ImGui rendering so debug overlay is not in the output
+    if (autoGif && !Screenshot::IsRecording() && diagFrame == 0) {
+      std::string gifPath =
+          !outputName.empty()
+              ? "screenshots/" + outputName + ".gif"
+              : (objectDebugName.empty()
+                     ? "screenshots/fire_effect.gif"
+                     : "screenshots/" + objectDebugName + ".gif");
+      Screenshot::StartRecording(window, gifPath, gifFrameCount, gifDelay);
+      std::cout << "[GIF] Starting capture (" << gifFrameCount << " frames)"
+                << std::endl;
     }
-    ImGui::End();
-
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-    // Auto-GIF: begin capture after warmup, record frames, then save and exit
-    if (autoGif) {
-      int warmup = 30; // let fire particles build up
-      if (diagFrame == warmup) {
-        int sw, sh;
-        glfwGetFramebufferSize(window, &sw, &sh);
-        Screenshot::BeginGif(sw, sh);
-        std::cout << "[GIF] Starting capture (" << gifFrameCount << " frames)"
-                  << std::endl;
-      }
-      if (diagFrame >= warmup && diagFrame < warmup + gifFrameCount) {
-        Screenshot::AddGifFrame(window);
-      }
-      if (diagFrame == warmup + gifFrameCount) {
-        std::filesystem::create_directories("screenshots");
-        Screenshot::SaveGif("screenshots/fire_effect.gif", gifDelay);
-        break;
-      }
+    if (Screenshot::TickRecording(window)) {
+      break; // GIF saved, exit
     }
 
     // Auto-screenshot: capture after enough frames for fire particles to build up
+    // Capture BEFORE ImGui rendering so debug overlay is not in the output
     if (autoScreenshot && diagFrame == 60) {
       std::string ssPath = objectDebugName.empty()
                                ? "screenshots/world_objects.jpg"
@@ -371,6 +449,34 @@ int main(int argc, char **argv) {
       std::cout << "[screenshot] Saved " << ssPath << std::endl;
       break;
     }
+
+    // Start the Dear ImGui frame
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    // Add some debug info
+    ImGui::Begin("Terrain Debug");
+    ImGui::Text("Camera Pos: %.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
+    ImGui::Text("Zoom: %.1f", g_camera.GetZoom());
+    ImGui::Text("Objects: %d instances, %d models",
+                g_objectRenderer.GetInstanceCount(),
+                g_objectRenderer.GetModelCount());
+    ImGui::Text("Fire: %d emitters, %d particles",
+                g_fireEffect.GetEmitterCount(),
+                g_fireEffect.GetParticleCount());
+
+    static int debugMode = 0;
+    const char *debugModes[] = {"Normal",     "Tile Index", "Tile UV",
+                                "Alpha",      "Lightmap",   "No Lightmap",
+                                "Layer1 Only"};
+    if (ImGui::Combo("Debug View", &debugMode, debugModes, 7)) {
+      g_terrain.SetDebugMode(debugMode);
+    }
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     // Auto-diagnostic: capture AFTER render, BEFORE swap (back buffer has
     // current frame)
@@ -411,10 +517,10 @@ int main(int argc, char **argv) {
     glfwSwapBuffers(window);
   }
 
-  // Save camera state before exit
-  g_camera.SaveState("camera_save.txt");
+  // Camera state is fixed (no save needed for isometric mode)
 
   // Cleanup
+  g_sky.Cleanup();
   g_fireEffect.Cleanup();
   g_objectRenderer.Cleanup();
   ImGui_ImplOpenGL3_Shutdown();

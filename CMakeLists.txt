@@ -50,6 +50,8 @@ set(COMMON_SRC
     src/Terrain.cpp
     src/Screenshot.cpp
     src/FireEffect.cpp
+    src/Sky.cpp
+    src/GrassRenderer.cpp
 )
 
 # Main Game Executable

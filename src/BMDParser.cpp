@@ -1,4 +1,5 @@
 #include "BMDParser.hpp"
+#include "BMDUtils.hpp"
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -166,6 +167,12 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
           ptr += numKeys * 12;
           memcpy(bm.Rotation.data(), data + ptr, numKeys * 12);
           ptr += numKeys * 12;
+          // Pre-compute quaternions for slerp interpolation
+          for (int k = 0; k < numKeys; ++k) {
+            float q[4];
+            MuMath::AngleQuaternion(bm.Rotation[k], q);
+            bm.Quaternion[k] = glm::vec4(q[0], q[1], q[2], q[3]);
+          }
         }
       }
     }
