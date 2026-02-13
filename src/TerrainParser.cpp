@@ -1,6 +1,7 @@
 #include "TerrainParser.hpp"
 #include "TextureLoader.hpp"
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 
@@ -212,10 +213,85 @@ TerrainParser::ParseAttributesFile(const std::string &path) {
   return {attributes, symmetry};
 }
 
-// Minimal placeholder for objects for now
 std::vector<ObjectData>
 TerrainParser::ParseObjectsFile(const std::string &path) {
-  return std::vector<ObjectData>();
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    std::cerr << "[TerrainParser] Cannot open object file: " << path
+              << std::endl;
+    return {};
+  }
+
+  std::vector<uint8_t> raw_data((std::istreambuf_iterator<char>(file)),
+                                std::istreambuf_iterator<char>());
+  std::vector<uint8_t> data = DecryptMapFile(raw_data);
+
+  if (data.size() < 4) {
+    std::cerr << "[TerrainParser] Object file too small: " << data.size()
+              << std::endl;
+    return {};
+  }
+
+  // Header: Version(1) + MapNumber(1) + Count(2)
+  uint8_t version = data[0];
+  uint8_t mapNumber = data[1];
+  short count;
+  memcpy(&count, data.data() + 2, sizeof(short));
+
+  std::cout << "[TerrainParser] Object file: version=" << (int)version
+            << " map=" << (int)mapNumber << " count=" << count << std::endl;
+
+  if (count < 0 || count > 10000) {
+    std::cerr << "[TerrainParser] Invalid object count: " << count << std::endl;
+    return {};
+  }
+
+  // Each object: Type(2) + Position(12) + Angle(12) + Scale(4) = 30 bytes
+  const size_t recordSize = 30;
+  const size_t expectedSize = 4 + (size_t)count * recordSize;
+  if (data.size() < expectedSize) {
+    std::cerr << "[TerrainParser] Object file too small for " << count
+              << " objects: " << data.size() << " < " << expectedSize
+              << std::endl;
+    return {};
+  }
+
+  std::vector<ObjectData> objects;
+  objects.reserve(count);
+  size_t ptr = 4;
+
+  for (int i = 0; i < count; ++i) {
+    ObjectData obj;
+    memcpy(&obj.type, data.data() + ptr, 2);
+    ptr += 2;
+
+    float mu_pos[3], mu_angle[3];
+    memcpy(mu_pos, data.data() + ptr, 12);
+    ptr += 12;
+    memcpy(mu_angle, data.data() + ptr, 12);
+    ptr += 12;
+    memcpy(&obj.scale, data.data() + ptr, 4);
+    ptr += 4;
+
+    // Store raw MU values
+    obj.mu_pos_raw = glm::vec3(mu_pos[0], mu_pos[1], mu_pos[2]);
+    obj.mu_angle_raw = glm::vec3(mu_angle[0], mu_angle[1], mu_angle[2]);
+
+    // Convert MU coords to OpenGL Y-up world coords
+    // Terrain mapping: MU_Y(z-loop) → WorldX, MU_X(x-loop) → WorldZ
+    obj.position = glm::vec3(mu_pos[1], mu_pos[2], mu_pos[0]);
+
+    // Convert degrees to radians
+    obj.rotation = glm::vec3(glm::radians(mu_angle[0]),
+                             glm::radians(mu_angle[1]),
+                             glm::radians(mu_angle[2]));
+
+    objects.push_back(obj);
+  }
+
+  std::cout << "[TerrainParser] Loaded " << objects.size() << " objects"
+            << std::endl;
+  return objects;
 }
 
 std::vector<glm::vec3> TerrainParser::ParseLightFile(const std::string &path) {

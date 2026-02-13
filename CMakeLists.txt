@@ -20,6 +20,9 @@ find_package(OpenGL REQUIRED)
 find_path(JPEG_INCLUDE_DIR NAMES turbojpeg.h PATHS /opt/homebrew/include)
 find_library(JPEG_LIBRARY NAMES turbojpeg PATHS /opt/homebrew/lib)
 
+# giflib
+find_library(GIF_LIBRARY NAMES gif PATHS /opt/homebrew/lib)
+
 # ImGui setup
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
 set(IMGUI_SOURCES
@@ -37,20 +40,41 @@ include_directories(/opt/homebrew/include) # Ensure GLM and others are found
 include_directories(${IMGUI_DIR})
 include_directories(${IMGUI_DIR}/backends)
 
-file(GLOB_RECURSE SRC_FILES src/*.cpp)
+# Common source files (loaders, parsers, shared infrastructure)
+set(COMMON_SRC
+    src/TextureLoader.cpp
+    src/BMDParser.cpp
+    src/BMDUtils.cpp
+    src/TerrainParser.cpp
+    src/Camera.cpp
+    src/Terrain.cpp
+    src/Screenshot.cpp
+    src/FireEffect.cpp
+)
 
-add_executable(${PROJECT_NAME} ${SRC_FILES} ${IMGUI_SOURCES})
-
-# Linking
-target_link_libraries(${PROJECT_NAME} PRIVATE
+# Main Game Executable
+add_executable(MuRemaster src/main.cpp src/ObjectRenderer.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+target_link_libraries(MuRemaster PRIVATE
     glfw
     GLEW::GLEW
     OpenGL::GL
     ${JPEG_LIBRARY}
+    ${GIF_LIBRARY}
+)
+
+# Standalone Model Viewer
+add_executable(ModelViewer src/model_viewer_main.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+target_link_libraries(ModelViewer PRIVATE
+    glfw
+    GLEW::GLEW
+    OpenGL::GL
+    ${JPEG_LIBRARY}
+    ${GIF_LIBRARY}
 )
 
 if(APPLE)
-    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
+    target_link_libraries(MuRemaster PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
+    target_link_libraries(ModelViewer PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
 endif()
 
-message(STATUS "Configured MuRemaster with GLFW, GLEW, ImGui, and libjpeg-turbo")
+message(STATUS "Configured MuRemaster and ModelViewer")

@@ -1,3 +1,0 @@
-/Users/karlisfeldmanis/Desktop/mu_remaster/build/CMakeFiles/MuRemaster.dir
-/Users/karlisfeldmanis/Desktop/mu_remaster/build/CMakeFiles/edit_cache.dir
-/Users/karlisfeldmanis/Desktop/mu_remaster/build/CMakeFiles/rebuild_cache.dir

@@ -5,12 +5,40 @@
 #include <string>
 #include <vector>
 
+struct TextureLoadResult {
+  GLuint textureID = 0;
+  bool hasAlpha = false; // true if RGBA/32-bit
+};
+
+// Rendering flags parsed from MU Online texture name suffixes.
+// Pattern: "basename_FLAGS.ext" where FLAGS is a combination of R, H, N, S.
+struct TextureScriptFlags {
+  bool bright = false;    // _R: additive blending
+  bool hidden = false;    // _H: skip rendering
+  bool noneBlend = false; // _N: disable blending, render opaque
+};
+
 class TextureLoader {
 public:
   static GLuint LoadOZJ(const std::string &path);
   static std::vector<unsigned char> LoadOZJRaw(const std::string &path,
                                                int &width, int &height);
   static GLuint LoadOZT(const std::string &path);
+
+  // Load texture by extension (OZJ/JPG -> LoadOZJ, OZT/TGA -> LoadOZT)
+  static GLuint LoadByExtension(const std::string &path);
+
+  // Resolve a BMD texture name to an actual file and load it.
+  // Handles path prefixes, extension variants, and case-insensitive lookup.
+  static GLuint Resolve(const std::string &directory,
+                        const std::string &bmdTextureName);
+
+  // Resolve and return alpha info alongside the texture handle.
+  static TextureLoadResult ResolveWithInfo(const std::string &directory,
+                                           const std::string &bmdTextureName);
+
+  // Parse texture script flags from a texture filename.
+  static TextureScriptFlags ParseScriptFlags(const std::string &textureName);
 };
 
 #endif
