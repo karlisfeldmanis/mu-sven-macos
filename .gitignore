@@ -1,20 +1,42 @@
-# Godot 4+ specific ignores
-.godot/
-.import/
+# Build
+build/
+bin/
+*.o
+*.obj
+*.exe
+*.dll
+*.dylib
+*.so
+*.a
+*.lib
 
-# Raw MuOnline client files (proprietary)
+# Dependencies (External libraries)
+external/
+
+# Proprietary Data & References (Git Ignored)
+references/
+reference/
 raw_data/
+screenshots/
+camera_save.txt
+imgui.ini
 
 # OS specific
 .DS_Store
 Thumbs.db
+.AppleDouble
+.LSOverride
 
-# IDE
+# IDE & Editor
 .vscode/
 .idea/
+*.swp
+*.swo
+compile_commands.json
 
 # Logs
 *.log
 
-# Reference source code
-reference/
+# Godot (Legacy reference)
+.godot/
+.import/
