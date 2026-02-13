@@ -10,7 +10,11 @@ cd build && cmake .. && make -j$(sysctl -n hw.ncpu)
 ```
 
 Two targets: `MuRemaster` (world viewer) and `ModelViewer` (BMD object browser).
-Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui.
+Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui, giflib.
+
+### macOS Specifics
+- **Window Activation**: Uses `activateMacOSApp()` (Objective-C runtime) to force the GLFW window to the foreground on launch.
+- **GLEW Header Order**: `GL/glew.h` **must** be included before `GLFW/glfw3.h` to prevent symbol conflicts.
 
 ## Source Files
 
@@ -28,6 +32,7 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | `Terrain.hpp` | 256x256 heightmap mesh, 4-tap tile blending, lightmap integration. |
 | `TerrainParser.hpp` | Parses MAP heightmaps, tile layers, alpha maps, attributes, objects, lightmaps. `TERRAIN_SIZE = 256`. `ObjectData` struct. |
 | `ObjectRenderer.hpp` | World object rendering: BMD model cache, type-to-filename mapping, per-instance transforms, per-mesh blend state. |
+| `FireEffect.hpp` | Particle-based fire system for Lorenzian torches/bonfires. Uses GPU instancing and billboarding. |
 | `Screenshot.hpp` | `Screenshot::Capture(window)` for JPEG; GIF system for optimized frame-diffed animations. |
 
 ### Sources (src/)
@@ -42,6 +47,7 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | `Screenshot.cpp` | GIF optimization: resolution downscaling, frame diffing, and dirty rectangle encoding. |
 | `TerrainParser.cpp` | Decrypts and parses terrain files: heightmap, mapping, attributes, objects (EncTerrain1.obj), lightmap. |
 | `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ object instances with per-mesh blend. |
+| `FireEffect.cpp` | Particle physics, emitter management, and instanced billboarding rendering for `Fire01.OZJ`. |
 | `main.cpp` | World viewer app: terrain + objects, WASD nav, P screenshot. Data path: `references/other/MuMain/src/bin/Data/`. |
 | `model_viewer_main.cpp` | Object browser: scans Object1/ for BMDs, orbit camera, ImGui list+info panel, per-mesh blend state. |
 
@@ -104,7 +110,20 @@ offset 18: short TexCoordIndex[4]  (8 bytes)
 offset 26: [LightMapCoord data]   (we read into EdgeTriangleIndex, unused)
 offset 34: [more padding/lightmap] (we skip)
 ```
-**Important**: We `memcpy` 34 bytes then advance ptr by 64. The fields at offsets 0-25 contain the actual vertex/normal/texcoord indices. Bytes 26+ are lightmap data from Triangle_t2 that we discard.
+**Important**: We `memcpy` 34 bytes then advance ptr by 64. The fields at offsets 0-25 contain the actual vertex/normal/texcoord indices. Bytes 26+ are lightmap data from Triangle_t2 that we discard. Failure to use the 64-byte stride leads to alignment shifts and `std::length_error` during parsing.
+
+## Fire & Atmospheric Effects
+
+### Fire System (FireEffect.cpp)
+- **Data**: Uses `Data/Effect/Fire01.OZJ` (animated billboard strip).
+- **Emitters**: Spatially placed based on BMD object type (e.g., fountain, torch).
+- **Rendering**:
+  - **GPU Instancing**: All particles drawn in a single call via `glDrawElementsInstanced`.
+  - **Billboarding**: Billboard matrix reconstructed in shader to face camera.
+  - **Additive Blending**: `GL_ONE, GL_ONE` with `glDepthMask(GL_FALSE)`.
+
+### Texture Animation
+- Curtain and Flag meshes are animated by rotating/scaling UVs or applying vertex offsets based on bone IDs, as research into `Waterspout01.bmd` and `Bird01.bmd` shows specialized mesh use.
 
 ## OZJ Format (JPEG variant)
 
