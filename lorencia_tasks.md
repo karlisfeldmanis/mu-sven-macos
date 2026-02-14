@@ -1,3 +1,4 @@
+
 # Lorencia Map — Remaining Tasks
 
 Reference source: `references/other/Main5.2/Source Main 5.2/source/`
@@ -16,6 +17,8 @@ Reference source: `references/other/Main5.2/Source Main 5.2/source/`
 - [x] Water UV animation (horizontal scroll + sine wave in terrain shader)
 - [x] Screenshot capture (JPEG + optimized GIF with frame diffing)
 - [x] Grass billboard rendering + wind animation (42k billboards, GPU vertex shader wind, TileGrass OZT with alpha)
+- [x] Per-object terrain light query (bilinear lightmap sampling at object position)
+- [x] Sky dome rendering (gradient hemisphere behind scene)
 
 ---
 
@@ -28,24 +31,24 @@ Reference source: `references/other/Main5.2/Source Main 5.2/source/`
 | 1 | **Grass billboard rendering + wind animation** | `GrassRenderer.cpp` — 42k billboards, GPU wind shader, TileGrass OZT textures | Done |
 | 2 | **Object blob shadows** | `ZzzObject.cpp` `RenderBodyShadow()` — perspective-project mesh to ground, fixed light dir `(-1, 0.03, -1)` | Pending |
 | 3 | **Day/night luminosity cycle** | `ZzzAI.cpp` — `g_Luminosity = sin(WorldTime*0.004)*0.15+0.6`, range 0.45-0.75, ~26min cycle | Pending |
-| 4 | **Per-object terrain light query** | `ZzzLodTerrain.cpp` `RequestTerrainLight()` — bilinear sample lightmap at object position → `BodyLight` color | Pending |
+| 4 | **Per-object terrain light query** | `ZzzLodTerrain.cpp` `RequestTerrainLight()` — bilinear sample lightmap at object position → `terrainLight` uniform | Done |
 
 ### Medium Priority
 
 | # | Task | Reference Files | Status |
 |---|------|----------------|--------|
-| 5 | **Subtractive blending mode** | `ZzzOpenglUtil.cpp` — `GL_ZERO, GL_ONE_MINUS_SRC_COLOR` | Pending |
-| 6 | **Multiplicative blending mode** | `ZzzOpenglUtil.cpp` — `GL_ZERO, GL_SRC_COLOR` | Pending |
-| 7 | **Dynamic terrain lighting from torches** | `ZzzLodTerrain.cpp` — per-frame terrain light modification near fire objects | Pending |
-| 8 | **Water texture frame cycling** | `ZzzLodTerrain.cpp` — 32 pre-rendered water textures cycled per tick | Pending |
-| 9 | **Missing ExtTile01-16 textures** | Terrain shader already handles ExtTiles, need to load actual texture files | Pending |
+| 5 | **Subtractive blending mode** | `ZzzOpenglUtil.cpp` — `GL_ZERO, GL_ONE_MINUS_SRC_COLOR` — character/effect only, N/A for world objects | N/A |
+| 6 | **Multiplicative blending mode** | `ZzzOpenglUtil.cpp` — `GL_ZERO, GL_SRC_COLOR` — character/effect only, N/A for world objects | N/A |
+| 7 | **Dynamic terrain lighting from torches** | Already functional via point light system in terrain + object shaders | Done |
+| 8 | **Water texture frame cycling** | `ZzzLodTerrain.cpp` — 32 pre-rendered water textures (`wt00-wt31.jpg`) — files not in data | Blocked |
+| 9 | **Missing ExtTile01-16 textures** | Lorencia doesn't reference indices 14-29; tile loader now skips unused indices | Done |
 
 ### Lower Priority
 
 | # | Task | Reference Files | Status |
 |---|------|----------------|--------|
 | 10 | **Fish in water areas** | `ZzzEffect.cpp` — animated sprites on water attribute tiles | Pending |
-| 11 | **33 unmapped object types** | `MapManager.cpp` `AccessModel()` — extend `GetObjectBMDFilename()` type table | Pending |
+| 11 | **33 unmapped object types** | All 109 Lorencia types already mapped (0 skipped) | Done |
 | 12 | **Chrome/metal reflection mapping** | `ZzzOpenglUtil.cpp` — environment map for metallic surfaces | Pending |
 | 13 | **Bloom/HDR post-processing** | Not in original — enhancement opportunity | Pending |
 | 14 | **Weather system (rain)** | `GMRain.cpp` — particle rain with splash effects | Pending |

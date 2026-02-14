@@ -11,9 +11,37 @@
 #include "imgui_impl_opengl3.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <streambuf>
 #include <turbojpeg.h>
+
+// Tee streambuf: writes to both a file and the original stream
+class TeeStreambuf : public std::streambuf {
+public:
+  TeeStreambuf(std::streambuf *orig, std::streambuf *file)
+      : original(orig), fileBuf(file) {}
+
+protected:
+  int overflow(int c) override {
+    if (c == EOF)
+      return !EOF;
+    int r1 = original->sputc(c);
+    int r2 = fileBuf->sputc(c);
+    return (r1 == EOF || r2 == EOF) ? EOF : c;
+  }
+  int sync() override {
+    original->pubsync();
+    fileBuf->pubsync();
+    return 0;
+  }
+
+private:
+  std::streambuf *original;
+  std::streambuf *fileBuf;
+};
 
 #ifdef __APPLE__
 #include <objc/message.h>
@@ -54,20 +82,20 @@ struct LightTemplate {
 
 // Returns light properties for a given object type, or nullptr if not a light
 static const LightTemplate *GetLightProperties(int type) {
-  static const LightTemplate fireLightProps = {
-      glm::vec3(1.5f, 0.9f, 0.5f), 800.0f, 150.0f};
-  static const LightTemplate bonfireProps = {
-      glm::vec3(1.5f, 0.75f, 0.3f), 1000.0f, 100.0f};
-  static const LightTemplate gateProps = {
-      glm::vec3(1.5f, 0.9f, 0.5f), 800.0f, 200.0f};
-  static const LightTemplate bridgeProps = {
-      glm::vec3(1.2f, 0.7f, 0.4f), 700.0f, 50.0f};
-  static const LightTemplate streetLightProps = {
-      glm::vec3(1.5f, 1.2f, 0.75f), 800.0f, 250.0f};
-  static const LightTemplate candleProps = {
-      glm::vec3(1.2f, 0.7f, 0.3f), 600.0f, 80.0f};
-  static const LightTemplate lightFixtureProps = {
-      glm::vec3(1.2f, 0.85f, 0.5f), 700.0f, 150.0f};
+  static const LightTemplate fireLightProps = {glm::vec3(1.5f, 0.9f, 0.5f),
+                                               800.0f, 150.0f};
+  static const LightTemplate bonfireProps = {glm::vec3(1.5f, 0.75f, 0.3f),
+                                             1000.0f, 100.0f};
+  static const LightTemplate gateProps = {glm::vec3(1.5f, 0.9f, 0.5f), 800.0f,
+                                          200.0f};
+  static const LightTemplate bridgeProps = {glm::vec3(1.2f, 0.7f, 0.4f), 700.0f,
+                                            50.0f};
+  static const LightTemplate streetLightProps = {glm::vec3(1.5f, 1.2f, 0.75f),
+                                                 800.0f, 250.0f};
+  static const LightTemplate candleProps = {glm::vec3(1.2f, 0.7f, 0.3f), 600.0f,
+                                            80.0f};
+  static const LightTemplate lightFixtureProps = {glm::vec3(1.2f, 0.85f, 0.5f),
+                                                  700.0f, 150.0f};
 
   switch (type) {
   case 50:
@@ -138,6 +166,25 @@ void processInput(GLFWwindow *window, float deltaTime) {
 }
 
 int main(int argc, char **argv) {
+  // Open client.log — tee all cout/cerr to both console and file
+  std::ofstream logFile("client.log", std::ios::trunc);
+  TeeStreambuf *coutTee = nullptr, *cerrTee = nullptr;
+  std::streambuf *origCout = nullptr, *origCerr = nullptr;
+  if (logFile.is_open()) {
+    // Log header with timestamp
+    std::time_t now = std::time(nullptr);
+    logFile << "=== MuRemaster client.log === " << std::ctime(&now)
+            << std::endl;
+    logFile.flush();
+
+    origCout = std::cout.rdbuf();
+    origCerr = std::cerr.rdbuf();
+    coutTee = new TeeStreambuf(origCout, logFile.rdbuf());
+    cerrTee = new TeeStreambuf(origCerr, logFile.rdbuf());
+    std::cout.rdbuf(coutTee);
+    std::cerr.rdbuf(cerrTee);
+  }
+
   if (!glfwInit()) {
     std::cerr << "Failed to initialize GLFW" << std::endl;
     return -1;
@@ -194,13 +241,61 @@ int main(int argc, char **argv) {
   std::string data_path = "/Users/karlisfeldmanis/Desktop/mu_remaster/"
                           "references/other/MuMain/src/bin/Data";
   TerrainData terrainData = TerrainParser::LoadWorld(1, data_path);
+
+  // Reconstruct TW_NOGROUND for bridge cells over water.
+  // Original engine reads this from .att file (ZzzLodTerrain.cpp:176) and
+  // RenderTerrainTile() skips tiles with TW_NOGROUND (line 1665).
+  // Our .att version lacks these flags, so reconstruct from bridge object
+  // positions. Must run BEFORE g_terrain.Load() so modified attributes reach
+  // the GPU. Use oriented rectangle matching bridge direction (narrow
+  // perpendicular to deck).
+  {
+    const int S = TerrainParser::TERRAIN_SIZE;
+    int count = 0;
+    for (const auto &obj : terrainData.objects) {
+      if (obj.type != 80)
+        continue; // MODEL_BRIDGE only
+      std::cout << "[Bridge] Type 80 at gl_pos=(" << obj.position.x << ", "
+                << obj.position.y << ", " << obj.position.z << ")" << std::endl;
+      int gz = (int)(obj.position.x / 100.0f);
+      int gx = (int)(obj.position.z / 100.0f);
+      // Bridge orientation from Z rotation:
+      // angle Z ≈ ±90: bridge spans along gz (N-S), narrow in gx
+      // angle Z ≈ 0/180: bridge spans along gx (E-W), narrow in gz
+      float angZ =
+          std::abs(std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
+      bool spanAlongGZ = (std::abs(angZ - 90.0f) < 45.0f);
+      int rGZ = spanAlongGZ ? 4 : 2; // Increased radius to ensure coverage
+      int rGX = spanAlongGZ ? 2 : 4;
+      for (int dz = -rGZ; dz <= rGZ; ++dz) {
+        for (int dx = -rGX; dx <= rGX; ++dx) {
+          int cz = gz + dz, cx = gx + dx;
+          if (cz < 0 || cz >= S || cx < 0 || cx >= S)
+            continue;
+          int idx = cz * S + cx;
+          // Mark all cells under/near bridge as submerged bridge supports
+          terrainData.mapping.attributes[idx] |= 0x18; // TW_NOGROUND | TW_WATER
+          count++;
+          if (dz == 0 && dx == 0) {
+            std::cout << "[Bridge] Marked center cell (" << cz << "," << cx
+                      << ") at idx " << idx << std::endl;
+          }
+        }
+      }
+    }
+    if (count > 0)
+      std::cout << "[Terrain] Reconstructed " << count
+                << " bridge support cells (TW_NOGROUND|TW_WATER)" << std::endl;
+  }
+
   g_terrain.Load(terrainData, 1, data_path);
   std::cout << "Loaded Map 1 (Lorencia): " << terrainData.heightmap.size()
-            << " height samples, " << terrainData.objects.size()
-            << " objects" << std::endl;
+            << " height samples, " << terrainData.objects.size() << " objects"
+            << std::endl;
 
   // Load world objects
   g_objectRenderer.Init();
+  g_objectRenderer.SetTerrainLightmap(terrainData.lightmap);
   std::string object1_path = data_path + "/Object1";
   g_objectRenderer.LoadObjects(terrainData.objects, object1_path);
 
@@ -216,8 +311,7 @@ int main(int argc, char **argv) {
   for (auto &inst : g_objectRenderer.GetInstances()) {
     auto &offsets = GetFireOffsets(inst.type);
     for (auto &off : offsets) {
-      glm::vec3 worldPos =
-          glm::vec3(inst.modelMatrix * glm::vec4(off, 1.0f));
+      glm::vec3 worldPos = glm::vec3(inst.modelMatrix * glm::vec4(off, 1.0f));
       g_fireEffect.AddEmitter(worldPos);
     }
   }
@@ -250,9 +344,8 @@ int main(int argc, char **argv) {
   std::cout << "[Lights] Collected " << g_pointLights.size()
             << " point lights from world objects" << std::endl;
 
-  // Fixed isometric camera at Lorencia town center (simulates character standing)
-  // Position is the "character" location; camera orbits at MU angle + distance
-  g_camera.SetPosition(glm::vec3(13000.0f, 350.0f, 13500.0f));
+  // Load saved camera state (persists position/angle/zoom across restarts)
+  g_camera.LoadState("camera_save.txt");
 
   // Auto-diagnostic mode: --diag flag captures all debug views and exits
   bool autoDiag = false;
@@ -270,6 +363,10 @@ int main(int argc, char **argv) {
       autoDiag = true;
     if (std::string(argv[i]) == "--screenshot")
       autoScreenshot = true;
+    if (std::string(argv[i]) == "--debug" && i + 1 < argc) {
+      g_terrain.SetDebugMode(std::atoi(argv[i + 1]));
+      ++i;
+    }
     if (std::string(argv[i]) == "--gif")
       autoGif = true;
     if (std::string(argv[i]) == "--gif-frames" && i + 1 < argc) {
@@ -298,8 +395,9 @@ int main(int argc, char **argv) {
     g_camera.SetAngles(0.0f, -89.0f); // Look straight down
     g_camera.SetZoom(3000.0f);
   }
-  if (autoScreenshot || autoGif) {
-    // Lorencia town center at original MU isometric angle (default)
+  if ((autoScreenshot || autoGif) && !hasCustomPos) {
+    // Lorencia town center at original MU isometric angle (default for
+    // captures)
     g_camera.SetPosition(glm::vec3(13000.0f, 350.0f, 13500.0f));
   }
   // --pos X Y Z: override camera position with exact coordinates
@@ -309,8 +407,7 @@ int main(int argc, char **argv) {
               << ", " << customZ << ")" << std::endl;
   }
   // --object-debug <index>: position camera to look at a specific object
-  if (objectDebugIdx >= 0 &&
-      objectDebugIdx < (int)terrainData.objects.size()) {
+  if (objectDebugIdx >= 0 && objectDebugIdx < (int)terrainData.objects.size()) {
     auto &debugObj = terrainData.objects[objectDebugIdx];
     // Position camera offset from the object, looking at it
     glm::vec3 objPos = debugObj.position;
@@ -321,8 +418,7 @@ int main(int argc, char **argv) {
         topDown = true;
     }
     if (topDown) {
-      g_camera.SetPosition(
-          glm::vec3(objPos.x, objPos.y + 1500.0f, objPos.z));
+      g_camera.SetPosition(glm::vec3(objPos.x, objPos.y + 1500.0f, objPos.z));
       g_camera.SetAngles(0.0f, -89.0f);
       g_camera.SetZoom(1500.0f);
     } else {
@@ -336,8 +432,8 @@ int main(int argc, char **argv) {
     else
       autoScreenshot = true;
     std::cout << "[object-debug] Targeting object " << objectDebugIdx
-              << " type=" << debugObj.type << " at gl_pos=(" << objPos.x
-              << ", " << objPos.y << ", " << objPos.z << ")" << std::endl;
+              << " type=" << debugObj.type << " at gl_pos=(" << objPos.x << ", "
+              << objPos.y << ", " << objPos.z << ")" << std::endl;
   }
   int diagFrame = 0;
   const char *diagNames[] = {"normal", "tileindex", "tileuv",
@@ -357,8 +453,10 @@ int main(int argc, char **argv) {
   }
 
   glEnable(GL_DEPTH_TEST);
+  glDepthFunc(GL_LEQUAL);
 
-  ImVec4 clear_color = ImVec4(0.0f, 0.0f, 0.0f, 1.00f); // Black: matches edge fog at map boundaries
+  ImVec4 clear_color = ImVec4(
+      0.0f, 0.0f, 0.0f, 1.00f); // Black: matches edge fog at map boundaries
   float lastFrame = 0.0f;
   while (!glfwWindowShouldClose(window)) {
     float currentFrame = glfwGetTime();
@@ -389,14 +487,15 @@ int main(int argc, char **argv) {
 
     g_terrain.Render(view, projection, currentFrame, camPos);
 
-    // Render grass billboards (after terrain, before objects)
-    g_grass.Render(view, projection, currentFrame, camPos);
-
-    // Render world objects
+    // Render world objects first (before grass, so tall grass billboards
+    // don't block thin fence bar meshes via depth buffer)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     g_objectRenderer.Render(view, projection, g_camera.GetPosition(),
                             currentFrame);
+
+    // Render grass billboards (after objects so grass doesn't occlude fences)
+    g_grass.Render(view, projection, currentFrame, camPos);
 
     // Update and render fire effects
     g_fireEffect.Update(deltaTime);
@@ -419,17 +518,25 @@ int main(int argc, char **argv) {
       break; // GIF saved, exit
     }
 
-    // Auto-screenshot: capture after enough frames for fire particles to build up
-    // Capture BEFORE ImGui rendering so debug overlay is not in the output
+    // Auto-screenshot: capture after enough frames for fire particles to build
+    // up Capture BEFORE ImGui rendering so debug overlay is not in the output
     if (autoScreenshot && diagFrame == 60) {
-      std::string ssPath = objectDebugName.empty()
-                               ? "screenshots/world_objects.jpg"
-                               : "screenshots/" + objectDebugName + ".jpg";
+      std::string ssPath;
+      if (!outputName.empty()) {
+        ssPath = "screenshots/" + outputName + ".jpg";
+      } else if (!objectDebugName.empty()) {
+        ssPath = "screenshots/" + objectDebugName + ".jpg";
+      } else {
+        // Use a timestamp to ensure uniqueness
+        ssPath =
+            "screenshots/verif_" + std::to_string(std::time(nullptr)) + ".jpg";
+      }
       int sw, sh;
       glfwGetFramebufferSize(window, &sw, &sh);
       std::vector<unsigned char> px(sw * sh * 3);
       glPixelStorei(GL_PACK_ALIGNMENT, 1);
       glReadPixels(0, 0, sw, sh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+      // ... (capture logic)
       std::vector<unsigned char> flipped(sw * sh * 3);
       for (int y = 0; y < sh; ++y)
         memcpy(&flipped[y * sw * 3], &px[(sh - 1 - y) * sw * 3], sw * 3);
@@ -517,7 +624,8 @@ int main(int argc, char **argv) {
     glfwSwapBuffers(window);
   }
 
-  // Camera state is fixed (no save needed for isometric mode)
+  // Save camera state for next launch
+  g_camera.SaveState("camera_save.txt");
 
   // Cleanup
   g_sky.Cleanup();
@@ -529,6 +637,14 @@ int main(int argc, char **argv) {
 
   glfwDestroyWindow(window);
   glfwTerminate();
+
+  // Restore original stream buffers before log file closes
+  if (origCout)
+    std::cout.rdbuf(origCout);
+  if (origCerr)
+    std::cerr.rdbuf(origCerr);
+  delete coutTee;
+  delete cerrTee;
 
   return 0;
 }
