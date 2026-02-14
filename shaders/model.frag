@@ -11,6 +11,7 @@ uniform vec3 lightPos;
 uniform vec3 viewPos;
 uniform bool useFog;
 uniform float blendMeshLight;
+uniform vec3 terrainLight; // Lightmap color sampled at object world position
 
 // Point lights
 const int MAX_POINT_LIGHTS = 64;
@@ -51,7 +52,7 @@ void main() {
     vec4 texColor = texture(texture_diffuse, TexCoord);
     if (texColor.a < 0.1) discard;
 
-    FragColor = vec4(lighting * blendMeshLight, 1.0) * texColor;
+    FragColor = vec4(lighting * blendMeshLight * terrainLight, 1.0) * texColor;
 
     if (useFog) {
         float dist = length(FragPos - viewPos);

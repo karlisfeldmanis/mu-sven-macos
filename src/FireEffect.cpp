@@ -2,6 +2,7 @@
 #include "TextureLoader.hpp"
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 // --- Fire offset table (MU local coordinates from ZzzObject.cpp) ---
@@ -18,11 +19,13 @@ static const std::vector<glm::vec3> kBonfireOffsets = {
     glm::vec3(0.0f, 0.0f, 60.0f)};
 
 static const std::vector<glm::vec3> kDungeonGateOffsets = {
-    glm::vec3(-150.0f, -150.0f, 140.0f),
-    glm::vec3(150.0f, -150.0f, 140.0f)};
+    glm::vec3(-150.0f, -150.0f, 140.0f), glm::vec3(150.0f, -150.0f, 140.0f)};
 
 static const std::vector<glm::vec3> kBridgeOffsets = {
     glm::vec3(90.0f, -200.0f, 30.0f), glm::vec3(90.0f, 200.0f, 30.0f)};
+
+static const std::vector<glm::vec3> kLight01Offsets = {
+    glm::vec3(0.0f, 0.0f, 0.0f)};
 
 const std::vector<glm::vec3> &GetFireOffsets(int objectType) {
   switch (objectType) {
@@ -36,6 +39,8 @@ const std::vector<glm::vec3> &GetFireOffsets(int objectType) {
     return kDungeonGateOffsets;
   case 80:
     return kBridgeOffsets;
+  case 130:
+    return kLight01Offsets;
   default:
     return kNoOffsets;
   }
@@ -52,6 +57,8 @@ int GetFireTypeFromFilename(const std::string &bmdFilename) {
     return 55;
   if (bmdFilename == "Bridge01.bmd")
     return 80;
+  if (bmdFilename == "Light01.bmd")
+    return 130;
   return -1;
 }
 
@@ -81,9 +88,15 @@ void FireEffect::Init(const std::string &effectDataPath) {
   std::cout << "[FireEffect] Loaded fire texture: " << firePath << std::endl;
 
   // Compile billboard shader
-  billboardShader =
-      std::make_unique<Shader>("../shaders/billboard.vert",
-                               "../shaders/billboard.frag");
+  {
+    std::ifstream test("shaders/billboard.vert");
+    if (test.good())
+      billboardShader = std::make_unique<Shader>("shaders/billboard.vert",
+                                                 "shaders/billboard.frag");
+    else
+      billboardShader = std::make_unique<Shader>("../shaders/billboard.vert",
+                                                 "../shaders/billboard.frag");
+  }
 
   // Create static quad VAO (4 corners at ±0.5)
   float quadVerts[] = {
@@ -179,7 +192,8 @@ void FireEffect::Update(float deltaTime) {
   // Spawn new particles from emitters
   for (auto &emitter : emitters) {
     emitter.spawnAccum += SPAWN_RATE * deltaTime;
-    while (emitter.spawnAccum >= 1.0f && (int)particles.size() < MAX_PARTICLES) {
+    while (emitter.spawnAccum >= 1.0f &&
+           (int)particles.size() < MAX_PARTICLES) {
       emitter.spawnAccum -= 1.0f;
 
       Particle p;

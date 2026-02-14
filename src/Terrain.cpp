@@ -77,7 +77,7 @@ float computeEdgeFog(vec3 worldPos) {
     return smoothstep(edgeMargin, edgeMargin + edgeWidth, dEdge);
 }
 
-vec4 sampleLayerSmooth(sampler2D layerMap, vec2 uv, vec2 uvBase, bool suppressWaterAnim) {
+vec4 sampleLayerSmooth(sampler2D layerMap, vec2 uv, vec2 uvBase) {
     vec2 size = vec2(256.0);
     vec2 texelSize = 1.0 / size;
     vec2 gridPos = uvBase - 0.5;
@@ -89,6 +89,8 @@ vec4 sampleLayerSmooth(sampler2D layerMap, vec2 uv, vec2 uvBase, bool suppressWa
     float centerSrc = texture(layerMap, centerCoord).r * 255.0;
     uint centerSym = texture(symmetryMap, centerCoord).r;
 
+    bool centerIsWater = (abs(centerSrc - 5.0) < 0.1);
+
     float src[4];
     uint sym[4];
     uint attr[4];
@@ -98,44 +100,37 @@ vec4 sampleLayerSmooth(sampler2D layerMap, vec2 uv, vec2 uvBase, bool suppressWa
         src[k] = texture(layerMap, coord).r * 255.0;
         sym[k] = texture(symmetryMap, coord).r;
         attr[k] = texture(attributeMap, coord).r;
-        // Replace NOGROUND neighbors with center cell to prevent water bleeding
-        if ((attr[k] & 8u) != 0u) {
-            src[k] = centerSrc;
-            sym[k] = centerSym;
-        }
     }
 
-    // Prevent water/non-water bilinear mixing.
-    // Water is defined as Tile Index 5 OR Attribute Bit 4 (0x10).
-    bool water[4];
-    bool hasWater = false, hasNonWater = false;
+    // Check if any bilinear neighbor has TW_NOGROUND (bridge area)
+    bool anyNoGround = false;
     for(int k=0; k<4; ++k) {
-        water[k] = (abs(src[k] - 5.0) < 0.1) || ((attr[k] & 16u) != 0u);
-        if (water[k]) hasWater = true;
-        else if (src[k] < 254.5) hasNonWater = true;
-    }
-    // If we're at a water/land boundary, snap to center tile to avoid blocky edges
-    // and mismatched uv animations.
-    if (hasWater && hasNonWater) {
-        for(int k=0; k<4; ++k) {
-            src[k] = centerSrc;
-            sym[k] = centerSym;
-        }
+        if ((attr[k] & 8u) != 0u) anyNoGround = true;
     }
 
     vec4 c[4];
     for(int k=0; k<4; ++k) {
-        vec2 tileUV = fract(uv * 0.25); // Scale matches Sven's 64.0/256.0
-        tileUV = applySymmetry(tileUV, sym[k]);
-        
-        // Water detection: index 5 or attribute bit 4 (0x10)
-        // Skip animation on NOGROUND cells (under bridges) to avoid visible movement
-        bool isWater = (abs(src[k] - 5.0) < 0.1) || ((attr[k] & 16u) != 0u);
-        if(isWater && !suppressWaterAnim) {
-            tileUV.x += uTime * 0.1;
-            tileUV.y += sin(uTime + (uv.y * 0.25) * 10.0) * 0.05;
+        bool isWater = (abs(src[k] - 5.0) < 0.1);
+
+        // At bridge boundaries (TW_NOGROUND): snap to prevent water on road.
+        // At normal water/land boundaries: allow bilinear for smooth transition.
+        if (isWater != centerIsWater && anyNoGround) {
+            vec2 cUV = fract(uv * 0.25);
+            cUV = applySymmetry(cUV, centerSym);
+            if(centerIsWater) {
+                cUV.x += uTime * 0.1;
+                cUV.y += sin(uTime + (uv.y * 0.25) * 10.0) * 0.05;
+            }
+            c[k] = texture(tileTextures, vec3(cUV, floor(centerSrc + 0.5)));
+        } else {
+            vec2 tileUV = fract(uv * 0.25);
+            tileUV = applySymmetry(tileUV, sym[k]);
+            if(isWater) {
+                tileUV.x += uTime * 0.1;
+                tileUV.y += sin(uTime + (uv.y * 0.25) * 10.0) * 0.05;
+            }
+            c[k] = texture(tileTextures, vec3(tileUV, floor(src[k] + 0.5)));
         }
-        c[k] = texture(tileTextures, vec3(tileUV, floor(src[k] + 0.5)));
     }
 
     // Bilinear mix of colors
@@ -151,22 +146,18 @@ vec4 sampleLayerSmooth(sampler2D layerMap, vec2 uv, vec2 uvBase, bool suppressWa
 void main() {
     vec2 uvBase = TexCoord * 256.0;
 
-    // TW_NOGROUND: suppress water animation under bridges (render static water)
-    uint centerAttr = texture(attributeMap, (floor(uvBase) + 0.5) / 256.0).r;
-    bool noGround = (centerAttr & 8u) != 0u;
-
     // Smooth alpha sampling
     float alpha = texture(alphaMap, (uvBase + 0.5) / 256.0).r;
 
-    vec4 l1 = sampleLayerSmooth(layer1Map, uvBase, uvBase, noGround);
-    vec4 l2 = sampleLayerSmooth(layer2Map, uvBase, uvBase, noGround);
-    
+    vec4 l1 = sampleLayerSmooth(layer1Map, uvBase, uvBase);
+    vec4 l2 = sampleLayerSmooth(layer2Map, uvBase, uvBase);
+
     vec3 finalColor = mix(l1.rgb, l2.rgb, alpha * l2.a);
-    
+
     // Apply lightmap
     vec3 lightColor = texture(lightMap, TexCoord).rgb;
     finalColor *= lightColor;
-    
+
     // Accumulate point lights on terrain
     for (int i = 0; i < numPointLights; ++i) {
         vec3 toLight = pointLightPos[i] - FragPos;
@@ -174,36 +165,6 @@ void main() {
         float atten = max(1.0 - dist / pointLightRange[i], 0.0);
         atten *= atten; // Quadratic falloff
         finalColor += atten * pointLightColor[i] * finalColor;
-    }
-
-    // Water Surface Overlay
-    // Provides a wavy blue surface over ALL tiles marked as water, 
-    // including those with ground textures (making them look submerged).
-    vec2 f = fract(uvBase - 0.5);
-    vec2 i = floor(uvBase - 0.5);
-    float w[4];
-    for(int k=0; k<4; ++k) {
-        vec2 off = vec2(float(k % 2), float(k / 2));
-        uint attr = texture(attributeMap, (i + off + 0.5) / 256.0).r;
-        w[k] = ((attr & 16u) != 0u) ? 1.0 : 0.0;
-    }
-    float waterMask = mix(mix(w[0], w[1], f.x), mix(w[2], w[3], f.x), f.y);
-
-    if (waterMask > 0.001) {
-        // Sample TileWater01 with two layers of scrolling for depth
-        vec2 waterUV = fract(uvBase * 0.25);
-        float animScale = noGround ? 0.0 : 1.0; // Suppress anim under bridge supports
-        
-        vec2 uv1 = waterUV + vec2(uTime * 0.08, uTime * 0.05) * animScale;
-        vec2 uv2 = waterUV * 1.5 + vec2(-uTime * 0.05, uTime * 0.08) * animScale;
-        
-        vec4 w1 = texture(tileTextures, vec3(uv1, 5.0));
-        vec4 w2 = texture(tileTextures, vec3(uv2, 5.0));
-        vec3 waterSurface = (w1.rgb + w2.rgb) * 0.5;
-        
-        // Refined MU style: subtle overlay to show ground beneath
-        vec3 blueTint = vec3(0.0, 0.08, 0.2) * waterMask;
-        finalColor = mix(finalColor, waterSurface + blueTint, 0.3 * waterMask);
     }
 
     // Fog: match original engine (CameraViewFar=2000, dark brown fog color)
@@ -214,13 +175,7 @@ void main() {
     vec3 fogColor = vec3(0.117, 0.078, 0.039); // 30/256, 20/256, 10/256
     finalColor = mix(fogColor, finalColor, fogFactor);
 
-    // Edge fog: darken toward black at map boundaries
-    float edgeFactor = computeEdgeFog(FragPos);
-    finalColor = mix(vec3(0.0), finalColor, edgeFactor);
-
     FragColor = vec4(finalColor, 1.0);
-
-    // Debug modes
 }
 )glsl";
 

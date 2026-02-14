@@ -23,6 +23,7 @@ public:
   void SetPointLights(const std::vector<glm::vec3> &positions,
                       const std::vector<glm::vec3> &colors,
                       const std::vector<float> &ranges);
+  void SetTerrainLightmap(const std::vector<glm::vec3> &lightmap);
 
   int GetInstanceCount() const { return (int)instances.size(); }
   int GetModelCount() const { return (int)modelCache.size(); }
@@ -30,6 +31,7 @@ public:
   struct ObjectInstance {
     int type;
     glm::mat4 modelMatrix;
+    glm::vec3 terrainLight = glm::vec3(1.0f); // Lightmap color at object position
   };
   const std::vector<ObjectInstance> &GetInstances() const { return instances; }
 
@@ -58,6 +60,11 @@ private:
   std::vector<glm::vec3> plPositions, plColors;
   std::vector<float> plRanges;
   int plCount = 0;
+
+  std::vector<glm::vec3> terrainLightmap; // Copy of terrain lightmap for sampling
+
+  // Bilinear sample terrain lightmap at world position
+  glm::vec3 SampleTerrainLight(const glm::vec3 &worldPos) const;
 
   std::unique_ptr<Shader> shader;
 

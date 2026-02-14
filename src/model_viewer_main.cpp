@@ -5,6 +5,7 @@
 #include "Screenshot.hpp"
 #include "Shader.hpp"
 #include "TextureLoader.hpp"
+#include <fstream>
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -136,7 +137,11 @@ public:
       return;
     }
 
-    Shader shader("../shaders/model.vert", "../shaders/model.frag");
+    std::ifstream shaderTest("shaders/model.vert");
+    Shader shader(shaderTest.good() ? "shaders/model.vert"
+                                    : "../shaders/model.vert",
+                  shaderTest.good() ? "shaders/model.frag"
+                                    : "../shaders/model.frag");
     InitAxes();
     fireEffect.Init(EFFECT_PATH);
     LoadObject(0);
@@ -684,6 +689,7 @@ private:
     shader.setVec3("viewPos", eye);
     shader.setBool("useFog", false);
     shader.setFloat("blendMeshLight", 1.0f);
+    shader.setVec3("terrainLight", 1.0f, 1.0f, 1.0f);
     shader.setVec2("texCoordOffset", glm::vec2(0.0f));
     shader.setInt("numPointLights", 0);
 

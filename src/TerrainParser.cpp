@@ -73,6 +73,40 @@ TerrainData TerrainParser::LoadWorld(int world_id,
   std::string light_path = base_path + "TerrainLight.OZJ";
   result.lightmap = ParseLightFile(light_path);
 
+  // 6. Apply directional sun lighting (CreateTerrainLight from reference)
+  // Computes terrain normals from heightmap, modulates lightmap by
+  // dot(normal, sunDir) + 0.5  —  adds relief shading to hills/slopes
+  if (!result.heightmap.empty() && !result.lightmap.empty()) {
+    const int S = TERRAIN_SIZE;
+    // Sun direction in MU coordinates: (0.5, -0.5, 0.5) for normal worlds
+    glm::vec3 sunDir = glm::normalize(glm::vec3(0.5f, -0.5f, 0.5f));
+
+    for (int y = 0; y < S; ++y) {
+      for (int x = 0; x < S; ++x) {
+        int idx = y * S + x;
+
+        // Compute terrain normal from heightmap finite differences
+        // MU coords: X=right, Y=forward, Z=up (height)
+        float h = result.heightmap[idx];
+        float hx = (x < S - 1) ? result.heightmap[y * S + (x + 1)] : h;
+        float hy = (y < S - 1) ? result.heightmap[(y + 1) * S + x] : h;
+        float dz_dx = hx - h; // Height change per cell in MU X
+        float dz_dy = hy - h; // Height change per cell in MU Y
+        // Normal = normalize(-dz_dx, -dz_dy, 100) where 100 = TERRAIN_SCALE
+        glm::vec3 normal = glm::normalize(glm::vec3(-dz_dx, -dz_dy, 100.0f));
+
+        // Reference: Luminosity = dot(normal, sunDir) + 0.5, clamped [0, 1]
+        float luminosity = glm::dot(normal, sunDir) + 0.5f;
+        luminosity = glm::clamp(luminosity, 0.0f, 1.0f);
+
+        result.lightmap[idx] *= luminosity;
+      }
+    }
+    std::cout << "[TerrainParser] Applied directional sun lighting (sunDir="
+              << sunDir.x << "," << sunDir.y << "," << sunDir.z << ")"
+              << std::endl;
+  }
+
   return result;
 }
 

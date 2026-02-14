@@ -242,49 +242,61 @@ int main(int argc, char **argv) {
                           "references/other/MuMain/src/bin/Data";
   TerrainData terrainData = TerrainParser::LoadWorld(1, data_path);
 
-  // Reconstruct TW_NOGROUND for bridge cells over water.
-  // Original engine reads this from .att file (ZzzLodTerrain.cpp:176) and
-  // RenderTerrainTile() skips tiles with TW_NOGROUND (line 1665).
-  // Our .att version lacks these flags, so reconstruct from bridge object
-  // positions. Must run BEFORE g_terrain.Load() so modified attributes reach
-  // the GPU. Use oriented rectangle matching bridge direction (narrow
-  // perpendicular to deck).
+  // Reconstruct TW_NOGROUND for bridge cells.
+  // The .att file for this data version lacks these flags (verified: 0 cells).
+  // Original engine reads them from .att (ZzzLodTerrain.cpp:1665).
+  // We reconstruct from bridge objects (type 80) with orientation awareness.
   {
     const int S = TerrainParser::TERRAIN_SIZE;
     int count = 0;
     for (const auto &obj : terrainData.objects) {
       if (obj.type != 80)
-        continue; // MODEL_BRIDGE only
+        continue;
       int gz = (int)(obj.position.x / 100.0f);
       int gx = (int)(obj.position.z / 100.0f);
-      float angZ =
-          std::abs(std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
+      float angZ = std::abs(
+          std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
       bool spanAlongGZ = (std::abs(angZ - 90.0f) < 45.0f);
-      int rGZ = spanAlongGZ ? 3 : 1;
-      int rGX = spanAlongGZ ? 1 : 3;
+      // +1 buffer for bilinear neighbor coverage in shader
+      int rGZ = spanAlongGZ ? 4 : 2;
+      int rGX = spanAlongGZ ? 2 : 4;
       for (int dz = -rGZ; dz <= rGZ; ++dz) {
         for (int dx = -rGX; dx <= rGX; ++dx) {
           int cz = gz + dz, cx = gx + dx;
-          if (cz < 0 || cz >= S || cx < 0 || cx >= S)
-            continue;
-          int idx = cz * S + cx;
-          float h = terrainData.heightmap[idx];
-          // If terrain is near bridge height, it's the road/entrance -> NO
-          // water
-          if (std::abs(h - obj.position.y) < 80.0f) {
-            terrainData.mapping.attributes[idx] |= 0x08;  // TW_NOGROUND
-            terrainData.mapping.attributes[idx] &= ~0x10; // Clear TW_WATER
-          } else {
-            // It's submerged -> Apply water surface over it
-            terrainData.mapping.attributes[idx] |= 0x10; // TW_WATER
+          if (cz >= 0 && cz < S && cx >= 0 && cx < S) {
+            terrainData.mapping.attributes[cz * S + cx] |= 0x08;
+            count++;
           }
-          count++;
         }
       }
     }
-    if (count > 0)
-      std::cout << "[Terrain] Reconstructed " << count
-                << " refined bridge support/deck cells" << std::endl;
+    // Expand TW_NOGROUND to adjacent water cells so bilinear sampling in the
+    // shader never mixes unmarked water into bridge road tiles.
+    std::vector<uint8_t> expanded = terrainData.mapping.attributes;
+    for (int z = 0; z < S; ++z) {
+      for (int x = 0; x < S; ++x) {
+        if (!(terrainData.mapping.attributes[z * S + x] & 0x08))
+          continue;
+        for (int dz = -1; dz <= 1; ++dz) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            int nz = z + dz, nx = x + dx;
+            if (nz >= 0 && nz < S && nx >= 0 && nx < S) {
+              if (terrainData.mapping.layer1[nz * S + nx] == 5)
+                expanded[nz * S + nx] |= 0x08;
+            }
+          }
+        }
+      }
+    }
+    terrainData.mapping.attributes = expanded;
+
+    int finalCount = 0;
+    for (int idx = 0; idx < S * S; ++idx)
+      if (terrainData.mapping.attributes[idx] & 0x08)
+        finalCount++;
+    std::cout << "[Terrain] Marked " << finalCount
+              << " bridge cells as TW_NOGROUND (" << count
+              << " from objects + expansion)" << std::endl;
   }
 
   g_terrain.Load(terrainData, 1, data_path);
@@ -297,8 +309,9 @@ int main(int argc, char **argv) {
   g_objectRenderer.SetTerrainLightmap(terrainData.lightmap);
   std::string object1_path = data_path + "/Object1";
   g_objectRenderer.LoadObjects(terrainData.objects, object1_path);
-
-  // Initialize grass billboards
+  std::cout << "[ObjectRenderer] Loaded " << terrainData.objects.size()
+            << " object instances, " << g_objectRenderer.GetModelCount()
+            << " unique models" << std::endl;
   g_grass.Init();
   g_grass.Load(terrainData, 1, data_path);
 
@@ -310,8 +323,12 @@ int main(int argc, char **argv) {
   for (auto &inst : g_objectRenderer.GetInstances()) {
     auto &offsets = GetFireOffsets(inst.type);
     for (auto &off : offsets) {
-      glm::vec3 worldPos = glm::vec3(inst.modelMatrix * glm::vec4(off, 1.0f));
-      g_fireEffect.AddEmitter(worldPos);
+      // Extract rotation without scale (original CreateFire only rotates, no scale)
+      glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+      glm::mat3 rot;
+      for (int c = 0; c < 3; c++)
+        rot[c] = glm::normalize(glm::vec3(inst.modelMatrix[c]));
+      g_fireEffect.AddEmitter(worldPos + rot * off);
     }
   }
   std::cout << "[FireEffect] Registered " << g_fireEffect.GetEmitterCount()
@@ -319,7 +336,7 @@ int main(int argc, char **argv) {
   // Print fire-type objects for debugging/testing
   for (int i = 0; i < (int)terrainData.objects.size(); ++i) {
     int t = terrainData.objects[i].type;
-    if (t == 50 || t == 51 || t == 52 || t == 55 || t == 80)
+    if (t == 50 || t == 51 || t == 52 || t == 55 || t == 80 || t == 130)
       std::cout << "  fire obj idx=" << i << " type=" << t << std::endl;
   }
 

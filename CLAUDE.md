@@ -31,8 +31,8 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | `Camera.hpp` | FPS camera with yaw/pitch/zoom, WASD movement, state persistence. |
 | `Terrain.hpp` | 256x256 heightmap mesh, 4-tap tile blending, lightmap integration. |
 | `TerrainParser.hpp` | Parses MAP heightmaps, tile layers, alpha maps, attributes, objects, lightmaps. `TERRAIN_SIZE = 256`. `ObjectData` struct. |
-| `ObjectRenderer.hpp` | World object rendering: BMD model cache, type-to-filename mapping, per-instance transforms, per-mesh blend state, skeletal animation (AnimState, RetransformMesh), BlendMesh system. |
-| `FireEffect.hpp` | Particle-based fire system for Lorenzian torches/bonfires. Uses GPU instancing and billboarding. |
+| `ObjectRenderer.hpp` | World object rendering: BMD model cache, type-to-filename mapping, per-instance transforms, per-mesh blend state, skeletal animation (AnimState, RetransformMesh), BlendMesh system, terrain lightmap sampling per object. |
+| `FireEffect.hpp` | Particle-based fire system for Lorencia torches/bonfires/lights. Uses GPU instancing and billboarding. |
 | `Screenshot.hpp` | `Screenshot::Capture(window)` for JPEG; GIF system for optimized frame-diffed animations. |
 
 ### Sources (src/)
@@ -43,11 +43,11 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | `BMDUtils.cpp` | Euler→quaternion→matrix, parent-chain bone concatenation, quaternion slerp interpolation. |
 | `TextureLoader.cpp` | OZJ (JPEG+header) and OZT (TGA+header) loading with RLE, V-flip, extension resolution. |
 | `Camera.cpp` | Camera math, smooth zoom lerp, state save/load to `camera_save.txt`. |
-| `Terrain.cpp` | Terrain vertex grid generation, texture array loading, shader-based 4-tap blending. |
+| `Terrain.cpp` | Terrain vertex grid generation, texture array loading, shader-based 4-tap blending. Water is rendered as regular tile (layer1=5) with animated UV — no overlay. |
 | `Screenshot.cpp` | GIF optimization: resolution downscaling, frame diffing, and dirty rectangle encoding. |
 | `TerrainParser.cpp` | Decrypts and parses terrain files: heightmap, mapping, attributes, objects (EncTerrain1.obj), lightmap. |
-| `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ object instances with per-mesh blend, BlendMesh glow, and skeletal animation (CPU re-skinning for whitelisted types). |
-| `FireEffect.cpp` | Particle physics, emitter management, and instanced billboarding rendering for `Fire01.OZJ`. |
+| `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ object instances with per-mesh blend, BlendMesh glow, skeletal animation (CPU re-skinning for whitelisted types), and terrain lightmap sampling. |
+| `FireEffect.cpp` | Particle physics, emitter management, and instanced billboarding rendering for `Fire01.OZJ`. Fire types: 50-51, 52, 55, 80, 130. |
 | `main.cpp` | World viewer app: terrain + objects, WASD nav, P screenshot. Data path: `references/other/MuMain/src/bin/Data/`. |
 | `model_viewer_main.cpp` | Object browser: scans Object1/ for BMDs, orbit camera, ImGui list+info panel, per-mesh blend state, skeletal animation playback with ImGui controls. |
 
@@ -56,7 +56,7 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | File | Purpose |
 |------|---------|
 | `model.vert` | Standard MVP transform, normal correction via inverse-transpose, `texCoordOffset` for UV scroll. Inputs: aPos, aNormal, aTexCoord. |
-| `model.frag` | Two-sided diffuse lighting (abs dot), alpha discard at 0.1, optional linear fog (2000-8000 range), `blendMeshLight` intensity, point light array (64 max). |
+| `model.frag` | Two-sided diffuse lighting (abs dot), alpha discard at 0.1, optional linear fog (2000-8000 range), `blendMeshLight` intensity, `terrainLight` (lightmap color at object world position), point light array (64 max). |
 
 ### GIF Capture Optimizations
 - **Resolution Downscaling**: Optional scale factor (e.g., 0.5x) using box-filter averaging during capture.
@@ -116,7 +116,8 @@ offset 34: [more padding/lightmap] (we skip)
 
 ### Fire System (FireEffect.cpp)
 - **Data**: Uses `Data/Effect/Fire01.OZJ` (animated billboard strip).
-- **Emitters**: Spatially placed based on BMD object type (e.g., fountain, torch).
+- **Emitters**: Spatially placed based on BMD object type (e.g., fountain, torch, light).
+- **Fire types**: 50-51 (FireLight), 52 (Bonfire), 55 (DungeonGate), 80 (Bridge), 130 (Light01).
 - **Rendering**:
   - **GPU Instancing**: All particles drawn in a single call via `glDrawElementsInstanced`.
   - **Billboarding**: Billboard matrix reconstructed in shader to face camera.
@@ -159,10 +160,29 @@ Original MU's BlendMesh marks specific mesh indices within BMD models for additi
 
 **Light templates**: Per object type, defines color (warm orange for torches, yellow for street lamps) and range. Collected in `main.cpp` from fire emitter object instances.
 
+### Water Rendering (Terrain Shader)
+The original MU engine for standard maps (Lorencia) renders water as a **regular tile** (layer1 index 5) with animated UV scrolling — no overlay, no proximity kernel, no blue tint. Our implementation matches this:
+
+- **`sampleLayerSmooth()`** handles water tile animation: `tileUV.x += uTime * 0.1` + sinusoidal Y offset
+- **Shore transitions**: Handled naturally by the alpha map blending between Layer1 and Layer2
+- **Bridge protection**: `sampleLayerSmooth()` checks `TW_NOGROUND` (0x08) on bilinear neighbors; at bridge boundaries, snaps to center cell texture to prevent water bleeding onto road
+- **No water surface overlay**: A custom water overlay (5x5 proximity kernel + blue tint + roadSuppression) was previously added but caused bridge artifacts. Removed — the original engine doesn't have it for Lorencia.
+- **TW_NOGROUND reconstruction**: The .att file for our data version lacks these flags. Reconstructed in `main.cpp` from bridge objects (type 80) with orientation-aware rectangular footprint + 1-cell expansion to adjacent water cells.
+
+**Lesson learned**: Do not invent rendering systems that don't exist in the original source. For Lorencia, water is just a tile with animated UVs. The original `RenderTerrainTile()` simply skips TW_NOGROUND cells entirely (line 1665 of ZzzLodTerrain.cpp). Special water overlays only exist for Atlantis (WD_7ATLANSE) in the original.
+
+### Terrain Lightmap on Objects
+Objects sample the terrain lightmap at their world position for ambient lighting, matching the original engine's per-object lighting.
+
+- **`ObjectRenderer::SetTerrainLightmap()`** stores a copy of the 256x256 RGB lightmap
+- **`ObjectRenderer::SampleTerrainLight()`** bilinear-samples the lightmap at object world position
+- **`terrainLight` uniform** in `model.frag` multiplies the final lighting color
+
 ### Reference Code Navigation
 Key functions in the original MU source for future lookups:
 - **ZzzObject.cpp**: `OpenObjectsEnc()` (load world objects), `CreateObject()` (per-type setup, BlendMesh assignment), `RenderObject()` / `RenderObjectMesh()` (draw with blend state)
 - **ZzzBMD.cpp**: `Animation()` (frame interpolation, slerp), `RenderBody()` / `RenderMesh()` (bone transform + draw)
+- **ZzzLodTerrain.cpp**: `RenderTerrainTile()` (line 1662, TW_NOGROUND skip at 1665), `FaceTexture()` (line 1447, water UV animation via WaterMove), `RenderTerrainFace()` (base terrain pass)
 - **ZzzMathLib.cpp**: `AngleQuaternion()`, `QuaternionMatrix()`, `R_ConcatTransforms()`, `AngleMatrix()`
 - **MapManager.cpp**: `AccessModel()` calls define type-to-filename mapping
 - **_enum.h**: `MODEL_TREE01=0`, `MODEL_GRASS01=20`, `MODEL_CURTAIN01=95`, etc.

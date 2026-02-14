@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 
@@ -49,50 +50,51 @@ std::string ObjectRenderer::GetObjectBMDFilename(int type) {
 
   // Ranges: type = baseType + offset → BaseName(startIndex + offset).bmd
   static const TypeEntry ranges[] = {
-      {0, "Tree", 1},             // 0-19: Tree01-Tree20
-      {20, "Grass", 1},           // 20-29: Grass01-Grass10
-      {30, "Stone", 1},           // 30-39: Stone01-Stone10
-      {40, "StoneStatue", 1},     // 40-42: StoneStatue01-03
-      {43, "SteelStatue", 1},     // 43: SteelStatue01
-      {44, "Tomb", 1},            // 44-46: Tomb01-03
-      {50, "FireLight", 1},       // 50-51: FireLight01-02
-      {52, "Bonfire", 1},         // 52: Bonfire01
-      {55, "DoungeonGate", 1},    // 55: DoungeonGate01
-      {56, "MerchantAnimal", 1},  // 56-57: MerchantAnimal01-02
-      {58, "TreasureDrum", 1},    // 58: TreasureDrum01
-      {59, "TreasureChest", 1},   // 59: TreasureChest01
-      {60, "Ship", 1},            // 60: Ship01
-      {65, "SteelWall", 1},       // 65-67: SteelWall01-03
-      {68, "SteelDoor", 1},       // 68: SteelDoor01
-      {69, "StoneWall", 1},       // 69-74: StoneWall01-06
-      {75, "StoneMuWall", 1},     // 75-78: StoneMuWall01-04
-      {80, "Bridge", 1},          // 80: Bridge01
-      {81, "Fence", 1},           // 81-84: Fence01-04
-      {85, "BridgeStone", 1},     // 85: BridgeStone01
-      {90, "StreetLight", 1},     // 90: StreetLight01
-      {91, "Cannon", 1},          // 91-93: Cannon01-03
-      {95, "Curtain", 1},         // 95: Curtain01
-      {96, "Sign", 1},            // 96-97: Sign01-02
-      {98, "Carriage", 1},        // 98-101: Carriage01-04
-      {102, "Straw", 1},          // 102-103: Straw01-02
-      {105, "Waterspout", 1},     // 105: Waterspout01
-      {106, "Well", 1},           // 106-109: Well01-04
-      {110, "Hanging", 1},        // 110: Hanging01
-      {111, "Stair", 1},          // 111: Stair01
-      {115, "House", 1},          // 115-119: House01-05
-      {120, "Tent", 1},           // 120: Tent01
-      {121, "HouseWall", 1},      // 121-126: HouseWall01-06
-      {127, "HouseEtc", 1},       // 127-129: HouseEtc01-03
-      {130, "Light", 1},          // 130-132: Light01-03
-      {133, "PoseBox", 1},        // 133: PoseBox01
-      {140, "Furniture", 1},      // 140-146: Furniture01-07
-      {150, "Candle", 1},         // 150: Candle01
-      {151, "Beer", 1},           // 151-153: Beer01-03
+      {0, "Tree", 1},            // 0-19: Tree01-Tree20
+      {20, "Grass", 1},          // 20-29: Grass01-Grass10
+      {30, "Stone", 1},          // 30-39: Stone01-Stone10
+      {40, "StoneStatue", 1},    // 40-42: StoneStatue01-03
+      {43, "SteelStatue", 1},    // 43: SteelStatue01
+      {44, "Tomb", 1},           // 44-46: Tomb01-03
+      {50, "FireLight", 1},      // 50-51: FireLight01-02
+      {52, "Bonfire", 1},        // 52: Bonfire01
+      {55, "DoungeonGate", 1},   // 55: DoungeonGate01
+      {56, "MerchantAnimal", 1}, // 56-57: MerchantAnimal01-02
+      {58, "TreasureDrum", 1},   // 58: TreasureDrum01
+      {59, "TreasureChest", 1},  // 59: TreasureChest01
+      {60, "Ship", 1},           // 60: Ship01
+      {65, "SteelWall", 1},      // 65-67: SteelWall01-03
+      {68, "SteelDoor", 1},      // 68: SteelDoor01
+      {69, "StoneWall", 1},      // 69-74: StoneWall01-06
+      {75, "StoneMuWall", 1},    // 75-78: StoneMuWall01-04
+      {80, "Bridge", 1},         // 80: Bridge01
+      {81, "Fence", 1},          // 81-84: Fence01-04
+      {85, "BridgeStone", 1},    // 85: BridgeStone01
+      {90, "StreetLight", 1},    // 90: StreetLight01
+      {91, "Cannon", 1},         // 91-93: Cannon01-03
+      {95, "Curtain", 1},        // 95: Curtain01
+      {96, "Sign", 1},           // 96-97: Sign01-02
+      {98, "Carriage", 1},       // 98-101: Carriage01-04
+      {102, "Straw", 1},         // 102-103: Straw01-02
+      {105, "Waterspout", 1},    // 105: Waterspout01
+      {106, "Well", 1},          // 106-109: Well01-04
+      {110, "Hanging", 1},       // 110: Hanging01
+      {111, "Stair", 1},         // 111: Stair01
+      {115, "House", 1},         // 115-119: House01-05
+      {120, "Tent", 1},          // 120: Tent01
+      {121, "HouseWall", 1},     // 121-126: HouseWall01-06
+      {127, "HouseEtc", 1},      // 127-129: HouseEtc01-03
+      {130, "Light", 1},         // 130-132: Light01-03
+      {133, "PoseBox", 1},       // 133: PoseBox01
+      {140, "Furniture", 1},     // 140-146: Furniture01-07
+      {150, "Candle", 1},        // 150: Candle01
+      {151, "Beer", 1},          // 151-153: Beer01-03
   };
 
   static const int numRanges = sizeof(ranges) / sizeof(ranges[0]);
 
-  // Find the range that contains this type (search backwards to find best match)
+  // Find the range that contains this type (search backwards to find best
+  // match)
   const TypeEntry *best = nullptr;
   for (int i = 0; i < numRanges; ++i) {
     if (type >= ranges[i].baseType) {
@@ -117,8 +119,16 @@ std::string ObjectRenderer::GetObjectBMDFilename(int type) {
 }
 
 void ObjectRenderer::Init() {
-  shader = std::make_unique<Shader>("../shaders/model.vert",
-                                    "../shaders/model.frag");
+  // Try project root first (./build/MuRemaster), then build dir (cd build &&
+  // ./MuRemaster)
+  std::ifstream test("shaders/model.vert");
+  if (test.good()) {
+    shader =
+        std::make_unique<Shader>("shaders/model.vert", "shaders/model.frag");
+  } else {
+    shader = std::make_unique<Shader>("../shaders/model.vert",
+                                      "../shaders/model.frag");
+  }
 }
 
 void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
@@ -149,15 +159,15 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
         const auto &bm = bones[boneIdx];
         vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
                                           srcVert.Position);
-        vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
-                                           srcNorm.Normal);
+        vert.normal =
+            MuMath::RotateVector((const float(*)[4])bm.data(), srcNorm.Normal);
       } else {
         vert.pos = srcVert.Position;
         vert.normal = srcNorm.Normal;
       }
 
       vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                            mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+                           mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
       vertices.push_back(vert);
       indices.push_back(startIdx + v);
     }
@@ -181,7 +191,7 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
         }
 
         vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                              mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+                             mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
         vertices.push_back(vert);
         indices.push_back(vertices.size() - 1);
       }
@@ -208,9 +218,8 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
                vertices.data(), usage);
 
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mb.ebo);
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-               indices.size() * sizeof(unsigned int), indices.data(),
-               GL_STATIC_DRAW);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int),
+               indices.data(), GL_STATIC_DRAW);
 
   glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)0);
   glEnableVertexAttribArray(0);
@@ -230,8 +239,8 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
   mb.noneBlend = scriptFlags.noneBlend;
   mb.hidden = scriptFlags.hidden;
   mb.bright = scriptFlags.bright;
-
-  mb.bmdTextureId = mesh.Texture; // Store BMD texture slot for BlendMesh matching
+  mb.bmdTextureId =
+      mesh.Texture; // Store BMD texture slot for BlendMesh matching
 
   out.push_back(mb);
 }
@@ -267,18 +276,18 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
       // stone walls have too many instances for per-frame vertex transforms.
       auto shouldAnimate = [](int t) {
         // Cloth, signs, animals, mechanical, decorative — low instance count
-        return t == 56 || t == 57 ||  // MerchantAnimal01-02
-               t == 59 ||             // TreasureChest01
-               t == 60 ||             // Ship01
-               t == 90 ||             // StreetLight01
-               t == 95 ||             // Curtain01
-               t == 96 ||             // Sign01
-               t == 98 ||             // Carriage01
-               t == 105 ||            // Waterspout01
-               t == 110 ||            // Hanging01
+        return t == 56 || t == 57 ||   // MerchantAnimal01-02
+               t == 59 ||              // TreasureChest01
+               t == 60 ||              // Ship01
+               t == 90 ||              // StreetLight01
+               t == 95 ||              // Curtain01
+               t == 96 ||              // Sign01
+               t == 98 ||              // Carriage01
+               t == 105 ||             // Waterspout01
+               t == 110 ||             // Hanging01
                t == 118 || t == 119 || // House04-05
-               t == 120 ||            // Tent01
-               t == 150;              // Candle01
+               t == 120 ||             // Tent01
+               t == 150;               // Candle01
       };
       if (!bmd->Actions.empty() && bmd->Actions[0].NumAnimationKeys > 1 &&
           shouldAnimate(obj.type)) {
@@ -288,8 +297,8 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
 
       for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
         auto &mesh = bmd->Meshes[mi];
-        UploadMesh(mesh, objectDir + "/", cache.boneMatrices,
-                   cache.meshBuffers, cache.isAnimated);
+        UploadMesh(mesh, objectDir + "/", cache.boneMatrices, cache.meshBuffers,
+                   cache.isAnimated);
       }
 
       // Mark BlendMesh meshes (window light / glow)
@@ -304,8 +313,8 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
       // Retain BMD data for animated types (needed for per-frame re-skinning)
       if (cache.isAnimated) {
         cache.bmdData = std::move(bmd);
-        std::cout << "  [Animated] type " << obj.type << " keys="
-                  << cache.numAnimationKeys << std::endl;
+        std::cout << "  [Animated] type " << obj.type
+                  << " keys=" << cache.numAnimationKeys << std::endl;
       }
 
       modelCache[obj.type] = std::move(cache);
@@ -337,7 +346,11 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
                         glm::vec3(1.0f, 0.0f, 0.0f)); // MU X rotation
     model = glm::scale(model, glm::vec3(obj.scale));
 
-    instances.push_back({obj.type, model});
+    // Sample terrain lightmap at object's world position
+    glm::vec3 worldPos = glm::vec3(model[3]);
+    glm::vec3 tLight = SampleTerrainLight(worldPos);
+
+    instances.push_back({obj.type, model, tLight});
   }
 
   std::cout << "[ObjectRenderer] Loaded " << instances.size()
@@ -345,9 +358,43 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
             << " unique models, skipped " << skipped << std::endl;
 }
 
-void ObjectRenderer::SetPointLights(
-    const std::vector<glm::vec3> &positions,
-    const std::vector<glm::vec3> &colors, const std::vector<float> &ranges) {
+void ObjectRenderer::SetTerrainLightmap(
+    const std::vector<glm::vec3> &lightmap) {
+  terrainLightmap = lightmap;
+}
+
+glm::vec3 ObjectRenderer::SampleTerrainLight(const glm::vec3 &worldPos) const {
+  const int SIZE = 256;
+  if (terrainLightmap.size() < (size_t)(SIZE * SIZE))
+    return glm::vec3(1.0f);
+
+  // World → grid: WorldX maps to grid Z, WorldZ maps to grid X
+  // (MU Y→WorldX, MU X→WorldZ; lightmap indexed as [z * SIZE + x])
+  float gz = worldPos.x / 100.0f;
+  float gx = worldPos.z / 100.0f;
+
+  int xi = (int)gx;
+  int zi = (int)gz;
+  if (xi < 0 || zi < 0 || xi > SIZE - 2 || zi > SIZE - 2)
+    return glm::vec3(0.5f);
+
+  float xd = gx - (float)xi;
+  float zd = gz - (float)zi;
+
+  // 4 corners for bilinear interpolation
+  const glm::vec3 &c00 = terrainLightmap[zi * SIZE + xi];
+  const glm::vec3 &c10 = terrainLightmap[zi * SIZE + (xi + 1)];
+  const glm::vec3 &c01 = terrainLightmap[(zi + 1) * SIZE + xi];
+  const glm::vec3 &c11 = terrainLightmap[(zi + 1) * SIZE + (xi + 1)];
+
+  glm::vec3 left = c00 + (c01 - c00) * zd;
+  glm::vec3 right = c10 + (c11 - c10) * zd;
+  return left + (right - left) * xd;
+}
+
+void ObjectRenderer::SetPointLights(const std::vector<glm::vec3> &positions,
+                                    const std::vector<glm::vec3> &colors,
+                                    const std::vector<float> &ranges) {
   plCount = std::min((int)positions.size(), 64);
   plPositions.assign(positions.begin(), positions.begin() + plCount);
   plColors.assign(colors.begin(), colors.begin() + plCount);
@@ -381,15 +428,15 @@ void ObjectRenderer::RetransformMesh(const Mesh_t &mesh,
         const auto &bm = bones[boneIdx];
         vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
                                           srcVert.Position);
-        vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
-                                           srcNorm.Normal);
+        vert.normal =
+            MuMath::RotateVector((const float(*)[4])bm.data(), srcNorm.Normal);
       } else {
         vert.pos = srcVert.Position;
         vert.normal = srcNorm.Normal;
       }
 
       vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                            mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+                           mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
       vertices.push_back(vert);
     }
     if (steps == 4) {
@@ -412,7 +459,7 @@ void ObjectRenderer::RetransformMesh(const Mesh_t &mesh,
         }
 
         vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                              mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+                             mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
         vertices.push_back(vert);
       }
     }
@@ -465,9 +512,8 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
 
         auto bones = ComputeBoneMatricesInterpolated(cache.bmdData.get(), 0,
                                                      state.frame);
-        for (int mi = 0;
-             mi < (int)cache.meshBuffers.size() &&
-             mi < (int)cache.bmdData->Meshes.size();
+        for (int mi = 0; mi < (int)cache.meshBuffers.size() &&
+                         mi < (int)cache.bmdData->Meshes.size();
              ++mi) {
           RetransformMesh(cache.bmdData->Meshes[mi], bones,
                           cache.meshBuffers[mi]);
@@ -478,16 +524,17 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   }
 
   // Compute BlendMesh animation state from time
-  // Flicker: random-ish intensity between 0.4 and 0.7 (like original rand()%4+4)
-  float flickerBase =
-      0.55f + 0.15f * std::sin(currentTime * 7.3f) *
-                  std::sin(currentTime * 11.1f + 2.0f);
+  // Flicker: random-ish intensity between 0.4 and 0.7 (like original
+  // rand()%4+4)
+  float flickerBase = 0.55f + 0.15f * std::sin(currentTime * 7.3f) *
+                                  std::sin(currentTime * 11.1f + 2.0f);
   // UV scroll: 1-second cycle for animated window meshes
   float uvScroll = -std::fmod(currentTime, 1.0f);
 
   for (auto &inst : instances) {
     // PoseBox (type 133) is an NPC interaction trigger, not a visible object
-    if (inst.type == 133)
+    // Light01-03 (types 130-132) are fire/smoke-only emitters (HiddenMesh=-2)
+    if (inst.type == 133 || (inst.type >= 130 && inst.type <= 132))
       continue;
 
     auto it = modelCache.find(inst.type);
@@ -495,10 +542,12 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
       continue;
 
     shader->setMat4("model", inst.modelMatrix);
+    shader->setVec3("terrainLight", inst.terrainLight);
 
     // Check if this model type has BlendMesh animation
     bool hasBlendMesh = it->second.blendMeshTexId >= 0;
-    bool hasUVScroll = (inst.type == 118 || inst.type == 119 || inst.type == 105);
+    bool hasUVScroll =
+        (inst.type == 118 || inst.type == 119 || inst.type == 105);
 
     for (auto &mb : it->second.meshBuffers) {
       if (mb.indexCount == 0 || mb.hidden)
@@ -546,7 +595,22 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
         glDepthMask(GL_TRUE);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       } else {
+        // Alpha meshes: disable face culling (paper-thin geometry like
+        // fence bars needs both sides visible) and add depth bias to
+        // avoid z-fighting with coplanar opaque meshes.
+        // Matches original engine's EnableAlphaTest() → DisableCullFace().
+        if (mb.hasAlpha) {
+          glDisable(GL_CULL_FACE);
+          glEnable(GL_POLYGON_OFFSET_FILL);
+          glPolygonOffset(-1.0f, -1.0f);
+          glDepthMask(GL_FALSE); // Shadows/Alpha shouldn't write depth
+        }
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        if (mb.hasAlpha) {
+          glDepthMask(GL_TRUE);
+          glDisable(GL_POLYGON_OFFSET_FILL);
+          glEnable(GL_CULL_FACE);
+        }
       }
     }
   }

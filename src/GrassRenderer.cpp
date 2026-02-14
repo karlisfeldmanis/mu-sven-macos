@@ -62,7 +62,7 @@ void main() {
     else if (TexLayer == 2) color = texture(grassTex2, TexCoord);
     else color = texture(grassTex0, TexCoord);
 
-    if (color.a < 0.1) discard;
+    if (color.a < 0.25) discard; // Match original glAlphaFunc(GL_GREATER, 0.25)
 
     vec3 lit = color.rgb * VertColor;
 
@@ -87,8 +87,8 @@ void main() {
 
 // --- Constants ---
 
-// Reference: Height = pBitmap->Height * 2.0 = 128 * 2 = 256
-static constexpr float GRASS_HEIGHT = 256.0f;
+// Reference: Height = pBitmap->Height * 2.0f; TileGrass01/02 are 256x64, so 64*2=128
+static constexpr float GRASS_HEIGHT = 128.0f;
 // Reference: Width = 64.0f / 256.0f = 0.25 (four grass blade variants per texture)
 static constexpr float UV_WIDTH = 64.0f / 256.0f;
 
@@ -153,18 +153,20 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
   }
 
   // Generate grass billboard quads for grass terrain cells
-  // Two cross-billboards per cell (SW→NE and SE→NW diagonals) for 3D look
+  // Single billboard per cell (SW→NE diagonal) matching original engine
   std::vector<GrassVertex> vertices;
   std::vector<unsigned int> indices;
 
   // Seed RNG for per-row UV randomization (matches reference TerrainGrassTexture)
   srand(42);
 
-  for (int z = 0; z < SIZE - 1; ++z) {
-    // Random UV offset per row (reference: TerrainGrassTexture[yi] = rand()%4/4.0)
-    // Gives 0.0, 0.25, 0.5, or 0.75 — selects one of four blade variants
-    float rowUVOffset = (float)(rand() % 4) / 4.0f;
+  // Pre-compute per-row random UV offsets (reference: TerrainGrassTexture[yi])
+  float rowUVOffsets[256];
+  for (int z = 0; z < SIZE; ++z) {
+    rowUVOffsets[z] = (float)(rand() % 4) / 4.0f;
+  }
 
+  for (int z = 0; z < SIZE - 1; ++z) {
     for (int x = 0; x < SIZE - 1; ++x) {
       int idx = z * SIZE + x;
 
@@ -177,16 +179,22 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
       if (data.mapping.alpha[idx] > 0.0f)
         continue;
 
-      // Get heightmap at all 4 cell corners
-      // Our coordinate system: position = (z*100, height, x*100)
-      float h_sw = data.heightmap[z * SIZE + x];
-      float h_se = data.heightmap[z * SIZE + (x + 1)];
-      float h_ne = data.heightmap[(z + 1) * SIZE + (x + 1)];
-      float h_nw = data.heightmap[(z + 1) * SIZE + x];
+      // Skip cells with NOGROUND attribute (under bridges/structures)
+      if (idx < (int)data.mapping.attributes.size() &&
+          (data.mapping.attributes[idx] & 0x08) != 0)
+        continue;
 
-      // UV strip: width=0.25 (reference: 64/256), offset from row randomization
-      float uLeft = rowUVOffset;
-      float uRight = rowUVOffset + UV_WIDTH;
+      // Get heightmap at SW and NE corners (diagonal billboard)
+      float h_sw = data.heightmap[z * SIZE + x];
+      float h_ne = data.heightmap[(z + 1) * SIZE + (x + 1)];
+
+      // UV strip: reference uses su = xf * Width + TerrainGrassTexture[yi]
+      // This cycles through 4 blade variants per column, plus row randomization
+      float su = (float)x * UV_WIDTH + rowUVOffsets[z];
+      // Wrap to [0, 1) range
+      su = su - floorf(su);
+      float uLeft = su;
+      float uRight = su + UV_WIDTH;
 
       // Lightmap color at this cell
       glm::vec3 lightColor(1.0f);
@@ -196,120 +204,64 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
 
       float texLayer = (float)layer1;
 
-      // --- Billboard 1: SW → NE diagonal (matches reference VectorCopy swap) ---
-      // Reference creates diagonal strip from corner[0] (SW) to corner[2] (NE)
-      // MU_Y (z) → GL X, MU_X (x) → GL Z, MU_Z → GL Y
-      {
-        unsigned int baseIdx = (unsigned int)vertices.size();
+      // Single billboard: SW → NE diagonal (matches reference VectorCopy)
+      // Reference: v[3]=SW(ground), v[2]=NE(ground), v[0]=SW(top), v[1]=NE(top)
+      // Top vertices: Z += Height, X -= 50, Y += wind
+      unsigned int baseIdx = (unsigned int)vertices.size();
 
-        glm::vec3 posSW((float)z * 100.0f, h_sw, (float)x * 100.0f);
-        glm::vec3 posNE((float)(z + 1) * 100.0f, h_ne,
-                        (float)(x + 1) * 100.0f);
+      glm::vec3 posSW((float)z * 100.0f, h_sw, (float)x * 100.0f);
+      glm::vec3 posNE((float)(z + 1) * 100.0f, h_ne,
+                      (float)(x + 1) * 100.0f);
 
-        // Bottom-left (SW, anchored at terrain)
-        GrassVertex bl;
-        bl.position = posSW;
-        bl.texCoord = glm::vec2(uLeft, 1.0f); // V=1 at base
-        bl.windWeight = 0.0f;
-        bl.gridX = (float)x;
-        bl.color = lightColor;
-        bl.texLayer = texLayer;
-        vertices.push_back(bl);
+      // Bottom-left (SW, anchored at terrain)
+      GrassVertex bl;
+      bl.position = posSW;
+      bl.texCoord = glm::vec2(uLeft, 1.0f); // V=1 at base
+      bl.windWeight = 0.0f;
+      bl.gridX = (float)x;
+      bl.color = lightColor;
+      bl.texLayer = texLayer;
+      vertices.push_back(bl);
 
-        // Bottom-right (NE, anchored at terrain)
-        GrassVertex br;
-        br.position = posNE;
-        br.texCoord = glm::vec2(uRight, 1.0f);
-        br.windWeight = 0.0f;
-        br.gridX = (float)(x + 1);
-        br.color = lightColor;
-        br.texLayer = texLayer;
-        vertices.push_back(br);
+      // Bottom-right (NE, anchored at terrain)
+      GrassVertex br;
+      br.position = posNE;
+      br.texCoord = glm::vec2(uRight, 1.0f);
+      br.windWeight = 0.0f;
+      br.gridX = (float)(x + 1);
+      br.color = lightColor;
+      br.texLayer = texLayer;
+      vertices.push_back(br);
 
-        // Top-right (NE, elevated + wind)
-        // Reference: MU_Z += Height, MU_X -= 50 → GL: Y += Height, Z -= 50
-        GrassVertex tr;
-        tr.position =
-            glm::vec3(posNE.x, posNE.y + GRASS_HEIGHT, posNE.z - 50.0f);
-        tr.texCoord = glm::vec2(uRight, 0.0f); // V=0 at tips
-        tr.windWeight = 1.0f;
-        tr.gridX = (float)(x + 1);
-        tr.color = lightColor;
-        tr.texLayer = texLayer;
-        vertices.push_back(tr);
+      // Top-right (NE, elevated + wind)
+      // Reference: MU_Z += Height, MU_X -= 50 → GL: Y += Height, Z -= 50
+      GrassVertex tr;
+      tr.position =
+          glm::vec3(posNE.x, posNE.y + GRASS_HEIGHT, posNE.z - 50.0f);
+      tr.texCoord = glm::vec2(uRight, 0.0f); // V=0 at tips
+      tr.windWeight = 1.0f;
+      tr.gridX = (float)(x + 1);
+      tr.color = lightColor;
+      tr.texLayer = texLayer;
+      vertices.push_back(tr);
 
-        // Top-left (SW, elevated + wind)
-        GrassVertex tl;
-        tl.position =
-            glm::vec3(posSW.x, posSW.y + GRASS_HEIGHT, posSW.z - 50.0f);
-        tl.texCoord = glm::vec2(uLeft, 0.0f);
-        tl.windWeight = 1.0f;
-        tl.gridX = (float)x;
-        tl.color = lightColor;
-        tl.texLayer = texLayer;
-        vertices.push_back(tl);
+      // Top-left (SW, elevated + wind)
+      GrassVertex tl;
+      tl.position =
+          glm::vec3(posSW.x, posSW.y + GRASS_HEIGHT, posSW.z - 50.0f);
+      tl.texCoord = glm::vec2(uLeft, 0.0f);
+      tl.windWeight = 1.0f;
+      tl.gridX = (float)x;
+      tl.color = lightColor;
+      tl.texLayer = texLayer;
+      vertices.push_back(tl);
 
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 3);
-      }
-
-      // --- Billboard 2: SE → NW diagonal (cross-billboard for free camera) ---
-      // Perpendicular to billboard 1, creating an X-pattern per cell
-      {
-        unsigned int baseIdx = (unsigned int)vertices.size();
-
-        glm::vec3 posSE((float)z * 100.0f, h_se, (float)(x + 1) * 100.0f);
-        glm::vec3 posNW((float)(z + 1) * 100.0f, h_nw, (float)x * 100.0f);
-
-        GrassVertex bl;
-        bl.position = posSE;
-        bl.texCoord = glm::vec2(uLeft, 1.0f);
-        bl.windWeight = 0.0f;
-        bl.gridX = (float)(x + 1);
-        bl.color = lightColor;
-        bl.texLayer = texLayer;
-        vertices.push_back(bl);
-
-        GrassVertex br;
-        br.position = posNW;
-        br.texCoord = glm::vec2(uRight, 1.0f);
-        br.windWeight = 0.0f;
-        br.gridX = (float)x;
-        br.color = lightColor;
-        br.texLayer = texLayer;
-        vertices.push_back(br);
-
-        GrassVertex tr;
-        tr.position =
-            glm::vec3(posNW.x, posNW.y + GRASS_HEIGHT, posNW.z - 50.0f);
-        tr.texCoord = glm::vec2(uRight, 0.0f);
-        tr.windWeight = 1.0f;
-        tr.gridX = (float)x;
-        tr.color = lightColor;
-        tr.texLayer = texLayer;
-        vertices.push_back(tr);
-
-        GrassVertex tl;
-        tl.position =
-            glm::vec3(posSE.x, posSE.y + GRASS_HEIGHT, posSE.z - 50.0f);
-        tl.texCoord = glm::vec2(uLeft, 0.0f);
-        tl.windWeight = 1.0f;
-        tl.gridX = (float)(x + 1);
-        tl.color = lightColor;
-        tl.texLayer = texLayer;
-        vertices.push_back(tl);
-
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 3);
-      }
+      indices.push_back(baseIdx + 0);
+      indices.push_back(baseIdx + 1);
+      indices.push_back(baseIdx + 2);
+      indices.push_back(baseIdx + 0);
+      indices.push_back(baseIdx + 2);
+      indices.push_back(baseIdx + 3);
     }
   }
 

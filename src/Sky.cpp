@@ -1,6 +1,7 @@
 #include "Sky.hpp"
 #include "TextureLoader.hpp"
 #include <cmath>
+#include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 #include <vector>
@@ -98,7 +99,14 @@ void Sky::Init(const std::string &dataPath) {
 
   glBindVertexArray(0);
 
-  shader = std::make_unique<Shader>("../shaders/sky.vert", "../shaders/sky.frag");
+  {
+    std::ifstream test("shaders/sky.vert");
+    if (test.good())
+      shader = std::make_unique<Shader>("shaders/sky.vert", "shaders/sky.frag");
+    else
+      shader = std::make_unique<Shader>("../shaders/sky.vert",
+                                        "../shaders/sky.frag");
+  }
 
   std::cout << "[Sky] Initialized with " << SEGMENTS << " segments, radius "
             << RADIUS << std::endl;

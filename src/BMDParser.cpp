@@ -46,20 +46,18 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
   uint8_t version = buffer[3];
   size_t ptr = 4;
 
-  std::cout << "[BMDParser] Version: 0x" << std::hex << (int)version << std::dec
-            << " File size: " << size << std::endl;
+  std::cout << "[BMDParser] " << path << " Version: 0x" << std::hex
+            << (int)version << std::dec << " File size: " << size << std::endl;
 
   auto bmd = std::make_unique<BMDData>();
   bmd->Version = version;
 
-  std::vector<uint8_t> decrypted;
   const uint8_t *data = buffer.data();
+  std::vector<uint8_t> decrypted;
 
   if (version == 0xC) {
     uint32_t encSize = ReadRaw<uint32_t>(buffer.data(), ptr);
-    std::cout << "[BMDParser] Encrypted size: " << encSize << " ptr: " << ptr
-              << std::endl;
-    if (encSize > 100 * 1024 * 1024) { // 100MB limit for safety
+    if (encSize > 100 * 1024 * 1024) {
       std::cerr << "[BMDParser] Invalid encrypted size: " << encSize
                 << std::endl;
       return nullptr;
@@ -81,7 +79,7 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
   short numActions = ReadRaw<short>(data, ptr);
 
   std::cout << "[BMDParser] Meshes: " << numMeshes << " Bones: " << numBones
-            << " Actions: " << numActions << " ptr: " << ptr << std::endl;
+            << " Actions: " << numActions << std::endl;
 
   if (numMeshes < 0 || numMeshes > 1000) {
     std::cerr << "[BMDParser] Invalid mesh count: " << numMeshes << std::endl;
@@ -97,10 +95,6 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
     m.NumTriangles = ReadRaw<short>(data, ptr);
     m.Texture = ReadRaw<short>(data, ptr);
 
-    std::cout << " [Mesh " << i << "] Verts: " << m.NumVertices
-              << " Norms: " << m.NumNormals << " Tex: " << m.NumTexCoords
-              << " Tris: " << m.NumTriangles << std::endl;
-
     if (m.NumVertices < 0 || m.NumVertices > 10000) {
       std::cerr << " [BMDParser] Invalid vertex count: " << m.NumVertices
                 << std::endl;
@@ -108,14 +102,11 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
     }
 
     m.Vertices.resize(m.NumVertices);
-    memcpy(m.Vertices.data(), data + ptr,
-           m.NumVertices * 16); // Node(2) + Pad(2) + Pos(12)
+    memcpy(m.Vertices.data(), data + ptr, m.NumVertices * 16);
     ptr += m.NumVertices * 16;
 
     m.Normals.resize(m.NumNormals);
-    memcpy(m.Normals.data(), data + ptr,
-           m.NumNormals *
-               20); // Node(2) + Pad(2) + Normal(12) + Bind(2) + Pad(2)
+    memcpy(m.Normals.data(), data + ptr, m.NumNormals * 20);
     ptr += m.NumNormals * 20;
 
     m.TexCoords.resize(m.NumTexCoords);
@@ -125,7 +116,6 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
     m.Triangles.resize(m.NumTriangles);
     for (int j = 0; j < m.NumTriangles; ++j) {
       memcpy(&m.Triangles[j], data + ptr, 34);
-      // sizeof(Triangle_t2) on MSVC with default packing = 64
       ptr += 64;
     }
 
@@ -133,6 +123,11 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
     memcpy(texName, data + ptr, 32);
     m.TextureName = texName;
     ptr += 32;
+
+    std::cout << " [Mesh " << i << "] Verts: " << m.NumVertices
+              << " Norms: " << m.NumNormals << " Tex: " << m.NumTexCoords
+              << " Tris: " << m.NumTriangles << " Texture: " << m.TextureName;
+    std::cout << std::endl;
   }
 
   bmd->Actions.resize(numActions);
@@ -167,7 +162,6 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
           ptr += numKeys * 12;
           memcpy(bm.Rotation.data(), data + ptr, numKeys * 12);
           ptr += numKeys * 12;
-          // Pre-compute quaternions for slerp interpolation
           for (int k = 0; k < numKeys; ++k) {
             float q[4];
             MuMath::AngleQuaternion(bm.Rotation[k], q);
