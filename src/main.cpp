@@ -255,37 +255,36 @@ int main(int argc, char **argv) {
     for (const auto &obj : terrainData.objects) {
       if (obj.type != 80)
         continue; // MODEL_BRIDGE only
-      std::cout << "[Bridge] Type 80 at gl_pos=(" << obj.position.x << ", "
-                << obj.position.y << ", " << obj.position.z << ")" << std::endl;
       int gz = (int)(obj.position.x / 100.0f);
       int gx = (int)(obj.position.z / 100.0f);
-      // Bridge orientation from Z rotation:
-      // angle Z ≈ ±90: bridge spans along gz (N-S), narrow in gx
-      // angle Z ≈ 0/180: bridge spans along gx (E-W), narrow in gz
       float angZ =
           std::abs(std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
       bool spanAlongGZ = (std::abs(angZ - 90.0f) < 45.0f);
-      int rGZ = spanAlongGZ ? 4 : 2; // Increased radius to ensure coverage
-      int rGX = spanAlongGZ ? 2 : 4;
+      int rGZ = spanAlongGZ ? 3 : 1;
+      int rGX = spanAlongGZ ? 1 : 3;
       for (int dz = -rGZ; dz <= rGZ; ++dz) {
         for (int dx = -rGX; dx <= rGX; ++dx) {
           int cz = gz + dz, cx = gx + dx;
           if (cz < 0 || cz >= S || cx < 0 || cx >= S)
             continue;
           int idx = cz * S + cx;
-          // Mark all cells under/near bridge as submerged bridge supports
-          terrainData.mapping.attributes[idx] |= 0x18; // TW_NOGROUND | TW_WATER
-          count++;
-          if (dz == 0 && dx == 0) {
-            std::cout << "[Bridge] Marked center cell (" << cz << "," << cx
-                      << ") at idx " << idx << std::endl;
+          float h = terrainData.heightmap[idx];
+          // If terrain is near bridge height, it's the road/entrance -> NO
+          // water
+          if (std::abs(h - obj.position.y) < 80.0f) {
+            terrainData.mapping.attributes[idx] |= 0x08;  // TW_NOGROUND
+            terrainData.mapping.attributes[idx] &= ~0x10; // Clear TW_WATER
+          } else {
+            // It's submerged -> Apply water surface over it
+            terrainData.mapping.attributes[idx] |= 0x10; // TW_WATER
           }
+          count++;
         }
       }
     }
     if (count > 0)
       std::cout << "[Terrain] Reconstructed " << count
-                << " bridge support cells (TW_NOGROUND|TW_WATER)" << std::endl;
+                << " refined bridge support/deck cells" << std::endl;
   }
 
   g_terrain.Load(terrainData, 1, data_path);
