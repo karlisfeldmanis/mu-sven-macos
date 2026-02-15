@@ -65,8 +65,18 @@ target_link_libraries(MuRemaster PRIVATE
 )
 
 # Standalone Model Viewer
-add_executable(ModelViewer src/model_viewer_main.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+add_executable(ModelViewer src/model_viewer_main.cpp src/ViewerCommon.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
 target_link_libraries(ModelViewer PRIVATE
+    glfw
+    GLEW::GLEW
+    OpenGL::GL
+    ${JPEG_LIBRARY}
+    ${GIF_LIBRARY}
+)
+
+# Standalone Character Viewer
+add_executable(CharViewer src/char_viewer_main.cpp src/ViewerCommon.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+target_link_libraries(CharViewer PRIVATE
     glfw
     GLEW::GLEW
     OpenGL::GL
@@ -77,6 +87,7 @@ target_link_libraries(ModelViewer PRIVATE
 if(APPLE)
     target_link_libraries(MuRemaster PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
     target_link_libraries(ModelViewer PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
+    target_link_libraries(CharViewer PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
 endif()
 
-message(STATUS "Configured MuRemaster and ModelViewer")
+message(STATUS "Configured MuRemaster, ModelViewer, and CharViewer")

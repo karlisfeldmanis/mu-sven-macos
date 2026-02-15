@@ -9,12 +9,13 @@ This document helps AI agents understand the codebase without re-exploring.
 cd build && cmake .. && make -j$(sysctl -n hw.ncpu)
 ```
 
-Two targets: `MuRemaster` (world viewer) and `ModelViewer` (BMD object browser).
+Three targets: `MuRemaster` (world viewer), `ModelViewer` (BMD object browser), and `CharViewer` (character animation browser).
 Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui, giflib.
 
 ### macOS Specifics
 - **Window Activation**: Uses `activateMacOSApp()` (Objective-C runtime) to force the GLFW window to the foreground on launch.
 - **GLEW Header Order**: `GL/glew.h` **must** be included before `GLFW/glfw3.h` to prevent symbol conflicts.
+- **Metal Translation Layer VBO Updates**: On macOS (OpenGL→Metal), `glBufferSubData` works for dynamic VBO updates. `glBufferData` + VAO re-setup does NOT work reliably. Always use `glBufferSubData` for animated mesh re-skinning.
 
 ## Source Files
 
@@ -31,7 +32,10 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | `Camera.hpp` | FPS camera with yaw/pitch/zoom, WASD movement, state persistence. |
 | `Terrain.hpp` | 256x256 heightmap mesh, 4-tap tile blending, lightmap integration. |
 | `TerrainParser.hpp` | Parses MAP heightmaps, tile layers, alpha maps, attributes, objects, lightmaps. `TERRAIN_SIZE = 256`. `ObjectData` struct. |
-| `ObjectRenderer.hpp` | World object rendering: BMD model cache, type-to-filename mapping, per-instance transforms, per-mesh blend state, skeletal animation (AnimState, RetransformMesh), BlendMesh system, terrain lightmap sampling per object. |
+| `ObjectRenderer.hpp` | World object rendering: BMD model cache, type-to-filename mapping, per-instance transforms, per-mesh blend state, skeletal animation (AnimState, RetransformMesh), BlendMesh system, terrain lightmap sampling per object, per-type alpha (roof hiding). |
+| `ViewerCommon.hpp` | Shared viewer utilities: OrbitCamera, DebugAxes, UploadMeshWithBones/RetransformMeshWithBones helpers, ActivateMacOSApp, ImGui init. |
+| `GrassRenderer.hpp` | Billboard grass system: wind animation, ball-push displacement, 3 texture layers. |
+| `Sky.hpp` | Sky dome: gradient hemisphere rendered behind scene. |
 | `FireEffect.hpp` | Particle-based fire system for Lorencia torches/bonfires/lights. Uses GPU instancing and billboarding. |
 | `Screenshot.hpp` | `Screenshot::Capture(window)` for JPEG; GIF system for optimized frame-diffed animations. |
 
@@ -46,17 +50,21 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | `Terrain.cpp` | Terrain vertex grid generation, texture array loading, shader-based 4-tap blending. Water is rendered as regular tile (layer1=5) with animated UV — no overlay. |
 | `Screenshot.cpp` | GIF optimization: resolution downscaling, frame diffing, and dirty rectangle encoding. |
 | `TerrainParser.cpp` | Decrypts and parses terrain files: heightmap, mapping, attributes, objects (EncTerrain1.obj), lightmap. |
-| `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ object instances with per-mesh blend, BlendMesh glow, skeletal animation (CPU re-skinning for whitelisted types), and terrain lightmap sampling. |
+| `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ object instances with per-mesh blend, BlendMesh glow, skeletal animation (CPU re-skinning for whitelisted types), terrain lightmap sampling, per-type alpha for roof hiding. |
+| `GrassRenderer.cpp` | 42k grass billboards with GPU vertex shader wind animation and ball-push displacement (quadratic falloff within pushRadius). |
+| `Sky.cpp` | Sky dome gradient hemisphere. |
 | `FireEffect.cpp` | Particle physics, emitter management, and instanced billboarding rendering for `Fire01.OZJ`. Fire types: 50-51, 52, 55, 80, 130. |
-| `main.cpp` | World viewer app: terrain + objects, WASD nav, P screenshot. Data path: `references/other/MuMain/src/bin/Data/`. |
+| `main.cpp` | World viewer app: terrain + objects + grass + sky + fire, WASD energy ball on terrain, P screenshot, roof hiding (tile==4), grass pushing. Data path: `references/other/MuMain/src/bin/Data/`. |
 | `model_viewer_main.cpp` | Object browser: scans Object1/ for BMDs, orbit camera, ImGui list+info panel, per-mesh blend state, skeletal animation playback with ImGui controls. |
+| `char_viewer_main.cpp` | Character browser: Player.bmd skeleton + body part armor system, class-aware skill/emote animation categories, orbit camera, GIF capture. |
+| `ViewerCommon.cpp` | Shared viewer code: OrbitCamera math, DebugAxes rendering, bone-aware mesh upload/retransform, ImGui lifecycle. |
 
 ### Shaders (shaders/)
 
 | File | Purpose |
 |------|---------|
 | `model.vert` | Standard MVP transform, normal correction via inverse-transpose, `texCoordOffset` for UV scroll. Inputs: aPos, aNormal, aTexCoord. |
-| `model.frag` | Two-sided diffuse lighting (abs dot), alpha discard at 0.1, optional linear fog (2000-8000 range), `blendMeshLight` intensity, `terrainLight` (lightmap color at object world position), point light array (64 max). |
+| `model.frag` | Two-sided diffuse lighting (abs dot), alpha discard at 0.1, optional linear fog (1500-3500 range), `blendMeshLight` intensity, `objectAlpha` (per-instance roof hiding), `terrainLight` (lightmap color at object world position), point light array (64 max). **Any renderer using this shader MUST set `objectAlpha` uniform to 1.0 or objects will be invisible.** |
 
 ### GIF Capture Optimizations
 - **Resolution Downscaling**: Optional scale factor (e.g., 0.5x) using box-filter averaging during capture.
@@ -151,6 +159,13 @@ Original MU's BlendMesh marks specific mesh indices within BMD models for additi
 
 **Rendering**: Additive blend (`GL_ONE, GL_ONE`) + depth write off + intensity flicker (sin-based) + optional UV scroll (House04, House05, Waterspout01).
 
+**BlendMeshLight intensity rules** (from reference ZzzObject.cpp):
+- 117 (House03), 122 (HouseWall02): sin-based flicker (0.4-0.7 range)
+- 118 (House04), 119 (House05): flicker + UV scroll `-(WorldTime%1000)*0.001f`
+- 52 (Bonfire01): wider flicker (0.4-0.9 range)
+- 90 (StreetLight01), 150 (Candle01), 98 (Carriage01): **constant 1.0f** (no flicker)
+- 105 (Waterspout01): **constant 1.0f** + UV scroll `-(WorldTime%1000)*0.001f`
+
 **Shader uniforms**: `blendMeshLight` (float intensity multiplier), `texCoordOffset` (vec2 UV scroll).
 
 ### Point Light System
@@ -171,12 +186,52 @@ The original MU engine for standard maps (Lorencia) renders water as a **regular
 
 **Lesson learned**: Do not invent rendering systems that don't exist in the original source. For Lorencia, water is just a tile with animated UVs. The original `RenderTerrainTile()` simply skips TW_NOGROUND cells entirely (line 1665 of ZzzLodTerrain.cpp). Special water overlays only exist for Atlantis (WD_7ATLANSE) in the original.
 
+### Roof Hiding System (objectAlpha)
+When the player stands on a tile with `layer1 == 4` (building interior), types 125 (HouseWall05) and 126 (HouseWall06) fade to invisible. Reference: ZzzObject.cpp:3744.
+
+- **`objectAlpha` uniform** in `model.frag`: multiplies fragment alpha (0=invisible, 1=opaque)
+- **`ObjectRenderer::SetTypeAlpha()`** accepts per-type alpha map
+- **Interpolation**: Exponential ease `alpha += (target - alpha) * (1 - exp(-20 * dt))` in `main.cpp`
+- **Skip rendering**: Objects with alpha < 0.01 are skipped entirely
+
+### Grass Pushing System
+Grass billboard vertices near the player ball get pushed away. Reference: GMHellas.cpp:402 `CheckGrass`.
+
+- Implemented in GrassRenderer vertex shader: top vertices (`aWindWeight > 0`) within `pushRadius` (150 units) of `ballPos` XZ are displaced away with quadratic falloff + slight downward bend.
+- `ballPos` and `pushRadius` uniforms set per frame from `main.cpp`.
+
+### RENDER_WAVE — Not For World Objects
+`RENDER_WAVE` (ZzzBMD.cpp:1331) is a procedural sine-wave vertex displacement along normals. Formula: `pos += normal * sin((WorldTime_ms + vertexIndex * 931) * 0.007) * 28.0`. It is **ONLY** used for `MODEL_MONSTER01+51` (a monster model), **never** for any Lorencia world objects. Do not apply it to world objects.
+
+### HouseEtc01-03 (Types 127-129) — Static Objects
+HouseEtc01 (type 127) has 2 meshes: mesh 0 = pole (c_wall04.OZJ), mesh 1 = flag cloth (c_wall06.OZJ). Internal BMD name: "Data2\Object1\c_wall07.smd". 1 bone, 1 keyframe. **Completely static in original MU** — no animation of any kind. 4 instances surround the fountain in Lorencia.
+
 ### Terrain Lightmap on Objects
 Objects sample the terrain lightmap at their world position for ambient lighting, matching the original engine's per-object lighting.
 
 - **`ObjectRenderer::SetTerrainLightmap()`** stores a copy of the 256x256 RGB lightmap
 - **`ObjectRenderer::SampleTerrainLight()`** bilinear-samples the lightmap at object world position
 - **`terrainLight` uniform** in `model.frag` multiplies the final lighting color
+
+### Character Viewer & Player.bmd Action Indices
+The character viewer (`char_viewer_main.cpp`) loads `Player.bmd` (60 bones, 0 meshes, **284 actions**) as a skeleton, then loads class-specific body part BMDs (Helm, Armor, Pants, Gloves, Boots) and re-skins them with the skeleton's bone transforms.
+
+**Player.bmd action indices** are sequential enum values from `_enum.h` (0.97d version, `YDG_ADD_SKILL_RIDING_ANIMATIONS` ifdef is NOT defined). Enum values map **1:1 to BMD action indices** — no offset needed. `MAX_PLAYER_ACTION = 284`.
+
+**Key action index ranges** (from `_enum.h`, PLAYER_SET=0):
+- Idle: 1-14 (Stop Male/Female/weapon variants, Fly, Ride)
+- Walk: 15-24 (Male/Female/weapon variants, Swim)
+- Run: 25-37 (weapon variants, Fly, Ride)
+- Combat: 38-59 (Fist, Sword, Bow, Ride attacks)
+- DK Sword Skills: 60-64 (PLAYER_ATTACK_SKILL_SWORD1-5), 65 (Wheel), 66 (Fury Strike)
+- Heal: 67 (PLAYER_SKILL_VITALITY)
+- Spear/DeathStab: 70-71
+- DarkLord/Fenrir: 74-129 (present in BMD but not used in 0.97d viewer)
+- Magic Skills: **146** (Energy Ball/HAND1), 147 (HAND2), 148 (WEAPON1), 149 (WEAPON2), 150 (ELF1), **151** (Teleport), 152 (Flash/Aqua Beam), **153** (Inferno), **154** (Hell Fire)
+- Emotes: **186** (Defense), 187-198 (Greeting→Gesture m/f pairs), 201-216 (Cry→Again m/f), 217-221 (Respect→Paper)
+- Other: **230** (Shock), 231-232 (Die), 233-240 (Sit/Healing/Pose m/f)
+
+**Lesson learned**: The `_enum.h` enum values are the BMD action indices. Do NOT add offsets. The `YDG_ADD_SKILL_RIDING_ANIMATIONS` ifdef is never `#define`d in any header — those 6 extra entries do NOT exist in the Player.bmd (confirmed: 284 actions = MAX_PLAYER_ACTION without ifdef).
 
 ### Reference Code Navigation
 Key functions in the original MU source for future lookups:
@@ -308,5 +363,5 @@ Key ranges: Tree(0-19), Grass(20-29), Stone(30-39), StoneStatue(40-42), Tomb(44-
 | TexCoord size | 8 bytes | BMDParser.cpp:121 |
 | Triangle stride | 64 bytes | BMDParser.cpp:128 |
 | Triangle read | 34 bytes | BMDParser.cpp:126 |
-| Alpha discard | 0.1 | shaders/model.frag:22 |
-| Fog range | 2000-8000 | shaders/model.frag:28 |
+| Alpha discard | 0.1 | shaders/model.frag |
+| Fog range | 1500-3500 | shaders/model.frag |
