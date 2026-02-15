@@ -127,6 +127,71 @@ void DebugAxes::Cleanup() {
   }
 }
 
+// ---------- DebugLines ----------
+
+void DebugLines::Init() {
+  program = CompileLineShader();
+
+  glGenVertexArrays(1, &vao);
+  glGenBuffers(1, &vbo);
+  glBindVertexArray(vao);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  glBufferData(GL_ARRAY_BUFFER, maxVerts * 6 * sizeof(float), nullptr,
+               GL_DYNAMIC_DRAW);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)0);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                        (void *)(3 * sizeof(float)));
+  glEnableVertexAttribArray(1);
+  glBindVertexArray(0);
+}
+
+void DebugLines::Clear() { verts.clear(); }
+
+void DebugLines::AddLine(const glm::vec3 &a, const glm::vec3 &b,
+                          const glm::vec3 &color) {
+  verts.insert(verts.end(), {a.x, a.y, a.z, color.r, color.g, color.b});
+  verts.insert(verts.end(), {b.x, b.y, b.z, color.r, color.g, color.b});
+}
+
+void DebugLines::Upload() {
+  int numVerts = (int)verts.size() / 6;
+  if (numVerts > maxVerts) {
+    maxVerts = numVerts * 2;
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, maxVerts * 6 * sizeof(float), nullptr,
+                 GL_DYNAMIC_DRAW);
+  }
+  if (numVerts > 0) {
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, verts.size() * sizeof(float),
+                    verts.data());
+  }
+}
+
+void DebugLines::Draw(const glm::mat4 &mvp) {
+  int numVerts = (int)verts.size() / 6;
+  if (!program || numVerts == 0)
+    return;
+  glUseProgram(program);
+  glUniformMatrix4fv(glGetUniformLocation(program, "uMVP"), 1, GL_FALSE,
+                     &mvp[0][0]);
+  glLineWidth(2.0f);
+  glBindVertexArray(vao);
+  glDrawArrays(GL_LINES, 0, numVerts);
+  glBindVertexArray(0);
+}
+
+void DebugLines::Cleanup() {
+  if (program) {
+    glDeleteProgram(program);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    program = 0;
+    vao = vbo = 0;
+  }
+}
+
 // ---------- Mesh upload / retransform ----------
 
 void UploadMeshWithBones(const Mesh_t &mesh, const std::string &textureDir,

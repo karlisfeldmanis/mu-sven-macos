@@ -358,6 +358,7 @@ private:
     shader.setVec3("terrainLight", 1.0f, 1.0f, 1.0f);
     shader.setVec2("texCoordOffset", glm::vec2(0.0f));
     shader.setInt("numPointLights", 0);
+    shader.setFloat("luminosity", 1.0f);
 
     // BlendMesh animation state
     float currentTime = (float)glfwGetTime();

@@ -27,6 +27,7 @@ glm::vec3 HeroCharacter::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
 }
 
 void HeroCharacter::Init(const std::string &dataPath) {
+  m_dataPath = dataPath;
   std::string playerPath = dataPath + "/Player/";
 
   // Load skeleton (Player.bmd — bones + actions, zero meshes)
@@ -240,6 +241,89 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
     }
   }
+
+  // Draw weapon attached to hand bone (if equipped)
+  // Original engine chain: CharBone[LinkBone] * WeaponBone[node] * vertex
+  // Rotation/offset are identity — weapon BMD's own bone handles orientation
+  auto &wCat = GetWeaponCategoryRender(m_weaponInfo.category);
+  int attachBone = wCat.attachBone;
+  if (m_weaponBmd && !m_weaponMeshBuffers.empty() &&
+      attachBone < (int)bones.size()) {
+
+    // Identity offset (no rotation, no translation)
+    BoneWorldMatrix weaponOffsetMat = MuMath::BuildWeaponOffsetMatrix(
+        glm::vec3(0, 0, 0), glm::vec3(0, 0, 0));
+
+    // parentMat = CharBone[attachBone] * OffsetMatrix
+    BoneWorldMatrix parentMat;
+    MuMath::ConcatTransforms(
+        (const float(*)[4])bones[attachBone].data(),
+        (const float(*)[4])weaponOffsetMat.data(),
+        (float(*)[4])parentMat.data());
+
+    // Compute weapon bone matrices with parentMat as root parent
+    // Mirrors original Animation(Parent=true)
+    auto wLocalBones = ComputeBoneMatrices(m_weaponBmd.get());
+    std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
+    for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
+      MuMath::ConcatTransforms(
+          (const float(*)[4])parentMat.data(),
+          (const float(*)[4])wLocalBones[bi].data(),
+          (float(*)[4])wFinalBones[bi].data());
+    }
+
+    // Re-skin weapon vertices using final bone matrices
+    for (int mi = 0; mi < (int)m_weaponMeshBuffers.size() &&
+                      mi < (int)m_weaponBmd->Meshes.size();
+         ++mi) {
+      auto &mesh = m_weaponBmd->Meshes[mi];
+      auto &mb = m_weaponMeshBuffers[mi];
+      if (mb.indexCount == 0)
+        continue;
+
+      std::vector<ViewerVertex> verts;
+      verts.reserve(mesh.NumTriangles * 3);
+      for (int ti = 0; ti < mesh.NumTriangles; ++ti) {
+        auto &tri = mesh.Triangles[ti];
+        for (int v = 0; v < 3; ++v) {
+          ViewerVertex vv;
+          auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+          glm::vec3 srcPos = srcVert.Position;
+          glm::vec3 srcNorm =
+              (tri.NormalIndex[v] < mesh.NumNormals)
+                  ? mesh.Normals[tri.NormalIndex[v]].Normal
+                  : glm::vec3(0, 0, 1);
+
+          int boneIdx = srcVert.Node;
+          if (boneIdx >= 0 && boneIdx < (int)wFinalBones.size()) {
+            vv.pos = MuMath::TransformPoint(
+                (const float(*)[4])wFinalBones[boneIdx].data(), srcPos);
+            vv.normal = MuMath::RotateVector(
+                (const float(*)[4])wFinalBones[boneIdx].data(), srcNorm);
+          } else {
+            vv.pos = MuMath::TransformPoint(
+                (const float(*)[4])parentMat.data(), srcPos);
+            vv.normal = MuMath::RotateVector(
+                (const float(*)[4])parentMat.data(), srcNorm);
+          }
+          vv.tex = (tri.TexCoordIndex[v] < mesh.NumTexCoords)
+                       ? glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                                   mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV)
+                       : glm::vec2(0);
+          verts.push_back(vv);
+        }
+      }
+
+      // Upload to GPU via glBufferSubData
+      glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
+      glBufferSubData(GL_ARRAY_BUFFER, 0,
+                      verts.size() * sizeof(ViewerVertex), verts.data());
+
+      glBindTexture(GL_TEXTURE_2D, mb.texture);
+      glBindVertexArray(mb.vao);
+      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+    }
+  }
 }
 
 void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
@@ -395,7 +479,12 @@ void HeroCharacter::ProcessMovement(float deltaTime) {
 void HeroCharacter::MoveTo(const glm::vec3 &target) {
   m_target = target;
   if (!m_moving) {
-    m_action = 15; // PLAYER_WALK_MALE
+    // Use weapon-specific walk action when outside SafeZone with weapon
+    if (!m_inSafeZone && m_weaponBmd) {
+      m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionWalk;
+    } else {
+      m_action = ACTION_WALK_MALE;
+    }
     m_animFrame = 0.0f;
   }
   m_moving = true;
@@ -407,8 +496,233 @@ void HeroCharacter::MoveTo(const glm::vec3 &target) {
 
 void HeroCharacter::StopMoving() {
   m_moving = false;
-  m_action = 1; // PLAYER_STOP1 (male idle)
+  // Use weapon-specific idle action when outside SafeZone with weapon
+  if (!m_inSafeZone && m_weaponBmd) {
+    m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+  } else {
+    m_action = ACTION_STOP_MALE;
+  }
   m_animFrame = 0.0f;
+}
+
+void HeroCharacter::SetInSafeZone(bool safe) {
+  if (m_inSafeZone == safe)
+    return;
+  m_inSafeZone = safe;
+  // Original MU: weapon model is ALWAYS rendered when equipped.
+  // SafeZone only changes animation stance (unarmed vs combat).
+
+  // Switch animation to match new state
+  if (m_moving) {
+    m_action = (!safe && m_weaponBmd) ? GetWeaponCategoryRender(m_weaponInfo.category).actionWalk : ACTION_WALK_MALE;
+  } else {
+    m_action = (!safe && m_weaponBmd) ? GetWeaponCategoryRender(m_weaponInfo.category).actionIdle : ACTION_STOP_MALE;
+  }
+  m_animFrame = 0.0f;
+
+  std::cout << "[Hero] " << (safe ? "Entered SafeZone" : "Left SafeZone")
+            << ", action=" << m_action << std::endl;
+}
+
+void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
+  if (weapon.category == 0xFF || weapon.modelFile.empty()) {
+    std::cout << "[Hero] No weapon to equip" << std::endl;
+    return;
+  }
+
+  m_weaponInfo = weapon;
+
+  // Load weapon BMD from Data/Item/ directory
+  std::string weaponPath = m_dataPath + "/Item/" + weapon.modelFile;
+  m_weaponBmd = BMDParser::Parse(weaponPath);
+  if (!m_weaponBmd) {
+    std::cerr << "[Hero] Failed to load weapon: " << weaponPath << std::endl;
+    return;
+  }
+
+  auto &catRender = GetWeaponCategoryRender(weapon.category);
+  std::cout << "[Hero] Loaded weapon " << weapon.modelFile
+            << ": " << m_weaponBmd->Meshes.size() << " meshes, "
+            << m_weaponBmd->Bones.size() << " bones"
+            << " (bone=" << (int)catRender.attachBone
+            << " idle=" << (int)catRender.actionIdle
+            << " walk=" << (int)catRender.actionWalk << ")" << std::endl;
+
+  // Upload weapon meshes with its own bone matrices (static reference pose)
+  std::string texPath = m_dataPath + "/Item/";
+  AABB weaponAABB{};
+
+  std::vector<BoneWorldMatrix> weaponBones;
+  if (!m_weaponBmd->Bones.empty()) {
+    weaponBones = ComputeBoneMatrices(m_weaponBmd.get());
+  } else {
+    BoneWorldMatrix identity{};
+    identity[0] = {1, 0, 0, 0};
+    identity[1] = {0, 1, 0, 0};
+    identity[2] = {0, 0, 1, 0};
+    weaponBones.push_back(identity);
+  }
+
+  CleanupMeshBuffers(m_weaponMeshBuffers);
+  for (auto &mesh : m_weaponBmd->Meshes) {
+    UploadMeshWithBones(mesh, texPath, weaponBones, m_weaponMeshBuffers,
+                        weaponAABB, true);
+  }
+
+  // Update animation to combat stance if outside SafeZone
+  if (!m_inSafeZone) {
+    m_action = m_moving ? catRender.actionWalk : catRender.actionIdle;
+    m_animFrame = 0.0f;
+  }
+
+  std::cout << "[Hero] Weapon equipped: " << weapon.modelFile
+            << " (" << m_weaponMeshBuffers.size() << " GPU meshes)" << std::endl;
+}
+
+void HeroCharacter::AttackMonster(int monsterIndex,
+                                  const glm::vec3 &monsterPos) {
+  if (!m_weaponBmd)
+    return; // Can't attack without a weapon
+
+  m_attackTargetMonster = monsterIndex;
+  m_attackTargetPos = monsterPos;
+
+  // Check distance
+  glm::vec3 dir = monsterPos - m_pos;
+  dir.y = 0.0f;
+  float dist = glm::length(dir);
+
+  if (dist <= ATTACK_RANGE) {
+    // In range — start swinging
+    m_attackState = AttackState::SWINGING;
+    m_attackAnimTimer = 0.0f;
+    m_attackHitRegistered = false;
+    m_moving = false;
+
+    // Face the target
+    m_facing = atan2f(dir.z, -dir.x);
+
+    // Alternate between two sword swing actions
+    m_action = (m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
+                                             : ACTION_ATTACK_SWORD_R2;
+    m_animFrame = 0.0f;
+    m_swordSwingCount++;
+  } else {
+    // Out of range — walk toward target
+    m_attackState = AttackState::APPROACHING;
+    MoveTo(monsterPos);
+  }
+}
+
+void HeroCharacter::UpdateAttack(float deltaTime) {
+  if (m_attackState == AttackState::NONE)
+    return;
+
+  switch (m_attackState) {
+  case AttackState::APPROACHING: {
+    // Check if we've arrived in range
+    glm::vec3 dir = m_attackTargetPos - m_pos;
+    dir.y = 0.0f;
+    float dist = glm::length(dir);
+
+    if (dist <= ATTACK_RANGE) {
+      // Arrived — start swing
+      m_moving = false;
+      m_attackState = AttackState::SWINGING;
+      m_attackAnimTimer = 0.0f;
+      m_attackHitRegistered = false;
+
+      // Face the target
+      m_facing = atan2f(dir.z, -dir.x);
+
+      m_action = (m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
+                                               : ACTION_ATTACK_SWORD_R2;
+      m_animFrame = 0.0f;
+      m_swordSwingCount++;
+    } else if (!m_moving) {
+      // Stopped moving but not in range (blocked) — cancel
+      CancelAttack();
+    }
+    break;
+  }
+
+  case AttackState::SWINGING: {
+    // Check if swing animation is done
+    int numKeys = 1;
+    if (m_action >= 0 && m_action < (int)m_skeleton->Actions.size())
+      numKeys = m_skeleton->Actions[m_action].NumAnimationKeys;
+
+    float animDuration = (numKeys > 1) ? (float)numKeys / ANIM_SPEED : 0.5f;
+    m_attackAnimTimer += deltaTime;
+
+    if (m_attackAnimTimer >= animDuration) {
+      // Swing finished — go to cooldown
+      m_attackState = AttackState::COOLDOWN;
+      m_attackCooldown = ATTACK_COOLDOWN_TIME;
+
+      // Return to combat idle
+      auto &catRender = GetWeaponCategoryRender(m_weaponInfo.category);
+      m_action = catRender.actionIdle;
+      m_animFrame = 0.0f;
+    }
+    break;
+  }
+
+  case AttackState::COOLDOWN: {
+    m_attackCooldown -= deltaTime;
+    if (m_attackCooldown <= 0.0f) {
+      // Auto-attack: if target is still valid, swing again
+      if (m_attackTargetMonster >= 0) {
+        // Will be re-evaluated from main.cpp which checks if target alive
+        m_attackState = AttackState::NONE;
+      } else {
+        CancelAttack();
+      }
+    }
+    break;
+  }
+
+  case AttackState::NONE:
+    break;
+  }
+}
+
+bool HeroCharacter::CheckAttackHit() {
+  if (m_attackState != AttackState::SWINGING || m_attackHitRegistered)
+    return false;
+
+  int numKeys = 1;
+  if (m_action >= 0 && m_action < (int)m_skeleton->Actions.size())
+    numKeys = m_skeleton->Actions[m_action].NumAnimationKeys;
+
+  float animDuration = (numKeys > 1) ? (float)numKeys / ANIM_SPEED : 0.5f;
+  float hitTime = animDuration * ATTACK_HIT_FRACTION;
+
+  if (m_attackAnimTimer >= hitTime) {
+    m_attackHitRegistered = true;
+    return true;
+  }
+  return false;
+}
+
+void HeroCharacter::CancelAttack() {
+  m_attackState = AttackState::NONE;
+  m_attackTargetMonster = -1;
+  m_swordSwingCount = 0;
+
+  // Return to appropriate idle
+  if (!m_inSafeZone && m_weaponBmd) {
+    m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+  } else {
+    m_action = ACTION_STOP_MALE;
+  }
+  m_animFrame = 0.0f;
+}
+
+int HeroCharacter::RollDamage() const {
+  if (m_damageMax <= m_damageMin)
+    return m_damageMin;
+  return m_damageMin + (rand() % (m_damageMax - m_damageMin + 1));
 }
 
 void HeroCharacter::SnapToTerrain() {
@@ -432,6 +746,8 @@ void HeroCharacter::SnapToTerrain() {
 void HeroCharacter::Cleanup() {
   for (int p = 0; p < PART_COUNT; ++p)
     CleanupMeshBuffers(m_parts[p].meshBuffers);
+  CleanupMeshBuffers(m_weaponMeshBuffers);
+  m_weaponBmd.reset();
   for (auto &sm : m_shadowMeshes) {
     if (sm.vao)
       glDeleteVertexArrays(1, &sm.vao);

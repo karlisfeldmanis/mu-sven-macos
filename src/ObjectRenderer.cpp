@@ -275,7 +275,8 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
       auto shouldAnimate = [](int t) {
         // Cloth, signs, animals, mechanical, decorative — low instance count
         return t == 56 || t == 57 ||   // MerchantAnimal01-02
-               t == 59 ||              // TreasureChest01
+               // Type 59 (TreasureChest01) excluded: original sets Velocity=0
+               // in Lorencia (ZzzObject.cpp:4719), purely decorative/static
                t == 60 ||              // Ship01
                t == 90 ||              // StreetLight01
                t == 95 ||              // Curtain01

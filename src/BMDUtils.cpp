@@ -68,6 +68,49 @@ glm::vec3 RotateVector(const float m[3][4], const glm::vec3 &v) {
                    m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z);
 }
 
+void AngleMatrix(const glm::vec3 &anglesDeg, float matrix[3][4]) {
+  // Exact copy of ZzzMathLib.cpp AngleMatrix — using original variable names
+  // angles[0]=X → sr/cr, angles[1]=Y → sp/cp, angles[2]=Z → sy/cy
+  float angle;
+  float sr, sp, sy, cr, cp, cy;
+
+  angle = anglesDeg.z * ((float)M_PI / 180.0f);
+  sy = sinf(angle);
+  cy = cosf(angle);
+  angle = anglesDeg.y * ((float)M_PI / 180.0f);
+  sp = sinf(angle);
+  cp = cosf(angle);
+  angle = anglesDeg.x * ((float)M_PI / 180.0f);
+  sr = sinf(angle);
+  cr = cosf(angle);
+
+  matrix[0][0] = cp * cy;
+  matrix[1][0] = cp * sy;
+  matrix[2][0] = -sp;
+  matrix[0][1] = sr * sp * cy + cr * (-sy);
+  matrix[1][1] = sr * sp * sy + cr * cy;
+  matrix[2][1] = sr * cp;
+  matrix[0][2] = cr * sp * cy + (-sr) * (-sy);
+  matrix[1][2] = cr * sp * sy + (-sr) * cy;
+  matrix[2][2] = cr * cp;
+  matrix[0][3] = 0.0f;
+  matrix[1][3] = 0.0f;
+  matrix[2][3] = 0.0f;
+}
+
+BoneWorldMatrix BuildWeaponOffsetMatrix(const glm::vec3 &rotDeg,
+                                        const glm::vec3 &offset) {
+  float m[3][4];
+  AngleMatrix(rotDeg, m);
+  m[0][3] = offset.x;
+  m[1][3] = offset.y;
+  m[2][3] = offset.z;
+
+  BoneWorldMatrix result;
+  memcpy(result.data(), m, sizeof(float) * 12);
+  return result;
+}
+
 } // namespace MuMath
 
 std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd,

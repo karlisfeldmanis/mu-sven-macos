@@ -5,6 +5,8 @@
 #include "FireEffect.hpp"
 #include "GrassRenderer.hpp"
 #include "HeroCharacter.hpp"
+#include "MonsterManager.hpp"
+#include "NpcManager.hpp"
 #include "ObjectRenderer.hpp"
 #include "Screenshot.hpp"
 #include "Shader.hpp"
@@ -147,6 +149,153 @@ static std::vector<PointLight> g_pointLights;
 // Hero character and click-to-move effect
 static HeroCharacter g_hero;
 static ClickEffect g_clickEffect;
+static NpcManager g_npcManager;
+
+// NPC interaction state
+static int g_hoveredNpc = -1;   // Index of NPC under mouse cursor
+static int g_selectedNpc = -1;  // Index of NPC that was clicked (dialog open)
+
+// Server connection for NPC + equipment data
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <cstring>
+
+// Data received from server
+struct ServerData {
+  std::vector<ServerNpcSpawn> npcs;
+  std::vector<WeaponEquipInfo> equipment;
+  bool connected = false;
+};
+
+static ServerData connectToServer(const char *host, uint16_t port) {
+  ServerData result;
+
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) {
+    std::cerr << "[Net] Failed to create socket" << std::endl;
+    return result;
+  }
+
+  // Set 2 second timeout
+  struct timeval tv{2, 0};
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+  struct sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  inet_pton(AF_INET, host, &addr.sin_addr);
+
+  if (connect(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
+    std::cerr << "[Net] Cannot connect to server " << host << ":" << port << std::endl;
+    close(sock);
+    return result;
+  }
+  result.connected = true;
+  std::cout << "[Net] Connected to server " << host << ":" << port << std::endl;
+
+  // Receive all pending data (welcome + NPC viewport + equipment)
+  uint8_t buf[8192];
+  int total = 0;
+  while (total < (int)sizeof(buf)) {
+    int n = recv(sock, buf + total, sizeof(buf) - total, 0);
+    if (n <= 0) break;
+    total += n;
+  }
+  close(sock);
+
+  std::cout << "[Net] Received " << total << " bytes from server" << std::endl;
+
+  // Parse all packets
+  int pos = 0;
+  while (pos < total) {
+    uint8_t type = buf[pos];
+    int pktSize = 0;
+
+    if (type == 0xC1 || type == 0xC3) {
+      if (pos + 1 >= total) break;
+      pktSize = buf[pos + 1];
+    } else if (type == 0xC2 || type == 0xC4) {
+      if (pos + 2 >= total) break;
+      pktSize = (buf[pos + 1] << 8) | buf[pos + 2];
+    } else {
+      pos++;
+      continue;
+    }
+
+    if (pktSize < 2 || pos + pktSize > total) break;
+
+    // C2 packets: NPC viewport (0x13)
+    if (type == 0xC2 && pktSize >= 5) {
+      uint8_t headcode = buf[pos + 3];
+      if (headcode == 0x13) {
+        uint8_t count = buf[pos + 4];
+        std::cout << "[Net] NPC viewport: " << (int)count << " NPCs" << std::endl;
+
+        int entryStart = pos + 5;
+        for (int i = 0; i < count; i++) {
+          int off = entryStart + i * 9;
+          if (off + 9 > total) break;
+
+          ServerNpcSpawn npc;
+          npc.type = (uint16_t)((buf[off + 2] << 8) | buf[off + 3]);
+          npc.gridX = buf[off + 4];
+          npc.gridY = buf[off + 5];
+          npc.dir = buf[off + 8] >> 4;
+          result.npcs.push_back(npc);
+
+          std::cout << "[Net]   NPC type=" << npc.type
+                    << " grid=(" << (int)npc.gridX << "," << (int)npc.gridY
+                    << ") dir=" << (int)npc.dir << std::endl;
+        }
+      }
+    }
+
+    // C1 packets: Equipment (0x24)
+    if (type == 0xC1 && pktSize >= 4) {
+      uint8_t headcode = buf[pos + 2];
+      if (headcode == 0x24) {
+        uint8_t count = buf[pos + 3];
+        std::cout << "[Net] Equipment: " << (int)count << " slots" << std::endl;
+
+        // Each slot entry: 4 bytes fixed + 32 bytes modelFile = 36 bytes
+        int entryStart = pos + 4;
+        int entrySize = 4 + 32; // matches PMSG_EQUIPMENT_SLOT packed size
+        for (int i = 0; i < count; i++) {
+          int off = entryStart + i * entrySize;
+          if (off + entrySize > total) break;
+
+          WeaponEquipInfo weapon;
+          uint8_t slot = buf[off + 0];
+          weapon.category = buf[off + 1];
+          weapon.itemIndex = buf[off + 2];
+          weapon.itemLevel = buf[off + 3];
+
+          // Model file name (32 bytes, null-terminated)
+          char modelFile[33] = {};
+          std::memcpy(modelFile, &buf[off + 4], 32);
+          weapon.modelFile = modelFile;
+
+          std::cout << "[Net]   Slot " << (int)slot << ": " << weapon.modelFile
+                    << " cat=" << (int)weapon.category
+                    << " idx=" << (int)weapon.itemIndex
+                    << " +" << (int)weapon.itemLevel
+                    << std::endl;
+
+          // Only handle right-hand weapon for now (slot 0)
+          if (slot == 0) {
+            result.equipment.push_back(weapon);
+          }
+        }
+      }
+    }
+
+    pos += pktSize;
+  }
+
+  return result;
+}
 
 static const TerrainData *g_terrainDataPtr = nullptr;
 
@@ -201,9 +350,19 @@ static const LightTemplate *GetLightProperties(int type) {
   }
 }
 
+// Forward declaration for NPC ray picking
+static int rayPickNpc(GLFWwindow *window, double mouseX, double mouseY);
+
 void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
   ImGui_ImplGlfw_CursorPosCallback(window, xpos, ypos);
   // Camera rotation disabled — fixed isometric angle like original MU
+
+  // Update NPC hover state on cursor move
+  if (!ImGui::GetIO().WantCaptureMouse) {
+    g_hoveredNpc = rayPickNpc(window, xpos, ypos);
+  } else {
+    g_hoveredNpc = -1;
+  }
 }
 
 void scroll_callback(GLFWwindow *window, double xoffset, double yoffset) {
@@ -310,22 +469,86 @@ static bool screenToTerrain(GLFWwindow *window, double mouseX, double mouseY,
   return false;
 }
 
+// --- Ray-NPC picking (cylinder intersection) ---
+
+static int rayPickNpc(GLFWwindow *window, double mouseX, double mouseY) {
+  int winW, winH;
+  glfwGetWindowSize(window, &winW, &winH);
+
+  float ndcX = (float)(2.0 * mouseX / winW - 1.0);
+  float ndcY = (float)(1.0 - 2.0 * mouseY / winH);
+
+  glm::mat4 proj = g_camera.GetProjectionMatrix((float)winW, (float)winH);
+  glm::mat4 view = g_camera.GetViewMatrix();
+  glm::mat4 invVP = glm::inverse(proj * view);
+
+  glm::vec4 nearPt = invVP * glm::vec4(ndcX, ndcY, -1.0f, 1.0f);
+  glm::vec4 farPt = invVP * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+  nearPt /= nearPt.w;
+  farPt /= farPt.w;
+
+  glm::vec3 rayO = glm::vec3(nearPt);
+  glm::vec3 rayD = glm::normalize(glm::vec3(farPt) - rayO);
+
+  int bestIdx = -1;
+  float bestT = 1e9f;
+
+  for (int i = 0; i < g_npcManager.GetNpcCount(); ++i) {
+    NpcInfo info = g_npcManager.GetNpcInfo(i);
+    float r = info.radius;
+    float yMin = info.position.y;
+    float yMax = info.position.y + info.height;
+
+    // Ray-cylinder intersection in XZ plane
+    float dx = rayO.x - info.position.x;
+    float dz = rayO.z - info.position.z;
+    float a = rayD.x * rayD.x + rayD.z * rayD.z;
+    float b = 2.0f * (dx * rayD.x + dz * rayD.z);
+    float c = dx * dx + dz * dz - r * r;
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0) continue;
+
+    float sqrtDisc = sqrtf(disc);
+    float t0 = (-b - sqrtDisc) / (2.0f * a);
+    float t1 = (-b + sqrtDisc) / (2.0f * a);
+
+    // Check both intersection points
+    for (float t : {t0, t1}) {
+      if (t < 0) continue;
+      float hitY = rayO.y + rayD.y * t;
+      if (hitY >= yMin && hitY <= yMax && t < bestT) {
+        bestT = t;
+        bestIdx = i;
+      }
+    }
+  }
+  return bestIdx;
+}
+
 // --- Click-to-move mouse handler ---
 
 void mouse_button_callback(GLFWwindow *window, int button, int action,
                            int mods) {
   ImGui_ImplGlfw_MouseButtonCallback(window, button, action, mods);
 
-  // Click-to-move on left click
+  // Click-to-move on left click (NPC click takes priority)
   if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
     if (!ImGui::GetIO().WantCaptureMouse && g_terrainDataPtr) {
       double mx, my;
       glfwGetCursorPos(window, &mx, &my);
-      glm::vec3 target;
-      if (screenToTerrain(window, mx, my, target)) {
-        if (isWalkable(*g_terrainDataPtr, target.x, target.z)) {
-          g_hero.MoveTo(target);
-          g_clickEffect.Show(target);
+
+      // Check NPC click first
+      int npcHit = rayPickNpc(window, mx, my);
+      if (npcHit >= 0) {
+        g_selectedNpc = npcHit;
+      } else {
+        g_selectedNpc = -1; // Dismiss dialog on ground click
+        glm::vec3 target;
+        if (screenToTerrain(window, mx, my, target)) {
+          if (isWalkable(*g_terrainDataPtr, target.x, target.z)) {
+            g_hero.MoveTo(target);
+            g_clickEffect.Show(target);
+          }
         }
       }
     }
@@ -597,6 +820,30 @@ int main(int argc, char **argv) {
   g_clickEffect.SetTerrainData(&terrainData);
   checkGLError("hero init");
 
+  // Connect to server — receives NPCs and equipment from database
+  g_npcManager.SetTerrainData(&terrainData);
+  auto serverData = connectToServer("127.0.0.1", 44405);
+  if (serverData.connected && !serverData.npcs.empty()) {
+    // Server mode: load models, then place NPCs from server data
+    g_npcManager.InitModels(data_path);
+    for (auto &npc : serverData.npcs) {
+      g_npcManager.AddNpcByType(npc.type, npc.gridX, npc.gridY, npc.dir);
+    }
+    std::cout << "[NPC] Loaded " << serverData.npcs.size() << " NPCs from server" << std::endl;
+  } else {
+    // Fallback: hardcoded NPC positions
+    std::cout << "[NPC] No server connection, using hardcoded NPCs" << std::endl;
+    g_npcManager.Init(data_path);
+  }
+
+  // Equip weapon from server equipment data (DB-driven)
+  if (!serverData.equipment.empty()) {
+    g_hero.EquipWeapon(serverData.equipment[0]);
+  }
+  g_npcManager.SetTerrainLightmap(terrainData.lightmap);
+  g_npcManager.SetPointLights(g_pointLights);
+  checkGLError("npc init");
+
   // Load saved camera state (persists position/angle/zoom across restarts)
   g_camera.LoadState("camera_save.txt");
 
@@ -748,6 +995,12 @@ int main(int argc, char **argv) {
         alpha += (g_typeAlphaTarget[type] - alpha) * blend;
       }
       g_objectRenderer.SetTypeAlpha(g_typeAlpha);
+
+      // SafeZone detection: attribute 0x01 = TW_SAFEZONE
+      uint8_t heroAttr = 0;
+      if (gx >= 0 && gz >= 0 && gx < S && gz < S)
+        heroAttr = g_terrainDataPtr->mapping.attributes[gz * S + gx];
+      g_hero.SetInSafeZone((heroAttr & 0x01) != 0);
     }
 
     // Auto-diagnostic: set debug mode BEFORE render
@@ -783,6 +1036,14 @@ int main(int argc, char **argv) {
     // Update and render fire effects
     g_fireEffect.Update(deltaTime);
     g_fireEffect.Render(view, projection);
+
+    // Render NPC characters with shadows
+    g_npcManager.RenderShadows(view, projection);
+    g_npcManager.Render(view, projection, camPos, deltaTime);
+
+    // Render NPC selection outline (green glow on hover)
+    if (g_hoveredNpc >= 0)
+      g_npcManager.RenderOutline(g_hoveredNpc, view, projection);
 
     // Render hero character, shadow, and click effect (after all world geometry)
     g_clickEffect.Render(view, projection, deltaTime, g_hero.GetShader());
@@ -908,6 +1169,69 @@ int main(int argc, char **argv) {
       ImGui::End();
     }
 
+    // NPC name labels — original MU style (ZzzInterface.cpp RenderBoolean)
+    // NPC text color: RGB(150, 255, 240) cyan, BG: RGBA(10, 30, 50, 150) dark blue
+    // Hovered NPC: brighter green text, green-tinted BG
+    {
+      int winW, winH;
+      glfwGetWindowSize(window, &winW, &winH);
+      auto *drawList = ImGui::GetForegroundDrawList();
+      const float padX = 4.0f, padY = 2.0f;
+
+      for (int i = 0; i < g_npcManager.GetNpcCount(); ++i) {
+        NpcInfo info = g_npcManager.GetNpcInfo(i);
+        if (info.name.empty()) continue;
+
+        float dist = glm::distance(camPos, info.position);
+        if (dist > 2000.0f) continue;
+
+        glm::vec3 labelPos = info.position + glm::vec3(0, info.height + 30.0f, 0);
+        glm::vec4 clip = projection * view * glm::vec4(labelPos, 1.0f);
+        if (clip.w <= 0) continue;
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        float sx = (ndc.x * 0.5f + 0.5f) * (float)winW;
+        float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * (float)winH;
+
+        ImVec2 textSize = ImGui::CalcTextSize(info.name.c_str());
+        float x0 = sx - textSize.x / 2 - padX;
+        float y0 = sy - textSize.y / 2 - padY;
+        float x1 = sx + textSize.x / 2 + padX;
+        float y1 = sy + textSize.y / 2 + padY;
+
+        bool hovered = (i == g_hoveredNpc);
+        ImU32 bgCol = hovered ? IM_COL32(10, 50, 20, 180)
+                              : IM_COL32(10, 30, 50, 150);
+        ImU32 textCol = hovered ? IM_COL32(100, 255, 100, 255)
+                                : IM_COL32(150, 255, 240, 255);
+
+        drawList->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), bgCol);
+        drawList->AddText(
+            ImVec2(sx - textSize.x / 2, sy - textSize.y / 2),
+            textCol, info.name.c_str());
+      }
+    }
+
+    // NPC click interaction dialog
+    if (g_selectedNpc >= 0) {
+      NpcInfo info = g_npcManager.GetNpcInfo(g_selectedNpc);
+      int winW, winH;
+      glfwGetWindowSize(window, &winW, &winH);
+      ImGui::SetNextWindowPos(ImVec2((float)winW / 2 - 150, (float)winH / 2 - 100),
+                              ImGuiCond_Always);
+      ImGui::SetNextWindowSize(ImVec2(300, 200));
+      ImGui::Begin("NPC Dialog", nullptr,
+                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+      ImGui::TextWrapped("Hello adventurer! I am %s.", info.name.c_str());
+      ImGui::Separator();
+      if (ImGui::Button("Shop (Coming Soon)", ImVec2(-1, 0))) {}
+      if (ImGui::Button("Close", ImVec2(-1, 0))) { g_selectedNpc = -1; }
+      ImGui::End();
+
+      // Close on Escape
+      if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        g_selectedNpc = -1;
+    }
+
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -963,6 +1287,7 @@ int main(int argc, char **argv) {
   g_camera.SaveState("camera_save.txt");
 
   // Cleanup
+  g_npcManager.Cleanup();
   g_hero.Cleanup();
   g_clickEffect.Cleanup();
   g_sky.Cleanup();

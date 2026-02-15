@@ -55,7 +55,7 @@ set(COMMON_SRC
 )
 
 # Main Game Executable
-add_executable(MuRemaster src/main.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+add_executable(MuRemaster src/main.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
 target_link_libraries(MuRemaster PRIVATE
     glfw
     GLEW::GLEW

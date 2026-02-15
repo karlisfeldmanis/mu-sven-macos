@@ -38,6 +38,14 @@ glm::vec3 TransformPoint(const float m[3][4], const glm::vec3 &v);
 // Rotate a vector by a 3x4 matrix (rotation only, no translation)
 glm::vec3 RotateVector(const float m[3][4], const glm::vec3 &v);
 
+// Euler angles (degrees) -> 3x4 rotation matrix (matches ZzzMathLib AngleMatrix)
+// angles.x = X (sr/cr), angles.y = Y (sp/cp), angles.z = Z (sy/cy)
+void AngleMatrix(const glm::vec3 &anglesDeg, float matrix[3][4]);
+
+// Build a weapon offset matrix: AngleMatrix(rotDeg) + translation in [i][3]
+BoneWorldMatrix BuildWeaponOffsetMatrix(const glm::vec3 &rotDeg,
+                                        const glm::vec3 &offset);
+
 } // namespace MuMath
 
 // Compute bone world matrices for a given action and frame

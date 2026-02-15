@@ -113,6 +113,130 @@ static const ArmorSetDef kArmorSets[] = {
 };
 static const int kNumArmorSets = sizeof(kArmorSets) / sizeof(kArmorSets[0]);
 
+// --- Weapon system ---
+static const std::string DATA_ITEM_PATH =
+    "/Users/karlisfeldmanis/Desktop/mu_remaster/"
+    "references/other/MuMain/src/bin/Data/Item/";
+
+enum WeaponCategory {
+  WCAT_NONE = 0,
+  WCAT_SWORD,
+  WCAT_AXE,
+  WCAT_MACE,
+  WCAT_SPEAR,
+  WCAT_STAFF,
+  WCAT_BOW,
+  WCAT_CROSSBOW,
+  WCAT_SHIELD,
+  WCAT_COUNT
+};
+
+static const char *kWeaponCatNames[] = {
+    "None", "Sword", "Axe", "Mace", "Spear",
+    "Staff", "Bow",  "Crossbow", "Shield"};
+
+// Per-category attachment config (from ZzzCharacter.cpp RenderLinkObject)
+struct WeaponCatConfig {
+  int bone;          // Attachment bone (28=R Hand, 37=L Hand)
+  glm::vec3 rot;     // Euler angles (degrees) for AngleMatrix
+  glm::vec3 offset;  // Translation in bone-local space
+};
+
+// Calibrated for 0.97d Player.bmd skeleton via runtime bone matrix analysis.
+// Weapon BMDs have their own bone rotation (e.g. Sword01 maps +Z→-Y).
+// Identity offset rotation (0,0,0) lets the weapon bone handle orientation:
+//   Action 5 (2H idle): blade 99% upward (bone -Y ≈ MU +Z)
+//   Action 4 (1H idle): blade slightly tilted (natural relaxed grip)
+static const WeaponCatConfig kWeaponConfigs[] = {
+    // NONE
+    {0, {0, 0, 0}, {0, 0, 0}},
+    // SWORD: right hand bone 33 (knife_gdf)
+    {33, {0, 0, 0}, {0, 0, 0}},
+    // AXE: same as sword
+    {33, {0, 0, 0}, {0, 0, 0}},
+    // MACE: same as sword
+    {33, {0, 0, 0}, {0, 0, 0}},
+    // SPEAR: right hand bone
+    {33, {0, 0, 0}, {0, 0, 0}},
+    // STAFF: left hand bone 42 (hand_bofdgne01)
+    {42, {0, 0, 0}, {0, 0, 0}},
+    // BOW: left hand bone — may need different rotation
+    {42, {0, 0, 0}, {0, 0, 0}},
+    // CROSSBOW: same as bow
+    {42, {0, 0, 0}, {0, 0, 0}},
+    // SHIELD: left hand bone
+    {42, {0, 0, 0}, {0, 0, 0}},
+};
+
+// Weapon file lists per category (0.97d scope — core numbered items)
+static const std::vector<const char *> kWeaponFiles[] = {
+    // NONE
+    {},
+    // SWORD (01-20)
+    {"Sword01.bmd", "Sword02.bmd", "Sword03.bmd", "Sword04.bmd",
+     "Sword05.bmd", "Sword06.bmd", "Sword07.bmd", "Sword08.bmd",
+     "Sword09.bmd", "Sword10.bmd", "Sword11.bmd", "Sword12.bmd",
+     "Sword13.bmd", "Sword14.bmd", "Sword15.bmd", "Sword16.bmd",
+     "Sword17.bmd", "Sword18.bmd", "Sword19.bmd", "Sword20.bmd"},
+    // AXE (01-09)
+    {"Axe01.bmd", "Axe02.bmd", "Axe03.bmd", "Axe04.bmd", "Axe05.bmd",
+     "Axe06.bmd", "Axe07.bmd", "Axe08.bmd", "Axe09.bmd"},
+    // MACE (01-14)
+    {"Mace01.bmd", "Mace02.bmd", "Mace03.bmd", "Mace04.bmd", "Mace05.bmd",
+     "Mace06.bmd", "Mace07.bmd", "Mace08.bmd", "Mace09.bmd", "Mace10.bmd",
+     "Mace11.bmd", "Mace12.bmd", "Mace13.bmd", "Mace14.bmd"},
+    // SPEAR (01-10)
+    {"Spear01.bmd", "Spear02.bmd", "Spear03.bmd", "Spear04.bmd",
+     "Spear05.bmd", "Spear06.bmd", "Spear07.bmd", "Spear08.bmd",
+     "Spear09.bmd", "Spear10.bmd"},
+    // STAFF (01-12)
+    {"Staff01.bmd", "Staff02.bmd", "Staff03.bmd", "Staff04.bmd",
+     "Staff05.bmd", "Staff06.bmd", "Staff07.bmd", "Staff08.bmd",
+     "Staff09.bmd", "Staff10.bmd", "Staff11.bmd", "Staff12.bmd"},
+    // BOW (01-07)
+    {"Bow01.bmd", "Bow02.bmd", "Bow03.bmd", "Bow04.bmd", "Bow05.bmd",
+     "Bow06.bmd", "Bow07.bmd"},
+    // CROSSBOW (01-07)
+    {"CrossBow01.bmd", "CrossBow02.bmd", "CrossBow03.bmd", "CrossBow04.bmd",
+     "CrossBow05.bmd", "CrossBow06.bmd", "CrossBow07.bmd"},
+    // SHIELD (01-15)
+    {"Shield01.bmd", "Shield02.bmd", "Shield03.bmd", "Shield04.bmd",
+     "Shield05.bmd", "Shield06.bmd", "Shield07.bmd", "Shield08.bmd",
+     "Shield09.bmd", "Shield10.bmd", "Shield11.bmd", "Shield12.bmd",
+     "Shield13.bmd", "Shield14.bmd", "Shield15.bmd"},
+};
+
+// Per-class weapon availability
+// DK/BK: Sword, Axe, Mace, Spear, Shield
+// DW/SM: Staff, Shield
+// ELF/ME: Bow, Crossbow, Spear, Shield
+// MG: Sword, Axe, Mace, Spear (one-hand, no shield)
+static bool CanClassUseWeapon(int classIdx, int wcat) {
+  if (wcat == WCAT_NONE)
+    return true;
+  bool isDK = (classIdx == CLASS_DK || classIdx == CLASS_BK);
+  bool isDW = (classIdx == CLASS_DW || classIdx == CLASS_SM);
+  bool isElf = (classIdx == CLASS_ELF || classIdx == CLASS_ME);
+  bool isMG = (classIdx == CLASS_MG);
+  switch (wcat) {
+  case WCAT_SWORD:
+  case WCAT_AXE:
+  case WCAT_MACE:
+    return isDK || isMG;
+  case WCAT_SPEAR:
+    return isDK || isElf || isMG;
+  case WCAT_STAFF:
+    return isDW;
+  case WCAT_BOW:
+  case WCAT_CROSSBOW:
+    return isElf;
+  case WCAT_SHIELD:
+    return isDK || isDW || isElf;
+  default:
+    return false;
+  }
+}
+
 // Animation category for UI grouping
 struct AnimEntry {
   const char *name;
@@ -296,6 +420,8 @@ static std::vector<AnimCategory> BuildAnimCategories(int classIdx) {
 
 class CharacterViewer {
 public:
+  bool autoScreenshot = false; // --screenshots mode
+
   void Run() {
     if (!InitWindow())
       return;
@@ -309,6 +435,7 @@ public:
         shaderTest.good() ? "shaders/model.frag" : "../shaders/model.frag");
 
     axes.Init();
+    debugLines.Init();
     animCategories = BuildAnimCategories(currentClass);
 
     // Load skeleton + default class
@@ -324,6 +451,18 @@ public:
 
     LoadClass(currentClass);
 
+    // Auto-screenshot mode: equip weapon, capture from multiple angles
+    if (autoScreenshot) {
+      RunAutoScreenshots();
+      UnloadParts();
+      axes.Cleanup();
+      debugLines.Cleanup();
+      ShutdownImGui();
+      glfwDestroyWindow(window);
+      glfwTerminate();
+      return;
+    }
+
     while (!glfwWindowShouldClose(window)) {
       float now = glfwGetTime();
       deltaTime = now - lastFrame;
@@ -338,6 +477,7 @@ public:
 
     UnloadParts();
     axes.Cleanup();
+    debugLines.Cleanup();
     ShutdownImGui();
     glfwDestroyWindow(window);
     glfwTerminate();
@@ -361,7 +501,7 @@ private:
   BodyPartSlot parts[PART_COUNT];
 
   // Class + armor selection
-  int currentClass = CLASS_DW;
+  int currentClass = CLASS_DK;
   int currentArmorSet = 0; // index into kArmorSets (0 = Naked)
 
   // Animation state
@@ -374,9 +514,11 @@ private:
   // Animation categories
   std::vector<AnimCategory> animCategories;
 
-  // Orbit camera + axes
+  // Orbit camera + axes + debug overlays
   OrbitCamera camera;
   DebugAxes axes;
+  DebugLines debugLines;
+  bool showWeaponDebug = true; // weapon bone axes + blade direction
 
   // Mouse
   bool dragging = false;
@@ -390,6 +532,16 @@ private:
   int gifFrameTarget = 72;
   float gifScaleSetting = 0.5f;
   int gifFpsSetting = 12;
+
+  // Weapon state
+  int weaponCategory = WCAT_NONE;
+  int weaponIndex = 0;
+  std::unique_ptr<BMDData> weaponBmd;
+  std::vector<MeshBuffers> weaponMeshBuffers;
+  // Editable weapon config (for live tweaking via debug sliders)
+  glm::vec3 weaponRot{0, 0, 0};
+  glm::vec3 weaponOffset{0, 0, 0};
+  int weaponBone = 33;
 
   // --- Init ---
 
@@ -456,6 +608,7 @@ private:
       parts[i].filename.clear();
       parts[i].loaded = false;
     }
+    UnloadWeapon();
   }
 
   void LoadClass(int classIdx) {
@@ -467,6 +620,11 @@ private:
     // Reset to Naked if current armor set not available for new class
     if (!CanClassWearSet(classIdx, kArmorSets[currentArmorSet]))
       currentArmorSet = 0; // Naked is always available
+
+    // Reset weapon if new class can't use current weapon category
+    if (!CanClassUseWeapon(classIdx, weaponCategory)) {
+      LoadWeapon(WCAT_NONE, 0);
+    }
 
     LoadArmorSet(currentArmorSet);
 
@@ -577,6 +735,96 @@ private:
     currentNumKeys = skeleton->Actions[action].NumAnimationKeys;
   }
 
+  // --- Weapon ---
+
+  // Switch to weapon-appropriate idle action (matches original game behavior)
+  // Reference: _enum.h PLAYER_STOP_SWORD=4, PLAYER_STOP_SPEAR=6, etc.
+  void AutoSwitchWeaponAction(int wcat) {
+    int idleAction = IsFemaleClass(currentClass) ? 2 : 1; // default unarmed
+    switch (wcat) {
+    case WCAT_SWORD:
+    case WCAT_AXE:
+    case WCAT_MACE:
+    case WCAT_SHIELD:
+      idleAction = 4;
+      break; // PLAYER_STOP_SWORD
+    case WCAT_SPEAR:
+      idleAction = 6;
+      break; // PLAYER_STOP_SPEAR
+    case WCAT_STAFF:
+      idleAction = 7;
+      break; // PLAYER_STOP_SCYTHE
+    case WCAT_BOW:
+      idleAction = 8;
+      break; // PLAYER_STOP_BOW
+    case WCAT_CROSSBOW:
+      idleAction = 9;
+      break; // PLAYER_STOP_CROSSBOW
+    }
+    SetAction(idleAction);
+  }
+
+  void UnloadWeapon() {
+    CleanupMeshBuffers(weaponMeshBuffers);
+    weaponBmd.reset();
+  }
+
+  void LoadWeapon(int category, int index) {
+    UnloadWeapon();
+    weaponCategory = category;
+    weaponIndex = index;
+
+    if (category == WCAT_NONE) {
+      AutoSwitchWeaponAction(WCAT_NONE);
+      return;
+    }
+
+    const auto &files = kWeaponFiles[category];
+    if (index < 0 || index >= (int)files.size())
+      return;
+
+    std::string path = DATA_ITEM_PATH + files[index];
+    weaponBmd = BMDParser::Parse(path);
+    if (!weaponBmd) {
+      std::cerr << "[CharViewer] Failed to load weapon: " << files[index]
+                << std::endl;
+      return;
+    }
+
+    // Upload weapon meshes as dynamic (for per-frame re-skinning)
+    AABB weaponAABB{};
+    std::vector<BoneWorldMatrix> wBones;
+    if (!weaponBmd->Bones.empty()) {
+      wBones = ComputeBoneMatrices(weaponBmd.get());
+    } else {
+      BoneWorldMatrix identity{};
+      identity[0] = {1, 0, 0, 0};
+      identity[1] = {0, 1, 0, 0};
+      identity[2] = {0, 0, 1, 0};
+      wBones.push_back(identity);
+    }
+
+    for (auto &mesh : weaponBmd->Meshes) {
+      UploadMeshWithBones(mesh, DATA_ITEM_PATH, wBones, weaponMeshBuffers,
+                          weaponAABB, true);
+    }
+
+    // Apply category defaults to debug sliders
+    const auto &cfg = kWeaponConfigs[category];
+    weaponRot = cfg.rot;
+    weaponOffset = cfg.offset;
+    weaponBone = cfg.bone;
+
+    std::cout << "[CharViewer] Weapon: " << files[index] << " ("
+              << weaponBmd->Meshes.size() << " meshes, "
+              << weaponBmd->Bones.size() << " bones, bone=" << weaponBone
+              << ")" << std::endl;
+
+    // Auto-switch to weapon-appropriate idle animation
+    // Original game changes pose when weapon is equipped
+    AutoSwitchWeaponAction(category);
+  }
+
   // --- Rendering ---
 
   void RenderScene() {
@@ -633,6 +881,7 @@ private:
     shader->setVec3("terrainLight", 1.0f, 1.0f, 1.0f);
     shader->setVec2("texCoordOffset", glm::vec2(0.0f));
     shader->setInt("numPointLights", 0);
+    shader->setFloat("luminosity", 1.0f);
 
     // Draw all body parts
     for (int p = 0; p < PART_COUNT; ++p) {
@@ -659,8 +908,161 @@ private:
       }
     }
 
-    // Debug axes
+    // Draw weapon attached to bone
+    // Original engine chain (ZzzCharacter.cpp RenderLinkObject + ZzzBMD.cpp):
+    //   ParentMatrix = CharBone[LinkBone] * OffsetMatrix(AngleMatrix + translation)
+    //   Animation(Parent=true): BoneMatrix[i] = ParentMatrix * WeaponBoneLocal[i]
+    //   Transform(): vertex = BoneMatrix[vertex.Node] * vertex.Position
+    // Full chain: CharBone * Offset * WeaponBone[node] * rawVertex
+    if (weaponBmd && !weaponMeshBuffers.empty() &&
+        weaponBone >= 0 && weaponBone < (int)bones.size()) {
+
+      // Build offset matrix from debug sliders using shared AngleMatrix
+      BoneWorldMatrix offsetMat =
+          MuMath::BuildWeaponOffsetMatrix(weaponRot, weaponOffset);
+
+      // parentMat = CharBone[attachBone] * OffsetMatrix
+      BoneWorldMatrix parentMat;
+      MuMath::ConcatTransforms(
+          (const float(*)[4])bones[weaponBone].data(),
+          (const float(*)[4])offsetMat.data(),
+          (float(*)[4])parentMat.data());
+
+      // Compute weapon bone matrices with parentMat as root parent
+      // This mirrors original Animation(Parent=true): root bone gets
+      // BoneMatrix[0] = parentMat * weaponBoneLocal[0]
+      auto wLocalBones = ComputeBoneMatrices(weaponBmd.get());
+      std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
+      for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
+        MuMath::ConcatTransforms(
+            (const float(*)[4])parentMat.data(),
+            (const float(*)[4])wLocalBones[bi].data(),
+            (float(*)[4])wFinalBones[bi].data());
+      }
+
+      // Re-skin and draw each weapon mesh using final bone matrices
+      for (int mi = 0; mi < (int)weaponMeshBuffers.size() &&
+                        mi < (int)weaponBmd->Meshes.size();
+           ++mi) {
+        auto &mesh = weaponBmd->Meshes[mi];
+        auto &mb = weaponMeshBuffers[mi];
+        if (mb.indexCount == 0)
+          continue;
+
+        std::vector<ViewerVertex> verts;
+        verts.reserve(mesh.NumTriangles * 3);
+
+        for (int ti = 0; ti < mesh.NumTriangles; ++ti) {
+          auto &tri = mesh.Triangles[ti];
+          for (int v = 0; v < 3; ++v) {
+            ViewerVertex vv;
+            auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+            glm::vec3 srcPos = srcVert.Position;
+            glm::vec3 srcNorm =
+                (tri.NormalIndex[v] < mesh.NumNormals)
+                    ? mesh.Normals[tri.NormalIndex[v]].Normal
+                    : glm::vec3(0, 0, 1);
+
+            // Transform by weapon bone matrix (includes parent attachment)
+            int boneIdx = srcVert.Node;
+            if (boneIdx >= 0 && boneIdx < (int)wFinalBones.size()) {
+              vv.pos = MuMath::TransformPoint(
+                  (const float(*)[4])wFinalBones[boneIdx].data(), srcPos);
+              vv.normal = MuMath::RotateVector(
+                  (const float(*)[4])wFinalBones[boneIdx].data(), srcNorm);
+            } else {
+              // Fallback: use parentMat directly
+              vv.pos = MuMath::TransformPoint(
+                  (const float(*)[4])parentMat.data(), srcPos);
+              vv.normal = MuMath::RotateVector(
+                  (const float(*)[4])parentMat.data(), srcNorm);
+            }
+            vv.tex =
+                (tri.TexCoordIndex[v] < mesh.NumTexCoords)
+                    ? glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                                mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV)
+                    : glm::vec2(0);
+            verts.push_back(vv);
+          }
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        verts.size() * sizeof(ViewerVertex), verts.data());
+
+        glBindTexture(GL_TEXTURE_2D, mb.texture);
+        glBindVertexArray(mb.vao);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+      }
+    }
+
+    // Debug overlays (weapon bone axes + blade direction)
     glm::mat4 mvp = projection * view * model;
+
+    if (showWeaponDebug && weaponBmd && weaponBone >= 0 &&
+        weaponBone < (int)bones.size()) {
+      debugLines.Clear();
+
+      // Bone attachment point origin (in MU space)
+      auto &bm = bones[weaponBone];
+      glm::vec3 boneOrigin(bm[0][3], bm[1][3], bm[2][3]);
+      float axisLen = 30.0f;
+
+      // Bone X axis (Red)
+      glm::vec3 boneX(bm[0][0], bm[1][0], bm[2][0]);
+      debugLines.AddLine(boneOrigin, boneOrigin + boneX * axisLen,
+                          {1, 0, 0});
+      // Bone Y axis (Green)
+      glm::vec3 boneY(bm[0][1], bm[1][1], bm[2][1]);
+      debugLines.AddLine(boneOrigin, boneOrigin + boneY * axisLen,
+                          {0, 1, 0});
+      // Bone Z axis (Blue)
+      glm::vec3 boneZ(bm[0][2], bm[1][2], bm[2][2]);
+      debugLines.AddLine(boneOrigin, boneOrigin + boneZ * axisLen,
+                          {0, 0, 1});
+
+      // Blade direction line (Yellow) - trace blade tip and handle through
+      // full weapon transform chain
+      if (!weaponMeshBuffers.empty()) {
+        BoneWorldMatrix oMat =
+            MuMath::BuildWeaponOffsetMatrix(weaponRot, weaponOffset);
+        BoneWorldMatrix pMat;
+        MuMath::ConcatTransforms((const float(*)[4])bm.data(),
+                                  (const float(*)[4])oMat.data(),
+                                  (float(*)[4])pMat.data());
+        auto wLocal = ComputeBoneMatrices(weaponBmd.get());
+        BoneWorldMatrix wFinal;
+        if (!wLocal.empty()) {
+          MuMath::ConcatTransforms((const float(*)[4])pMat.data(),
+                                    (const float(*)[4])wLocal[0].data(),
+                                    (float(*)[4])wFinal.data());
+        } else {
+          wFinal = pMat;
+        }
+        glm::vec3 bladeTip =
+            MuMath::TransformPoint((const float(*)[4])wFinal.data(),
+                                    glm::vec3(0, 0, 64.7f));
+        glm::vec3 handle =
+            MuMath::TransformPoint((const float(*)[4])wFinal.data(),
+                                    glm::vec3(0, 0, -10));
+        // Yellow line from handle to blade tip
+        debugLines.AddLine(handle, bladeTip, {1, 1, 0});
+        // White dot at blade tip (short cross)
+        float d = 3.0f;
+        debugLines.AddLine(bladeTip - glm::vec3(d, 0, 0),
+                            bladeTip + glm::vec3(d, 0, 0), {1, 1, 1});
+        debugLines.AddLine(bladeTip - glm::vec3(0, d, 0),
+                            bladeTip + glm::vec3(0, d, 0), {1, 1, 1});
+        debugLines.AddLine(bladeTip - glm::vec3(0, 0, d),
+                            bladeTip + glm::vec3(0, 0, d), {1, 1, 1});
+      }
+
+      debugLines.Upload();
+      glDisable(GL_DEPTH_TEST);
+      debugLines.Draw(mvp);
+      glEnable(GL_DEPTH_TEST);
+    }
+
     axes.Draw(mvp);
   }
 
@@ -701,6 +1103,66 @@ private:
           ImGui::SetItemDefaultFocus();
       }
       ImGui::EndCombo();
+    }
+
+    // --- Weapon selection ---
+    ImGui::Separator();
+    ImGui::Text("Weapon:");
+
+    // Category combo (filtered by class)
+    const char *catLabel = kWeaponCatNames[weaponCategory];
+    if (ImGui::BeginCombo("##wcat", catLabel)) {
+      for (int c = 0; c < WCAT_COUNT; ++c) {
+        if (!CanClassUseWeapon(currentClass, c))
+          continue;
+        bool selected = (weaponCategory == c);
+        if (ImGui::Selectable(kWeaponCatNames[c], selected)) {
+          if (c != weaponCategory) {
+            LoadWeapon(c, 0); // Load first weapon of new category
+          }
+        }
+        if (selected)
+          ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+
+    // Model combo (filtered by category)
+    if (weaponCategory != WCAT_NONE) {
+      const auto &files = kWeaponFiles[weaponCategory];
+      const char *modelLabel =
+          (weaponIndex < (int)files.size()) ? files[weaponIndex] : "None";
+      if (ImGui::BeginCombo("##wmodel", modelLabel)) {
+        for (int i = 0; i < (int)files.size(); ++i) {
+          bool selected = (weaponIndex == i);
+          if (ImGui::Selectable(files[i], selected)) {
+            if (i != weaponIndex) {
+              LoadWeapon(weaponCategory, i);
+            }
+          }
+          if (selected)
+            ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+
+      // Debug sliders for attachment tuning
+      if (ImGui::TreeNode("Attachment")) {
+        ImGui::SliderInt("Bone", &weaponBone, 0,
+                         (int)skeleton->Bones.size() - 1);
+        ImGui::DragFloat3("Rotation", &weaponRot.x, 1.0f, -360.0f, 360.0f,
+                          "%.0f");
+        ImGui::DragFloat3("Offset", &weaponOffset.x, 1.0f, -200.0f, 200.0f,
+                          "%.0f");
+        if (ImGui::Button("Reset to Defaults")) {
+          const auto &cfg = kWeaponConfigs[weaponCategory];
+          weaponRot = cfg.rot;
+          weaponOffset = cfg.offset;
+          weaponBone = cfg.bone;
+        }
+        ImGui::Checkbox("Show Debug Lines", &showWeaponDebug);
+        ImGui::TreePop();
+      }
     }
 
     // --- Body parts info ---
@@ -849,16 +1311,228 @@ private:
     if (action == GLFW_PRESS) {
       if (key == GLFW_KEY_ESCAPE)
         glfwSetWindowShouldClose(w, true);
+      if (key == GLFW_KEY_P)
+        Screenshot::Capture(w, "screenshots/char_screenshot.jpg");
     }
   }
 
   static void CharCallback(GLFWwindow *w, unsigned int c) {
     ImGui_ImplGlfw_CharCallback(w, c);
   }
+
+  // --- Auto-screenshot mode ---
+  void RunAutoScreenshots() {
+    // Load Sword01 for analysis
+    auto sw1 = BMDParser::Parse(DATA_ITEM_PATH + std::string("Sword01.bmd"));
+
+    printf("\n=== WEAPON BONE DIAGNOSTICS ===\n");
+
+    // Dump weapon BMD's own bone matrix (this is what the old diagnostic was missing!)
+    if (sw1) {
+      auto wBones = ComputeBoneMatrices(sw1.get());
+      printf("Sword01: %d bones, %d actions\n",
+             (int)sw1->Bones.size(), (int)sw1->Actions.size());
+      for (int bi = 0; bi < (int)wBones.size() && bi < 3; ++bi) {
+        auto &wb = wBones[bi];
+        printf("  WeaponBone[%d] matrix:\n", bi);
+        printf("    Row0: [%.4f, %.4f, %.4f, %.4f]\n", wb[0][0], wb[0][1], wb[0][2], wb[0][3]);
+        printf("    Row1: [%.4f, %.4f, %.4f, %.4f]\n", wb[1][0], wb[1][1], wb[1][2], wb[1][3]);
+        printf("    Row2: [%.4f, %.4f, %.4f, %.4f]\n", wb[2][0], wb[2][1], wb[2][2], wb[2][3]);
+        // What does this bone do to +Z (blade direction)?
+        glm::vec3 zInBone = MuMath::RotateVector(
+            (const float(*)[4])wb.data(), glm::vec3(0, 0, 1));
+        printf("    +Z maps to: (%.4f, %.4f, %.4f)\n", zInBone.x, zInBone.y, zInBone.z);
+      }
+      // Dump bone names if available
+      for (int bi = 0; bi < (int)sw1->Bones.size() && bi < 3; ++bi) {
+        printf("  Bone[%d]: dummy=%d parent=%d name='%s'\n",
+               bi, sw1->Bones[bi].Dummy, sw1->Bones[bi].Parent,
+               sw1->Bones[bi].Name);
+      }
+
+      // Vertex extents
+      glm::vec3 vmin(1e9), vmax(-1e9);
+      for (auto &mesh : sw1->Meshes) {
+        for (int i = 0; i < mesh.NumVertices; ++i) {
+          vmin = glm::min(vmin, mesh.Vertices[i].Position);
+          vmax = glm::max(vmax, mesh.Vertices[i].Position);
+        }
+      }
+      printf("  Vertex extents: min(%.2f,%.2f,%.2f) max(%.2f,%.2f,%.2f)\n",
+             vmin.x, vmin.y, vmin.z, vmax.x, vmax.y, vmax.z);
+    }
+
+    // Dump skeleton bone names for right arm area
+    printf("\n=== SKELETON BONE NAMES (right arm candidates) ===\n");
+    for (int bi = 0; bi < (int)skeleton->Bones.size(); ++bi) {
+      auto &bone = skeleton->Bones[bi];
+      if (bone.Dummy) continue;
+      printf("  Bone[%2d] parent=%2d name='%s'\n", bi, bone.Parent, bone.Name);
+    }
+
+    // Compare blade direction at action 5 for different bone + rotation combos
+    printf("\n=== BLADE DIRECTION COMPARISON (Action 5 = 2H idle) ===\n");
+    auto bones5 = ComputeBoneMatricesInterpolated(skeleton.get(), 5, 0.0f);
+    auto wBones = sw1 ? ComputeBoneMatrices(sw1.get()) : std::vector<BoneWorldMatrix>{};
+
+    struct TestConfig {
+      int bone;
+      glm::vec3 rot;
+      glm::vec3 offset;
+      const char *label;
+    };
+    TestConfig tests[] = {
+        {33, {90, 0, 0}, {0, 0, 0}, "Bone33 rot(90,0,0) [CURRENT]"},
+        {33, {-90, 0, 0}, {0, 0, 0}, "Bone33 rot(-90,0,0) [OLD]"},
+        {33, {70, 0, 90}, {-20, 5, 40}, "Bone33 rot(70,0,90) offs(-20,5,40) [ORIG REF]"},
+        {28, {70, 0, 90}, {-20, 5, 40}, "Bone28 rot(70,0,90) offs(-20,5,40) [ORIG BONE+ROT]"},
+        {33, {0, 0, 0}, {0, 0, 0}, "Bone33 rot(0,0,0) identity"},
+        {33, {0, 0, 180}, {0, 0, 0}, "Bone33 rot(0,0,180)"},
+        {33, {180, 0, 0}, {0, 0, 0}, "Bone33 rot(180,0,0)"},
+        {33, {0, 90, 0}, {0, 0, 0}, "Bone33 rot(0,90,0)"},
+        {33, {0, -90, 0}, {0, 0, 0}, "Bone33 rot(0,-90,0)"},
+        {33, {0, 0, 90}, {0, 0, 0}, "Bone33 rot(0,0,90)"},
+        {33, {0, 0, -90}, {0, 0, 0}, "Bone33 rot(0,0,-90)"},
+    };
+
+    for (auto &t : tests) {
+      if (t.bone >= (int)bones5.size()) {
+        printf("  %-50s  BONE OUT OF RANGE\n", t.label);
+        continue;
+      }
+      auto &bm = bones5[t.bone];
+      BoneWorldMatrix oMat = MuMath::BuildWeaponOffsetMatrix(t.rot, t.offset);
+      BoneWorldMatrix pMat;
+      MuMath::ConcatTransforms((const float(*)[4])bm.data(),
+                                (const float(*)[4])oMat.data(),
+                                (float(*)[4])pMat.data());
+      if (!wBones.empty()) {
+        BoneWorldMatrix fullMat;
+        MuMath::ConcatTransforms((const float(*)[4])pMat.data(),
+                                  (const float(*)[4])wBones[0].data(),
+                                  (float(*)[4])fullMat.data());
+        glm::vec3 tip = MuMath::TransformPoint(
+            (const float(*)[4])fullMat.data(), glm::vec3(0, 0, 64.7f));
+        glm::vec3 handle = MuMath::TransformPoint(
+            (const float(*)[4])fullMat.data(), glm::vec3(0, 0, 0));
+        glm::vec3 dir = tip - handle;
+        float glY = dir.z;  // GL Y(up) = MU Z
+        float pctUp = glY / glm::length(dir) * 100.0f;
+        printf("  %-50s  MU(%.1f,%.1f,%.1f) GL_Y(up)=%.1f (%.0f%%)\n",
+               t.label, dir.x, dir.y, dir.z, glY, pctUp);
+      }
+    }
+
+    // Also show action 4 for the most promising rotations
+    printf("\n=== BLADE DIRECTION COMPARISON (Action 4 = 1H idle) ===\n");
+    auto bones4 = ComputeBoneMatricesInterpolated(skeleton.get(), 4, 0.0f);
+    for (auto &t : tests) {
+      if (t.bone >= (int)bones4.size()) continue;
+      auto &bm = bones4[t.bone];
+      BoneWorldMatrix oMat = MuMath::BuildWeaponOffsetMatrix(t.rot, t.offset);
+      BoneWorldMatrix pMat;
+      MuMath::ConcatTransforms((const float(*)[4])bm.data(),
+                                (const float(*)[4])oMat.data(),
+                                (float(*)[4])pMat.data());
+      if (!wBones.empty()) {
+        BoneWorldMatrix fullMat;
+        MuMath::ConcatTransforms((const float(*)[4])pMat.data(),
+                                  (const float(*)[4])wBones[0].data(),
+                                  (float(*)[4])fullMat.data());
+        glm::vec3 tip = MuMath::TransformPoint(
+            (const float(*)[4])fullMat.data(), glm::vec3(0, 0, 64.7f));
+        glm::vec3 handle = MuMath::TransformPoint(
+            (const float(*)[4])fullMat.data(), glm::vec3(0, 0, 0));
+        glm::vec3 dir = tip - handle;
+        float glY = dir.z;
+        float pctUp = glY / glm::length(dir) * 100.0f;
+        printf("  %-50s  MU(%.1f,%.1f,%.1f) GL_Y(up)=%.1f (%.0f%%)\n",
+               t.label, dir.x, dir.y, dir.z, glY, pctUp);
+      }
+    }
+    printf("=== END DIAGNOSTICS ===\n\n");
+
+    struct AngleShot {
+      float yaw, pitch;
+      int action;
+      int weaponIdx;
+      const char *name;
+    };
+    AngleShot shots[] = {
+        // Sword05 (curved 2H) in Two-Hand idle
+        {180.0f, 0.0f, 5, 4, "2h_sw05_front"},
+        {270.0f, 0.0f, 5, 4, "2h_sw05_right"},
+        {  0.0f, 0.0f, 5, 4, "2h_sw05_back"},
+        // Sword01 (straight 1H) in Two-Hand idle — clearer blade direction
+        {180.0f, 0.0f, 5, 0, "2h_sw01_front"},
+        {270.0f, 0.0f, 5, 0, "2h_sw01_right"},
+        // Sword01 in One-Hand idle
+        {180.0f, 0.0f, 4, 0, "1h_sw01_front"},
+        {270.0f, 0.0f, 4, 0, "1h_sw01_right"},
+    };
+    int lastWeaponIdx = -1;
+
+    // Pause animation at frame 0 for clean capture
+    animPlaying = false;
+    animFrame = 0.0f;
+
+    // Warm up a few frames to let GL state settle
+    for (int i = 0; i < 5; ++i) {
+      glfwPollEvents();
+      deltaTime = 0.016f;
+      RenderScene();
+      RenderUI();
+      glfwSwapBuffers(window);
+    }
+
+    for (auto &shot : shots) {
+      // Switch weapon model if needed
+      if (shot.weaponIdx != lastWeaponIdx) {
+        UnloadWeapon();
+        LoadWeapon(WCAT_SWORD, shot.weaponIdx);
+        lastWeaponIdx = shot.weaponIdx;
+        // Extra frames to let new weapon mesh settle
+        for (int i = 0; i < 3; ++i) {
+          glfwPollEvents();
+          deltaTime = 0.016f;
+          RenderScene();
+          RenderUI();
+          glfwSwapBuffers(window);
+        }
+      }
+
+      camera.yaw = shot.yaw;
+      camera.pitch = shot.pitch;
+      if (shot.action >= 0)
+        SetAction(shot.action);
+
+      // Render 3 frames at this angle/action to stabilize
+      for (int i = 0; i < 3; ++i) {
+        glfwPollEvents();
+        deltaTime = 0.016f;
+        RenderScene();
+        RenderUI();
+        glfwSwapBuffers(window);
+      }
+
+      std::string fname =
+          std::string("charviewer_") + shot.name + ".jpg";
+      Screenshot::Capture(window, fname);
+      printf("[AutoScreenshot] Saved %s (action=%d weapon=%d yaw=%.0f pitch=%.0f)\n",
+             fname.c_str(), shot.action, shot.weaponIdx, shot.yaw, shot.pitch);
+    }
+
+    printf("[AutoScreenshot] Done — %zu screenshots saved to screenshots/\n",
+           sizeof(shots) / sizeof(shots[0]));
+  }
 };
 
 int main(int argc, char **argv) {
   CharacterViewer viewer;
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--screenshots")
+      viewer.autoScreenshot = true;
+  }
   viewer.Run();
   return 0;
 }

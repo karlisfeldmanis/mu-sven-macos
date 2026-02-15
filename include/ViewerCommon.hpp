@@ -42,7 +42,22 @@ struct DebugAxes {
   void Cleanup();
 };
 
-// Compile the simple colored-line shader used by DebugAxes
+// Dynamic colored-line buffer for debug overlays (bone axes, blade direction)
+struct DebugLines {
+  GLuint vao = 0, vbo = 0;
+  GLuint program = 0;
+  int maxVerts = 256;
+  std::vector<float> verts; // interleaved: x,y,z,r,g,b per vertex
+
+  void Init();
+  void Clear();
+  void AddLine(const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &color);
+  void Upload();
+  void Draw(const glm::mat4 &mvp);
+  void Cleanup();
+};
+
+// Compile the simple colored-line shader used by DebugAxes / DebugLines
 GLuint CompileLineShader();
 
 // Upload a BMD mesh to GPU with bone transforms applied to vertices.
