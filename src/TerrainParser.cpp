@@ -100,6 +100,12 @@ TerrainData TerrainParser::LoadWorld(int world_id,
         luminosity = glm::clamp(luminosity, 0.0f, 1.0f);
 
         result.lightmap[idx] *= luminosity;
+
+        // Prevent pitch-black cells at steep terrain edges (water/cliff drops).
+        // Original per-vertex lighting has min 0.2 (IntensityTransform floor),
+        // but BodyLight can still be near-zero from dark lightmap JPEG pixels.
+        // Floor ensures objects and terrain at water edges remain visible.
+        result.lightmap[idx] = glm::max(result.lightmap[idx], glm::vec3(0.1f));
       }
     }
     std::cout << "[TerrainParser] Applied directional sun lighting (sunDir="

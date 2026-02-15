@@ -23,14 +23,17 @@ public:
   void SetPointLights(const std::vector<glm::vec3> &positions,
                       const std::vector<glm::vec3> &colors,
                       const std::vector<float> &ranges);
+  void SetLuminosity(float l) { m_luminosity = l; }
 
 private:
   void setupMesh(const std::vector<float> &heightmap,
                  const std::vector<glm::vec3> &lightmap);
   void setupShader();
   void setupTextures(const TerrainData &data, const std::string &base_path);
+  void applyDynamicLights(); // CPU-side AddTerrainLight (matches original engine)
 
   int debugMode = 0;
+  float m_luminosity = 1.0f;
   std::vector<glm::vec3> plPositions, plColors;
   std::vector<float> plRanges;
   int plCount = 0;
@@ -41,6 +44,10 @@ private:
       lightmapTex;
   size_t indexCount;
   int worldID;
+
+  // CPU-side dynamic lightmap (matches original AddTerrainLight system)
+  std::vector<float> m_baselineLightRGB; // Baked lightmap (reset source)
+  std::vector<float> m_workingLightRGB;  // Modified per-frame with dynamic lights
 
   struct Vertex {
     glm::vec3 position;

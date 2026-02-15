@@ -24,6 +24,8 @@ flat out int TexLayer;
 uniform mat4 view;
 uniform mat4 projection;
 uniform float uTime;
+uniform vec3 ballPos;
+uniform float pushRadius;
 
 void main() {
     vec3 pos = aPos;
@@ -33,6 +35,19 @@ void main() {
     float windSpeed = mod(uTime, 720.0) * 2.0;
     float wind = sin(windSpeed + aGridX * 5.0) * 10.0 * aWindWeight;
     pos.x += wind;
+
+    // Grass pushing: top vertices near ball get pushed away (original CheckGrass)
+    if (aWindWeight > 0.0 && pushRadius > 0.0) {
+        vec2 toBlade = pos.xz - ballPos.xz;
+        float dist = length(toBlade);
+        if (dist < pushRadius && dist > 0.001) {
+            float pushStrength = (1.0 - dist / pushRadius);
+            pushStrength *= pushStrength; // Quadratic falloff
+            vec2 pushDir = normalize(toBlade);
+            pos.xz += pushDir * pushStrength * pushRadius * 0.5;
+            pos.y -= pushStrength * 30.0; // Slight downward bend
+        }
+    }
 
     gl_Position = projection * view * vec4(pos, 1.0);
     TexCoord = aTexCoord;
@@ -184,6 +199,24 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
           (data.mapping.attributes[idx] & 0x08) != 0)
         continue;
 
+      // Skip cells with large height discontinuity to neighbors
+      // (fountain edges, cliff edges, structural boundaries)
+      float hCenter = data.heightmap[idx];
+      bool steep = false;
+      const int neighbors[4][2] = {{0, 1}, {0, -1}, {1, 0}, {-1, 0}};
+      for (auto &n : neighbors) {
+        int nz = z + n[0], nx = x + n[1];
+        if (nz >= 0 && nz < SIZE && nx >= 0 && nx < SIZE) {
+          float hNeighbor = data.heightmap[nz * SIZE + nx];
+          if (std::abs(hCenter - hNeighbor) > 40.0f) {
+            steep = true;
+            break;
+          }
+        }
+      }
+      if (steep)
+        continue;
+
       // Get heightmap at SW and NE corners (diagonal billboard)
       float h_sw = data.heightmap[z * SIZE + x];
       float h_ne = data.heightmap[(z + 1) * SIZE + (x + 1)];
@@ -322,7 +355,8 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
 }
 
 void GrassRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
-                           float time, const glm::vec3 &viewPos) {
+                           float time, const glm::vec3 &viewPos,
+                           const glm::vec3 &ballPos) {
   if (indexCount == 0 || shaderProgram == 0)
     return;
 
@@ -335,6 +369,9 @@ void GrassRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   glUniform1f(glGetUniformLocation(shaderProgram, "uTime"), time);
   glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1,
                glm::value_ptr(viewPos));
+  glUniform3fv(glGetUniformLocation(shaderProgram, "ballPos"), 1,
+               glm::value_ptr(ballPos));
+  glUniform1f(glGetUniformLocation(shaderProgram, "pushRadius"), 150.0f);
 
   // Bind grass textures
   for (int i = 0; i < 3; ++i) {

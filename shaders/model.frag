@@ -11,7 +11,9 @@ uniform vec3 lightPos;
 uniform vec3 viewPos;
 uniform bool useFog;
 uniform float blendMeshLight;
+uniform float objectAlpha; // Per-instance alpha for roof hiding (0=invisible, 1=opaque)
 uniform vec3 terrainLight; // Lightmap color sampled at object world position
+uniform float luminosity;  // Day/night cycle (0.45-0.75)
 
 // Point lights
 const int MAX_POINT_LIGHTS = 64;
@@ -52,12 +54,12 @@ void main() {
     vec4 texColor = texture(texture_diffuse, TexCoord);
     if (texColor.a < 0.1) discard;
 
-    FragColor = vec4(lighting * blendMeshLight * terrainLight, 1.0) * texColor;
+    FragColor = vec4(lighting * blendMeshLight * terrainLight * luminosity, objectAlpha) * texColor;
 
     if (useFog) {
         float dist = length(FragPos - viewPos);
         float fogFactor = clamp((3500.0 - dist) / (3500.0 - 1500.0), 0.0, 1.0);
-        vec3 fogColor = vec3(0.117, 0.078, 0.039); // Original MU: 30/256, 20/256, 10/256
+        vec3 fogColor = vec3(0.117, 0.078, 0.039) * luminosity; // Original MU: 30/256, 20/256, 10/256
         FragColor.rgb = mix(fogColor, FragColor.rgb, fogFactor);
 
         // Edge fog: darken toward black at map boundaries

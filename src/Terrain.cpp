@@ -45,13 +45,7 @@ uniform usampler2D symmetryMap;
 uniform sampler2D lightMap;
 uniform float uTime;
 uniform int debugMode;
-
-// Point lights
-const int MAX_POINT_LIGHTS = 64;
-uniform int numPointLights;
-uniform vec3 pointLightPos[MAX_POINT_LIGHTS];
-uniform vec3 pointLightColor[MAX_POINT_LIGHTS];
-uniform float pointLightRange[MAX_POINT_LIGHTS];
+uniform float luminosity;
 
 vec2 applySymmetry(vec2 uv, uint symmetry) {
     uint rot = symmetry & 3u;
@@ -154,25 +148,16 @@ void main() {
 
     vec3 finalColor = mix(l1.rgb, l2.rgb, alpha * l2.a);
 
-    // Apply lightmap
+    // Apply lightmap and day/night luminosity
     vec3 lightColor = texture(lightMap, TexCoord).rgb;
-    finalColor *= lightColor;
-
-    // Accumulate point lights on terrain
-    for (int i = 0; i < numPointLights; ++i) {
-        vec3 toLight = pointLightPos[i] - FragPos;
-        float dist = length(toLight);
-        float atten = max(1.0 - dist / pointLightRange[i], 0.0);
-        atten *= atten; // Quadratic falloff
-        finalColor += atten * pointLightColor[i] * finalColor;
-    }
+    finalColor *= lightColor * luminosity;
 
     // Fog: match original engine (CameraViewFar=2000, dark brown fog color)
     float dist = length(FragPos - viewPos);
     float fogNear = 1500.0;
     float fogFar = 3500.0;
     float fogFactor = clamp((fogFar - dist) / (fogFar - fogNear), 0.0, 1.0);
-    vec3 fogColor = vec3(0.117, 0.078, 0.039); // 30/256, 20/256, 10/256
+    vec3 fogColor = vec3(0.117, 0.078, 0.039) * luminosity; // 30/256, 20/256, 10/256
     finalColor = mix(fogColor, finalColor, fogFactor);
 
     FragColor = vec4(finalColor, 1.0);
@@ -239,23 +224,12 @@ void Terrain::Render(const glm::mat4 &view, const glm::mat4 &projection,
                      GL_FALSE, glm::value_ptr(projection));
   glUniform1f(glGetUniformLocation(shaderProgram, "uTime"), time);
   glUniform1i(glGetUniformLocation(shaderProgram, "debugMode"), debugMode);
+  glUniform1f(glGetUniformLocation(shaderProgram, "luminosity"), m_luminosity);
   glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1,
                glm::value_ptr(viewPos));
 
-  // Set point light uniforms
-  glUniform1i(glGetUniformLocation(shaderProgram, "numPointLights"), plCount);
-  for (int i = 0; i < plCount; ++i) {
-    std::string idx = std::to_string(i);
-    glUniform3fv(glGetUniformLocation(shaderProgram,
-                                      ("pointLightPos[" + idx + "]").c_str()),
-                 1, glm::value_ptr(plPositions[i]));
-    glUniform3fv(glGetUniformLocation(shaderProgram,
-                                      ("pointLightColor[" + idx + "]").c_str()),
-                 1, glm::value_ptr(plColors[i]));
-    glUniform1f(glGetUniformLocation(shaderProgram,
-                                     ("pointLightRange[" + idx + "]").c_str()),
-                plRanges[i]);
-  }
+  // Apply dynamic point lights to lightmap (CPU-side, matching original engine)
+  applyDynamicLights();
 
   glBindVertexArray(VAO);
 
@@ -451,6 +425,9 @@ void Terrain::setupTextures(const TerrainData &data,
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+  // Save baseline lightmap for per-frame dynamic light application
+  m_baselineLightRGB = lightRGB;
+
   // Tile texture array - Sven loads up to 30 tiles per world
   // (14 base + 16 ExtTile overlays)
   const int tile_res = 256;
@@ -466,16 +443,16 @@ void Terrain::setupTextures(const TerrainData &data,
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-  // Fill all slots with magenta debug color so missing textures are obvious
-  std::vector<unsigned char> magenta(tile_res * tile_res * 3);
+  // Fill all slots with neutral dark brown so unloaded tiles blend with terrain
+  std::vector<unsigned char> neutral(tile_res * tile_res * 3);
   for (int p = 0; p < tile_res * tile_res; ++p) {
-    magenta[p * 3 + 0] = 255; // R
-    magenta[p * 3 + 1] = 0;   // G
-    magenta[p * 3 + 2] = 255; // B
+    neutral[p * 3 + 0] = 80;  // R
+    neutral[p * 3 + 1] = 70;  // G
+    neutral[p * 3 + 2] = 55;  // B
   }
   for (int slot = 0; slot < max_tiles; ++slot) {
     glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, slot, tile_res, tile_res, 1,
-                    GL_RGB, GL_UNSIGNED_BYTE, magenta.data());
+                    GL_RGB, GL_UNSIGNED_BYTE, neutral.data());
   }
 
   // Lorencia tile set - matches Sven MapManager.cpp tile loading order:
@@ -524,6 +501,15 @@ void Terrain::setupTextures(const TerrainData &data,
     usedTileIndices.insert(data.mapping.layer1[i]);
     if (data.mapping.alpha[i] > 0.0f)
       usedTileIndices.insert(data.mapping.layer2[i]);
+  }
+
+  // Log which tile indices are used (detect out-of-range indices)
+  for (int idx : usedTileIndices) {
+    if (idx >= (int)tile_names.size()) {
+      std::cerr << "[Terrain] WARNING: Terrain uses tile index " << idx
+                << " which has no tile name (max=" << tile_names.size() - 1
+                << ")" << std::endl;
+    }
   }
 
   // Cache first successfully loaded texture data as fallback for missing tiles
@@ -605,6 +591,60 @@ void Terrain::setupTextures(const TerrainData &data,
                       format, GL_UNSIGNED_BYTE, raw_data.data());
     }
   }
+}
+
+void Terrain::applyDynamicLights() {
+  if (m_baselineLightRGB.empty())
+    return;
+
+  const int S = TerrainParser::TERRAIN_SIZE; // 256
+
+  // Reset working lightmap from baseline
+  m_workingLightRGB = m_baselineLightRGB;
+
+  // Add each point light to the grid (matching AddTerrainLight from ZzzLodTerrain.cpp)
+  // Original: linear falloff, cell range 1-3, additive blending
+  for (int li = 0; li < plCount; ++li) {
+    // Convert world position to grid coordinates
+    // WorldX → MU_Y → grid z (outer), WorldZ → MU_X → grid x (inner)
+    float gx = plPositions[li].z / 100.0f;
+    float gz = plPositions[li].x / 100.0f;
+
+    const int cellRange = 3; // Original uses range 3 for most light types
+    float rf = (float)cellRange;
+
+    // Scale colors to match original intensity (original uses ~0.3-0.7 range)
+    glm::vec3 color = plColors[li] * 0.35f;
+
+    int gxi = (int)gx;
+    int gzi = (int)gz;
+
+    for (int sz = gzi - cellRange; sz <= gzi + cellRange; ++sz) {
+      if (sz < 0 || sz >= S)
+        continue;
+      for (int sx = gxi - cellRange; sx <= gxi + cellRange; ++sx) {
+        if (sx < 0 || sx >= S)
+          continue;
+
+        float xd = gx - (float)sx;
+        float zd = gz - (float)sz;
+        float dist = sqrtf(xd * xd + zd * zd);
+        float lf = (rf - dist) / rf; // Linear falloff (matches original)
+        if (lf <= 0.0f)
+          continue;
+
+        int idx = sz * S + sx;
+        m_workingLightRGB[idx * 3 + 0] += color.r * lf;
+        m_workingLightRGB[idx * 3 + 1] += color.g * lf;
+        m_workingLightRGB[idx * 3 + 2] += color.b * lf;
+      }
+    }
+  }
+
+  // Re-upload modified lightmap texture
+  glBindTexture(GL_TEXTURE_2D, lightmapTex);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, S, S, GL_RGB, GL_FLOAT,
+                  m_workingLightRGB.data());
 }
 
 void Terrain::setupShader() {

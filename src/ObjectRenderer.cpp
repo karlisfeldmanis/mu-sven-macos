@@ -1,8 +1,6 @@
 #include "ObjectRenderer.hpp"
 #include "TextureLoader.hpp"
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
@@ -327,8 +325,42 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
       continue;
     }
 
+    // Skip grass objects (types 20-29) on non-grass terrain tiles.
+    // Original engine only renders grass BMDs on grass terrain (layer1 0 or 1).
+    if (obj.type >= 20 && obj.type <= 29 && terrainMapping) {
+      const int S = 256;
+      int gz = (int)(obj.position.x / 100.0f);
+      int gx = (int)(obj.position.z / 100.0f);
+      if (gz >= 0 && gx >= 0 && gz < S && gx < S) {
+        uint8_t tile = terrainMapping->layer1[gz * S + gx];
+        if (tile != 0 && tile != 1) {
+          ++skipped;
+          continue;
+        }
+      }
+    }
+
+    // Snap grass objects (types 20-29) to terrain heightmap to prevent floating
+    glm::vec3 objPos = obj.position;
+    if (obj.type >= 20 && obj.type <= 29 &&
+        terrainHeightmap.size() >= 256 * 256) {
+      const int S = 256;
+      float gz = objPos.x / 100.0f;
+      float gx = objPos.z / 100.0f;
+      gz = std::clamp(gz, 0.0f, (float)(S - 2));
+      gx = std::clamp(gx, 0.0f, (float)(S - 2));
+      int xi = (int)gx, zi = (int)gz;
+      float xd = gx - (float)xi, zd = gz - (float)zi;
+      float h00 = terrainHeightmap[zi * S + xi];
+      float h10 = terrainHeightmap[zi * S + (xi + 1)];
+      float h01 = terrainHeightmap[(zi + 1) * S + xi];
+      float h11 = terrainHeightmap[(zi + 1) * S + (xi + 1)];
+      objPos.y = h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) +
+                 h01 * (1 - xd) * zd + h11 * xd * zd;
+    }
+
     // Build model matrix
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), obj.position);
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), objPos);
     // MU Z-up → OpenGL Y-up coordinate conversion
     // Position maps as: GL_X=MU_Y, GL_Y=MU_Z, GL_Z=MU_X
     // Model geometry must match: Rz(-90)*Ry(-90) permutes axes correctly
@@ -390,6 +422,11 @@ glm::vec3 ObjectRenderer::SampleTerrainLight(const glm::vec3 &worldPos) const {
   glm::vec3 left = c00 + (c01 - c00) * zd;
   glm::vec3 right = c10 + (c11 - c10) * zd;
   return left + (right - left) * xd;
+}
+
+void ObjectRenderer::SetTypeAlpha(
+    const std::unordered_map<int, float> &alphaMap) {
+  typeAlphaMap = alphaMap;
 }
 
 void ObjectRenderer::SetPointLights(const std::vector<glm::vec3> &positions,
@@ -465,6 +502,7 @@ void ObjectRenderer::RetransformMesh(const Mesh_t &mesh,
     }
   }
 
+  // Simple buffer update — matches ModelViewer's working approach
   glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
   glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(Vertex),
                   vertices.data());
@@ -486,7 +524,9 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   shader->setVec3("viewPos", cameraPos);
   shader->setBool("useFog", true);
   shader->setFloat("blendMeshLight", 1.0f);
+  shader->setFloat("objectAlpha", 1.0f);
   shader->setVec2("texCoordOffset", glm::vec2(0.0f));
+  shader->setFloat("luminosity", m_luminosity);
 
   // Set point light uniforms
   shader->setInt("numPointLights", plCount);
@@ -506,12 +546,15 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
         if (!cache.isAnimated || !cache.bmdData)
           continue;
         auto &state = animStates[type];
-        state.frame += ANIM_SPEED * dt;
+        // Per-type speed: flag (96) uses Velocity=0.3 in original (7.5 kf/s)
+        float speed = (type == 96) ? 7.5f : ANIM_SPEED;
+        state.frame += speed * dt;
         if (state.frame >= (float)cache.numAnimationKeys)
           state.frame = std::fmod(state.frame, (float)cache.numAnimationKeys);
 
         auto bones = ComputeBoneMatricesInterpolated(cache.bmdData.get(), 0,
                                                      state.frame);
+
         for (int mi = 0; mi < (int)cache.meshBuffers.size() &&
                          mi < (int)cache.bmdData->Meshes.size();
              ++mi) {
@@ -541,6 +584,16 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
     if (it == modelCache.end())
       continue;
 
+    // Per-type alpha for roof hiding (types 125/126 fade when inside buildings)
+    float instAlpha = 1.0f;
+    auto alphaIt = typeAlphaMap.find(inst.type);
+    if (alphaIt != typeAlphaMap.end()) {
+      instAlpha = alphaIt->second;
+      if (instAlpha < 0.01f)
+        continue; // Skip fully invisible objects
+    }
+    shader->setFloat("objectAlpha", instAlpha);
+
     shader->setMat4("model", inst.modelMatrix);
     shader->setVec3("terrainLight", inst.terrainLight);
 
@@ -565,8 +618,10 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
         if (inst.type == 52)
           intensity = 0.65f + 0.25f * std::sin(currentTime * 9.0f) *
                                   std::sin(currentTime * 13.7f);
-        // Static glow for streetlights, candles, carriages
-        if (inst.type == 90 || inst.type == 150 || inst.type == 98)
+        // Static glow for streetlights, candles, carriages, waterspout
+        // Reference: BlendMeshLight = 1.0f for these types
+        if (inst.type == 90 || inst.type == 150 || inst.type == 98 ||
+            inst.type == 105)
           intensity = 1.0f;
 
         shader->setFloat("blendMeshLight", intensity);
@@ -598,16 +653,15 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
         // Alpha meshes: disable face culling (paper-thin geometry like
         // fence bars needs both sides visible) and add depth bias to
         // avoid z-fighting with coplanar opaque meshes.
-        // Matches original engine's EnableAlphaTest() → DisableCullFace().
+        // Depth writes stay ON — shader discards transparent fragments
+        // (texColor.a < 0.1), so opaque parts write depth correctly.
         if (mb.hasAlpha) {
           glDisable(GL_CULL_FACE);
           glEnable(GL_POLYGON_OFFSET_FILL);
           glPolygonOffset(-1.0f, -1.0f);
-          glDepthMask(GL_FALSE); // Shadows/Alpha shouldn't write depth
         }
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
         if (mb.hasAlpha) {
-          glDepthMask(GL_TRUE);
           glDisable(GL_POLYGON_OFFSET_FILL);
           glEnable(GL_CULL_FACE);
         }

@@ -34,6 +34,8 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | `TerrainParser.hpp` | Parses MAP heightmaps, tile layers, alpha maps, attributes, objects, lightmaps. `TERRAIN_SIZE = 256`. `ObjectData` struct. |
 | `ObjectRenderer.hpp` | World object rendering: BMD model cache, type-to-filename mapping, per-instance transforms, per-mesh blend state, skeletal animation (AnimState, RetransformMesh), BlendMesh system, terrain lightmap sampling per object, per-type alpha (roof hiding). |
 | `ViewerCommon.hpp` | Shared viewer utilities: OrbitCamera, DebugAxes, UploadMeshWithBones/RetransformMeshWithBones helpers, ActivateMacOSApp, ImGui init. |
+| `HeroCharacter.hpp` | Player character: DK Naked model, click-to-move, skeletal walk animation, blob shadow (RenderBodyShadow), terrain snap, terrain lightmap sampling, point light uniforms. |
+| `ClickEffect.hpp` | Click-to-move visual feedback: animated ring effect at click position on terrain. |
 | `GrassRenderer.hpp` | Billboard grass system: wind animation, ball-push displacement, 3 texture layers. |
 | `Sky.hpp` | Sky dome: gradient hemisphere rendered behind scene. |
 | `FireEffect.hpp` | Particle-based fire system for Lorencia torches/bonfires/lights. Uses GPU instancing and billboarding. |
@@ -54,7 +56,9 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | `GrassRenderer.cpp` | 42k grass billboards with GPU vertex shader wind animation and ball-push displacement (quadratic falloff within pushRadius). |
 | `Sky.cpp` | Sky dome gradient hemisphere. |
 | `FireEffect.cpp` | Particle physics, emitter management, and instanced billboarding rendering for `Fire01.OZJ`. Fire types: 50-51, 52, 55, 80, 130. |
-| `main.cpp` | World viewer app: terrain + objects + grass + sky + fire, WASD energy ball on terrain, P screenshot, roof hiding (tile==4), grass pushing. Data path: `references/other/MuMain/src/bin/Data/`. |
+| `HeroCharacter.cpp` | DK Naked character: 5-part body (helm/armor/pants/gloves/boots), skeletal animation (idle=action1, walk=action15), click-to-move with terrain height tracking, blob shadow with stencil buffer, terrain lightmap + point light sampling. |
+| `ClickEffect.cpp` | Animated click ring effect on terrain at mouse click position. |
+| `main.cpp` | World viewer app: terrain + objects + grass + sky + fire + hero character, click-to-move, P screenshot, roof hiding (tile==4), grass pushing. Data path: `references/other/MuMain/src/bin/Data/`. |
 | `model_viewer_main.cpp` | Object browser: scans Object1/ for BMDs, orbit camera, ImGui list+info panel, per-mesh blend state, skeletal animation playback with ImGui controls. |
 | `char_viewer_main.cpp` | Character browser: Player.bmd skeleton + body part armor system, class-aware skill/emote animation categories, orbit camera, GIF capture. |
 | `ViewerCommon.cpp` | Shared viewer code: OrbitCamera math, DebugAxes rendering, bone-aware mesh upload/retransform, ImGui lifecycle. |
@@ -64,7 +68,9 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 | File | Purpose |
 |------|---------|
 | `model.vert` | Standard MVP transform, normal correction via inverse-transpose, `texCoordOffset` for UV scroll. Inputs: aPos, aNormal, aTexCoord. |
-| `model.frag` | Two-sided diffuse lighting (abs dot), alpha discard at 0.1, optional linear fog (1500-3500 range), `blendMeshLight` intensity, `objectAlpha` (per-instance roof hiding), `terrainLight` (lightmap color at object world position), point light array (64 max). **Any renderer using this shader MUST set `objectAlpha` uniform to 1.0 or objects will be invisible.** |
+| `model.frag` | Two-sided diffuse lighting (abs dot), alpha discard at 0.1, optional linear fog (1500-3500 range), `blendMeshLight` intensity, `objectAlpha` (per-instance roof hiding), `terrainLight` (lightmap color at object world position), `luminosity` (day/night multiplier, default 1.0), point light array (64 max). **Any renderer using this shader MUST set `objectAlpha` uniform to 1.0 or objects will be invisible.** |
+| `shadow.vert` | Minimal MVP vertex shader for blob shadow rendering (position-only input). |
+| `shadow.frag` | Flat black output with 30% opacity: `vec4(0, 0, 0, 0.3)`. |
 
 ### GIF Capture Optimizations
 - **Resolution Downscaling**: Optional scale factor (e.g., 0.5x) using box-filter averaging during capture.
@@ -169,11 +175,15 @@ Original MU's BlendMesh marks specific mesh indices within BMD models for additi
 **Shader uniforms**: `blendMeshLight` (float intensity multiplier), `texCoordOffset` (vec2 UV scroll).
 
 ### Point Light System
-64 point lights collected from world objects (fire emitter types) and passed as uniform arrays to both terrain and model shaders.
+64 point lights collected from world objects (fire emitter types). Used differently for terrain vs objects:
 
-**Shader uniforms**: `pointLightPos[64]`, `pointLightColor[64]`, `pointLightRange[64]`, `numPointLights`.
+**Terrain**: CPU-side `AddTerrainLight` matching original engine (ZzzLodTerrain.cpp). Each frame: reset lightmap from baseline, add lights to 256x256 grid cells with **linear falloff** and **cell range 3** (7x7 area per light), re-upload via `glTexSubImage2D`. Colors scaled ×0.35 from template values. This replaces the previous per-pixel shader approach that caused reddish spots.
 
-**Light templates**: Per object type, defines color (warm orange for torches, yellow for street lamps) and range. Collected in `main.cpp` from fire emitter object instances.
+**Objects/Characters**: Per-pixel in `model.frag` fragment shader. Shader uniforms: `pointLightPos[64]`, `pointLightColor[64]`, `pointLightRange[64]`, `numPointLights`.
+
+**Light templates** (in `main.cpp`): Per object type, defines color (warm orange for torches, yellow for street lamps) and range. Collected from fire emitter object instances.
+
+**Lesson learned**: The original MU engine applies dynamic lights to terrain via CPU-side lightmap grid modification (`AddTerrainLight` in ZzzLodTerrain.cpp), NOT per-pixel shader computation. Cell ranges are 1-3 (100-300 world units), linear falloff, additive blending. Per-pixel point lights with 600-1000 unit ranges and quadratic falloff create large reddish spots that don't match the original.
 
 ### Water Rendering (Terrain Shader)
 The original MU engine for standard maps (Lorencia) renders water as a **regular tile** (layer1 index 5) with animated UV scrolling — no overlay, no proximity kernel, no blue tint. Our implementation matches this:
@@ -205,6 +215,36 @@ Grass billboard vertices near the player ball get pushed away. Reference: GMHell
 
 ### HouseEtc01-03 (Types 127-129) — Static Objects
 HouseEtc01 (type 127) has 2 meshes: mesh 0 = pole (c_wall04.OZJ), mesh 1 = flag cloth (c_wall06.OZJ). Internal BMD name: "Data2\Object1\c_wall07.smd". 1 bone, 1 keyframe. **Completely static in original MU** — no animation of any kind. 4 instances surround the fountain in Lorencia.
+
+### Hero Character (HeroCharacter)
+DK Naked character model with click-to-move navigation on terrain.
+
+**Body parts**: 5 parts (Helm, Armor, Pants, Gloves, Boots) skinned against `Player.bmd` skeleton. Action 1 = idle, Action 15 = walk. Animation speed 8.25 keys/sec.
+
+**Click-to-move**: `MoveTo(target)` sets destination, `ProcessMovement(dt)` interpolates position with terrain height tracking. Character faces movement direction.
+
+**Blob shadow** (`RenderShadow`): Matches `ZzzBMD.cpp RenderBodyShadow()`. Shadow projection formula in MU-local space:
+```
+pos.x += pos.z * (pos.x + 2000) / (pos.z - 4000)
+pos.y += pos.z * (pos.y + 2000) / (pos.z - 4000)
+pos.z = 5.0  // flatten to just above ground
+```
+- Facing rotation baked into vertices before projection (shadow direction stays fixed in world space, doesn't rotate with character)
+- Shadow model matrix: `translate(m_pos) * Rz(-90) * Ry(-90)` — NO facing rotation
+- Stencil buffer (`GL_EQUAL, 0` + `GL_INCR`) ensures each pixel drawn once (prevents overlap darkening)
+- Requires `glfwWindowHint(GLFW_STENCIL_BITS, 8)` at window creation
+- Position-only VBOs (`GL_DYNAMIC_DRAW`), re-uploaded per frame via `glBufferSubData`
+- Rendered with alpha blend, depth write off, polygon offset, cull face disabled
+
+### Luminosity System (Day/Night Infrastructure)
+Uniform `luminosity` in both `model.frag` and terrain shader. Multiplies into lighting output and fog color. Infrastructure is in place but **currently disabled** (defaults to 1.0).
+
+**Original formula**: `g_Luminosity = sinf(WorldTime * 0.004f) * 0.15f + 0.6f` — range 0.45-0.75, ~26 minute period. From `ZzzAI.cpp`.
+
+**SetLuminosity(float)** method on `Terrain`, `ObjectRenderer`, and `HeroCharacter`. To enable: compute per-frame in main.cpp render loop and distribute to all renderers.
+
+### Terrain Tile Index 255
+Terrain layer1/layer2 data may contain tile index 255 as an "empty/invalid" marker. These slots have no corresponding tile texture. The tile texture array fills unloaded slots with **neutral dark brown (80, 70, 55)** to blend with surrounding terrain. Previously used magenta (255, 0, 255) debug fill which caused visible pink artifacts through bilinear tile blending in `sampleLayerSmooth()`.
 
 ### Terrain Lightmap on Objects
 Objects sample the terrain lightmap at their world position for ambient lighting, matching the original engine's per-object lighting.

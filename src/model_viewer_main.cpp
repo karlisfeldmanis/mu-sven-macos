@@ -5,6 +5,7 @@
 #include "Screenshot.hpp"
 #include "Shader.hpp"
 #include "TextureLoader.hpp"
+#include "ViewerCommon.hpp"
 #include <fstream>
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -18,62 +19,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 #include <vector>
-
-// Inline GLSL for colored line rendering
-static const char *kLineVertSrc = R"(
-#version 330 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aColor;
-uniform mat4 uMVP;
-out vec3 vColor;
-void main() {
-  gl_Position = uMVP * vec4(aPos, 1.0);
-  vColor = aColor;
-}
-)";
-
-static const char *kLineFragSrc = R"(
-#version 330 core
-in vec3 vColor;
-out vec4 FragColor;
-void main() {
-  FragColor = vec4(vColor, 1.0);
-}
-)";
-
-static GLuint CompileLineShader() {
-  GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-  glShaderSource(vs, 1, &kLineVertSrc, nullptr);
-  glCompileShader(vs);
-
-  GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(fs, 1, &kLineFragSrc, nullptr);
-  glCompileShader(fs);
-
-  GLuint prog = glCreateProgram();
-  glAttachShader(prog, vs);
-  glAttachShader(prog, fs);
-  glLinkProgram(prog);
-
-  glDeleteShader(vs);
-  glDeleteShader(fs);
-  return prog;
-}
-
-#ifdef __APPLE__
-#include <objc/message.h>
-#include <objc/runtime.h>
-static void activateMacOSApp() {
-  id app =
-      ((id(*)(id, SEL))objc_msgSend)((id)objc_getClass("NSApplication"),
-                                     sel_registerName("sharedApplication"));
-  ((void (*)(id, SEL, long))objc_msgSend)(
-      app, sel_registerName("setActivationPolicy:"),
-      0); // NSApplicationActivationPolicyRegular
-  ((void (*)(id, SEL, BOOL))objc_msgSend)(
-      app, sel_registerName("activateIgnoringOtherApps:"), YES);
-}
-#endif
 
 // BlendMesh texture ID lookup by BMD filename (model viewer has no type IDs)
 static int GetBlendMeshTexIdFromFilename(const std::string &filename) {
@@ -121,11 +66,9 @@ public:
     if (!InitWindow())
       return;
 
-#ifdef __APPLE__
-    activateMacOSApp();
-#endif
+    ActivateMacOSApp();
 
-    InitImGui();
+    InitImGui(window);
     ScanDirectory();
 
     if (bmdFiles.empty()) {
@@ -142,7 +85,7 @@ public:
                                     : "../shaders/model.vert",
                   shaderTest.good() ? "shaders/model.frag"
                                     : "../shaders/model.frag");
-    InitAxes();
+    axes.Init();
     fireEffect.Init(EFFECT_PATH);
     LoadObject(0);
 
@@ -162,11 +105,7 @@ public:
 
     UnloadObject();
     fireEffect.Cleanup();
-    if (axisProgram) {
-      glDeleteProgram(axisProgram);
-      glDeleteVertexArrays(1, &axisVAO);
-      glDeleteBuffers(1, &axisVBO);
-    }
+    axes.Cleanup();
     ShutdownImGui();
     glfwDestroyWindow(window);
     glfwTerminate();
@@ -187,11 +126,9 @@ private:
   // Bone world matrices for current model
   std::vector<BoneWorldMatrix> boneMatrices;
 
-  // Orbit camera
-  float orbitYaw = 45.0f;
-  float orbitPitch = -25.0f;
-  float orbitDistance = 500.0f;
-  glm::vec3 orbitCenter{0.0f};
+  // Orbit camera + debug axes (shared structs)
+  OrbitCamera camera;
+  DebugAxes axes;
 
   // Mouse state
   bool dragging = false;
@@ -203,11 +140,6 @@ private:
 
   // ImGui filter
   char filterBuf[128] = "";
-
-  // Debug axis
-  GLuint axisVAO = 0, axisVBO = 0;
-  GLuint axisProgram = 0;
-  float axisLength = 100.0f;
 
   // Fire effects
   FireEffect fireEffect;
@@ -223,11 +155,11 @@ private:
   bool animationEnabled = true;
   float animSpeed = 4.0f; // keyframes/sec (reference: 0.16 * 25fps)
 
-  // GIF recording (state managed by Screenshot module)
+  // GIF recording
   int gifFrameTarget = 72;
   float gifScaleSetting = 0.5f;
   int gifFpsSetting = 12;
-  int gifSkipSetting = 1; // 1 means 12.5fps if render is 25fps
+  int gifSkipSetting = 1;
 
   // --- Initialization ---
 
@@ -267,61 +199,6 @@ private:
     return true;
   }
 
-  void InitImGui() {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(window, false);
-    ImGui_ImplOpenGL3_Init("#version 150");
-  }
-
-  void ShutdownImGui() {
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-  }
-
-  void InitAxes() {
-    axisProgram = CompileLineShader();
-
-    glGenVertexArrays(1, &axisVAO);
-    glGenBuffers(1, &axisVBO);
-    glBindVertexArray(axisVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, axisVBO);
-    // Will be filled dynamically in UpdateAxisGeometry
-    glBufferData(GL_ARRAY_BUFFER, 6 * 6 * sizeof(float), nullptr,
-                 GL_DYNAMIC_DRAW);
-    // pos
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
-                          (void *)0);
-    glEnableVertexAttribArray(0);
-    // color
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
-                          (void *)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glBindVertexArray(0);
-  }
-
-  void UpdateAxisGeometry() {
-    // 6 vertices: 2 per axis (origin -> tip), each with pos(3) + color(3)
-    float L = axisLength;
-    // clang-format off
-    float verts[] = {
-      // X axis - Red
-      0, 0, 0,   1, 0, 0,
-      L, 0, 0,   1, 0, 0,
-      // Y axis - Green
-      0, 0, 0,   0, 1, 0,
-      0, L, 0,   0, 1, 0,
-      // Z axis - Blue
-      0, 0, 0,   0, 0, 1,
-      0, 0, L,   0, 0, 1,
-    };
-    // clang-format on
-    glBindBuffer(GL_ARRAY_BUFFER, axisVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
-  }
-
   // --- Directory scanning ---
 
   void ScanDirectory() {
@@ -342,15 +219,7 @@ private:
   // --- Object loading / unloading ---
 
   void UnloadObject() {
-    for (auto &mb : meshBuffers) {
-      glDeleteVertexArrays(1, &mb.vao);
-      glDeleteBuffers(1, &mb.vbo);
-      glDeleteBuffers(1, &mb.ebo);
-      if (mb.texture != 0) {
-        glDeleteTextures(1, &mb.texture);
-      }
-    }
-    meshBuffers.clear();
+    CleanupMeshBuffers(meshBuffers);
     currentBMD.reset();
     boneMatrices.clear();
   }
@@ -386,7 +255,8 @@ private:
     // Upload meshes with bone-transformed vertices
     currentAABB = AABB{};
     for (auto &mesh : currentBMD->Meshes) {
-      UploadMesh(mesh, DATA_PATH, currentIsAnimated);
+      UploadMeshWithBones(mesh, DATA_PATH, boneMatrices, meshBuffers,
+                          currentAABB, currentIsAnimated);
     }
 
     // Resolve BlendMesh for this model
@@ -406,7 +276,6 @@ private:
     fireEffect.ClearEmitters();
     int fireType = GetFireTypeFromFilename(bmdFiles[index]);
     if (fireType >= 0) {
-      // Model viewer uses Rx(-90°) to convert MU Z-up → GL Y-up
       glm::mat4 modelMat = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
                                        glm::vec3(1.0f, 0.0f, 0.0f));
       auto &offsets = GetFireOffsets(fireType);
@@ -422,225 +291,20 @@ private:
     glfwSetWindowTitle(window, title.c_str());
   }
 
-  void UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
-                  bool dynamic = false) {
-    MeshBuffers mb;
-    mb.texture = 0;
-
-    struct Vertex {
-      glm::vec3 pos;
-      glm::vec3 normal;
-      glm::vec2 tex;
-    };
-    std::vector<Vertex> vertices;
-    std::vector<unsigned int> indices;
-
-    for (int i = 0; i < mesh.NumTriangles; ++i) {
-      auto &tri = mesh.Triangles[i];
-      int steps = (tri.Polygon == 3) ? 3 : 4;
-      int startIdx = vertices.size();
-      for (int v = 0; v < 3; ++v) {
-        Vertex vert;
-        auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
-        auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
-
-        // Apply bone transform
-        int boneIdx = srcVert.Node;
-        if (boneIdx >= 0 && boneIdx < (int)boneMatrices.size()) {
-          const auto &bm = boneMatrices[boneIdx];
-          vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
-                                            srcVert.Position);
-          vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
-                                             srcNorm.Normal);
-        } else {
-          vert.pos = srcVert.Position;
-          vert.normal = srcNorm.Normal;
-        }
-
-        vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                             mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
-        vertices.push_back(vert);
-        indices.push_back(startIdx + v);
-
-        // Update AABB with transformed position
-        currentAABB.min = glm::min(currentAABB.min, vert.pos);
-        currentAABB.max = glm::max(currentAABB.max, vert.pos);
-      }
-      if (steps == 4) {
-        int quadIndices[3] = {0, 2, 3};
-        for (int v : quadIndices) {
-          Vertex vert;
-          auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
-          auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
-
-          int boneIdx = srcVert.Node;
-          if (boneIdx >= 0 && boneIdx < (int)boneMatrices.size()) {
-            const auto &bm = boneMatrices[boneIdx];
-            vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
-                                              srcVert.Position);
-            vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
-                                               srcNorm.Normal);
-          } else {
-            vert.pos = srcVert.Position;
-            vert.normal = srcNorm.Normal;
-          }
-
-          vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                               mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
-          vertices.push_back(vert);
-          indices.push_back(vertices.size() - 1);
-        }
-      }
-    }
-
-    mb.indexCount = indices.size();
-    mb.vertexCount = vertices.size();
-    mb.isDynamic = dynamic;
-    if (mb.indexCount == 0) {
-      meshBuffers.push_back(mb);
-      return;
-    }
-
-    GLenum usage = dynamic ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
-
-    glGenVertexArrays(1, &mb.vao);
-    glGenBuffers(1, &mb.vbo);
-    glGenBuffers(1, &mb.ebo);
-
-    glBindVertexArray(mb.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex),
-                 vertices.data(), usage);
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mb.ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int),
-                 indices.data(), GL_STATIC_DRAW);
-
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
-                          (void *)(sizeof(float) * 3));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex),
-                          (void *)(sizeof(float) * 6));
-    glEnableVertexAttribArray(2);
-
-    // Load texture via shared resolver
-    auto texResult = TextureLoader::ResolveWithInfo(baseDir, mesh.TextureName);
-    mb.texture = texResult.textureID;
-    mb.hasAlpha = texResult.hasAlpha;
-
-    // Parse texture script flags from name
-    auto scriptFlags = TextureLoader::ParseScriptFlags(mesh.TextureName);
-    mb.noneBlend = scriptFlags.noneBlend;
-    mb.hidden = scriptFlags.hidden;
-    mb.bright = scriptFlags.bright;
-
-    mb.bmdTextureId = mesh.Texture; // Store BMD texture slot for BlendMesh matching
-
-    meshBuffers.push_back(mb);
-  }
-
   void AutoFrame() {
     glm::vec3 c = currentAABB.center();
-    // Apply the same Z-up → Y-up rotation (-90° around X): (x, y, z) → (x, z,
-    // -y)
-    orbitCenter = glm::vec3(c.x, c.z, -c.y);
+    // Apply the same Z-up → Y-up rotation (-90° around X): (x, y, z) → (x, z, -y)
+    camera.center = glm::vec3(c.x, c.z, -c.y);
     float radius = currentAABB.radius();
     if (radius < 0.001f)
       radius = 100.0f;
 
-    orbitDistance = radius * 2.6f;
-    orbitYaw = 45.0f;
-    orbitPitch = -25.0f;
+    camera.distance = radius * 2.6f;
+    camera.yaw = 45.0f;
+    camera.pitch = -25.0f;
 
-    axisLength = radius * 0.5f;
-    UpdateAxisGeometry();
-  }
-
-  // --- Animation ---
-
-  void RetransformMeshLocal(const Mesh_t &mesh,
-                            const std::vector<BoneWorldMatrix> &bones,
-                            MeshBuffers &mb) {
-    if (!mb.isDynamic || mb.vertexCount == 0 || mb.vbo == 0)
-      return;
-
-    struct Vertex {
-      glm::vec3 pos;
-      glm::vec3 normal;
-      glm::vec2 tex;
-    };
-    std::vector<Vertex> vertices;
-    vertices.reserve(mb.vertexCount);
-
-    for (int i = 0; i < mesh.NumTriangles; ++i) {
-      auto &tri = mesh.Triangles[i];
-      int steps = (tri.Polygon == 3) ? 3 : 4;
-      for (int v = 0; v < 3; ++v) {
-        Vertex vert;
-        auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
-        auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
-        int boneIdx = srcVert.Node;
-        if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
-          const auto &bm = bones[boneIdx];
-          vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
-                                            srcVert.Position);
-          vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
-                                             srcNorm.Normal);
-        } else {
-          vert.pos = srcVert.Position;
-          vert.normal = srcNorm.Normal;
-        }
-        vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                              mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
-        vertices.push_back(vert);
-      }
-      if (steps == 4) {
-        int quadIndices[3] = {0, 2, 3};
-        for (int v : quadIndices) {
-          Vertex vert;
-          auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
-          auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
-          int boneIdx = srcVert.Node;
-          if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
-            const auto &bm = bones[boneIdx];
-            vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
-                                              srcVert.Position);
-            vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
-                                               srcNorm.Normal);
-          } else {
-            vert.pos = srcVert.Position;
-            vert.normal = srcNorm.Normal;
-          }
-          vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                                mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
-          vertices.push_back(vert);
-        }
-      }
-    }
-
-    glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(Vertex),
-                    vertices.data());
-  }
-
-  // --- Orbit camera ---
-
-  glm::vec3 GetEyePosition() const {
-    float yawRad = glm::radians(orbitYaw);
-    float pitchRad = glm::radians(orbitPitch);
-
-    glm::vec3 offset;
-    offset.x = orbitDistance * cos(pitchRad) * cos(yawRad);
-    offset.y = -orbitDistance * sin(pitchRad);
-    offset.z = orbitDistance * cos(pitchRad) * sin(yawRad);
-
-    return orbitCenter + offset;
-  }
-
-  glm::mat4 GetViewMatrix() const {
-    return glm::lookAt(GetEyePosition(), orbitCenter, glm::vec3(0, 1, 0));
+    axes.length = radius * 0.5f;
+    axes.UpdateGeometry();
   }
 
   // --- Rendering ---
@@ -663,7 +327,8 @@ private:
       for (int mi = 0;
            mi < (int)meshBuffers.size() && mi < (int)currentBMD->Meshes.size();
            ++mi) {
-        RetransformMeshLocal(currentBMD->Meshes[mi], bones, meshBuffers[mi]);
+        RetransformMeshWithBones(currentBMD->Meshes[mi], bones,
+                                 meshBuffers[mi]);
       }
     }
 
@@ -674,7 +339,7 @@ private:
 
     glm::mat4 projection = glm::perspective(
         glm::radians(45.0f), (float)fbWidth / (float)fbHeight, 0.1f, 100000.0f);
-    glm::mat4 view = GetViewMatrix();
+    glm::mat4 view = camera.GetViewMatrix();
     // MU Online uses Z-up; rotate -90° around X to convert to OpenGL Y-up
     glm::mat4 model = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
                                   glm::vec3(1.0f, 0.0f, 0.0f));
@@ -683,12 +348,13 @@ private:
     shader.setMat4("view", view);
     shader.setMat4("model", model);
 
-    glm::vec3 eye = GetEyePosition();
+    glm::vec3 eye = camera.GetEyePosition();
     shader.setVec3("lightPos", eye + glm::vec3(0, 200, 0));
     shader.setVec3("lightColor", 1.0f, 1.0f, 1.0f);
     shader.setVec3("viewPos", eye);
     shader.setBool("useFog", false);
     shader.setFloat("blendMeshLight", 1.0f);
+    shader.setFloat("objectAlpha", 1.0f);
     shader.setVec3("terrainLight", 1.0f, 1.0f, 1.0f);
     shader.setVec2("texCoordOffset", glm::vec2(0.0f));
     shader.setInt("numPointLights", 0);
@@ -708,7 +374,6 @@ private:
       glBindVertexArray(mb.vao);
 
       if (mb.isWindowLight && blendMeshTexId >= 0) {
-        // BlendMesh: additive blending with intensity flicker
         shader.setFloat("blendMeshLight", flickerBase);
         if (hasUVScroll)
           shader.setVec2("texCoordOffset", glm::vec2(0.0f, uvScroll));
@@ -743,16 +408,8 @@ private:
     fireEffect.Render(view, projection);
 
     // Draw XYZ debug axes at world origin (same rotation as model)
-    if (axisProgram) {
-      glUseProgram(axisProgram);
-      glm::mat4 mvp = projection * view * model;
-      glUniformMatrix4fv(glGetUniformLocation(axisProgram, "uMVP"), 1, GL_FALSE,
-                         &mvp[0][0]);
-      glLineWidth(2.0f);
-      glBindVertexArray(axisVAO);
-      glDrawArrays(GL_LINES, 0, 6);
-      glBindVertexArray(0);
-    }
+    glm::mat4 mvp = projection * view * model;
+    axes.Draw(mvp);
   }
 
   void RenderUI() {
@@ -866,8 +523,8 @@ private:
     if (ImGui::GetIO().WantCaptureMouse)
       return;
 
-    self->orbitDistance -= (float)yoff * self->orbitDistance * 0.15f;
-    self->orbitDistance = glm::clamp(self->orbitDistance, 1.0f, 50000.0f);
+    self->camera.distance -= (float)yoff * self->camera.distance * 0.15f;
+    self->camera.distance = glm::clamp(self->camera.distance, 1.0f, 50000.0f);
   }
 
   static void MouseButtonCallback(GLFWwindow *w, int button, int action,
@@ -895,9 +552,9 @@ private:
       self->lastMouseX = x;
       self->lastMouseY = y;
 
-      self->orbitYaw += dx * 0.3f;
-      self->orbitPitch += dy * 0.3f;
-      self->orbitPitch = glm::clamp(self->orbitPitch, -89.0f, -5.0f);
+      self->camera.yaw += dx * 0.3f;
+      self->camera.pitch += dy * 0.3f;
+      self->camera.pitch = glm::clamp(self->camera.pitch, -89.0f, -5.0f);
     }
   }
 

@@ -24,6 +24,10 @@ public:
                       const std::vector<glm::vec3> &colors,
                       const std::vector<float> &ranges);
   void SetTerrainLightmap(const std::vector<glm::vec3> &lightmap);
+  void SetTerrainMapping(const MapData *mapping) { terrainMapping = mapping; }
+  void SetTerrainHeightmap(const std::vector<float> &hm) { terrainHeightmap = hm; }
+  void SetTypeAlpha(const std::unordered_map<int, float> &alphaMap);
+  void SetLuminosity(float l) { m_luminosity = l; }
 
   int GetInstanceCount() const { return (int)instances.size(); }
   int GetModelCount() const { return (int)modelCache.size(); }
@@ -62,6 +66,10 @@ private:
   int plCount = 0;
 
   std::vector<glm::vec3> terrainLightmap; // Copy of terrain lightmap for sampling
+  const MapData *terrainMapping = nullptr; // For grass-on-tile filtering
+  std::vector<float> terrainHeightmap;     // For grass height snapping
+  std::unordered_map<int, float> typeAlphaMap; // Per-type alpha for roof hiding
+  float m_luminosity = 1.0f;
 
   // Bilinear sample terrain lightmap at world position
   glm::vec3 SampleTerrainLight(const glm::vec3 &worldPos) const;

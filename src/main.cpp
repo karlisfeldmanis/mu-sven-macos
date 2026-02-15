@@ -1,17 +1,26 @@
+#include "BMDParser.hpp"
+#include "BMDUtils.hpp"
 #include "Camera.hpp"
+#include "ClickEffect.hpp"
 #include "FireEffect.hpp"
 #include "GrassRenderer.hpp"
+#include "HeroCharacter.hpp"
 #include "ObjectRenderer.hpp"
 #include "Screenshot.hpp"
+#include "Shader.hpp"
 #include "Sky.hpp"
 #include "Terrain.hpp"
 #include "TerrainParser.hpp"
+#include "ViewerCommon.hpp"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <algorithm>
+#include <cmath>
 #include <ctime>
+#include <iomanip>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -58,6 +67,72 @@ static void activateMacOSApp() {
 }
 #endif
 
+// GL error checking utility — call after critical GL operations
+static void checkGLError(const char *label) {
+  GLenum err;
+  while ((err = glGetError()) != GL_NO_ERROR) {
+    const char *errStr = "UNKNOWN";
+    switch (err) {
+    case GL_INVALID_ENUM:
+      errStr = "INVALID_ENUM";
+      break;
+    case GL_INVALID_VALUE:
+      errStr = "INVALID_VALUE";
+      break;
+    case GL_INVALID_OPERATION:
+      errStr = "INVALID_OP";
+      break;
+    case GL_OUT_OF_MEMORY:
+      errStr = "OUT_OF_MEMORY";
+      break;
+    case GL_INVALID_FRAMEBUFFER_OPERATION:
+      errStr = "INVALID_FBO";
+      break;
+    }
+    std::cerr << "[GL ERROR] " << errStr << " (0x" << std::hex << err
+              << std::dec << ") at " << label << std::endl;
+  }
+}
+
+// OpenGL debug callback (ARB_debug_output) — logs all GL warnings/errors
+static void GLAPIENTRY glDebugCallback(GLenum source, GLenum type, GLuint id,
+                                       GLenum severity, GLsizei /*length*/,
+                                       const GLchar *message,
+                                       const void * /*userParam*/) {
+  // Skip notifications (very noisy)
+  if (severity == GL_DEBUG_SEVERITY_NOTIFICATION)
+    return;
+  const char *sevStr = "???";
+  switch (severity) {
+  case GL_DEBUG_SEVERITY_HIGH:
+    sevStr = "HIGH";
+    break;
+  case GL_DEBUG_SEVERITY_MEDIUM:
+    sevStr = "MED";
+    break;
+  case GL_DEBUG_SEVERITY_LOW:
+    sevStr = "LOW";
+    break;
+  }
+  const char *typeStr = "other";
+  switch (type) {
+  case GL_DEBUG_TYPE_ERROR:
+    typeStr = "ERROR";
+    break;
+  case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+    typeStr = "DEPRECATED";
+    break;
+  case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+    typeStr = "UNDEFINED";
+    break;
+  case GL_DEBUG_TYPE_PERFORMANCE:
+    typeStr = "PERF";
+    break;
+  }
+  std::cerr << "[GL " << sevStr << "/" << typeStr << "] " << message
+            << std::endl;
+}
+
 Camera g_camera(glm::vec3(12800.0f, 0.0f, 12800.0f));
 Terrain g_terrain;
 ObjectRenderer g_objectRenderer;
@@ -67,12 +142,18 @@ GrassRenderer g_grass;
 
 // Point lights collected from light-emitting world objects
 static const int MAX_POINT_LIGHTS = 64;
-struct PointLight {
-  glm::vec3 position;
-  glm::vec3 color;
-  float range;
-};
 static std::vector<PointLight> g_pointLights;
+
+// Hero character and click-to-move effect
+static HeroCharacter g_hero;
+static ClickEffect g_clickEffect;
+
+static const TerrainData *g_terrainDataPtr = nullptr;
+
+// Roof hiding: types 125 (HouseWall05) and 126 (HouseWall06) fade when
+// hero stands on layer1 tile == 4 (building interior). Original: ZzzObject.cpp:3744
+static std::unordered_map<int, float> g_typeAlpha = {{125, 1.0f}, {126, 1.0f}};
+static std::unordered_map<int, float> g_typeAlphaTarget = {{125, 1.0f}, {126, 1.0f}};
 
 struct LightTemplate {
   glm::vec3 color;
@@ -130,9 +211,125 @@ void scroll_callback(GLFWwindow *window, double xoffset, double yoffset) {
   g_camera.ProcessMouseScroll(yoffset);
 }
 
+// --- Terrain helpers ---
+
+static float getTerrainHeight(const TerrainData &td, float worldX,
+                              float worldZ) {
+  const int S = TerrainParser::TERRAIN_SIZE;
+  // World → grid: WorldX maps to gridZ, WorldZ maps to gridX
+  float gz = worldX / 100.0f;
+  float gx = worldZ / 100.0f;
+  gz = std::clamp(gz, 0.0f, (float)(S - 2));
+  gx = std::clamp(gx, 0.0f, (float)(S - 2));
+  int xi = (int)gx, zi = (int)gz;
+  float xd = gx - (float)xi, zd = gz - (float)zi;
+  float h00 = td.heightmap[zi * S + xi];
+  float h10 = td.heightmap[zi * S + (xi + 1)];
+  float h01 = td.heightmap[(zi + 1) * S + xi];
+  float h11 = td.heightmap[(zi + 1) * S + (xi + 1)];
+  return (h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) +
+          h01 * (1 - xd) * zd + h11 * xd * zd);
+}
+
+static bool isWalkable(const TerrainData &td, float worldX, float worldZ) {
+  const int S = TerrainParser::TERRAIN_SIZE;
+  int gz = (int)(worldX / 100.0f);
+  int gx = (int)(worldZ / 100.0f);
+  if (gx < 0 || gz < 0 || gx >= S || gz >= S)
+    return false;
+  uint8_t attr = td.mapping.attributes[gz * S + gx];
+  // Only TW_NOMOVE (0x04) blocks character movement.
+  // TW_NOGROUND (0x08) is our bridge shader flag, not a movement blocker —
+  // characters walk on bridges. Original uses iWall > byMapAttribute where
+  // the raw .att data has TW_NOMOVE on actual walls/obstacles.
+  return (attr & 0x04) == 0;
+}
+
+// --- Ray-terrain intersection for click-to-move ---
+
+static bool screenToTerrain(GLFWwindow *window, double mouseX, double mouseY,
+                            glm::vec3 &outWorld) {
+  if (!g_terrainDataPtr)
+    return false;
+
+  int winW, winH;
+  glfwGetWindowSize(window, &winW, &winH);
+
+  // NDC coordinates
+  float ndcX = (float)(2.0 * mouseX / winW - 1.0);
+  float ndcY = (float)(1.0 - 2.0 * mouseY / winH);
+
+  glm::mat4 proj = g_camera.GetProjectionMatrix((float)winW, (float)winH);
+  glm::mat4 view = g_camera.GetViewMatrix();
+  glm::mat4 invVP = glm::inverse(proj * view);
+
+  // Unproject near and far points
+  glm::vec4 nearPt = invVP * glm::vec4(ndcX, ndcY, -1.0f, 1.0f);
+  glm::vec4 farPt = invVP * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+  nearPt /= nearPt.w;
+  farPt /= farPt.w;
+
+  glm::vec3 rayOrigin = glm::vec3(nearPt);
+  glm::vec3 rayDir = glm::normalize(glm::vec3(farPt) - rayOrigin);
+
+  // March along ray, find where it crosses the terrain
+  float stepSize = 50.0f;
+  float maxDist = 10000.0f;
+  float prevT = 0.0f;
+  float prevAbove = rayOrigin.y - getTerrainHeight(*g_terrainDataPtr, rayOrigin.x, rayOrigin.z);
+
+  for (float t = stepSize; t < maxDist; t += stepSize) {
+    glm::vec3 p = rayOrigin + rayDir * t;
+    // Bounds check
+    if (p.x < 0 || p.z < 0 || p.x > 25500.0f || p.z > 25500.0f)
+      continue;
+    float terrH = getTerrainHeight(*g_terrainDataPtr, p.x, p.z);
+    float above = p.y - terrH;
+
+    if (above < 0.0f) {
+      // Crossed below terrain — binary search for precise intersection
+      float lo = prevT, hi = t;
+      for (int i = 0; i < 8; ++i) {
+        float mid = (lo + hi) * 0.5f;
+        glm::vec3 mp = rayOrigin + rayDir * mid;
+        float mh = getTerrainHeight(*g_terrainDataPtr, mp.x, mp.z);
+        if (mp.y > mh)
+          lo = mid;
+        else
+          hi = mid;
+      }
+      glm::vec3 hit = rayOrigin + rayDir * ((lo + hi) * 0.5f);
+      outWorld = glm::vec3(hit.x,
+                           getTerrainHeight(*g_terrainDataPtr, hit.x, hit.z),
+                           hit.z);
+      return true;
+    }
+    prevT = t;
+    prevAbove = above;
+  }
+  return false;
+}
+
+// --- Click-to-move mouse handler ---
+
 void mouse_button_callback(GLFWwindow *window, int button, int action,
                            int mods) {
   ImGui_ImplGlfw_MouseButtonCallback(window, button, action, mods);
+
+  // Click-to-move on left click
+  if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+    if (!ImGui::GetIO().WantCaptureMouse && g_terrainDataPtr) {
+      double mx, my;
+      glfwGetCursorPos(window, &mx, &my);
+      glm::vec3 target;
+      if (screenToTerrain(window, mx, my, target)) {
+        if (isWalkable(*g_terrainDataPtr, target.x, target.z)) {
+          g_hero.MoveTo(target);
+          g_clickEffect.Show(target);
+        }
+      }
+    }
+  }
 }
 
 void key_callback(GLFWwindow *window, int key, int scancode, int action,
@@ -144,15 +341,19 @@ void char_callback(GLFWwindow *window, unsigned int c) {
   ImGui_ImplGlfw_CharCallback(window, c);
 }
 
+// --- Process input: hero movement + screenshot ---
+
 void processInput(GLFWwindow *window, float deltaTime) {
-  if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-    g_camera.ProcessKeyboard(0, deltaTime);
-  if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-    g_camera.ProcessKeyboard(1, deltaTime);
-  if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-    g_camera.ProcessKeyboard(2, deltaTime);
-  if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-    g_camera.ProcessKeyboard(3, deltaTime);
+  bool wasMoving = g_hero.IsMoving();
+  g_hero.ProcessMovement(deltaTime);
+
+  // Hide click effect when hero stops moving
+  if (wasMoving && !g_hero.IsMoving())
+    g_clickEffect.Hide();
+
+  // Camera follows hero
+  if (wasMoving)
+    g_camera.SetPosition(g_hero.GetPosition());
 
   static bool pPressed = false;
   if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
@@ -196,6 +397,7 @@ int main(int argc, char **argv) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+  glfwWindowHint(GLFW_STENCIL_BITS, 8);
 
   GLFWwindow *window = glfwCreateWindow(
       1280, 720, "Mu Online Remaster (Native macOS C++)", nullptr, nullptr);
@@ -216,7 +418,21 @@ int main(int argc, char **argv) {
     return -1;
   }
 
+  // Enable OpenGL debug output if available (ARB_debug_output)
+  if (GLEW_ARB_debug_output) {
+    glEnable(GL_DEBUG_OUTPUT);
+    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+    glDebugMessageCallbackARB(glDebugCallback, nullptr);
+    std::cout << "[GL] Debug output enabled" << std::endl;
+  } else {
+    std::cout << "[GL] Debug output not available — using manual checks"
+              << std::endl;
+  }
+  std::cout << "[GL] Renderer: " << glGetString(GL_RENDERER) << std::endl;
+  std::cout << "[GL] Version: " << glGetString(GL_VERSION) << std::endl;
+
   g_terrain.Init(); // Initialize OpenGL resources for terrain
+  checkGLError("terrain init");
 
   // Setup Dear ImGui context
   IMGUI_CHECKVERSION();
@@ -299,6 +515,9 @@ int main(int argc, char **argv) {
               << " from objects + expansion)" << std::endl;
   }
 
+  // Make terrain data accessible for movement/height
+  g_terrainDataPtr = &terrainData;
+
   g_terrain.Load(terrainData, 1, data_path);
   std::cout << "Loaded Map 1 (Lorencia): " << terrainData.heightmap.size()
             << " height samples, " << terrainData.objects.size() << " objects"
@@ -307,19 +526,25 @@ int main(int argc, char **argv) {
   // Load world objects
   g_objectRenderer.Init();
   g_objectRenderer.SetTerrainLightmap(terrainData.lightmap);
+  g_objectRenderer.SetTerrainMapping(&terrainData.mapping);
+  g_objectRenderer.SetTerrainHeightmap(terrainData.heightmap);
   std::string object1_path = data_path + "/Object1";
   g_objectRenderer.LoadObjects(terrainData.objects, object1_path);
+  checkGLError("object renderer load");
   std::cout << "[ObjectRenderer] Loaded " << terrainData.objects.size()
             << " object instances, " << g_objectRenderer.GetModelCount()
             << " unique models" << std::endl;
   g_grass.Init();
   g_grass.Load(terrainData, 1, data_path);
+  checkGLError("grass load");
 
   // Initialize sky
   g_sky.Init(data_path + "/");
+  checkGLError("sky init");
 
   // Initialize fire effects and register emitters from fire-type objects
   g_fireEffect.Init(data_path + "/Effect");
+  checkGLError("fire init");
   for (auto &inst : g_objectRenderer.GetInstances()) {
     auto &offsets = GetFireOffsets(inst.type);
     for (auto &off : offsets) {
@@ -360,8 +585,25 @@ int main(int argc, char **argv) {
   std::cout << "[Lights] Collected " << g_pointLights.size()
             << " point lights from world objects" << std::endl;
 
+  // Initialize hero character and click effect
+  g_hero.Init(data_path);
+  g_hero.SetTerrainData(&terrainData);
+  g_hero.SetTerrainLightmap(terrainData.lightmap);
+  g_hero.SetPointLights(g_pointLights);
+  g_hero.SnapToTerrain();
+
+  g_clickEffect.Init();
+  g_clickEffect.LoadAssets(data_path);
+  g_clickEffect.SetTerrainData(&terrainData);
+  checkGLError("hero init");
+
   // Load saved camera state (persists position/angle/zoom across restarts)
   g_camera.LoadState("camera_save.txt");
+
+  // Sync hero position from loaded camera state
+  g_hero.SetPosition(g_camera.GetPosition());
+  g_hero.SnapToTerrain();
+  g_camera.SetPosition(g_hero.GetPosition());
 
   // Auto-diagnostic mode: --diag flag captures all debug views and exits
   bool autoDiag = false;
@@ -418,7 +660,9 @@ int main(int argc, char **argv) {
   }
   // --pos X Y Z: override camera position with exact coordinates
   if (hasCustomPos) {
-    g_camera.SetPosition(glm::vec3(customX, customY, customZ));
+    g_hero.SetPosition(glm::vec3(customX, customY, customZ));
+    g_hero.SnapToTerrain();
+    g_camera.SetPosition(g_hero.GetPosition());
     std::cout << "[camera] Position set to (" << customX << ", " << customY
               << ", " << customZ << ")" << std::endl;
   }
@@ -439,7 +683,9 @@ int main(int argc, char **argv) {
       g_camera.SetZoom(1500.0f);
     } else {
       // Position camera at the object using the fixed isometric angle
-      g_camera.SetPosition(glm::vec3(objPos.x, objPos.y, objPos.z));
+      g_hero.SetPosition(objPos);
+      g_hero.SnapToTerrain();
+      g_camera.SetPosition(g_hero.GetPosition());
     }
     objectDebugName = "obj_type" + std::to_string(debugObj.type) + "_idx" +
                       std::to_string(objectDebugIdx);
@@ -483,6 +729,27 @@ int main(int argc, char **argv) {
     processInput(window, deltaTime);
     g_camera.Update(deltaTime);
 
+    // Roof hiding: read layer1 tile at hero position, fade types 125/126
+    if (g_terrainDataPtr) {
+      glm::vec3 heroPos = g_hero.GetPosition();
+      const int S = TerrainParser::TERRAIN_SIZE;
+      int gz = (int)(heroPos.x / 100.0f);
+      int gx = (int)(heroPos.z / 100.0f);
+      uint8_t heroTile = 0;
+      if (gx >= 0 && gz >= 0 && gx < S && gz < S)
+        heroTile = g_terrainDataPtr->mapping.layer1[gz * S + gx];
+      // Original: HeroTile == 4 hides roof meshes
+      float target = (heroTile == 4) ? 0.0f : 1.0f;
+      g_typeAlphaTarget[125] = target;
+      g_typeAlphaTarget[126] = target;
+      // Fast fade — nearly instant (95%+ in 1-2 frames)
+      float blend = 1.0f - std::exp(-20.0f * deltaTime);
+      for (auto &[type, alpha] : g_typeAlpha) {
+        alpha += (g_typeAlphaTarget[type] - alpha) * blend;
+      }
+      g_objectRenderer.SetTypeAlpha(g_typeAlpha);
+    }
+
     // Auto-diagnostic: set debug mode BEFORE render
     if (autoDiag && diagFrame >= 2) {
       int mode = (diagFrame - 2) / 2;
@@ -511,11 +778,16 @@ int main(int argc, char **argv) {
                             currentFrame);
 
     // Render grass billboards (after objects so grass doesn't occlude fences)
-    g_grass.Render(view, projection, currentFrame, camPos);
+    g_grass.Render(view, projection, currentFrame, camPos, g_hero.GetPosition());
 
     // Update and render fire effects
     g_fireEffect.Update(deltaTime);
     g_fireEffect.Render(view, projection);
+
+    // Render hero character, shadow, and click effect (after all world geometry)
+    g_clickEffect.Render(view, projection, deltaTime, g_hero.GetShader());
+    g_hero.Render(view, projection, camPos, deltaTime);
+    g_hero.RenderShadow(view, projection);
 
     // Auto-GIF: capture with warmup for fire particle buildup
     // Capture BEFORE ImGui rendering so debug overlay is not in the output
@@ -598,6 +870,44 @@ int main(int argc, char **argv) {
     }
     ImGui::End();
 
+    // Hero coordinate overlay (top-left)
+    {
+      glm::vec3 hPos = g_hero.GetPosition();
+      ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+      ImGui::SetNextWindowBgAlpha(0.5f);
+      ImGui::Begin("##HeroCoords", nullptr,
+                   ImGuiWindowFlags_NoDecoration |
+                       ImGuiWindowFlags_AlwaysAutoResize |
+                       ImGuiWindowFlags_NoSavedSettings |
+                       ImGuiWindowFlags_NoFocusOnAppearing |
+                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+      float muX = hPos.z / 100.0f;
+      float muY = hPos.x / 100.0f;
+      ImGui::Text("World: %.0f, %.0f, %.0f", hPos.x, hPos.y, hPos.z);
+      ImGui::Text("Grid:  %.1f, %.1f", muX, muY);
+      ImGui::Text("Height: %.1f", hPos.y);
+      ImGui::Text("State: %s", g_hero.IsMoving() ? "Walking" : "Idle");
+      if (g_terrainDataPtr) {
+        const int S = TerrainParser::TERRAIN_SIZE;
+        int gz = (int)(hPos.x / 100.0f);
+        int gx = (int)(hPos.z / 100.0f);
+        if (gx >= 0 && gz >= 0 && gx < S && gz < S) {
+          uint8_t attr = g_terrainDataPtr->mapping.attributes[gz * S + gx];
+          ImGui::Text("Attr: 0x%02X%s%s%s%s%s", attr,
+                      (attr & 0x01) ? " SAFE" : "",
+                      (attr & 0x04) ? " NOMOVE" : "",
+                      (attr & 0x08) ? " NOGROUND" : "",
+                      (attr & 0x10) ? " WATER" : "",
+                      (attr & 0x20) ? " ACTION" : "");
+          uint8_t tile = g_terrainDataPtr->mapping.layer1[gz * S + gx];
+          ImGui::Text("Tile: %d%s", tile,
+                      (tile == 4) ? " (ROOF HIDE)" : "");
+          ImGui::Text("Roof: %.0f%%", g_typeAlpha[125] * 100.0f);
+        }
+      }
+      ImGui::End();
+    }
+
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -637,13 +947,24 @@ int main(int argc, char **argv) {
     if (autoDiag || autoScreenshot || autoGif)
       diagFrame++;
 
+    // Per-frame GL error check (only first 10 frames to avoid log spam)
+    {
+      static int frameNum = 0;
+      if (frameNum < 10)
+        checkGLError(("frame " + std::to_string(frameNum)).c_str());
+      frameNum++;
+    }
+
     glfwSwapBuffers(window);
   }
 
-  // Save camera state for next launch
+  // Save hero position via camera state for next launch
+  g_camera.SetPosition(g_hero.GetPosition());
   g_camera.SaveState("camera_save.txt");
 
   // Cleanup
+  g_hero.Cleanup();
+  g_clickEffect.Cleanup();
   g_sky.Cleanup();
   g_fireEffect.Cleanup();
   g_objectRenderer.Cleanup();
