@@ -166,7 +166,7 @@ MapData TerrainParser::ParseMappingFile(const std::string &path) {
                                 std::istreambuf_iterator<char>());
   std::vector<uint8_t> data = DecryptMapFile(raw_data);
 
-  // Sven format (OpenTerrainMapping in ZzzLodTerrain.cpp):
+  // Native MU mapping format (ZzzLodTerrain.cpp):
   //   Byte 0: Version
   //   Byte 1: Map Number
   //   Bytes 2..65537: Layer1 (256x256)
@@ -213,7 +213,7 @@ TerrainParser::ParseAttributesFile(const std::string &path) {
   std::vector<uint8_t> raw_data((std::istreambuf_iterator<char>(file)),
                                 std::istreambuf_iterator<char>());
 
-  // Sven's OpenTerrainAttribute: decrypt then BuxConvert
+  // MU attribute decryption and conversion
   std::vector<uint8_t> data = DecryptMapFile(raw_data);
 
   uint8_t bux_code[3] = {0xFC, 0xCF, 0xAB};
@@ -225,7 +225,7 @@ TerrainParser::ParseAttributesFile(const std::string &path) {
   std::vector<uint8_t> attributes(cells, 0);
   std::vector<uint8_t> symmetry(cells, 0);
 
-  // Sven format: 4-byte header (version, map, width, height)
+  // Native format: 4-byte header (version, map, width, height)
   // Then either BYTE[cells] or WORD[cells] attribute data
   const size_t byte_format_size = 4 + cells;
   const size_t word_format_size = 4 + cells * sizeof(uint16_t);
@@ -324,9 +324,9 @@ TerrainParser::ParseObjectsFile(const std::string &path) {
     obj.position = glm::vec3(mu_pos[1], mu_pos[2], mu_pos[0]);
 
     // Convert degrees to radians
-    obj.rotation = glm::vec3(glm::radians(mu_angle[0]),
-                             glm::radians(mu_angle[1]),
-                             glm::radians(mu_angle[2]));
+    obj.rotation =
+        glm::vec3(glm::radians(mu_angle[0]), glm::radians(mu_angle[1]),
+                  glm::radians(mu_angle[2]));
 
     objects.push_back(obj);
   }
@@ -350,7 +350,7 @@ std::vector<glm::vec3> TerrainParser::ParseLightFile(const std::string &path) {
     return lightmap;
   }
 
-  // LoadOZJRaw now uses TJFLAG_BOTTOMUP (matching Sven's OpenJpegBuffer),
+  // LoadOZJRaw now uses TJFLAG_BOTTOMUP,
   // so the decoded data is already in bottom-to-top order matching OpenGL.
   // No manual row flip needed.
   for (int z = 0; z < TERRAIN_SIZE; ++z) {

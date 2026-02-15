@@ -294,7 +294,7 @@ void Terrain::setupMesh(const std::vector<float> &heightmap,
     }
   }
 
-  // Sven's GL_TRIANGLE_FAN uses diagonal from (x,z) to (x+1,z+1).
+  // Original engine triangulation uses diagonal from (x,z) to (x+1,z+1).
   // Match that triangulation for consistent lightmap/height interpolation.
   for (int z = 0; z < size - 1; ++z) {
     for (int x = 0; x < size - 1; ++x) {
@@ -428,7 +428,7 @@ void Terrain::setupTextures(const TerrainData &data,
   // Save baseline lightmap for per-frame dynamic light application
   m_baselineLightRGB = lightRGB;
 
-  // Tile texture array - Sven loads up to 30 tiles per world
+  // Tile texture array - native client loads up to 30 tiles per world
   // (14 base + 16 ExtTile overlays)
   const int tile_res = 256;
   const int max_tiles = 32;
@@ -437,7 +437,7 @@ void Terrain::setupTextures(const TerrainData &data,
   glBindTexture(GL_TEXTURE_2D_ARRAY, tileTextureArray);
   glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, tile_res, tile_res, max_tiles,
                0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-  // Match Sven's LoadBitmap: GL_NEAREST + GL_REPEAT
+  // Standard bitmap loading parameters: GL_NEAREST + GL_REPEAT
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -446,16 +446,16 @@ void Terrain::setupTextures(const TerrainData &data,
   // Fill all slots with neutral dark brown so unloaded tiles blend with terrain
   std::vector<unsigned char> neutral(tile_res * tile_res * 3);
   for (int p = 0; p < tile_res * tile_res; ++p) {
-    neutral[p * 3 + 0] = 80;  // R
-    neutral[p * 3 + 1] = 70;  // G
-    neutral[p * 3 + 2] = 55;  // B
+    neutral[p * 3 + 0] = 80; // R
+    neutral[p * 3 + 1] = 70; // G
+    neutral[p * 3 + 2] = 55; // B
   }
   for (int slot = 0; slot < max_tiles; ++slot) {
     glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, slot, tile_res, tile_res, 1,
                     GL_RGB, GL_UNSIGNED_BYTE, neutral.data());
   }
 
-  // Lorencia tile set - matches Sven MapManager.cpp tile loading order:
+  // Lorencia tile set - matches relative tile loading order:
   // Indices 0-13: base tiles, 14-29: ExtTile01-16 (road/detail overlays)
   std::vector<std::string> tile_names;
   if (worldID == 1) {
@@ -525,7 +525,7 @@ void Terrain::setupTextures(const TerrainData &data,
     int w = 0, h = 0;
     std::vector<unsigned char> raw_data;
 
-    // Try OZJ first, then jpg (Sven uses .jpg, our data has .OZJ)
+    // Try OZJ first, then jpg (native uses .jpg, our data has .OZJ)
     std::vector<std::string> extensions = {".OZJ", ".jpg", ".OZT"};
     for (const auto &ext : extensions) {
       std::string path = base_path + "/" + tile_names[i] + ext;
@@ -570,7 +570,6 @@ void Terrain::setupTextures(const TerrainData &data,
                       GL_UNSIGNED_BYTE, raw_data.data());
     } else if (w == 128 && h == 128) {
       // 128x128 tiles: simple 2x2 copy to fill 256x256 array slot.
-      // Matches Sven's behavior where 128px tiles repeat with GL_REPEAT.
       int bpp = (raw_data.size() == (size_t)w * h * 4) ? 4 : 3;
       std::vector<unsigned char> tiled(256 * 256 * bpp);
       for (int y = 0; y < 256; ++y) {
@@ -602,8 +601,9 @@ void Terrain::applyDynamicLights() {
   // Reset working lightmap from baseline
   m_workingLightRGB = m_baselineLightRGB;
 
-  // Add each point light to the grid (matching AddTerrainLight from ZzzLodTerrain.cpp)
-  // Original: linear falloff, cell range 1-3, additive blending
+  // Add each point light to the grid (matching AddTerrainLight from
+  // ZzzLodTerrain.cpp) Original: linear falloff, cell range 1-3, additive
+  // blending
   for (int li = 0; li < plCount; ++li) {
     // Convert world position to grid coordinates
     // WorldX → MU_Y → grid z (outer), WorldZ → MU_X → grid x (inner)
