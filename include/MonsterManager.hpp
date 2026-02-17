@@ -3,10 +3,11 @@
 
 #include "BMDParser.hpp"
 #include "BMDUtils.hpp"
+#include "HeroCharacter.hpp" // For PointLight
 #include "MeshBuffers.hpp"
 #include "Shader.hpp"
 #include "TerrainParser.hpp"
-#include "HeroCharacter.hpp" // For PointLight
+#include "VFXManager.hpp"
 #include <GL/glew.h>
 #include <glm/glm.hpp>
 #include <memory>
@@ -18,17 +19,19 @@
 // The client NEVER decides state transitions on its own (except cosmetic
 // animation completion like ATTACKING->previous state).
 enum class MonsterState {
-  IDLE,       // Standing still, playing idle animation
-  WALKING,    // Moving to server-given wander/return target (0x35, chasing=0)
-  CHASING,    // Moving to server-given chase target (0x35, chasing=1)
-  ATTACKING,  // Playing attack animation (triggered by 0x2F monster-attack packet)
-  HIT,        // Playing shock/flinch animation (triggered by 0x29 damage-result packet)
-  DYING,      // Playing death animation (triggered by 0x2A death packet)
-  DEAD        // Corpse fading, waiting for server respawn (0x30)
+  IDLE,      // Standing still, playing idle animation
+  WALKING,   // Moving to server-given wander/return target (0x35, chasing=0)
+  CHASING,   // Moving to server-given chase target (0x35, chasing=1)
+  ATTACKING, // Playing attack animation (triggered by 0x2F monster-attack
+             // packet)
+  HIT,       // Playing shock/flinch animation (triggered by 0x29 damage-result
+             // packet)
+  DYING,     // Playing death animation (triggered by 0x2A death packet)
+  DEAD       // Corpse fading, waiting for server respawn (0x30)
 };
 
 struct ServerMonsterSpawn {
-  uint16_t serverIndex;  // Unique server-assigned index (from 0x34 packet)
+  uint16_t serverIndex; // Unique server-assigned index (from 0x34 packet)
   uint16_t monsterType;
   uint8_t gridX;
   uint8_t gridY;
@@ -86,7 +89,8 @@ public:
   void RespawnMonster(int index, uint8_t gridX, uint8_t gridY, int hp);
 
   // 0x35: Server movement — set target position for smooth interpolation
-  void SetMonsterServerPosition(int index, float worldX, float worldZ, bool chasing);
+  void SetMonsterServerPosition(int index, float worldX, float worldZ,
+                                bool chasing);
 
   // Player position for cosmetic facing during CHASING/ATTACKING states
   void SetPlayerPosition(const glm::vec3 &pos) { m_playerPos = pos; }
@@ -102,6 +106,7 @@ public:
     m_pointLights = lights;
   }
   void SetLuminosity(float l) { m_luminosity = l; }
+  void SetVFXManager(VFXManager *vfx) { m_vfxManager = vfx; }
 
 private:
   struct MonsterModel {
@@ -112,6 +117,7 @@ private:
     float collisionHeight = 80.0f;
     float bodyOffset = 0.0f;
     int rootBone = -1; // Index of root bone (Parent == -1) for LockPositions
+    std::vector<MeshBuffers> meshBuffers;
     // Stats from Monster.txt (used for display/UI only — combat is server-side)
     int level = 1;
     int defense = 0;
@@ -128,7 +134,7 @@ private:
     int action = 0;
     float scale = 1.0f;
     uint16_t monsterType = 0;
-    uint16_t serverIndex = 0;  // Server-assigned unique index
+    uint16_t serverIndex = 0; // Server-assigned unique index
     std::string name;
 
     MonsterState state = MonsterState::IDLE;
@@ -162,12 +168,24 @@ private:
     std::vector<BoneWorldMatrix> cachedBones;
   };
 
+  struct DebrisInstance {
+    int modelIdx;
+    glm::vec3 position;
+    glm::vec3 velocity;
+    glm::vec3 rotation;
+    glm::vec3 rotVelocity;
+    float scale;
+    float lifetime;
+  };
+
   std::vector<std::unique_ptr<BMDData>> m_ownedBmds;
   std::vector<MonsterModel> m_models;
   std::vector<MonsterInstance> m_monsters;
+  std::vector<DebrisInstance> m_debris;
 
   std::unique_ptr<Shader> m_shader;
   std::unique_ptr<Shader> m_shadowShader;
+  VFXManager *m_vfxManager = nullptr;
 
   std::string m_monsterTexPath;
   const TerrainData *m_terrainData = nullptr;
@@ -181,6 +199,7 @@ private:
 
   // ── Monster action constants (_define.h: MONSTER01_*) ──
   static constexpr int ACTION_STOP1 = 0;
+  static constexpr int ACTION_STOP2 = 1;
   static constexpr int ACTION_WALK = 2;
   static constexpr int ACTION_ATTACK1 = 3;
   static constexpr int ACTION_ATTACK2 = 4;
@@ -188,21 +207,25 @@ private:
   static constexpr int ACTION_DIE = 6;
 
   // ── Animation speeds (PlaySpeed * 25fps, from ZzzOpenData.cpp) ──
-  static constexpr float SPEED_STOP    = 6.25f;  // 0.25 * 25
-  static constexpr float SPEED_WALK    = 8.5f;   // 0.34 * 25
-  static constexpr float SPEED_ATTACK  = 8.25f;  // 0.33 * 25
-  static constexpr float SPEED_SHOCK   = 12.5f;  // 0.50 * 25
-  static constexpr float SPEED_DIE     = 13.75f; // 0.55 * 25
+  static constexpr float SPEED_STOP = 6.25f;   // 0.25 * 25
+  static constexpr float SPEED_WALK = 8.5f;    // 0.34 * 25
+  static constexpr float SPEED_ATTACK = 8.25f; // 0.33 * 25
+  static constexpr float SPEED_SHOCK = 12.5f;  // 0.50 * 25
+  static constexpr float SPEED_DIE = 13.75f;   // 0.55 * 25
   float getAnimSpeed(uint16_t monsterType, int action) const;
 
   // ── Client-side visual constants ──
   static constexpr float CORPSE_FADE_TIME = 3.0f;
-  static constexpr float CHASE_SPEED = 200.0f;  // Chase speed (player=334, can outrun)
-  static constexpr float WANDER_SPEED = 80.0f;  // Slow wander/walk speed
+  static constexpr float CHASE_SPEED =
+      200.0f; // Chase speed (player=334, can outrun)
+  static constexpr float WANDER_SPEED = 80.0f; // Slow wander/walk speed
 
   // Player position for cosmetic facing (not used for AI — that's server-side)
   glm::vec3 m_playerPos{0.0f};
   bool m_playerDead = false;
+
+  int m_boneModelIdx = -1;
+  int m_stoneModelIdx = -1;
 
   int loadMonsterModel(const std::string &bmdFile, const std::string &name,
                        float scale, float radius, float height,
@@ -210,6 +233,11 @@ private:
   float snapToTerrain(float worldX, float worldZ);
   glm::vec3 sampleTerrainLightAt(const glm::vec3 &worldPos) const;
   void updateStateMachine(MonsterInstance &mon, float dt);
+
+  void spawnDebris(int modelIdx, const glm::vec3 &pos, int count);
+  void updateDebris(float dt);
+  void renderDebris(const glm::mat4 &view, const glm::mat4 &projection,
+                    const glm::vec3 &camPos);
   void setAction(MonsterInstance &mon, int action);
 };
 

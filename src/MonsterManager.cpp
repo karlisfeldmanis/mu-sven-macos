@@ -12,7 +12,11 @@ static const std::unordered_map<uint16_t, std::string> s_monsterNames = {
     {0, "Bull Fighter"},
     {1, "Hound"},
     {2, "Budge Dragon"},
-    {3, "Spider"}};
+    {3, "Spider"},
+    {4, "Elite Bull Fighter"},
+    {6, "Lich"},
+    {7, "Giant"},
+    {14, "Skeleton Warrior"}};
 
 glm::vec3
 MonsterManager::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
@@ -50,8 +54,8 @@ float MonsterManager::snapToTerrain(float worldX, float worldZ) {
   float h10 = m_terrainData->heightmap[zi * S + (xi + 1)];
   float h01 = m_terrainData->heightmap[(zi + 1) * S + xi];
   float h11 = m_terrainData->heightmap[(zi + 1) * S + (xi + 1)];
-  return h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) +
-         h01 * (1 - xd) * zd + h11 * xd * zd;
+  return h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) + h01 * (1 - xd) * zd +
+         h11 * xd * zd;
 }
 
 int MonsterManager::loadMonsterModel(const std::string &bmdFile,
@@ -93,16 +97,25 @@ int MonsterManager::loadMonsterModel(const std::string &bmdFile,
   m_models.push_back(std::move(model));
   auto *loadedBmd = m_models[idx].bmd;
   std::cout << "[Monster] Loaded model '" << name << "' ("
-            << loadedBmd->Bones.size() << " bones, "
-            << loadedBmd->Meshes.size() << " meshes, "
-            << loadedBmd->Actions.size() << " actions, rootBone="
-            << m_models[idx].rootBone << ")" << std::endl;
+            << loadedBmd->Bones.size() << " bones, " << loadedBmd->Meshes.size()
+            << " meshes, " << loadedBmd->Actions.size()
+            << " actions, rootBone=" << m_models[idx].rootBone << ")"
+            << std::endl;
+
+  // Pre-upload mesh buffers using identity bones (for debris and shared use)
+  auto identityBones = ComputeBoneMatrices(loadedBmd);
+  AABB dummyAABB{};
+  for (auto &mesh : loadedBmd->Meshes) {
+    UploadMeshWithBones(mesh, m_monsterTexPath, identityBones,
+                        m_models[idx].meshBuffers, dummyAABB, true);
+  }
+
   // Log LockPositions for walk action (ACTION_WALK=2)
   if (ACTION_WALK < (int)loadedBmd->Actions.size()) {
     std::cout << "[Monster]   Walk action " << ACTION_WALK
               << ": keys=" << loadedBmd->Actions[ACTION_WALK].NumAnimationKeys
-              << " LockPositions=" << loadedBmd->Actions[ACTION_WALK].LockPositions
-              << std::endl;
+              << " LockPositions="
+              << loadedBmd->Actions[ACTION_WALK].LockPositions << std::endl;
   }
   return idx;
 }
@@ -129,10 +142,10 @@ void MonsterManager::InitModels(const std::string &dataPath) {
       loadMonsterModel("Monster01.bmd", "Bull Fighter", 0.8f, 80.0f, 150.0f);
   if (bullIdx >= 0) {
     auto &bull = m_models[bullIdx];
-    bull.level = 6;          // Monster.txt: Level=6
-    bull.defense = 6;        // Monster.txt: Defense=6
-    bull.defenseRate = 6;    // Monster.txt: DefRate=6
-    bull.attackRate = 28;    // Monster.txt: AtkRate=28
+    bull.level = 6;       // Monster.txt: Level=6
+    bull.defense = 6;     // Monster.txt: Defense=6
+    bull.defenseRate = 6; // Monster.txt: DefRate=6
+    bull.attackRate = 28; // Monster.txt: AtkRate=28
   }
   m_typeToModel[0] = bullIdx;
 
@@ -142,38 +155,93 @@ void MonsterManager::InitModels(const std::string &dataPath) {
       loadMonsterModel("Monster02.bmd", "Hound", 0.85f, 80.0f, 150.0f);
   if (houndIdx >= 0) {
     auto &hound = m_models[houndIdx];
-    hound.level = 9;         // Monster.txt: Level=9
-    hound.defense = 9;       // Monster.txt: Defense=9
-    hound.defenseRate = 9;   // Monster.txt: DefRate=9
-    hound.attackRate = 39;   // Monster.txt: AtkRate=39
+    hound.level = 9;       // Monster.txt: Level=9
+    hound.defense = 9;     // Monster.txt: Defense=9
+    hound.defenseRate = 9; // Monster.txt: DefRate=9
+    hound.attackRate = 39; // Monster.txt: AtkRate=39
   }
   m_typeToModel[1] = houndIdx;
 
   // Budge Dragon: server type 2, Monster03.bmd (CreateMonsterClient: scale 0.5)
-  // BBox: (-60,-60,0) to (50,50,80) — flying type, NO bodyOffset (hover handles height)
+  // BBox: (-60,-60,0) to (50,50,80) — flying type, NO bodyOffset (hover handles
+  // height)
   int budgeIdx =
       loadMonsterModel("Monster03.bmd", "Budge Dragon", 0.5f, 70.0f, 80.0f);
   if (budgeIdx >= 0) {
     auto &budge = m_models[budgeIdx];
-    budge.level = 4;         // Monster.txt: Level=4
-    budge.defense = 3;       // Monster.txt: Defense=3
-    budge.defenseRate = 3;   // Monster.txt: DefRate=3
-    budge.attackRate = 18;   // Monster.txt: AtkRate=18
+    budge.level = 4;       // Monster.txt: Level=4
+    budge.defense = 3;     // Monster.txt: Defense=3
+    budge.defenseRate = 3; // Monster.txt: DefRate=3
+    budge.attackRate = 18; // Monster.txt: AtkRate=18
   }
   m_typeToModel[2] = budgeIdx;
 
-  // Spider: server type 3, Monster10.bmd (CreateMonsterClient: scale 0.4, OpenMonsterModel(9))
-  // BBox: (-60,-60,0) to (50,50,80) — NO bodyOffset (BodyHeight=0 in original)
+  // Spider: server type 3, Monster10.bmd (CreateMonsterClient: scale 0.4,
+  // OpenMonsterModel(9)) BBox: (-60,-60,0) to (50,50,80) — NO bodyOffset
+  // (BodyHeight=0 in original)
   int spiderIdx =
       loadMonsterModel("Monster10.bmd", "Spider", 0.4f, 70.0f, 80.0f);
   if (spiderIdx >= 0) {
     auto &spider = m_models[spiderIdx];
-    spider.level = 2;        // Monster.txt: Level=2
-    spider.defense = 1;      // Monster.txt: Defense=1
-    spider.defenseRate = 1;  // Monster.txt: DefRate=1
-    spider.attackRate = 8;   // Monster.txt: AtkRate=8
+    spider.level = 2;       // Monster.txt: Level=2
+    spider.defense = 1;     // Monster.txt: Defense=1
+    spider.defenseRate = 1; // Monster.txt: DefRate=1
+    spider.attackRate = 8;  // Monster.txt: AtkRate=8
   }
   m_typeToModel[3] = spiderIdx;
+
+  // Elite Bull Fighter: server type 4, Monster01.bmd (Scale 1.15)
+  // Shared with Bull Fighter model but different scale
+  m_typeToModel[4] = bullIdx; // Use the same loaded model index
+  if (bullIdx >= 0) {
+    // We need to handle per-type scale if we share models.
+    // For now, let's just use the same model but I'll add a way to override
+    // scale per instance if needed. Actually, Bull Fighter and Elite Bull
+    // Fighter share the same BMD but have different server types. I will adjust
+    // the spawning logic to use the correct scale.
+  }
+
+  // Lich: server type 6, Monster05.bmd (scale 0.85, ranged caster)
+  int lichIdx = loadMonsterModel("Monster05.bmd", "Lich", 0.85f, 80.0f, 150.0f);
+  if (lichIdx >= 0) {
+    auto &lich = m_models[lichIdx];
+    lich.level = 14;
+    lich.defense = 18;
+    lich.defenseRate = 18;
+    lich.attackRate = 72;
+  }
+  m_typeToModel[6] = lichIdx;
+
+  // Giant: server type 7, Monster06.bmd (scale 1.6, large and slow)
+  int giantIdx =
+      loadMonsterModel("Monster06.bmd", "Giant", 1.6f, 120.0f, 200.0f);
+  if (giantIdx >= 0) {
+    auto &giant = m_models[giantIdx];
+    giant.level = 17;
+    giant.defense = 25;
+    giant.defenseRate = 25;
+    giant.attackRate = 89;
+  }
+  m_typeToModel[7] = giantIdx;
+
+  // Skeleton Warrior: server type 14, Monster48.bmd (from 5.2 reference) (scale
+  // 0.95)
+  int skelIdx = loadMonsterModel("Monster48.bmd", "Skeleton Warrior", 0.95f,
+                                 80.0f, 150.0f);
+  if (skelIdx >= 0) {
+    auto &skel = m_models[skelIdx];
+    skel.level = 19;
+    skel.defense = 30;
+    skel.defenseRate = 30;
+    skel.attackRate = 105;
+  }
+  m_typeToModel[14] = skelIdx;
+
+  // Load Debris models (not mapped to server types)
+  std::string skillPath = dataPath + "/Skill/";
+  m_boneModelIdx = loadMonsterModel("Bone01.bmd", "Bone Debris", 0.5f, 0, 0);
+  m_stoneModelIdx =
+      loadMonsterModel("BigStone01.bmd", "Stone Debris", 0.6f, 0, 0);
 
   m_modelsLoaded = true;
   std::cout << "[Monster] Models loaded: " << m_models.size() << " types"
@@ -235,8 +303,9 @@ void MonsterManager::AddMonster(uint16_t monsterType, uint8_t gridX,
   }
 
   // Create shadow mesh buffers — sized for triangle-expanded vertices
-  for (int mi = 0; mi < (int)mdl.bmd->Meshes.size() &&
-                    mi < (int)mon.meshBuffers.size(); ++mi) {
+  for (int mi = 0;
+       mi < (int)mdl.bmd->Meshes.size() && mi < (int)mon.meshBuffers.size();
+       ++mi) {
     auto &mesh = mdl.bmd->Meshes[mi];
     MonsterInstance::ShadowMesh sm;
     // Count actual shadow vertices: 3 per tri, 6 per quad
@@ -274,33 +343,57 @@ void MonsterManager::setAction(MonsterInstance &mon, int action) {
   mon.animFrame = 0.0f;
 }
 
-// Per-action animation speed with per-type overrides (ZzzOpenData.cpp OpenMonsterModel)
+// Per-action animation speed with per-type overrides (ZzzOpenData.cpp
+// OpenMonsterModel)
 float MonsterManager::getAnimSpeed(uint16_t monsterType, int action) const {
   float speed;
   switch (action) {
-  case ACTION_STOP1:   speed = SPEED_STOP;   break;
-  case ACTION_WALK:    speed = SPEED_WALK;    break;
+  case ACTION_STOP1:
+    speed = 0.25f;
+    break;
+  case ACTION_STOP2:
+    speed = 0.20f;
+    break;
+  case ACTION_WALK:
+    speed = 0.34f;
+    break;
   case ACTION_ATTACK1:
-  case ACTION_ATTACK2: speed = SPEED_ATTACK;  break;
-  case ACTION_SHOCK:   speed = SPEED_SHOCK;   break;
-  case ACTION_DIE:     speed = SPEED_DIE;     break;
-  default:             speed = SPEED_STOP;    break;
+  case ACTION_ATTACK2:
+    speed = 0.33f;
+    break;
+  case ACTION_SHOCK:
+    speed = 0.50f;
+    break;
+  case ACTION_DIE:
+    speed = 0.55f;
+    break;
+  default:
+    speed = 0.25f;
+    break;
   }
 
-  // Per-type walk speed overrides (ZzzOpenData.cpp line 2434)
-  if (action == ACTION_WALK) {
-    switch (monsterType) {
-    case 2:  speed = 0.7f * 25.0f;  break;  // Budge Dragon (flying): fast walk
-    case 3:  speed = 1.2f * 25.0f;  break;  // Spider: very fast walk
-    default: break;
-    }
+  // Global per-type multipliers (ZzzOpenData.cpp:2370-2376)
+  if (monsterType == 3) { // Spider
+    speed *= 1.2f;
+  } else if (monsterType == 5 ||
+             monsterType == 25) { // Larva / Golem variations
+    speed *= 0.7f;
   }
-  return speed;
+
+  // Specific action overrides
+  if (action == ACTION_WALK) {
+    if (monsterType == 2)
+      speed = 0.7f; // Budge Dragon (flying)
+    // Add other specific walk speeds if needed
+  }
+
+  return speed * 25.0f; // Scale to 25fps base
 }
 
 // Smooth facing interpolation matching original MU TurnAngle2:
 // - If angular error >= 45° (pi/4): snap to target (large correction)
-// - Otherwise: exponential decay at 0.5^(dt*25) rate (half remaining error per 25fps frame)
+// - Otherwise: exponential decay at 0.5^(dt*25) rate (half remaining error per
+// 25fps frame)
 static float smoothFacing(float current, float target, float dt) {
   float diff = target - current;
   // Normalize to [-PI, PI]
@@ -312,7 +405,8 @@ static float smoothFacing(float current, float target, float dt) {
   if (std::abs(diff) >= (float)M_PI / 4.0f) {
     return target; // Snap for large turns (original: >= 45°)
   }
-  // Exponential decay: 0.5^(dt*25) matches original half-error-per-frame at 25fps
+  // Exponential decay: 0.5^(dt*25) matches original half-error-per-frame at
+  // 25fps
   float factor = 1.0f - std::pow(0.5f, dt * 25.0f);
   float result = current + diff * factor;
   // Normalize result
@@ -336,14 +430,24 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
 
   switch (mon.state) {
   case MonsterState::IDLE: {
-    setAction(mon, ACTION_STOP1);
+    // If we just entered IDLE or finished an idle cycle, pick a new action and
+    // duration
+    if (mon.stateTimer <= 0.0f) {
+      // 80% chance for STOP1, 20% for STOP2 (matches original MU feel)
+      int nextIdle = (rand() % 100 < 80) ? ACTION_STOP1 : ACTION_STOP2;
+      setAction(mon, nextIdle);
+      // Stay in this idle action for 2-5 seconds
+      mon.stateTimer = 2.0f + static_cast<float>(rand() % 3000) / 1000.0f;
+    }
+
     float terrainY = snapToTerrain(mon.position.x, mon.position.z);
     mon.position.y = terrainY + mdl.bodyOffset;
-    // Budge Dragon hover (ZzzCharacter.cpp:6224): -abs(sin(Timer))*70+70, Timer+=0.15/tick@25fps
+    // Budge Dragon hover (ZzzCharacter.cpp:6224): -abs(sin(Timer))*70+70
     if (mon.monsterType == 2) {
-      mon.bobTimer += dt * 3.75f; // 0.15 * 25fps
+      mon.bobTimer += dt * 3.75f;
       mon.position.y += (-std::abs(std::sin(mon.bobTimer)) * 30.0f + 30.0f);
     }
+    mon.stateTimer -= dt;
     break;
   }
 
@@ -387,13 +491,15 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
       break;
     }
 
-    // Chase toward actual player position (smooth) instead of quantized grid cell
+    // Chase toward actual player position (smooth) instead of quantized grid
+    // cell
     glm::vec3 chaseTarget = m_playerDead ? mon.serverTargetPos : m_playerPos;
     glm::vec3 toTarget = chaseTarget - mon.position;
     toTarget.y = 0.0f;
     float distToTarget = glm::length(toTarget);
 
-    // Within melee range — stand and face player (idle), waiting for next attack
+    // Within melee range — stand and face player (idle), waiting for next
+    // attack
     static constexpr float MELEE_IDLE_RANGE = 200.0f;
     if (distToTarget <= MELEE_IDLE_RANGE) {
       setAction(mon, ACTION_STOP1);
@@ -426,7 +532,8 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
       }
     }
     // Always snap Y to terrain (fixes hover accumulation bug for Budge Dragon)
-    mon.position.y = snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
+    mon.position.y =
+        snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
     if (mon.monsterType == 2) {
       mon.bobTimer += dt * 3.75f;
       mon.position.y += (-std::abs(std::sin(mon.bobTimer)) * 30.0f + 30.0f);
@@ -445,7 +552,8 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
       }
     }
     // Maintain Y position (terrain + bodyOffset + hover for flying types)
-    mon.position.y = snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
+    mon.position.y =
+        snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
     if (mon.monsterType == 2) {
       mon.bobTimer += dt * 3.75f;
       mon.position.y += (-std::abs(std::sin(mon.bobTimer)) * 30.0f + 30.0f);
@@ -464,7 +572,8 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
   case MonsterState::HIT: {
     setAction(mon, ACTION_SHOCK);
     // Maintain Y position during hit stun
-    mon.position.y = snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
+    mon.position.y =
+        snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
     if (mon.monsterType == 2) {
       mon.bobTimer += dt * 3.75f;
       mon.position.y += (-std::abs(std::sin(mon.bobTimer)) * 30.0f + 30.0f);
@@ -483,7 +592,8 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
   case MonsterState::DYING: {
     setAction(mon, ACTION_DIE);
     // On death: snap to terrain + bodyOffset, no hover (ZzzCharacter.cpp:6285)
-    mon.position.y = snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
+    mon.position.y =
+        snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
 
     int numKeys = 1;
     if (ACTION_DIE < (int)mdl.bmd->Actions.size())
@@ -520,8 +630,8 @@ void MonsterManager::Update(float deltaTime) {
     if (mon.hp <= 0 && mon.state != MonsterState::DYING &&
         mon.state != MonsterState::DEAD) {
       std::cout << "[Client] Mon " << idx << " (" << mon.name
-                << "): HP=0 but state=" << (int)mon.state
-                << ", forcing DYING" << std::endl;
+                << "): HP=0 but state=" << (int)mon.state << ", forcing DYING"
+                << std::endl;
       mon.state = MonsterState::DYING;
       mon.stateTimer = 0.0f;
       setAction(mon, ACTION_DIE);
@@ -533,7 +643,8 @@ void MonsterManager::Update(float deltaTime) {
     updateStateMachine(mon, deltaTime);
 
     // Stuck + stutter detection for WALKING/CHASING monsters
-    if (mon.state == MonsterState::WALKING || mon.state == MonsterState::CHASING) {
+    if (mon.state == MonsterState::WALKING ||
+        mon.state == MonsterState::CHASING) {
       glm::vec3 delta = mon.position - posBefore;
       delta.y = 0.0f; // Ignore vertical (terrain snap)
       float moveLen = glm::length(delta);
@@ -545,11 +656,13 @@ void MonsterManager::Update(float deltaTime) {
         // Stutter detection: direction reversals
         float prevLen = glm::length(mon.prevDelta);
         if (moveLen > 0.1f && prevLen > 0.1f) {
-          float dot = glm::dot(glm::normalize(delta), glm::normalize(mon.prevDelta));
+          float dot =
+              glm::dot(glm::normalize(delta), glm::normalize(mon.prevDelta));
           if (dot < -0.5f) {
             mon.stutterScore += 1.0f;
           } else {
-            mon.stutterScore = std::max(0.0f, mon.stutterScore - deltaTime * 2.0f);
+            mon.stutterScore =
+                std::max(0.0f, mon.stutterScore - deltaTime * 2.0f);
           }
         }
       }
@@ -563,12 +676,11 @@ void MonsterManager::Update(float deltaTime) {
         mon.stutterLogTimer = 2.0f;
         std::cout << "[STUCK] Mon " << idx << " (" << mon.name
                   << "): score=" << mon.stutterScore
-                  << " state=" << (int)mon.state
-                  << " hp=" << mon.hp
-                  << " pos=(" << mon.position.x << "," << mon.position.z << ")"
-                  << " target=(" << mon.wanderTarget.x << "," << mon.wanderTarget.z << ")"
-                  << " serverAge=" << mon.serverPosAge
-                  << std::endl;
+                  << " state=" << (int)mon.state << " hp=" << mon.hp << " pos=("
+                  << mon.position.x << "," << mon.position.z << ")"
+                  << " target=(" << mon.wanderTarget.x << ","
+                  << mon.wanderTarget.z << ")"
+                  << " serverAge=" << mon.serverPosAge << std::endl;
       }
     } else {
       mon.stutterScore = 0.0f;
@@ -576,6 +688,7 @@ void MonsterManager::Update(float deltaTime) {
     }
     idx++;
   }
+  updateDebris(deltaTime);
 }
 
 void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
@@ -606,7 +719,8 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     m_shader->setFloat("pointLightRange[" + idx + "]", m_pointLights[i].range);
   }
 
-  // Disable face culling — spider legs are thin planar geometry visible from both sides
+  // Disable face culling — spider legs are thin planar geometry visible from
+  // both sides
   glDisable(GL_CULL_FACE);
 
   for (auto &mon : m_monsters) {
@@ -627,7 +741,8 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       float animSpeed = getAnimSpeed(mon.monsterType, mon.action);
 
       // Scale walk animation speed to match actual movement speed.
-      // Original MU MoveSpeed=400 for all Lorencia monsters — animation was tuned for that.
+      // Original MU MoveSpeed=400 for all Lorencia monsters — animation was
+      // tuned for that.
       static constexpr float ORIGINAL_MOVE_SPEED = 400.0f;
       if (mon.action == ACTION_WALK) {
         if (mon.state == MonsterState::WALKING)
@@ -639,14 +754,14 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       mon.animFrame += animSpeed * deltaTime;
 
       // Die animation doesn't loop
-      if (mon.state == MonsterState::DYING ||
-          mon.state == MonsterState::DEAD) {
+      if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD) {
         if (mon.animFrame >= (float)(numKeys - 1))
           mon.animFrame = (float)(numKeys - 1);
       } else {
         // LockPositions actions wrap at numKeys-1 (last frame == first frame)
         int wrapKeys = lockPos ? (numKeys - 1) : numKeys;
-        if (wrapKeys < 1) wrapKeys = 1;
+        if (wrapKeys < 1)
+          wrapKeys = 1;
         if (mon.animFrame >= (float)wrapKeys)
           mon.animFrame = std::fmod(mon.animFrame, (float)wrapKeys);
       }
@@ -675,11 +790,10 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     mon.cachedBones = bones;
 
     // Re-skin meshes
-    for (int mi = 0; mi < (int)mon.meshBuffers.size() &&
-                      mi < (int)mdl.bmd->Meshes.size();
+    for (int mi = 0;
+         mi < (int)mon.meshBuffers.size() && mi < (int)mdl.bmd->Meshes.size();
          ++mi) {
-      RetransformMeshWithBones(mdl.bmd->Meshes[mi], bones,
-                               mon.meshBuffers[mi]);
+      RetransformMeshWithBones(mdl.bmd->Meshes[mi], bones, mon.meshBuffers[mi]);
     }
 
     // Build model matrix
@@ -724,6 +838,8 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
   // Restore state
   glEnable(GL_CULL_FACE);
   m_shader->setFloat("objectAlpha", 1.0f);
+
+  renderDebris(view, proj, camPos);
 }
 
 void MonsterManager::RenderShadows(const glm::mat4 &view,
@@ -771,8 +887,8 @@ void MonsterManager::RenderShadows(const glm::mat4 &view,
     float cosF = cosf(mon.facing);
     float sinF = sinf(mon.facing);
 
-    for (int mi = 0; mi < (int)mdl.bmd->Meshes.size() &&
-                      mi < (int)mon.shadowMeshes.size();
+    for (int mi = 0;
+         mi < (int)mdl.bmd->Meshes.size() && mi < (int)mon.shadowMeshes.size();
          ++mi) {
       auto &sm = mon.shadowMeshes[mi];
       if (sm.vertexCount == 0 || sm.vao == 0)
@@ -850,8 +966,7 @@ void MonsterManager::RenderShadows(const glm::mat4 &view,
 
 void MonsterManager::RenderOutline(int monsterIndex, const glm::mat4 &view,
                                    const glm::mat4 &proj) {
-  if (!m_shader || monsterIndex < 0 ||
-      monsterIndex >= (int)m_monsters.size())
+  if (!m_shader || monsterIndex < 0 || monsterIndex >= (int)m_monsters.size())
     return;
 
   auto &mon = m_monsters[monsterIndex];
@@ -928,41 +1043,56 @@ MonsterInfo MonsterManager::GetMonsterInfo(int index) const {
 }
 
 uint16_t MonsterManager::GetServerIndex(int index) const {
-  if (index < 0 || index >= (int)m_monsters.size()) return 0;
+  if (index < 0 || index >= (int)m_monsters.size())
+    return 0;
   return m_monsters[index].serverIndex;
 }
 
 int MonsterManager::FindByServerIndex(uint16_t serverIndex) const {
   for (int i = 0; i < (int)m_monsters.size(); i++) {
-    if (m_monsters[i].serverIndex == serverIndex) return i;
+    if (m_monsters[i].serverIndex == serverIndex)
+      return i;
   }
   return -1;
 }
 
 void MonsterManager::SetMonsterHP(int index, int hp, int maxHp) {
-  if (index < 0 || index >= (int)m_monsters.size()) return;
+  if (index < 0 || index >= (int)m_monsters.size())
+    return;
   std::cout << "[Client] Mon " << index << " (" << m_monsters[index].name
-            << "): HP " << m_monsters[index].hp << " -> " << hp << "/" << maxHp << std::endl;
+            << "): HP " << m_monsters[index].hp << " -> " << hp << "/" << maxHp
+            << std::endl;
   m_monsters[index].hp = hp;
   m_monsters[index].maxHp = maxHp;
 }
 
 void MonsterManager::SetMonsterDying(int index) {
-  if (index < 0 || index >= (int)m_monsters.size()) return;
+  if (index < 0 || index >= (int)m_monsters.size())
+    return;
   auto &mon = m_monsters[index];
   if (mon.state != MonsterState::DYING && mon.state != MonsterState::DEAD) {
-    std::cout << "[Client] Mon " << index << " (" << mon.name << "): DYING" << std::endl;
+    std::cout << "[Client] Mon " << index << " (" << mon.name << "): DYING"
+              << std::endl;
     mon.hp = 0;
     mon.state = MonsterState::DYING;
     mon.stateTimer = 0.0f;
     setAction(mon, ACTION_DIE);
+
+    // Spawn death debris (Main 5.2 ZzzCharacter.cpp:1386, 1401, 1412)
+    if (mon.monsterType == 14) { // Skeleton Warrior
+      spawnDebris(m_boneModelIdx, mon.position + glm::vec3(0, 50, 0), 6);
+    } else if (mon.monsterType == 7) { // Giant
+      spawnDebris(m_stoneModelIdx, mon.position + glm::vec3(0, 80, 0), 8);
+    }
   }
 }
 
 void MonsterManager::TriggerHitAnimation(int index) {
-  if (index < 0 || index >= (int)m_monsters.size()) return;
+  if (index < 0 || index >= (int)m_monsters.size())
+    return;
   auto &mon = m_monsters[index];
-  if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD) return;
+  if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD)
+    return;
   std::cout << "[Client] Mon " << index << " (" << mon.name << "): HIT (was "
             << (int)mon.state << ")" << std::endl;
   mon.state = MonsterState::HIT;
@@ -970,11 +1100,15 @@ void MonsterManager::TriggerHitAnimation(int index) {
 }
 
 void MonsterManager::TriggerAttackAnimation(int index) {
-  if (index < 0 || index >= (int)m_monsters.size()) return;
+  if (index < 0 || index >= (int)m_monsters.size())
+    return;
   auto &mon = m_monsters[index];
-  if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD) return;
-  // Don't override HIT stun — let flinch animation play out before attacking again
-  if (mon.state == MonsterState::HIT) return;
+  if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD)
+    return;
+  // Don't override HIT stun — let flinch animation play out before attacking
+  // again
+  if (mon.state == MonsterState::HIT)
+    return;
   // Attack packet confirms monster is actively chasing — refresh timeout
   std::cout << "[Client] Mon " << index << " (" << mon.name
             << "): ATTACKING (was " << (int)mon.state << ")" << std::endl;
@@ -983,19 +1117,36 @@ void MonsterManager::TriggerAttackAnimation(int index) {
   mon.state = MonsterState::ATTACKING;
   // Attack animation duration based on action keys / speed
   auto &mdl = m_models[mon.modelIdx];
-  int atk = (mon.swordCount % 3 == 0) ? ACTION_ATTACK1 : ACTION_ATTACK2;
+  int atk = (rand() % 2 == 0) ? ACTION_ATTACK1 : ACTION_ATTACK2;
   mon.swordCount++;
   int numKeys = 1;
   if (atk < (int)mdl.bmd->Actions.size())
     numKeys = mdl.bmd->Actions[atk].NumAnimationKeys;
   float speed = getAnimSpeed(mon.monsterType, atk);
-  mon.stateTimer = (numKeys > 1 && speed > 0.0f) ? (float)numKeys / speed : 1.0f;
+  mon.stateTimer =
+      (numKeys > 1 && speed > 0.0f) ? (float)numKeys / speed : 1.0f;
   setAction(mon, atk);
   mon.animFrame = 0.0f;
+
+  // Trigger Lich VFX (Monster Type 6)
+  if (mon.monsterType == 6 && m_vfxManager) {
+    glm::vec3 startPos = mon.position;
+    // Try to get weapon bone position (41)
+    if (41 < (int)mon.cachedBones.size()) {
+      const auto &m = mon.cachedBones[41];
+      startPos = glm::vec3(m[0][3], m[1][3],
+                           m[2][3]); // Translation is in the 4th column
+    } else {
+      startPos.y += 150.0f; // Fallback to head-ish height
+    }
+    m_vfxManager->SpawnLightning(startPos, m_playerPos);
+  }
 }
 
-void MonsterManager::RespawnMonster(int index, uint8_t gridX, uint8_t gridY, int hp) {
-  if (index < 0 || index >= (int)m_monsters.size()) return;
+void MonsterManager::RespawnMonster(int index, uint8_t gridX, uint8_t gridY,
+                                    int hp) {
+  if (index < 0 || index >= (int)m_monsters.size())
+    return;
   auto &mon = m_monsters[index];
   std::cout << "[Client] Mon " << index << " (" << mon.name << "): RESPAWN at ("
             << (int)gridX << "," << (int)gridY << ") hp=" << hp << std::endl;
@@ -1016,13 +1167,17 @@ void MonsterManager::RespawnMonster(int index, uint8_t gridX, uint8_t gridY, int
   setAction(mon, ACTION_STOP1);
 }
 
-void MonsterManager::SetMonsterServerPosition(int index, float worldX, float worldZ, bool chasing) {
-  if (index < 0 || index >= (int)m_monsters.size()) return;
+void MonsterManager::SetMonsterServerPosition(int index, float worldX,
+                                              float worldZ, bool chasing) {
+  if (index < 0 || index >= (int)m_monsters.size())
+    return;
   auto &mon = m_monsters[index];
-  if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD) return;
-  std::cout << "[Client] Mon " << index << " (" << mon.name << "): 0x35 move to ("
-            << worldX << "," << worldZ << ") chasing=" << chasing
-            << " state=" << (int)mon.state << std::endl;
+  if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD)
+    return;
+  std::cout << "[Client] Mon " << index << " (" << mon.name
+            << "): 0x35 move to (" << worldX << "," << worldZ
+            << ") chasing=" << chasing << " state=" << (int)mon.state
+            << std::endl;
 
   auto &mdl = m_models[mon.modelIdx];
   float terrainY = snapToTerrain(worldX, worldZ) + mdl.bodyOffset;
@@ -1031,13 +1186,16 @@ void MonsterManager::SetMonsterServerPosition(int index, float worldX, float wor
   mon.serverPosAge = 0.0f;
 
   // Transition to CHASING if server says monster is chasing
-  if (chasing && mon.state != MonsterState::ATTACKING && mon.state != MonsterState::HIT) {
+  if (chasing && mon.state != MonsterState::ATTACKING &&
+      mon.state != MonsterState::HIT) {
     mon.state = MonsterState::CHASING;
   }
   // If server says no longer chasing, walk to the given position then idle
-  // Also update wanderTarget when already WALKING (prevents idle gaps between wander moves)
-  if (!chasing && (mon.state == MonsterState::CHASING || mon.state == MonsterState::IDLE ||
-                   mon.state == MonsterState::WALKING)) {
+  // Also update wanderTarget when already WALKING (prevents idle gaps between
+  // wander moves)
+  if (!chasing &&
+      (mon.state == MonsterState::CHASING || mon.state == MonsterState::IDLE ||
+       mon.state == MonsterState::WALKING)) {
     mon.state = MonsterState::WALKING;
     mon.wanderTarget = mon.serverTargetPos;
     // Compute a reasonable timeout based on distance to target
@@ -1061,6 +1219,104 @@ int MonsterManager::CalcXPReward(int monsterIndex, int playerLevel) const {
     lvlFactor = (lvlFactor * (monLvl + 10)) / std::max(1, playerLevel);
   int xp = lvlFactor + lvlFactor / 4; // * 1.25
   return std::max(1, xp);
+}
+
+void MonsterManager::spawnDebris(int modelIdx, const glm::vec3 &pos,
+                                 int count) {
+  if (modelIdx < 0 || modelIdx >= (int)m_models.size())
+    return;
+
+  for (int i = 0; i < count; ++i) {
+    DebrisInstance d;
+    d.modelIdx = modelIdx;
+    d.position = pos;
+    float angle = (float)(rand() % 360) * 3.14159f / 180.0f;
+    float speed = 80.0f + (float)(rand() % 100);
+    d.velocity =
+        glm::vec3(std::cos(angle) * speed, 150.0f + (float)(rand() % 100),
+                  std::sin(angle) * speed);
+    d.rotation = glm::vec3((float)(rand() % 360), (float)(rand() % 360),
+                           (float)(rand() % 360));
+    d.rotVelocity =
+        glm::vec3((float)(rand() % 200 - 100), (float)(rand() % 200 - 100),
+                  (float)(rand() % 200 - 100));
+    d.scale = m_models[modelIdx].scale * (0.8f + (float)(rand() % 40) / 100.0f);
+    d.lifetime = 2.0f + (float)(rand() % 2000) / 1000.0f;
+    m_debris.push_back(d);
+  }
+}
+
+void MonsterManager::updateDebris(float dt) {
+  for (int i = (int)m_debris.size() - 1; i >= 0; --i) {
+    auto &d = m_debris[i];
+    d.lifetime -= dt;
+    if (d.lifetime <= 0.0f) {
+      m_debris[i] = m_debris.back();
+      m_debris.pop_back();
+      continue;
+    }
+
+    d.position += d.velocity * dt;
+    d.rotation += d.rotVelocity * dt;
+
+    float floorY = snapToTerrain(d.position.x, d.position.z);
+    if (d.position.y < floorY) {
+      d.position.y = floorY;
+      d.velocity.y = -d.velocity.y * 0.4f; // Bounce
+      d.velocity.x *= 0.6f;
+      d.velocity.z *= 0.6f;
+      d.rotVelocity *= 0.5f;
+    } else {
+      d.velocity.y -= 500.0f * dt; // Gravity
+    }
+  }
+}
+
+void MonsterManager::renderDebris(const glm::mat4 &view,
+                                  const glm::mat4 &projection,
+                                  const glm::vec3 &camPos) {
+  if (m_debris.empty() || !m_shader)
+    return;
+
+  m_shader->use();
+  m_shader->setMat4("view", view);
+  m_shader->setMat4("projection", projection);
+  m_shader->setFloat("luminosity", m_luminosity);
+  m_shader->setFloat("blendMeshLight", 1.0f);
+  m_shader->setInt("numPointLights", 0);
+  m_shader->setBool("useFog", true);
+  m_shader->setVec3("viewPos", camPos);
+  // We need camPos if we want fog to work correctly, passing it via Render
+  // For now let's assume viewPos is already set or passed.
+  // I'll update Render() to pass camPos to renderDebris.
+
+  for (const auto &d : m_debris) {
+    auto &mdl = m_models[d.modelIdx];
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::translate(model, d.position);
+    model = glm::rotate(model, glm::radians(d.rotation.z), glm::vec3(0, 0, 1));
+    model = glm::rotate(model, glm::radians(d.rotation.y), glm::vec3(0, 1, 0));
+    model = glm::rotate(model, glm::radians(d.rotation.x), glm::vec3(1, 0, 0));
+    model = glm::scale(model, glm::vec3(d.scale));
+    m_shader->setMat4("model", model);
+
+    // Get terrain light
+    glm::vec3 light = sampleTerrainLightAt(d.position);
+    m_shader->setVec3("terrainLight", light);
+
+    // Debris fade out
+    float alpha = std::min(1.0f, d.lifetime * 2.0f);
+    m_shader->setFloat("objectAlpha", alpha);
+
+    // Draw pre-uploaded mesh buffers
+    for (size_t i = 0; i < mdl.meshBuffers.size(); ++i) {
+      auto &mb = mdl.meshBuffers[i];
+      glBindTexture(GL_TEXTURE_2D, mb.texture);
+      glBindVertexArray(mb.vao);
+      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+    }
+  }
+  glBindVertexArray(0);
 }
 
 void MonsterManager::Cleanup() {

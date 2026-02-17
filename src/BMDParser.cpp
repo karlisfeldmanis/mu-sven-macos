@@ -172,5 +172,26 @@ std::unique_ptr<BMDData> BMDParser::Parse(const std::string &path) {
     }
   }
 
+  // Calculate AABB from all meshes (bind pose)
+  if (!bmd->Meshes.empty()) {
+    glm::vec3 min(1e9f);
+    glm::vec3 max(-1e9f);
+    bool anyVert = false;
+    for (const auto &mesh : bmd->Meshes) {
+      for (const auto &v : mesh.Vertices) {
+        min = glm::min(min, v.Position);
+        max = glm::max(max, v.Position);
+        anyVert = true;
+      }
+    }
+    if (anyVert) {
+      bmd->Min = min;
+      bmd->Max = max;
+      std::cout << "[BMDParser] AABB: Min(" << min.x << "," << min.y << ","
+                << min.z << ") Max(" << max.x << "," << max.y << "," << max.z
+                << ")" << std::endl;
+    }
+  }
+
   return bmd;
 }

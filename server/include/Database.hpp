@@ -2,148 +2,158 @@
 #define MU_DATABASE_HPP
 
 #include <cstdint>
+#include <sqlite3.h>
 #include <string>
 #include <vector>
-#include <sqlite3.h>
 
 struct NpcSpawnData {
-    int id = 0;
-    uint16_t type = 0;     // NPC type ID (253=Amy, 250=Merchant, etc.)
-    uint8_t mapId = 0;     // 0=Lorencia
-    uint8_t posX = 0;
-    uint8_t posY = 0;
-    uint8_t direction = 0; // 0-7
-    std::string name;
+  int id = 0;
+  uint16_t type = 0; // NPC type ID (253=Amy, 250=Merchant, etc.)
+  uint8_t mapId = 0; // 0=Lorencia
+  uint8_t posX = 0;
+  uint8_t posY = 0;
+  uint8_t direction = 0; // 0-7
+  std::string name;
 };
 
 struct MonsterSpawnData {
-    int id = 0;
-    uint16_t type = 0;     // Monster type (3=Spider, etc.)
-    uint8_t mapId = 0;
-    uint8_t posX = 0;
-    uint8_t posY = 0;
-    uint8_t direction = 0;
+  int id = 0;
+  uint16_t type = 0; // Monster type (3=Spider, etc.)
+  uint8_t mapId = 0;
+  uint8_t posX = 0;
+  uint8_t posY = 0;
+  uint8_t direction = 0;
 };
 
 struct CharacterData {
-    int id = 0;
-    int accountId = 0;
-    int slot = 0;
-    std::string name;
-    uint8_t charClass = 0; // 0=DW, 16=DK, 32=Elf
-    uint16_t level = 1;
-    uint8_t mapId = 0;
-    uint8_t posX = 130;
-    uint8_t posY = 130;
-    uint8_t direction = 2;
-    uint16_t strength = 20;
-    uint16_t dexterity = 20;
-    uint16_t vitality = 20;
-    uint16_t energy = 20;
-    uint16_t life = 100;
-    uint16_t maxLife = 100;
-    uint16_t mana = 50;
-    uint16_t maxMana = 50;
-    uint32_t money = 0;
-    uint64_t experience = 0;
-    uint16_t levelUpPoints = 0;
+  int id = 0;
+  int accountId = 0;
+  int slot = 0;
+  std::string name;
+  uint8_t charClass = 0; // 0=DW, 16=DK, 32=Elf
+  uint16_t level = 1;
+  uint8_t mapId = 0;
+  uint8_t posX = 130;
+  uint8_t posY = 130;
+  uint8_t direction = 2;
+  uint16_t strength = 20;
+  uint16_t dexterity = 20;
+  uint16_t vitality = 20;
+  uint16_t energy = 20;
+  uint16_t life = 100;
+  uint16_t maxLife = 100;
+  uint16_t mana = 50;
+  uint16_t maxMana = 50;
+  uint32_t money = 0;
+  uint64_t experience = 0;
+  uint16_t levelUpPoints = 0;
 };
 
 // Equipment slot constants (matching original MU inventory layout)
 enum EquipSlot : uint8_t {
-    EQUIP_RIGHT_HAND = 0,
-    EQUIP_LEFT_HAND  = 1,
-    EQUIP_HELM       = 2,
-    EQUIP_ARMOR      = 3,
-    EQUIP_PANTS      = 4,
-    EQUIP_GLOVES     = 5,
-    EQUIP_BOOTS      = 6,
+  EQUIP_RIGHT_HAND = 0,
+  EQUIP_LEFT_HAND = 1,
+  EQUIP_HELM = 2,
+  EQUIP_ARMOR = 3,
+  EQUIP_PANTS = 4,
+  EQUIP_GLOVES = 5,
+  EQUIP_BOOTS = 6,
 };
 
 // Item category constants (matching original MU item groups)
 enum ItemCategory : uint8_t {
-    ITEM_SWORD   = 0,
-    ITEM_AXE     = 1,
-    ITEM_MACE    = 2,
-    ITEM_SPEAR   = 3,
-    ITEM_BOW     = 4,
-    ITEM_STAFF   = 5,
-    ITEM_SHIELD  = 6,
+  ITEM_SWORD = 0,
+  ITEM_AXE = 1,
+  ITEM_MACE = 2,
+  ITEM_SPEAR = 3,
+  ITEM_BOW = 4,
+  ITEM_STAFF = 5,
+  ITEM_SHIELD = 6,
 };
 
 struct ItemDefinition {
-    int id = 0;
-    uint8_t category = 0;   // ItemCategory
-    uint8_t itemIndex = 0;   // Index within category (0=Sword01, 1=Sword02...)
-    std::string name;
-    std::string modelFile;   // e.g. "Sword01.bmd"
-    uint16_t level = 0;      // Level requirement
-    uint16_t damageMin = 0;
-    uint16_t damageMax = 0;
-    uint16_t defense = 0;    // Base defense (for shields/armor)
-    uint8_t attackSpeed = 0;
-    uint8_t twoHanded = 0;
+  int id = 0;
+  uint8_t category = 0;  // ItemCategory
+  uint8_t itemIndex = 0; // Index within category (0=Sword01, 1=Sword02...)
+  std::string name;
+  std::string modelFile; // e.g. "Sword01.bmd"
+  uint16_t level = 0;    // Level requirement
+  uint16_t damageMin = 0;
+  uint16_t damageMax = 0;
+  uint16_t defense = 0; // Base defense (for shields/armor)
+  uint8_t attackSpeed = 0;
+  uint8_t twoHanded = 0;
+  uint8_t width = 1;
+  uint8_t height = 1;
+  uint16_t reqStrength = 0;
+  uint16_t reqDexterity = 0;
+  uint16_t reqVitality = 0;
+  uint16_t reqEnergy = 0;
+  uint32_t classFlags = 0xFFFFFFFF;
 };
 
 struct EquipmentSlot {
-    uint8_t slot = 0;         // EquipSlot
-    uint8_t category = 0;     // ItemCategory
-    uint8_t itemIndex = 0;    // Index within category
-    uint8_t itemLevel = 0;    // +0 to +15 enhancement
+  uint8_t slot = 0;      // EquipSlot
+  uint8_t category = 0;  // ItemCategory
+  uint8_t itemIndex = 0; // Index within category
+  uint8_t itemLevel = 0; // +0 to +15 enhancement
 };
 
 class Database {
 public:
-    bool Open(const std::string &dbPath);
-    void Close();
+  bool Open(const std::string &dbPath);
+  void Close();
 
-    // Returns accountId on success, 0 on failure
-    int ValidateLogin(const std::string &username, const std::string &password);
+  // Returns accountId on success, 0 on failure
+  int ValidateLogin(const std::string &username, const std::string &password);
 
-    std::vector<CharacterData> GetCharacterList(int accountId);
-    CharacterData GetCharacter(const std::string &name);
+  std::vector<CharacterData> GetCharacterList(int accountId);
+  CharacterData GetCharacter(const std::string &name);
 
-    void UpdatePosition(int charId, uint8_t x, uint8_t y);
-    void UpdateCharacterStats(int charId, uint16_t level, uint16_t strength,
-                              uint16_t dexterity, uint16_t vitality, uint16_t energy,
-                              uint16_t life, uint16_t maxLife, uint16_t levelUpPoints,
-                              uint64_t experience);
-    void CreateDefaultAccount();
+  void UpdatePosition(int charId, uint8_t x, uint8_t y);
+  void UpdateCharacterStats(int charId, uint16_t level, uint16_t strength,
+                            uint16_t dexterity, uint16_t vitality,
+                            uint16_t energy, uint16_t life, uint16_t maxLife,
+                            uint16_t levelUpPoints, uint64_t experience);
+  void CreateDefaultAccount();
 
-    // NPC spawns
-    std::vector<NpcSpawnData> GetNpcSpawns(uint8_t mapId);
-    void SeedNpcSpawns();
+  // NPC spawns
+  std::vector<NpcSpawnData> GetNpcSpawns(uint8_t mapId);
+  void SeedNpcSpawns();
 
-    // Monster spawns
-    std::vector<MonsterSpawnData> GetMonsterSpawns(uint8_t mapId);
-    void SeedMonsterSpawns();
+  // Monster spawns
+  std::vector<MonsterSpawnData> GetMonsterSpawns(uint8_t mapId);
+  void SeedMonsterSpawns();
 
-    // Items and equipment
-    void SeedItemDefinitions();
-    ItemDefinition GetItemDefinition(uint8_t category, uint8_t itemIndex);
-    std::vector<EquipmentSlot> GetCharacterEquipment(int characterId);
-    void SeedDefaultEquipment(int characterId);
-    void UpdateEquipment(int characterId, uint8_t slot, uint8_t category,
-                         uint8_t itemIndex, uint8_t itemLevel);
+  // Items and equipment
+  void SeedItemDefinitions();
+  ItemDefinition GetItemDefinition(uint8_t category, uint8_t itemIndex);
+  ItemDefinition GetItemDefinition(int id);
+  std::vector<EquipmentSlot> GetCharacterEquipment(int characterId);
+  void SeedDefaultEquipment(int characterId);
+  void UpdateEquipment(int characterId, uint8_t slot, uint8_t category,
+                       uint8_t itemIndex, uint8_t itemLevel);
 
-    // Inventory bag (8x8 grid of picked-up items)
-    struct InventorySlotData {
-        uint8_t slot;
-        int8_t defIndex;
-        uint8_t quantity;
-        uint8_t itemLevel;
-    };
-    std::vector<InventorySlotData> GetCharacterInventory(int characterId);
-    void SaveCharacterInventory(int characterId, int8_t defIndex, uint8_t quantity,
-                                uint8_t itemLevel, uint8_t slot);
-    void ClearCharacterInventory(int characterId);
+  // Inventory bag (8x8 grid of picked-up items)
+  struct InventorySlotData {
+    uint8_t slot;
+    int16_t defIndex;
+    uint8_t quantity;
+    uint8_t itemLevel;
+  };
+  std::vector<InventorySlotData> GetCharacterInventory(int characterId);
+  void SaveCharacterInventory(int characterId, int16_t defIndex,
+                              uint8_t quantity, uint8_t itemLevel,
+                              uint8_t slot);
+  void ClearCharacterInventory(int characterId);
+  void DeleteCharacterInventoryItem(int characterId, uint8_t slot);
 
-    // Money / Zen
-    void UpdateCharacterMoney(int characterId, uint32_t money);
+  // Money / Zen
+  void UpdateCharacterMoney(int characterId, uint32_t money);
 
 private:
-    void CreateTables();
-    sqlite3 *m_db = nullptr;
+  void CreateTables();
+  sqlite3 *m_db = nullptr;
 };
 
 #endif // MU_DATABASE_HPP

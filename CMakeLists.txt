@@ -56,6 +56,7 @@ set(COMMON_SRC
     src/FireEffect.cpp
     src/Sky.cpp
     src/GrassRenderer.cpp
+    src/VFXManager.cpp
 )
 
 # Main Game Executable

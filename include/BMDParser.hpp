@@ -11,6 +11,8 @@ struct BMDData {
   std::vector<Mesh_t> Meshes;
   std::vector<Bone_t> Bones;
   std::vector<Action_t> Actions;
+  glm::vec3 Min = glm::vec3(0.0f);
+  glm::vec3 Max = glm::vec3(0.0f);
 };
 
 class BMDParser {

@@ -7,8 +7,8 @@
 #include "Shader.hpp"
 #include "TerrainParser.hpp"
 #include "ViewerCommon.hpp"
-#include <glm/glm.hpp>
 #include <cstdint>
+#include <glm/glm.hpp>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,33 +23,34 @@ struct PointLight {
 // The server only sends what the character has equipped — the client
 // resolves all rendering config (animations, bones, rotation) locally.
 struct WeaponEquipInfo {
-  uint8_t category = 0xFF;  // ItemCategory (0xFF = none equipped)
+  uint8_t category = 0xFF; // ItemCategory (0xFF = none equipped)
   uint8_t itemIndex = 0;
   uint8_t itemLevel = 0;
-  std::string modelFile;    // e.g. "Sword01.bmd"
+  std::string modelFile; // e.g. "Sword01.bmd"
 };
 
 // Client-side rendering config per weapon category
 // Resolved locally from category — never stored in DB or sent over the wire
 struct WeaponCategoryRender {
-  uint8_t actionIdle;   // Player action for combat idle
-  uint8_t actionWalk;   // Player action for combat walk
-  uint8_t attachBone;   // Bone index (33=R Hand mount, 42=L Hand mount)
+  uint8_t actionIdle; // Player action for combat idle
+  uint8_t actionWalk; // Player action for combat walk
+  uint8_t attachBone; // Bone index (33=R Hand mount, 42=L Hand mount)
 };
 
 // Client-side weapon category rendering config table
 // Reference: ZzzCharacter.cpp CreateCharacterPointer(), _enum.h player actions
-// Identity rotation (0,0,0) + zero offset — weapon BMD's own bone handles orientation
+// Identity rotation (0,0,0) + zero offset — weapon BMD's own bone handles
+// orientation
 inline const WeaponCategoryRender &GetWeaponCategoryRender(uint8_t category) {
   // Indexed by ItemCategory enum (0=Sword..6=Shield)
   static const WeaponCategoryRender table[] = {
-    {4,  17, 33}, // SWORD:  PLAYER_STOP_SWORD / PLAYER_WALK_SWORD, R Hand
-    {4,  17, 33}, // AXE:    same as sword
-    {4,  17, 33}, // MACE:   same as sword
-    {6,  19, 33}, // SPEAR:  PLAYER_STOP_SPEAR / PLAYER_WALK_SPEAR, R Hand
-    {8,  20, 42}, // BOW:    PLAYER_STOP_BOW / PLAYER_WALK_BOW, L Hand
-    {10, 22, 42}, // STAFF:  PLAYER_STOP_WAND / PLAYER_WALK_WAND, L Hand
-    {4,  17, 42}, // SHIELD: PLAYER_STOP_SWORD / PLAYER_WALK_SWORD, L Hand
+      {4, 17, 33},  // SWORD:  PLAYER_STOP_SWORD / PLAYER_WALK_SWORD, R Hand
+      {4, 17, 33},  // AXE:    same as sword
+      {4, 17, 33},  // MACE:   same as sword
+      {6, 19, 33},  // SPEAR:  PLAYER_STOP_SPEAR / PLAYER_WALK_SPEAR, R Hand
+      {8, 20, 42},  // BOW:    PLAYER_STOP_BOW / PLAYER_WALK_BOW, L Hand
+      {10, 22, 42}, // STAFF:  PLAYER_STOP_WAND / PLAYER_WALK_WAND, L Hand
+      {4, 17, 42},  // SHIELD: PLAYER_STOP_SWORD / PLAYER_WALK_SWORD, L Hand
   };
   if (category < sizeof(table) / sizeof(table[0]))
     return table[category];
@@ -59,11 +60,11 @@ inline const WeaponCategoryRender &GetWeaponCategoryRender(uint8_t category) {
 
 // Damage type for colored floating numbers (from WSclient.cpp DamageType)
 enum class DamageType {
-  NORMAL = 0,     // Orange — standard hit
-  EXCELLENT = 2,  // Green-teal — 120% of max damage
-  CRITICAL = 3,   // Sky blue — max damage + level bonus
-  MISS = 7,       // Grey "MISS" text
-  INCOMING = 8,   // Red — monster hits hero
+  NORMAL = 0,    // Orange — standard hit
+  EXCELLENT = 2, // Green-teal — 120% of max damage
+  CRITICAL = 3,  // Sky blue — max damage + level bonus
+  MISS = 7,      // Grey "MISS" text
+  INCOMING = 8,  // Red — monster hits hero
 };
 
 struct DamageResult {
@@ -89,6 +90,10 @@ public:
   void EquipWeapon(const WeaponEquipInfo &weapon);
   void EquipShield(const WeaponEquipInfo &shield);
 
+  // Body part replacement (0=Helm, 1=Armor, 2=Pants, 3=Gloves, 4=Boots)
+  // Pass empty modelFile to revert to default naked part
+  void EquipBodyPart(int partIndex, const std::string &modelFile);
+
   // Combat: attack a monster by index
   void AttackMonster(int monsterIndex, const glm::vec3 &monsterPos);
   void UpdateAttack(float deltaTime);
@@ -103,8 +108,12 @@ public:
   void TakeDamage(int damage);
   int GetHP() const { return m_hp; }
   int GetMaxHP() const { return m_maxHp; }
-  bool IsDead() const { return m_heroState == HeroState::DYING || m_heroState == HeroState::DEAD; }
-  bool ReadyToRespawn() const { return m_heroState == HeroState::DEAD && m_stateTimer <= 0.0f; }
+  bool IsDead() const {
+    return m_heroState == HeroState::DYING || m_heroState == HeroState::DEAD;
+  }
+  bool ReadyToRespawn() const {
+    return m_heroState == HeroState::DEAD && m_stateTimer <= 0.0f;
+  }
   HeroState GetHeroState() const { return m_heroState; }
   void UpdateState(float deltaTime);
   void Respawn(const glm::vec3 &spawnPos);
@@ -113,8 +122,9 @@ public:
   void RecalcStats();
   void GainExperience(uint64_t xp);
   // Load stats from server (overrides defaults, calls RecalcStats)
-  void LoadStats(int level, uint16_t str, uint16_t dex, uint16_t vit, uint16_t ene,
-                 uint64_t experience, int levelUpPoints, int currentHp);
+  void LoadStats(int level, uint16_t str, uint16_t dex, uint16_t vit,
+                 uint16_t ene, uint64_t experience, int levelUpPoints,
+                 int currentHp);
   bool AddStatPoint(int stat); // 0=STR, 1=DEX, 2=VIT, 3=ENE
   int GetLevel() const { return m_level; }
   uint64_t GetExperience() const { return m_experience; }
@@ -189,7 +199,8 @@ private:
   static constexpr int ACTION_WALK_MALE = 15; // PLAYER_WALK_MALE
 
   // Attack actions
-  static constexpr int ACTION_ATTACK_FIST = 38;     // PLAYER_ATTACK_FIST (no weapon)
+  static constexpr int ACTION_ATTACK_FIST =
+      38; // PLAYER_ATTACK_FIST (no weapon)
   static constexpr int ACTION_ATTACK_SWORD_R1 = 39;
   static constexpr int ACTION_ATTACK_SWORD_R2 = 40;
 
@@ -204,10 +215,10 @@ private:
   int m_levelUpPoints = 0;
   bool m_leveledUpThisFrame = false;
 
-  uint16_t m_strength = 28;   // DK starting STR
-  uint16_t m_dexterity = 20;  // DK starting DEX (Agility)
-  uint16_t m_vitality = 25;   // DK starting VIT
-  uint16_t m_energy = 10;     // DK starting ENE
+  uint16_t m_strength = 28;  // DK starting STR
+  uint16_t m_dexterity = 20; // DK starting DEX (Agility)
+  uint16_t m_vitality = 25;  // DK starting VIT
+  uint16_t m_energy = 10;    // DK starting ENE
 
   // DK class constants (from DefaultClassInfo.txt + GameServerInfo)
   static constexpr int DK_BASE_STR = 28, DK_BASE_DEX = 20;
@@ -218,9 +229,9 @@ private:
   static constexpr int DK_POINTS_PER_LEVEL = 5;
 
   // Derived combat stats (recomputed by RecalcStats)
-  int m_damageMin = 3;   // STR / 8 + weapon
-  int m_damageMax = 7;   // STR / 4 + weapon
-  int m_defense = 6;     // DEX / 3 + equipment
+  int m_damageMin = 3;          // STR / 8 + weapon
+  int m_damageMax = 7;          // STR / 4 + weapon
+  int m_defense = 6;            // DEX / 3 + equipment
   int m_attackSuccessRate = 42; // Level*5 + DEX*3/2 + STR/4
   int m_defenseSuccessRate = 6; // DEX / 3
 
@@ -280,7 +291,7 @@ private:
     int indexCount = 0;
     int vertexCount = 0;
   };
-  std::vector<ShadowMesh> m_shadowMeshes; // one per body part mesh
+  std::vector<ShadowMesh> m_shadowMeshes;     // one per body part mesh
   std::vector<BoneWorldMatrix> m_cachedBones; // cached from last Render()
 
   // External data (non-owning)
