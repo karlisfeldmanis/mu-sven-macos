@@ -34,11 +34,15 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
 
+# stb headers (stb_image for PNG loading)
+set(STB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/stb)
+
 # Source and include directories
 include_directories(include)
 include_directories(/opt/homebrew/include) # Ensure GLM and others are found
 include_directories(${IMGUI_DIR})
 include_directories(${IMGUI_DIR}/backends)
+include_directories(${STB_DIR})
 
 # Common source files (loaders, parsers, shared infrastructure)
 set(COMMON_SRC
@@ -55,7 +59,7 @@ set(COMMON_SRC
 )
 
 # Main Game Executable
-add_executable(MuRemaster src/main.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+add_executable(MuRemaster src/main.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/NetworkClient.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
 target_link_libraries(MuRemaster PRIVATE
     glfw
     GLEW::GLEW

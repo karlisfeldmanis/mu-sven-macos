@@ -17,6 +17,10 @@ public:
     Database &GetDB() { return m_db; }
     GameWorld &GetWorld() { return m_world; }
 
+    // Broadcast to all sessions that are inWorld
+    void Broadcast(const void *data, size_t len);
+    void BroadcastExcept(int excludeFd, const void *data, size_t len);
+
 private:
     void AcceptNewClients();
     void ProcessSessions();

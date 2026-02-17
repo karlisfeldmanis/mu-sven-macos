@@ -8,6 +8,7 @@
 #include "TerrainParser.hpp"
 #include "ViewerCommon.hpp"
 #include <glm/glm.hpp>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -56,7 +57,22 @@ inline const WeaponCategoryRender &GetWeaponCategoryRender(uint8_t category) {
   return fallback;
 }
 
+// Damage type for colored floating numbers (from WSclient.cpp DamageType)
+enum class DamageType {
+  NORMAL = 0,     // Orange — standard hit
+  EXCELLENT = 2,  // Green-teal — 120% of max damage
+  CRITICAL = 3,   // Sky blue — max damage + level bonus
+  MISS = 7,       // Grey "MISS" text
+  INCOMING = 8,   // Red — monster hits hero
+};
+
+struct DamageResult {
+  int damage;
+  DamageType type;
+};
+
 enum class AttackState { NONE, APPROACHING, SWINGING, COOLDOWN };
+enum class HeroState { ALIVE, HIT_STUN, DYING, DEAD, RESPAWNING };
 
 class HeroCharacter {
 public:
@@ -69,23 +85,68 @@ public:
   void StopMoving();
   void Cleanup();
 
-  // Weapon equipping (called after server sends equipment packet)
+  // Equipment equipping (called after server sends equipment packet)
   void EquipWeapon(const WeaponEquipInfo &weapon);
+  void EquipShield(const WeaponEquipInfo &shield);
 
   // Combat: attack a monster by index
   void AttackMonster(int monsterIndex, const glm::vec3 &monsterPos);
   void UpdateAttack(float deltaTime);
   bool CheckAttackHit();
   void CancelAttack();
-  int RollDamage() const;
+  DamageResult RollAttack(int targetDefense, int targetDefSuccessRate) const;
   int GetAttackTarget() const { return m_attackTargetMonster; }
   AttackState GetAttackState() const { return m_attackState; }
   bool IsAttacking() const { return m_attackState != AttackState::NONE; }
 
+  // HP and damage
+  void TakeDamage(int damage);
+  int GetHP() const { return m_hp; }
+  int GetMaxHP() const { return m_maxHp; }
+  bool IsDead() const { return m_heroState == HeroState::DYING || m_heroState == HeroState::DEAD; }
+  bool ReadyToRespawn() const { return m_heroState == HeroState::DEAD && m_stateTimer <= 0.0f; }
+  HeroState GetHeroState() const { return m_heroState; }
+  void UpdateState(float deltaTime);
+  void Respawn(const glm::vec3 &spawnPos);
+
+  // Stats and leveling (MU DK formulas from MuEmu-0.97k)
+  void RecalcStats();
+  void GainExperience(uint64_t xp);
+  // Load stats from server (overrides defaults, calls RecalcStats)
+  void LoadStats(int level, uint16_t str, uint16_t dex, uint16_t vit, uint16_t ene,
+                 uint64_t experience, int levelUpPoints, int currentHp);
+  bool AddStatPoint(int stat); // 0=STR, 1=DEX, 2=VIT, 3=ENE
+  int GetLevel() const { return m_level; }
+  uint64_t GetExperience() const { return m_experience; }
+  uint64_t GetNextExperience() const { return m_nextExperience; }
+  int GetLevelUpPoints() const { return m_levelUpPoints; }
+  uint16_t GetStrength() const { return m_strength; }
+  uint16_t GetDexterity() const { return m_dexterity; }
+  uint16_t GetVitality() const { return m_vitality; }
+  uint16_t GetEnergy() const { return m_energy; }
+  int GetDamageMin() const { return m_damageMin; }
+  int GetDamageMax() const { return m_damageMax; }
+  int GetDefense() const { return m_defense; }
+  int GetAttackSuccessRate() const { return m_attackSuccessRate; }
+  int GetDefenseSuccessRate() const { return m_defenseSuccessRate; }
+  bool LeveledUpThisFrame() const { return m_leveledUpThisFrame; }
+  void ClearLevelUpFlag() { m_leveledUpThisFrame = false; }
+
+  // XP table: cubic curve (from gObjSetExperienceTable, MaxLevel=400)
+  static uint64_t CalcXPForLevel(int level);
+
   // SafeZone state (called from main.cpp each frame)
   void SetInSafeZone(bool safe);
   bool IsInSafeZone() const { return m_inSafeZone; }
+  void Heal(int amount);
   bool HasWeapon() const { return m_weaponBmd != nullptr; }
+
+  // Equipment stat bonuses (weapon adds damage, armor/shield adds defense)
+  void SetWeaponBonus(int dmin, int dmax);
+  void SetDefenseBonus(int def);
+  int GetWeaponBonusMin() const { return m_weaponDamageMin; }
+  int GetWeaponBonusMax() const { return m_weaponDamageMax; }
+  int GetDefenseBonus() const { return m_equipDefenseBonus; }
 
   // Accessors
   glm::vec3 GetPosition() const { return m_pos; }
@@ -127,13 +188,58 @@ private:
   static constexpr int ACTION_STOP_MALE = 1;  // PLAYER_STOP_MALE
   static constexpr int ACTION_WALK_MALE = 15; // PLAYER_WALK_MALE
 
-  // Attack actions (sword right hand)
+  // Attack actions
+  static constexpr int ACTION_ATTACK_FIST = 38;     // PLAYER_ATTACK_FIST (no weapon)
   static constexpr int ACTION_ATTACK_SWORD_R1 = 39;
   static constexpr int ACTION_ATTACK_SWORD_R2 = 40;
 
+  // Hit/death actions (CharViewer: Shock=230, Die1=231, Die2=232)
+  static constexpr int ACTION_SHOCK = 230;
+  static constexpr int ACTION_DIE1 = 231;
+
+  // ─── DK Stats (MuEmu-0.97k DefaultClassInfo.txt, Class=1) ───
+  int m_level = 1;
+  uint64_t m_experience = 0;
+  uint64_t m_nextExperience = 0;
+  int m_levelUpPoints = 0;
+  bool m_leveledUpThisFrame = false;
+
+  uint16_t m_strength = 28;   // DK starting STR
+  uint16_t m_dexterity = 20;  // DK starting DEX (Agility)
+  uint16_t m_vitality = 25;   // DK starting VIT
+  uint16_t m_energy = 10;     // DK starting ENE
+
+  // DK class constants (from DefaultClassInfo.txt + GameServerInfo)
+  static constexpr int DK_BASE_STR = 28, DK_BASE_DEX = 20;
+  static constexpr int DK_BASE_VIT = 25, DK_BASE_ENE = 10;
+  static constexpr int DK_BASE_HP = 110;
+  static constexpr float DK_LEVEL_LIFE = 2.0f;
+  static constexpr float DK_VIT_TO_LIFE = 3.0f;
+  static constexpr int DK_POINTS_PER_LEVEL = 5;
+
+  // Derived combat stats (recomputed by RecalcStats)
+  int m_damageMin = 3;   // STR / 8 + weapon
+  int m_damageMax = 7;   // STR / 4 + weapon
+  int m_defense = 6;     // DEX / 3 + equipment
+  int m_attackSuccessRate = 42; // Level*5 + DEX*3/2 + STR/4
+  int m_defenseSuccessRate = 6; // DEX / 3
+
+  // Equipment bonuses (set from inventory equip)
+  int m_weaponDamageMin = 0;
+  int m_weaponDamageMax = 0;
+  int m_equipDefenseBonus = 0;
+
+  // HP system (m_maxHp computed by RecalcStats)
+  int m_hp = 110;
+  int m_maxHp = 110;
+  HeroState m_heroState = HeroState::ALIVE;
+  float m_stateTimer = 0.0f;
+  static constexpr float HIT_STUN_TIME = 0.4f;
+  static constexpr float DEAD_WAIT_TIME = 3.0f;
+
   // Combat state
-  bool m_inSafeZone = true;    // Start in SafeZone (Lorencia town)
-  WeaponEquipInfo m_weaponInfo; // Current weapon config (from server)
+  bool m_inSafeZone = true;
+  WeaponEquipInfo m_weaponInfo;
 
   // Attack state machine
   AttackState m_attackState = AttackState::NONE;
@@ -145,9 +251,7 @@ private:
   float m_attackCooldown = 0.0f;
   static constexpr float ATTACK_RANGE = 150.0f;
   static constexpr float ATTACK_COOLDOWN_TIME = 0.6f;
-  static constexpr float ATTACK_HIT_FRACTION = 0.4f; // Hit at 40% through anim
-  int m_damageMin = 1;
-  int m_damageMax = 6;
+  static constexpr float ATTACK_HIT_FRACTION = 0.4f;
 
   // Skeleton + body parts
   std::unique_ptr<BMDData> m_skeleton;
@@ -159,10 +263,15 @@ private:
   BodyPart m_parts[PART_COUNT];
   std::unique_ptr<Shader> m_shader;
 
-  // Weapon (attached item model)
+  // Weapon (attached item model — right hand)
   std::unique_ptr<BMDData> m_weaponBmd;
   std::vector<MeshBuffers> m_weaponMeshBuffers;
   std::string m_dataPath; // Cached for late weapon loading
+
+  // Shield (attached item model — left hand)
+  WeaponEquipInfo m_shieldInfo;
+  std::unique_ptr<BMDData> m_shieldBmd;
+  std::vector<MeshBuffers> m_shieldMeshBuffers;
 
   // Shadow rendering
   std::unique_ptr<Shader> m_shadowShader;

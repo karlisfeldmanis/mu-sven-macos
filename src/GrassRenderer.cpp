@@ -24,8 +24,12 @@ flat out int TexLayer;
 uniform mat4 view;
 uniform mat4 projection;
 uniform float uTime;
-uniform vec3 ballPos;
-uniform float pushRadius;
+
+// Multiple push sources (hero + monsters)
+const int MAX_PUSHERS = 17;
+uniform vec3 pushPos[MAX_PUSHERS];
+uniform float pushRadius[MAX_PUSHERS];
+uniform int numPushers;
 
 void main() {
     vec3 pos = aPos;
@@ -36,16 +40,19 @@ void main() {
     float wind = sin(windSpeed + aGridX * 5.0) * 10.0 * aWindWeight;
     pos.x += wind;
 
-    // Grass pushing: top vertices near ball get pushed away (original CheckGrass)
-    if (aWindWeight > 0.0 && pushRadius > 0.0) {
-        vec2 toBlade = pos.xz - ballPos.xz;
-        float dist = length(toBlade);
-        if (dist < pushRadius && dist > 0.001) {
-            float pushStrength = (1.0 - dist / pushRadius);
-            pushStrength *= pushStrength; // Quadratic falloff
-            vec2 pushDir = normalize(toBlade);
-            pos.xz += pushDir * pushStrength * pushRadius * 0.5;
-            pos.y -= pushStrength * 30.0; // Slight downward bend
+    // Grass pushing: top vertices near push sources get pushed away
+    if (aWindWeight > 0.0) {
+        for (int i = 0; i < numPushers; i++) {
+            if (pushRadius[i] <= 0.0) continue;
+            vec2 toBlade = pos.xz - pushPos[i].xz;
+            float dist = length(toBlade);
+            if (dist < pushRadius[i] && dist > 0.001) {
+                float pushStrength = (1.0 - dist / pushRadius[i]);
+                pushStrength *= pushStrength; // Quadratic falloff
+                vec2 pushDir = normalize(toBlade);
+                pos.xz += pushDir * pushStrength * pushRadius[i] * 0.5;
+                pos.y -= pushStrength * 30.0; // Slight downward bend
+            }
         }
     }
 
@@ -356,7 +363,7 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
 
 void GrassRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
                            float time, const glm::vec3 &viewPos,
-                           const glm::vec3 &ballPos) {
+                           const std::vector<PushSource> &pushSources) {
   if (indexCount == 0 || shaderProgram == 0)
     return;
 
@@ -369,9 +376,18 @@ void GrassRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   glUniform1f(glGetUniformLocation(shaderProgram, "uTime"), time);
   glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1,
                glm::value_ptr(viewPos));
-  glUniform3fv(glGetUniformLocation(shaderProgram, "ballPos"), 1,
-               glm::value_ptr(ballPos));
-  glUniform1f(glGetUniformLocation(shaderProgram, "pushRadius"), 150.0f);
+
+  // Upload push sources (hero + monsters)
+  int count = std::min((int)pushSources.size(), 17);
+  glUniform1i(glGetUniformLocation(shaderProgram, "numPushers"), count);
+  for (int i = 0; i < count; ++i) {
+    std::string posName = "pushPos[" + std::to_string(i) + "]";
+    std::string radName = "pushRadius[" + std::to_string(i) + "]";
+    glUniform3fv(glGetUniformLocation(shaderProgram, posName.c_str()), 1,
+                 glm::value_ptr(pushSources[i].pos));
+    glUniform1f(glGetUniformLocation(shaderProgram, radName.c_str()),
+                pushSources[i].radius);
+  }
 
   // Bind grass textures
   for (int i = 0; i < 3; ++i) {

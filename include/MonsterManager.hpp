@@ -14,15 +14,21 @@
 #include <unordered_map>
 #include <vector>
 
+// Client-side monster visual state — driven entirely by server packets.
+// The client NEVER decides state transitions on its own (except cosmetic
+// animation completion like ATTACKING->previous state).
 enum class MonsterState {
-  IDLE,
-  WALKING,
-  HIT,
-  DYING,
-  DEAD
+  IDLE,       // Standing still, playing idle animation
+  WALKING,    // Moving to server-given wander/return target (0x35, chasing=0)
+  CHASING,    // Moving to server-given chase target (0x35, chasing=1)
+  ATTACKING,  // Playing attack animation (triggered by 0x2F monster-attack packet)
+  HIT,        // Playing shock/flinch animation (triggered by 0x29 damage-result packet)
+  DYING,      // Playing death animation (triggered by 0x2A death packet)
+  DEAD        // Corpse fading, waiting for server respawn (0x30)
 };
 
 struct ServerMonsterSpawn {
+  uint16_t serverIndex;  // Unique server-assigned index (from 0x34 packet)
   uint16_t monsterType;
   uint8_t gridX;
   uint8_t gridY;
@@ -33,10 +39,14 @@ struct MonsterInfo {
   glm::vec3 position;
   float radius;
   float height;
+  float bodyOffset;
   std::string name;
   uint16_t type;
+  int level;
   int hp;
   int maxHp;
+  int defense;
+  int defenseRate;
   MonsterState state;
 };
 
@@ -44,7 +54,7 @@ class MonsterManager {
 public:
   void InitModels(const std::string &dataPath);
   void AddMonster(uint16_t monsterType, uint8_t gridX, uint8_t gridY,
-                  uint8_t dir);
+                  uint8_t dir, uint16_t serverIndex = 0);
 
   void Update(float deltaTime);
   void Render(const glm::mat4 &view, const glm::mat4 &proj,
@@ -54,9 +64,35 @@ public:
                      const glm::mat4 &proj);
   void Cleanup();
 
-  bool DealDamage(int monsterIndex, int damage);
   int GetMonsterCount() const { return (int)m_monsters.size(); }
   MonsterInfo GetMonsterInfo(int index) const;
+  int CalcXPReward(int monsterIndex, int playerLevel) const;
+  uint16_t GetServerIndex(int index) const;
+  int FindByServerIndex(uint16_t serverIndex) const;
+
+  // ── Server-driven state updates (called from packet handlers in main.cpp) ──
+
+  // 0x29: Server damage result — update HP, play hit animation
+  void SetMonsterHP(int index, int hp, int maxHp);
+  void TriggerHitAnimation(int index);
+
+  // 0x2A: Server death notification — play die animation
+  void SetMonsterDying(int index);
+
+  // 0x2F: Monster attacks player — play attack animation
+  void TriggerAttackAnimation(int index);
+
+  // 0x30: Server respawn — reset monster at new position
+  void RespawnMonster(int index, uint8_t gridX, uint8_t gridY, int hp);
+
+  // 0x35: Server movement — set target position for smooth interpolation
+  void SetMonsterServerPosition(int index, float worldX, float worldZ, bool chasing);
+
+  // Player position for cosmetic facing during CHASING/ATTACKING states
+  void SetPlayerPosition(const glm::vec3 &pos) { m_playerPos = pos; }
+  void SetPlayerDead(bool dead) { m_playerDead = dead; }
+
+  // ── External data linkage ──
 
   void SetTerrainData(const TerrainData *td) { m_terrainData = td; }
   void SetTerrainLightmap(const std::vector<glm::vec3> &lm) {
@@ -74,6 +110,13 @@ private:
     float scale = 1.0f;
     float collisionRadius = 60.0f;
     float collisionHeight = 80.0f;
+    float bodyOffset = 0.0f;
+    int rootBone = -1; // Index of root bone (Parent == -1) for LockPositions
+    // Stats from Monster.txt (used for display/UI only — combat is server-side)
+    int level = 1;
+    int defense = 0;
+    int defenseRate = 0;
+    int attackRate = 0;
   };
 
   struct MonsterInstance {
@@ -85,17 +128,30 @@ private:
     int action = 0;
     float scale = 1.0f;
     uint16_t monsterType = 0;
+    uint16_t serverIndex = 0;  // Server-assigned unique index
     std::string name;
 
     MonsterState state = MonsterState::IDLE;
     float stateTimer = 0.0f;
-    float idleWanderTimer = 0.0f;
+    float bobTimer = 0.0f; // Budge Dragon hover timer (ZzzCharacter.cpp:6224)
     glm::vec3 wanderTarget;
 
     int hp = 30;
     int maxHp = 30;
     float corpseTimer = 0.0f;
     float corpseAlpha = 1.0f;
+    int swordCount = 0; // Attack alternation counter (ATTACK1/ATTACK2)
+
+    // Server-driven position target (from 0x35 packet)
+    glm::vec3 serverTargetPos{0.0f};
+    bool serverChasing = false;
+    float serverPosAge = 999.0f; // Time since last server position update
+
+    // Stutter detection (debug): track position deltas to detect vibration
+    glm::vec3 prevPosition{0.0f};
+    glm::vec3 prevDelta{0.0f};
+    float stutterScore = 0.0f;    // Accumulates when direction reverses
+    float stutterLogTimer = 0.0f; // Throttle stutter warnings
 
     std::vector<MeshBuffers> meshBuffers;
     struct ShadowMesh {
@@ -123,21 +179,34 @@ private:
   std::unordered_map<uint16_t, int> m_typeToModel;
   bool m_modelsLoaded = false;
 
-  // Monster action constants (_define.h)
+  // ── Monster action constants (_define.h: MONSTER01_*) ──
   static constexpr int ACTION_STOP1 = 0;
   static constexpr int ACTION_WALK = 2;
   static constexpr int ACTION_ATTACK1 = 3;
+  static constexpr int ACTION_ATTACK2 = 4;
   static constexpr int ACTION_SHOCK = 5;
   static constexpr int ACTION_DIE = 6;
 
-  static constexpr float ANIM_SPEED = 4.0f;
+  // ── Animation speeds (PlaySpeed * 25fps, from ZzzOpenData.cpp) ──
+  static constexpr float SPEED_STOP    = 6.25f;  // 0.25 * 25
+  static constexpr float SPEED_WALK    = 8.5f;   // 0.34 * 25
+  static constexpr float SPEED_ATTACK  = 8.25f;  // 0.33 * 25
+  static constexpr float SPEED_SHOCK   = 12.5f;  // 0.50 * 25
+  static constexpr float SPEED_DIE     = 13.75f; // 0.55 * 25
+  float getAnimSpeed(uint16_t monsterType, int action) const;
+
+  // ── Client-side visual constants ──
   static constexpr float CORPSE_FADE_TIME = 3.0f;
-  static constexpr float RESPAWN_TIME = 10.0f;
-  static constexpr float WANDER_RADIUS = 300.0f;
-  static constexpr float WANDER_SPEED = 100.0f;
+  static constexpr float CHASE_SPEED = 200.0f;  // Chase speed (player=334, can outrun)
+  static constexpr float WANDER_SPEED = 80.0f;  // Slow wander/walk speed
+
+  // Player position for cosmetic facing (not used for AI — that's server-side)
+  glm::vec3 m_playerPos{0.0f};
+  bool m_playerDead = false;
 
   int loadMonsterModel(const std::string &bmdFile, const std::string &name,
-                       float scale, float radius, float height);
+                       float scale, float radius, float height,
+                       float bodyOffset = 0.0f);
   float snapToTerrain(float worldX, float worldZ);
   glm::vec3 sampleTerrainLightAt(const glm::vec3 &worldPos) const;
   void updateStateMachine(MonsterInstance &mon, float dt);

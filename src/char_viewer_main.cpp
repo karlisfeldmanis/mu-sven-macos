@@ -12,15 +12,17 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 #include <vector>
 
-static const std::string DATA_PATH =
-    "/Users/karlisfeldmanis/Desktop/mu_remaster/"
-    "references/other/MuMain/src/bin/Data/Player/";
+static const std::string DATA_PATH = "Data/Player/";
 static const int WIN_WIDTH = 1280;
 static const int WIN_HEIGHT = 720;
 
@@ -114,9 +116,7 @@ static const ArmorSetDef kArmorSets[] = {
 static const int kNumArmorSets = sizeof(kArmorSets) / sizeof(kArmorSets[0]);
 
 // --- Weapon system ---
-static const std::string DATA_ITEM_PATH =
-    "/Users/karlisfeldmanis/Desktop/mu_remaster/"
-    "references/other/MuMain/src/bin/Data/Item/";
+static const std::string DATA_ITEM_PATH = "Data/Item/";
 
 enum WeaponCategory {
   WCAT_NONE = 0,
@@ -1528,6 +1528,17 @@ private:
 };
 
 int main(int argc, char **argv) {
+#ifdef __APPLE__
+  { // Fix CWD when launched via 'open' or Finder
+    char buf[1024];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+      auto dir = std::filesystem::path(buf).parent_path();
+      if (!dir.empty())
+        std::filesystem::current_path(dir);
+    }
+  }
+#endif
   CharacterViewer viewer;
   for (int i = 1; i < argc; ++i) {
     if (std::string(argv[i]) == "--screenshots")

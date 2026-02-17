@@ -6,7 +6,9 @@
 #include "GrassRenderer.hpp"
 #include "HeroCharacter.hpp"
 #include "MonsterManager.hpp"
+#include "NetworkClient.hpp"
 #include "NpcManager.hpp"
+#include "../server/include/PacketDefs.hpp"
 #include "ObjectRenderer.hpp"
 #include "Screenshot.hpp"
 #include "Shader.hpp"
@@ -14,6 +16,9 @@
 #include "Terrain.hpp"
 #include "TerrainParser.hpp"
 #include "ViewerCommon.hpp"
+#include "UICoords.hpp"
+#include "HUD.hpp"
+#include "MockData.hpp"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -21,13 +26,15 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <ctime>
-#include <iomanip>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <streambuf>
 #include <turbojpeg.h>
+#include <unistd.h>
 
 // Tee streambuf: writes to both a file and the original stream
 class TeeStreambuf : public std::streambuf {
@@ -150,159 +157,422 @@ static std::vector<PointLight> g_pointLights;
 static HeroCharacter g_hero;
 static ClickEffect g_clickEffect;
 static NpcManager g_npcManager;
+static MonsterManager g_monsterManager;
+static NetworkClient g_net;
 
 // NPC interaction state
-static int g_hoveredNpc = -1;   // Index of NPC under mouse cursor
-static int g_selectedNpc = -1;  // Index of NPC that was clicked (dialog open)
+static int g_hoveredNpc = -1;  // Index of NPC under mouse cursor
+static int g_selectedNpc = -1; // Index of NPC that was clicked (dialog open)
 
-// Server connection for NPC + equipment data
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <cstring>
+// ── Floating damage numbers ──
+struct FloatingDamage {
+  glm::vec3 worldPos;    // World position where damage occurred
+  int damage;
+  uint8_t type;          // 0=normal(orange), 2=excellent(green), 3=critical(blue), 7=miss, 8=incoming(red)
+  float timer;           // Counts up from 0
+  float maxTime;         // When to remove (1.5s)
+  bool active;
+};
+static constexpr int MAX_FLOATING_DAMAGE = 32;
+static FloatingDamage g_floatingDmg[MAX_FLOATING_DAMAGE] = {};
 
-// Data received from server
+// ── Ground item drops ──
+struct GroundItem {
+  uint16_t dropIndex;
+  int8_t defIndex;    // -1=Zen
+  uint8_t quantity;
+  uint8_t itemLevel;
+  glm::vec3 position;
+  float timer;        // Time alive (for bob animation)
+  bool active;
+};
+static constexpr int MAX_GROUND_ITEMS = 64;
+static GroundItem g_groundItems[MAX_GROUND_ITEMS] = {};
+// Drop item names (matching server's SeedItemDefinitions)
+static const char* GetDropName(int8_t defIndex) {
+  switch (defIndex) {
+    case -1: return "Zen";
+    case 0: return "Short Sword";
+    case 1: return "Kris";
+    case 2: return "Small Shield";
+    case 3: return "Leather Armor";
+    case 4: return "Healing Potion";
+    case 5: return "Mana Potion";
+    default: return "Item";
+  }
+}
+
+static void SpawnDamageNumber(const glm::vec3 &pos, int damage, uint8_t type) {
+  for (auto &d : g_floatingDmg) {
+    if (!d.active) {
+      d.worldPos = pos + glm::vec3(((rand() % 40) - 20), 80.0f + (rand() % 30), ((rand() % 40) - 20));
+      d.damage = damage;
+      d.type = type;
+      d.timer = 0.0f;
+      d.maxTime = 1.5f;
+      d.active = true;
+      return;
+    }
+  }
+}
+
+// Server-received character stats for HUD
+static int g_serverLevel = 1;
+static int g_serverHP = 100, g_serverMaxHP = 100;
+static int g_serverMP = 0, g_serverMaxMP = 0;
+static int g_serverStr = 0, g_serverDex = 0, g_serverVit = 0, g_serverEne = 0;
+static int g_serverLevelUpPoints = 0;
+static int64_t g_serverXP = 0;
+
+// Panel toggle state
+static bool g_showCharInfo = false;
+static bool g_showInventory = false;
+
+// Client-side inventory (synced from server via 0x36)
+struct ClientInventoryItem {
+  int8_t defIndex = -2; // -2=empty
+  uint8_t quantity = 0;
+  uint8_t itemLevel = 0;
+  bool occupied = false;
+};
+static constexpr int INVENTORY_SLOTS = 64;
+static ClientInventoryItem g_inventory[INVENTORY_SLOTS] = {};
+static uint32_t g_zen = 0;
+
+// Equipment display (populated from 0x24 packet)
+struct ClientEquipSlot {
+  uint8_t category = 0xFF;
+  uint8_t itemIndex = 0;
+  uint8_t itemLevel = 0;
+  std::string modelFile;
+  bool equipped = false;
+};
+static ClientEquipSlot g_equipSlots[7] = {}; // 7 equipment slots
+
+// Forward declarations for panel rendering
+static UICoords g_hudCoords; // File-scope for mouse callback access
+
+// Data received from server initial burst
 struct ServerData {
   std::vector<ServerNpcSpawn> npcs;
+  std::vector<ServerMonsterSpawn> monsters;
   std::vector<WeaponEquipInfo> equipment;
   bool connected = false;
 };
 
-static ServerData connectToServer(const char *host, uint16_t port) {
-  ServerData result;
+// Parse a single MU packet from the initial server data burst
+static void parseInitialPacket(const uint8_t *pkt, int pktSize,
+                               ServerData &result) {
+  if (pktSize < 3) return;
+  uint8_t type = pkt[0];
 
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0) {
-    std::cerr << "[Net] Failed to create socket" << std::endl;
-    return result;
-  }
+  // C2 packets (4-byte header)
+  if (type == 0xC2 && pktSize >= 5) {
+    uint8_t headcode = pkt[3];
 
-  // Set 2 second timeout
-  struct timeval tv{2, 0};
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-  struct sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  inet_pton(AF_INET, host, &addr.sin_addr);
-
-  if (connect(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    std::cerr << "[Net] Cannot connect to server " << host << ":" << port << std::endl;
-    close(sock);
-    return result;
-  }
-  result.connected = true;
-  std::cout << "[Net] Connected to server " << host << ":" << port << std::endl;
-
-  // Receive all pending data (welcome + NPC viewport + equipment)
-  uint8_t buf[8192];
-  int total = 0;
-  while (total < (int)sizeof(buf)) {
-    int n = recv(sock, buf + total, sizeof(buf) - total, 0);
-    if (n <= 0) break;
-    total += n;
-  }
-  close(sock);
-
-  std::cout << "[Net] Received " << total << " bytes from server" << std::endl;
-
-  // Parse all packets
-  int pos = 0;
-  while (pos < total) {
-    uint8_t type = buf[pos];
-    int pktSize = 0;
-
-    if (type == 0xC1 || type == 0xC3) {
-      if (pos + 1 >= total) break;
-      pktSize = buf[pos + 1];
-    } else if (type == 0xC2 || type == 0xC4) {
-      if (pos + 2 >= total) break;
-      pktSize = (buf[pos + 1] << 8) | buf[pos + 2];
-    } else {
-      pos++;
-      continue;
+    // NPC viewport (0x13)
+    if (headcode == 0x13) {
+      uint8_t count = pkt[4];
+      std::cout << "[Net] NPC viewport: " << (int)count << " NPCs" << std::endl;
+      int entryStart = 5;
+      for (int i = 0; i < count; i++) {
+        int off = entryStart + i * 9;
+        if (off + 9 > pktSize) break;
+        ServerNpcSpawn npc;
+        npc.type = (uint16_t)((pkt[off + 2] << 8) | pkt[off + 3]);
+        npc.gridX = pkt[off + 4];
+        npc.gridY = pkt[off + 5];
+        npc.dir = pkt[off + 8] >> 4;
+        result.npcs.push_back(npc);
+        std::cout << "[Net]   NPC type=" << npc.type << " grid=("
+                  << (int)npc.gridX << "," << (int)npc.gridY
+                  << ") dir=" << (int)npc.dir << std::endl;
+      }
     }
 
-    if (pktSize < 2 || pos + pktSize > total) break;
+    // Monster viewport V2 (0x34) — includes index, HP, state
+    if (headcode == 0x34) {
+      uint8_t count = pkt[4];
+      std::cout << "[Net] Monster viewport V2: " << (int)count << " monsters"
+                << std::endl;
+      int entryStart = 5;
+      int entrySize = 12; // sizeof(PMSG_MONSTER_VIEWPORT_ENTRY_V2)
+      for (int i = 0; i < count; i++) {
+        int off = entryStart + i * entrySize;
+        if (off + entrySize > pktSize) break;
+        ServerMonsterSpawn mon;
+        mon.serverIndex = (uint16_t)((pkt[off + 0] << 8) | pkt[off + 1]);
+        mon.monsterType = (uint16_t)((pkt[off + 2] << 8) | pkt[off + 3]);
+        mon.gridX = pkt[off + 4];
+        mon.gridY = pkt[off + 5];
+        mon.dir = pkt[off + 6];
+        result.monsters.push_back(mon);
+        std::cout << "[Net]   Monster idx=" << mon.serverIndex
+                  << " type=" << mon.monsterType << " grid=("
+                  << (int)mon.gridX << "," << (int)mon.gridY
+                  << ") dir=" << (int)mon.dir << std::endl;
+      }
+    }
 
-    // C2 packets: NPC viewport (0x13)
-    if (type == 0xC2 && pktSize >= 5) {
-      uint8_t headcode = buf[pos + 3];
-      if (headcode == 0x13) {
-        uint8_t count = buf[pos + 4];
-        std::cout << "[Net] NPC viewport: " << (int)count << " NPCs" << std::endl;
+    // Inventory sync (0x36) — C2: header(4) + zen(4) + count(1) + N*item(4)
+    if (headcode == 0x36 && pktSize >= 9) {
+      uint32_t zen;
+      std::memcpy(&zen, pkt + 4, 4);
+      g_zen = zen;
+      uint8_t count = pkt[8];
+      for (auto &item : g_inventory) item = {};
+      for (int i = 0; i < count; i++) {
+        int off = 9 + i * 4;
+        if (off + 4 > pktSize) break;
+        uint8_t slot = pkt[off];
+        if (slot < INVENTORY_SLOTS) {
+          g_inventory[slot].defIndex = static_cast<int8_t>(pkt[off + 1]);
+          g_inventory[slot].quantity = pkt[off + 2];
+          g_inventory[slot].itemLevel = pkt[off + 3];
+          g_inventory[slot].occupied = true;
+        }
+      }
+      std::cout << "[Net] Inventory sync: " << (int)count << " items, zen=" << g_zen << std::endl;
+    }
+  }
 
-        int entryStart = pos + 5;
-        for (int i = 0; i < count; i++) {
-          int off = entryStart + i * 9;
-          if (off + 9 > total) break;
+  // C1 packets (2-byte header)
+  if (type == 0xC1 && pktSize >= 3) {
+    uint8_t headcode = pkt[2];
 
-          ServerNpcSpawn npc;
-          npc.type = (uint16_t)((buf[off + 2] << 8) | buf[off + 3]);
-          npc.gridX = buf[off + 4];
-          npc.gridY = buf[off + 5];
-          npc.dir = buf[off + 8] >> 4;
-          result.npcs.push_back(npc);
+    // Monster viewport V1 (0x1F) — fallback if V2 not parsed
+    if (headcode == 0x1F && pktSize >= 4) {
+      uint8_t count = pkt[3];
+      std::cout << "[Net] Monster viewport V1: " << (int)count << " monsters"
+                << std::endl;
+      int entryStart = 4;
+      int entrySize = 5; // sizeof(PMSG_MONSTER_VIEWPORT_ENTRY)
+      for (int i = 0; i < count; i++) {
+        int off = entryStart + i * entrySize;
+        if (off + entrySize > pktSize) break;
+        ServerMonsterSpawn mon;
+        mon.monsterType = (uint16_t)((pkt[off] << 8) | pkt[off + 1]);
+        mon.gridX = pkt[off + 2];
+        mon.gridY = pkt[off + 3];
+        mon.dir = pkt[off + 4];
+        // Only add if not already from V2
+        if (result.monsters.empty())
+          result.monsters.push_back(mon);
+      }
+    }
 
-          std::cout << "[Net]   NPC type=" << npc.type
-                    << " grid=(" << (int)npc.gridX << "," << (int)npc.gridY
-                    << ") dir=" << (int)npc.dir << std::endl;
+    // Equipment (0x24)
+    if (headcode == 0x24 && pktSize >= 4) {
+      uint8_t count = pkt[3];
+      std::cout << "[Net] Equipment: " << (int)count << " slots" << std::endl;
+      int entryStart = 4;
+      int entrySize = 4 + 32;
+      for (int i = 0; i < count; i++) {
+        int off = entryStart + i * entrySize;
+        if (off + entrySize > pktSize) break;
+        WeaponEquipInfo weapon;
+        uint8_t slot = pkt[off + 0];
+        weapon.category = pkt[off + 1];
+        weapon.itemIndex = pkt[off + 2];
+        weapon.itemLevel = pkt[off + 3];
+        char modelFile[33] = {};
+        std::memcpy(modelFile, &pkt[off + 4], 32);
+        weapon.modelFile = modelFile;
+        std::cout << "[Net]   Slot " << (int)slot << ": " << weapon.modelFile
+                  << " cat=" << (int)weapon.category
+                  << " idx=" << (int)weapon.itemIndex << " +"
+                  << (int)weapon.itemLevel << std::endl;
+        if (slot == 0) result.equipment.push_back(weapon);
+        // Populate all equipment display slots
+        if (slot < 7) {
+          g_equipSlots[slot].category = weapon.category;
+          g_equipSlots[slot].itemIndex = weapon.itemIndex;
+          g_equipSlots[slot].itemLevel = weapon.itemLevel;
+          g_equipSlots[slot].modelFile = weapon.modelFile;
+          g_equipSlots[slot].equipped = true;
         }
       }
     }
 
-    // C1 packets: Equipment (0x24)
-    if (type == 0xC1 && pktSize >= 4) {
-      uint8_t headcode = buf[pos + 2];
-      if (headcode == 0x24) {
-        uint8_t count = buf[pos + 3];
-        std::cout << "[Net] Equipment: " << (int)count << " slots" << std::endl;
+    // Character stats (0x25)
+    if (headcode == 0x25 && pktSize >= (int)sizeof(PMSG_CHARSTATS_SEND)) {
+      auto *stats = reinterpret_cast<const PMSG_CHARSTATS_SEND *>(pkt);
+      g_serverLevel = stats->level;
+      g_serverStr = stats->strength;
+      g_serverDex = stats->dexterity;
+      g_serverVit = stats->vitality;
+      g_serverEne = stats->energy;
+      g_serverHP = stats->life;
+      g_serverMaxHP = stats->maxLife;
+      g_serverLevelUpPoints = stats->levelUpPoints;
+      g_serverXP = ((int64_t)stats->experienceHi << 32) | stats->experienceLo;
+      std::cout << "[Net] Character stats: Lv." << g_serverLevel
+                << " HP=" << g_serverHP << "/" << g_serverMaxHP
+                << " STR=" << g_serverStr << " XP=" << g_serverXP << std::endl;
+    }
+  }
+}
 
-        // Each slot entry: 4 bytes fixed + 32 bytes modelFile = 36 bytes
-        int entryStart = pos + 4;
-        int entrySize = 4 + 32; // matches PMSG_EQUIPMENT_SLOT packed size
-        for (int i = 0; i < count; i++) {
-          int off = entryStart + i * entrySize;
-          if (off + entrySize > total) break;
+// Handle ongoing server packets (monster AI, combat, drops)
+static void handleServerPacket(const uint8_t *pkt, int pktSize) {
+  if (pktSize < 3) return;
+  uint8_t type = pkt[0];
 
-          WeaponEquipInfo weapon;
-          uint8_t slot = buf[off + 0];
-          weapon.category = buf[off + 1];
-          weapon.itemIndex = buf[off + 2];
-          weapon.itemLevel = buf[off + 3];
+  if (type == 0xC1) {
+    uint8_t headcode = pkt[2];
 
-          // Model file name (32 bytes, null-terminated)
-          char modelFile[33] = {};
-          std::memcpy(modelFile, &buf[off + 4], 32);
-          weapon.modelFile = modelFile;
+    // Monster move/chase (0x35)
+    if (headcode == 0x35 && pktSize >= (int)sizeof(PMSG_MONSTER_MOVE_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_MONSTER_MOVE_SEND *>(pkt);
+      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
+      if (idx >= 0) {
+        float worldX = (float)p->targetY * 100.0f;
+        float worldZ = (float)p->targetX * 100.0f;
+        g_monsterManager.SetMonsterServerPosition(idx, worldX, worldZ,
+                                                   p->chasing != 0);
+      }
+    }
 
-          std::cout << "[Net]   Slot " << (int)slot << ": " << weapon.modelFile
-                    << " cat=" << (int)weapon.category
-                    << " idx=" << (int)weapon.itemIndex
-                    << " +" << (int)weapon.itemLevel
-                    << std::endl;
+    // Damage result (0x29) — player hits monster
+    if (headcode == 0x29 && pktSize >= (int)sizeof(PMSG_DAMAGE_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_DAMAGE_SEND *>(pkt);
+      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
+      if (idx >= 0) {
+        MonsterInfo mi = g_monsterManager.GetMonsterInfo(idx);
+        g_monsterManager.SetMonsterHP(idx, p->remainingHp, mi.maxHp);
+        if (p->damageType > 0)
+          g_monsterManager.TriggerHitAnimation(idx);
+        // Floating damage number above monster
+        uint8_t dmgType = p->damageType; // 0=miss, 1=normal, 2=critical, 3=excellent
+        SpawnDamageNumber(mi.position, p->damage, dmgType == 0 ? 7 : dmgType);
+      }
+    }
 
-          // Only handle right-hand weapon for now (slot 0)
-          if (slot == 0) {
-            result.equipment.push_back(weapon);
+    // Monster death (0x2A)
+    if (headcode == 0x2A && pktSize >= (int)sizeof(PMSG_MONSTER_DEATH_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_MONSTER_DEATH_SEND *>(pkt);
+      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
+      if (idx >= 0)
+        g_monsterManager.SetMonsterDying(idx);
+    }
+
+    // Monster attack player (0x2F) — monster hits hero
+    if (headcode == 0x2F && pktSize >= (int)sizeof(PMSG_MONSTER_ATTACK_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_MONSTER_ATTACK_SEND *>(pkt);
+      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
+      if (idx >= 0)
+        g_monsterManager.TriggerAttackAnimation(idx);
+      g_serverHP = p->remainingHp;
+      g_hero.TakeDamage(p->damage);
+      // Red damage number above hero
+      SpawnDamageNumber(g_hero.GetPosition(), p->damage, 8);
+    }
+
+    // Monster respawn (0x30)
+    if (headcode == 0x30 && pktSize >= (int)sizeof(PMSG_MONSTER_RESPAWN_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_MONSTER_RESPAWN_SEND *>(pkt);
+      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
+      if (idx >= 0)
+        g_monsterManager.RespawnMonster(idx, p->x, p->y, p->hp);
+    }
+
+    // Ground drop spawned (0x2B)
+    if (headcode == 0x2B && pktSize >= (int)sizeof(PMSG_DROP_SPAWN_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_DROP_SPAWN_SEND *>(pkt);
+      for (auto &gi : g_groundItems) {
+        if (!gi.active) {
+          gi.dropIndex = p->dropIndex;
+          gi.defIndex = p->defIndex;
+          gi.quantity = p->quantity;
+          gi.itemLevel = p->itemLevel;
+          gi.position = glm::vec3(p->worldX, 0.0f, p->worldZ);
+          gi.timer = 0.0f;
+          gi.active = true;
+          std::cout << "[Drop] Spawned " << GetDropName(p->defIndex)
+                    << " (idx=" << p->dropIndex << ") at ("
+                    << p->worldX << "," << p->worldZ << ")" << std::endl;
+          break;
+        }
+      }
+    }
+
+    // Pickup result (0x2D) — gold or item acquired
+    if (headcode == 0x2D && pktSize >= (int)sizeof(PMSG_PICKUP_RESULT_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_PICKUP_RESULT_SEND *>(pkt);
+      if (p->success) {
+        // Remove from ground
+        for (auto &gi : g_groundItems) {
+          if (gi.active && gi.dropIndex == p->dropIndex) {
+            gi.active = false;
+            break;
           }
         }
       }
     }
 
-    pos += pktSize;
+    // Drop removed (0x2E)
+    if (headcode == 0x2E && pktSize >= (int)sizeof(PMSG_DROP_REMOVE_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_DROP_REMOVE_SEND *>(pkt);
+      for (auto &gi : g_groundItems) {
+        if (gi.active && gi.dropIndex == p->dropIndex) {
+          gi.active = false;
+          break;
+        }
+      }
+    }
+
+    // Stat allocation response (0x38)
+    if (headcode == 0x38 && pktSize >= (int)sizeof(PMSG_STAT_ALLOC_SEND)) {
+      auto *resp = reinterpret_cast<const PMSG_STAT_ALLOC_SEND *>(pkt);
+      if (resp->result) {
+        switch (resp->statType) {
+          case 0: g_serverStr = resp->newValue; break;
+          case 1: g_serverDex = resp->newValue; break;
+          case 2: g_serverVit = resp->newValue; break;
+          case 3: g_serverEne = resp->newValue; break;
+        }
+        g_serverLevelUpPoints = resp->levelUpPoints;
+        g_serverMaxHP = resp->maxLife;
+        std::cout << "[Net] Stat alloc: type=" << (int)resp->statType
+                  << " val=" << resp->newValue << " pts=" << resp->levelUpPoints << std::endl;
+      }
+    }
   }
 
-  return result;
+  // C2 packets (ongoing)
+  if (type == 0xC2 && pktSize >= 5) {
+    uint8_t headcode = pkt[3];
+
+    // Inventory sync (0x36)
+    if (headcode == 0x36 && pktSize >= 9) {
+      uint32_t zen;
+      std::memcpy(&zen, pkt + 4, 4);
+      g_zen = zen;
+      uint8_t count = pkt[8];
+      for (auto &item : g_inventory) item = {};
+      for (int i = 0; i < count; i++) {
+        int off = 9 + i * 4;
+        if (off + 4 > pktSize) break;
+        uint8_t slot = pkt[off];
+        if (slot < INVENTORY_SLOTS) {
+          g_inventory[slot].defIndex = static_cast<int8_t>(pkt[off + 1]);
+          g_inventory[slot].quantity = pkt[off + 2];
+          g_inventory[slot].itemLevel = pkt[off + 3];
+          g_inventory[slot].occupied = true;
+        }
+      }
+    }
+  }
 }
 
 static const TerrainData *g_terrainDataPtr = nullptr;
 
 // Roof hiding: types 125 (HouseWall05) and 126 (HouseWall06) fade when
-// hero stands on layer1 tile == 4 (building interior). Original: ZzzObject.cpp:3744
+// hero stands on layer1 tile == 4 (building interior). Original:
+// ZzzObject.cpp:3744
 static std::unordered_map<int, float> g_typeAlpha = {{125, 1.0f}, {126, 1.0f}};
-static std::unordered_map<int, float> g_typeAlphaTarget = {{125, 1.0f}, {126, 1.0f}};
+static std::unordered_map<int, float> g_typeAlphaTarget = {{125, 1.0f},
+                                                           {126, 1.0f}};
 
 struct LightTemplate {
   glm::vec3 color;
@@ -435,7 +705,8 @@ static bool screenToTerrain(GLFWwindow *window, double mouseX, double mouseY,
   float stepSize = 50.0f;
   float maxDist = 10000.0f;
   float prevT = 0.0f;
-  float prevAbove = rayOrigin.y - getTerrainHeight(*g_terrainDataPtr, rayOrigin.x, rayOrigin.z);
+  float prevAbove = rayOrigin.y - getTerrainHeight(*g_terrainDataPtr,
+                                                   rayOrigin.x, rayOrigin.z);
 
   for (float t = stepSize; t < maxDist; t += stepSize) {
     glm::vec3 p = rayOrigin + rayDir * t;
@@ -458,9 +729,8 @@ static bool screenToTerrain(GLFWwindow *window, double mouseX, double mouseY,
           hi = mid;
       }
       glm::vec3 hit = rayOrigin + rayDir * ((lo + hi) * 0.5f);
-      outWorld = glm::vec3(hit.x,
-                           getTerrainHeight(*g_terrainDataPtr, hit.x, hit.z),
-                           hit.z);
+      outWorld = glm::vec3(
+          hit.x, getTerrainHeight(*g_terrainDataPtr, hit.x, hit.z), hit.z);
       return true;
     }
     prevT = t;
@@ -506,7 +776,8 @@ static int rayPickNpc(GLFWwindow *window, double mouseX, double mouseY) {
     float b = 2.0f * (dx * rayD.x + dz * rayD.z);
     float c = dx * dx + dz * dz - r * r;
     float disc = b * b - 4.0f * a * c;
-    if (disc < 0) continue;
+    if (disc < 0)
+      continue;
 
     float sqrtDisc = sqrtf(disc);
     float t0 = (-b - sqrtDisc) / (2.0f * a);
@@ -514,7 +785,8 @@ static int rayPickNpc(GLFWwindow *window, double mouseX, double mouseY) {
 
     // Check both intersection points
     for (float t : {t0, t1}) {
-      if (t < 0) continue;
+      if (t < 0)
+        continue;
       float hitY = rayO.y + rayD.y * t;
       if (hitY >= yMin && hitY <= yMax && t < bestT) {
         bestT = t;
@@ -524,6 +796,75 @@ static int rayPickNpc(GLFWwindow *window, double mouseX, double mouseY) {
   }
   return bestIdx;
 }
+
+// --- Ray-Monster picking (cylinder intersection, same as NPC) ---
+
+static int rayPickMonster(GLFWwindow *window, double mouseX, double mouseY) {
+  int winW, winH;
+  glfwGetWindowSize(window, &winW, &winH);
+
+  float ndcX = (float)(2.0 * mouseX / winW - 1.0);
+  float ndcY = (float)(1.0 - 2.0 * mouseY / winH);
+
+  glm::mat4 proj = g_camera.GetProjectionMatrix((float)winW, (float)winH);
+  glm::mat4 view = g_camera.GetViewMatrix();
+  glm::mat4 invVP = glm::inverse(proj * view);
+
+  glm::vec4 nearPt = invVP * glm::vec4(ndcX, ndcY, -1.0f, 1.0f);
+  glm::vec4 farPt = invVP * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+  nearPt /= nearPt.w;
+  farPt /= farPt.w;
+
+  glm::vec3 rayO = glm::vec3(nearPt);
+  glm::vec3 rayD = glm::normalize(glm::vec3(farPt) - rayO);
+
+  int bestIdx = -1;
+  float bestT = 1e9f;
+
+  for (int i = 0; i < g_monsterManager.GetMonsterCount(); ++i) {
+    MonsterInfo info = g_monsterManager.GetMonsterInfo(i);
+    if (info.state == MonsterState::DEAD || info.state == MonsterState::DYING)
+      continue;
+    float r = info.radius * 1.8f; // Inflated pick radius for click forgiveness
+    float yMin = info.position.y;
+    float yMax = info.position.y + info.height;
+
+    float dx = rayO.x - info.position.x;
+    float dz = rayO.z - info.position.z;
+    float a = rayD.x * rayD.x + rayD.z * rayD.z;
+    float b = 2.0f * (dx * rayD.x + dz * rayD.z);
+    float c = dx * dx + dz * dz - r * r;
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0)
+      continue;
+
+    float sqrtDisc = sqrtf(disc);
+    float t0 = (-b - sqrtDisc) / (2.0f * a);
+    float t1 = (-b + sqrtDisc) / (2.0f * a);
+
+    for (float t : {t0, t1}) {
+      if (t < 0)
+        continue;
+      float hitY = rayO.y + rayD.y * t;
+      if (hitY >= yMin && hitY <= yMax && t < bestT) {
+        bestT = t;
+        bestIdx = i;
+      }
+    }
+  }
+  return bestIdx;
+}
+
+// Drag state for inventory (declared here for mouse callback access)
+static int g_dragFromSlot = -1;
+static int8_t g_dragDefIndex = -2;
+static uint8_t g_dragQuantity = 0;
+static uint8_t g_dragItemLevel = 0;
+static bool g_isDragging = false;
+
+// Forward declarations for panel interaction (defined later)
+static bool HandlePanelClick(float vx, float vy);
+static void HandlePanelMouseUp(float vx, float vy);
 
 // --- Click-to-move mouse handler ---
 
@@ -537,20 +878,49 @@ void mouse_button_callback(GLFWwindow *window, int button, int action,
       double mx, my;
       glfwGetCursorPos(window, &mx, &my);
 
-      // Check NPC click first
+      // Check if click is on a UI panel first
+      if (g_showCharInfo || g_showInventory) {
+        float vx = g_hudCoords.ToVirtualX((float)mx);
+        float vy = g_hudCoords.ToVirtualY((float)my);
+        if (HandlePanelClick(vx, vy)) return;
+      }
+
+      // Check NPC click first, then monster, then ground
       int npcHit = rayPickNpc(window, mx, my);
       if (npcHit >= 0) {
         g_selectedNpc = npcHit;
+        g_hero.CancelAttack();
       } else {
-        g_selectedNpc = -1; // Dismiss dialog on ground click
-        glm::vec3 target;
-        if (screenToTerrain(window, mx, my, target)) {
-          if (isWalkable(*g_terrainDataPtr, target.x, target.z)) {
-            g_hero.MoveTo(target);
-            g_clickEffect.Show(target);
+        g_selectedNpc = -1;
+        // Check monster click
+        int monHit = rayPickMonster(window, mx, my);
+        if (monHit >= 0) {
+          MonsterInfo info = g_monsterManager.GetMonsterInfo(monHit);
+          g_hero.AttackMonster(monHit, info.position);
+        } else {
+          // Ground click — move to terrain
+          if (g_hero.IsAttacking())
+            g_hero.CancelAttack();
+          glm::vec3 target;
+          if (screenToTerrain(window, mx, my, target)) {
+            if (isWalkable(*g_terrainDataPtr, target.x, target.z)) {
+              g_hero.MoveTo(target);
+              g_clickEffect.Show(target);
+            }
           }
         }
       }
+    }
+  }
+
+  // Mouse up: handle drag release
+  if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
+    if (g_isDragging) {
+      double mx, my;
+      glfwGetCursorPos(window, &mx, &my);
+      float vx = g_hudCoords.ToVirtualX((float)mx);
+      float vy = g_hudCoords.ToVirtualY((float)my);
+      HandlePanelMouseUp(vx, vy);
     }
   }
 }
@@ -558,6 +928,16 @@ void mouse_button_callback(GLFWwindow *window, int button, int action,
 void key_callback(GLFWwindow *window, int key, int scancode, int action,
                   int mods) {
   ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
+  if (ImGui::GetIO().WantCaptureKeyboard) return;
+
+  if (action == GLFW_PRESS) {
+    if (key == GLFW_KEY_C) g_showCharInfo = !g_showCharInfo;
+    if (key == GLFW_KEY_I) g_showInventory = !g_showInventory;
+    if (key == GLFW_KEY_ESCAPE) {
+      if (g_showCharInfo) g_showCharInfo = false;
+      else if (g_showInventory) g_showInventory = false;
+    }
+  }
 }
 
 void char_callback(GLFWwindow *window, unsigned int c) {
@@ -587,6 +967,544 @@ void processInput(GLFWwindow *window, float deltaTime) {
   } else {
     pPressed = false;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Panel rendering: Character Info (C) and Inventory (I)
+// ═══════════════════════════════════════════════════════════════════════
+
+static const char* GetEquipSlotName(int slot) {
+  static const char* names[] = {"R.Hand", "L.Hand", "Helm", "Armor", "Pants", "Gloves", "Boots"};
+  if (slot >= 0 && slot < 7) return names[slot];
+  return "???";
+}
+
+static const char* GetItemNameByDef(int8_t defIndex) {
+  switch (defIndex) {
+    case 0: return "Short Sword";
+    case 1: return "Kris";
+    case 2: return "Small Shield";
+    case 3: return "Leather Armor";
+    case 4: return "Healing Pot";
+    case 5: return "Mana Pot";
+    default: return "Item";
+  }
+}
+
+// Panel layout constants (virtual coords 1280x720)
+static constexpr float PANEL_W = 290.0f;
+static constexpr float PANEL_H = 560.0f;
+static constexpr float PANEL_Y = 20.0f;
+static constexpr float PANEL_X_RIGHT = 970.0f;
+
+static float GetCharInfoPanelX() { return PANEL_X_RIGHT; }
+static float GetInventoryPanelX() { return g_showCharInfo ? PANEL_X_RIGHT - PANEL_W - 10.0f : PANEL_X_RIGHT; }
+
+// Check if virtual point is inside a panel
+static bool IsPointInPanel(float vx, float vy, float panelX) {
+  return vx >= panelX && vx < panelX + PANEL_W && vy >= PANEL_Y && vy < PANEL_Y + PANEL_H;
+}
+
+// Helper: draw centered text with shadow
+static void DrawPanelText(ImDrawList* dl, const UICoords& c, float vx, float vy,
+                          const char* text, ImU32 color, ImFont* font = nullptr) {
+  float sx = c.ToScreenX(vx), sy = c.ToScreenY(vy);
+  if (font)
+    dl->AddText(font, font->LegacySize, ImVec2(sx+1, sy+1), IM_COL32(0,0,0,180), text);
+  dl->AddText(ImVec2(sx+1, sy+1), IM_COL32(0,0,0,180), text);
+  if (font)
+    dl->AddText(font, font->LegacySize, ImVec2(sx, sy), color, text);
+  else
+    dl->AddText(ImVec2(sx, sy), color, text);
+}
+
+// Helper: draw right-aligned text
+static void DrawPanelTextRight(ImDrawList* dl, const UICoords& c, float vx, float vy,
+                               float width, const char* text, ImU32 color) {
+  ImVec2 sz = ImGui::CalcTextSize(text);
+  float sx = c.ToScreenX(vx + width) - sz.x;
+  float sy = c.ToScreenY(vy);
+  dl->AddText(ImVec2(sx+1, sy+1), IM_COL32(0,0,0,180), text);
+  dl->AddText(ImVec2(sx, sy), color, text);
+}
+
+// Helper: draw centered text horizontally
+static void DrawPanelTextCentered(ImDrawList* dl, const UICoords& c, float vx, float vy,
+                                   float width, const char* text, ImU32 color) {
+  ImVec2 sz = ImGui::CalcTextSize(text);
+  float sx = c.ToScreenX(vx + width * 0.5f) - sz.x * 0.5f;
+  float sy = c.ToScreenY(vy);
+  dl->AddText(ImVec2(sx+1, sy+1), IM_COL32(0,0,0,180), text);
+  dl->AddText(ImVec2(sx, sy), color, text);
+}
+
+static void RenderCharInfoPanel(ImDrawList* dl, const UICoords& c) {
+  float px = GetCharInfoPanelX(), py = PANEL_Y;
+  float pw = PANEL_W, ph = PANEL_H;
+
+  // Colors
+  const ImU32 colBg     = IM_COL32(15, 15, 25, 235);
+  const ImU32 colBorder = IM_COL32(60, 65, 90, 200);
+  const ImU32 colTitle  = IM_COL32(255, 210, 80, 255);
+  const ImU32 colHeader = IM_COL32(200, 180, 120, 255);
+  const ImU32 colLabel  = IM_COL32(170, 170, 190, 255);
+  const ImU32 colValue  = IM_COL32(255, 255, 255, 255);
+  const ImU32 colGreen  = IM_COL32(100, 255, 100, 255);
+  const ImU32 colBtnN   = IM_COL32(40, 80, 40, 200);
+  const ImU32 colBtnH   = IM_COL32(60, 120, 60, 230);
+  const ImU32 colClose   = IM_COL32(200, 60, 60, 200);
+  const ImU32 colCloseH  = IM_COL32(255, 80, 80, 230);
+  const ImU32 colBar     = IM_COL32(30, 30, 45, 200);
+
+  // Background + border
+  ImVec2 pMin(c.ToScreenX(px), c.ToScreenY(py));
+  ImVec2 pMax(c.ToScreenX(px + pw), c.ToScreenY(py + ph));
+  dl->AddRectFilled(pMin, pMax, colBg, 6.0f);
+  dl->AddRect(pMin, pMax, colBorder, 6.0f);
+
+  // Close button [X]
+  float closeX = px + pw - 28, closeY = py + 6;
+  ImVec2 cMin(c.ToScreenX(closeX), c.ToScreenY(closeY));
+  ImVec2 cMax(c.ToScreenX(closeX + 22), c.ToScreenY(closeY + 18));
+  ImVec2 mp = ImGui::GetIO().MousePos;
+  bool hoverClose = mp.x >= cMin.x && mp.x < cMax.x && mp.y >= cMin.y && mp.y < cMax.y;
+  dl->AddRectFilled(cMin, cMax, hoverClose ? colCloseH : colClose, 3.0f);
+  DrawPanelTextCentered(dl, c, closeX, closeY + 1, 22, "X", colValue);
+
+  // Title
+  DrawPanelTextCentered(dl, c, px, py + 10, pw, "Character Info", colTitle);
+
+  // Separator
+  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 32)),
+              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 32)), colBorder);
+
+  // Name + Class + Level
+  DrawPanelTextCentered(dl, c, px, py + 40, pw, "TestDK", colValue);
+  DrawPanelTextCentered(dl, c, px, py + 58, pw, "Dark Knight", colLabel);
+
+  char buf[64];
+  snprintf(buf, sizeof(buf), "Level %d", g_serverLevel);
+  DrawPanelTextCentered(dl, c, px, py + 78, pw, buf, colHeader);
+
+  // XP bar
+  float xpFrac = 0.0f;
+  uint64_t nextXp = g_hero.GetNextExperience();
+  uint64_t curXp = (uint64_t)g_serverXP;
+  uint64_t prevXp = g_hero.CalcXPForLevel(g_serverLevel);
+  if (nextXp > prevXp) xpFrac = (float)(curXp - prevXp) / (float)(nextXp - prevXp);
+  xpFrac = std::clamp(xpFrac, 0.0f, 1.0f);
+
+  float barX = px + 15, barY = py + 100, barW = pw - 30, barH = 14;
+  dl->AddRectFilled(ImVec2(c.ToScreenX(barX), c.ToScreenY(barY)),
+                    ImVec2(c.ToScreenX(barX + barW), c.ToScreenY(barY + barH)), colBar, 3.0f);
+  if (xpFrac > 0.0f)
+    dl->AddRectFilled(ImVec2(c.ToScreenX(barX + 1), c.ToScreenY(barY + 1)),
+                      ImVec2(c.ToScreenX(barX + 1 + (barW - 2) * xpFrac), c.ToScreenY(barY + barH - 1)),
+                      IM_COL32(40, 180, 80, 255), 2.0f);
+  snprintf(buf, sizeof(buf), "EXP %.1f%%", xpFrac * 100.0f);
+  DrawPanelTextCentered(dl, c, barX, barY, barW, buf, colValue);
+
+  // Separator
+  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 122)),
+              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 122)), colBorder);
+
+  // Stats section
+  DrawPanelText(dl, c, px + 15, py + 128, "Stats", colHeader);
+
+  const char* statNames[] = {"Strength", "Dexterity", "Vitality", "Energy"};
+  int statValues[] = {g_serverStr, g_serverDex, g_serverVit, g_serverEne};
+
+  for (int i = 0; i < 4; i++) {
+    float rowY = py + 150 + i * 32;
+
+    // Stat label
+    DrawPanelText(dl, c, px + 20, rowY + 2, statNames[i], colLabel);
+
+    // Stat value
+    snprintf(buf, sizeof(buf), "%d", statValues[i]);
+    DrawPanelTextRight(dl, c, px + 100, rowY + 2, 80, buf, colValue);
+
+    // "+" button (if points available)
+    if (g_serverLevelUpPoints > 0) {
+      float btnX = px + pw - 42, btnY = rowY;
+      ImVec2 bMin(c.ToScreenX(btnX), c.ToScreenY(btnY));
+      ImVec2 bMax(c.ToScreenX(btnX + 26), c.ToScreenY(btnY + 20));
+      bool hoverBtn = mp.x >= bMin.x && mp.x < bMax.x && mp.y >= bMin.y && mp.y < bMax.y;
+      dl->AddRectFilled(bMin, bMax, hoverBtn ? colBtnH : colBtnN, 3.0f);
+      DrawPanelTextCentered(dl, c, btnX, btnY + 2, 26, "+", colValue);
+    }
+  }
+
+  // Available points
+  if (g_serverLevelUpPoints > 0) {
+    snprintf(buf, sizeof(buf), "Points: %d", g_serverLevelUpPoints);
+    DrawPanelText(dl, c, px + 20, py + 282, buf, colGreen);
+  }
+
+  // Separator
+  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 302)),
+              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 302)), colBorder);
+
+  // Derived stats
+  DrawPanelText(dl, c, px + 15, py + 308, "Combat", colHeader);
+
+  // Compute derived stats (DK formulas)
+  int dmgMin = g_serverStr / 8 + g_hero.GetWeaponBonusMin();
+  int dmgMax = g_serverStr / 4 + g_hero.GetWeaponBonusMax();
+  int defense = g_serverDex / 3 + g_hero.GetDefenseBonus();
+  int atkRate = g_serverLevel * 5 + g_serverDex * 3 / 2 + g_serverStr / 4;
+  int defRate = g_serverDex / 3;
+
+  struct { const char* label; int val; char fmt[32]; } derived[] = {
+    {"Damage",   0, ""},
+    {"Defense",  defense, ""},
+    {"Atk Rate", atkRate, ""},
+    {"Def Rate", defRate, ""},
+  };
+  snprintf(derived[0].fmt, 32, "%d - %d", dmgMin, dmgMax);
+  snprintf(derived[1].fmt, 32, "%d", defense);
+  snprintf(derived[2].fmt, 32, "%d", atkRate);
+  snprintf(derived[3].fmt, 32, "%d", defRate);
+
+  for (int i = 0; i < 4; i++) {
+    float rowY = py + 330 + i * 22;
+    DrawPanelText(dl, c, px + 20, rowY, derived[i].label, colLabel);
+    DrawPanelTextRight(dl, c, px + 130, rowY, 100, derived[i].fmt, colValue);
+  }
+
+  // Separator
+  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 422)),
+              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 422)), colBorder);
+
+  // HP bar
+  float hpFrac = g_serverMaxHP > 0 ? (float)g_serverHP / g_serverMaxHP : 0.0f;
+  hpFrac = std::clamp(hpFrac, 0.0f, 1.0f);
+  float hpBarX = px + 15, hpBarY = py + 432, hpBarW = pw - 30, hpBarH = 16;
+  dl->AddRectFilled(ImVec2(c.ToScreenX(hpBarX), c.ToScreenY(hpBarY)),
+                    ImVec2(c.ToScreenX(hpBarX + hpBarW), c.ToScreenY(hpBarY + hpBarH)), colBar, 3.0f);
+  if (hpFrac > 0)
+    dl->AddRectFilled(ImVec2(c.ToScreenX(hpBarX + 1), c.ToScreenY(hpBarY + 1)),
+                      ImVec2(c.ToScreenX(hpBarX + 1 + (hpBarW - 2) * hpFrac), c.ToScreenY(hpBarY + hpBarH - 1)),
+                      IM_COL32(180, 30, 30, 255), 2.0f);
+  snprintf(buf, sizeof(buf), "HP %d / %d", g_serverHP, g_serverMaxHP);
+  DrawPanelTextCentered(dl, c, hpBarX, hpBarY, hpBarW, buf, colValue);
+
+  // MP bar
+  float mpBarY = py + 454;
+  dl->AddRectFilled(ImVec2(c.ToScreenX(hpBarX), c.ToScreenY(mpBarY)),
+                    ImVec2(c.ToScreenX(hpBarX + hpBarW), c.ToScreenY(mpBarY + hpBarH)), colBar, 3.0f);
+  dl->AddRectFilled(ImVec2(c.ToScreenX(hpBarX + 1), c.ToScreenY(mpBarY + 1)),
+                    ImVec2(c.ToScreenX(hpBarX + 1 + (hpBarW - 2)), c.ToScreenY(mpBarY + hpBarH - 1)),
+                    IM_COL32(40, 80, 200, 255), 2.0f);
+  snprintf(buf, sizeof(buf), "MP %d / %d", g_serverMP, g_serverMaxMP);
+  DrawPanelTextCentered(dl, c, hpBarX, mpBarY, hpBarW, buf, colValue);
+}
+
+static void RenderInventoryPanel(ImDrawList* dl, const UICoords& c) {
+  float px = GetInventoryPanelX(), py = PANEL_Y;
+  float pw = PANEL_W, ph = PANEL_H;
+
+  const ImU32 colBg     = IM_COL32(15, 15, 25, 235);
+  const ImU32 colBorder = IM_COL32(60, 65, 90, 200);
+  const ImU32 colTitle  = IM_COL32(255, 210, 80, 255);
+  const ImU32 colHeader = IM_COL32(200, 180, 120, 255);
+  const ImU32 colLabel  = IM_COL32(170, 170, 190, 255);
+  const ImU32 colValue  = IM_COL32(255, 255, 255, 255);
+  const ImU32 colSlotBg = IM_COL32(25, 25, 40, 220);
+  const ImU32 colSlotBr = IM_COL32(50, 50, 70, 180);
+  const ImU32 colEquip  = IM_COL32(120, 200, 255, 255);
+  const ImU32 colClose  = IM_COL32(200, 60, 60, 200);
+  const ImU32 colCloseH = IM_COL32(255, 80, 80, 230);
+  const ImU32 colGold   = IM_COL32(255, 215, 0, 255);
+  const ImU32 colDragHi = IM_COL32(255, 255, 100, 100);
+
+  // Background + border
+  ImVec2 pMin(c.ToScreenX(px), c.ToScreenY(py));
+  ImVec2 pMax(c.ToScreenX(px + pw), c.ToScreenY(py + ph));
+  dl->AddRectFilled(pMin, pMax, colBg, 6.0f);
+  dl->AddRect(pMin, pMax, colBorder, 6.0f);
+
+  // Close button
+  float closeX = px + pw - 28, closeY = py + 6;
+  ImVec2 cMin(c.ToScreenX(closeX), c.ToScreenY(closeY));
+  ImVec2 cMax(c.ToScreenX(closeX + 22), c.ToScreenY(closeY + 18));
+  ImVec2 mp = ImGui::GetIO().MousePos;
+  bool hoverClose = mp.x >= cMin.x && mp.x < cMax.x && mp.y >= cMin.y && mp.y < cMax.y;
+  dl->AddRectFilled(cMin, cMax, hoverClose ? colCloseH : colClose, 3.0f);
+  DrawPanelTextCentered(dl, c, closeX, closeY + 1, 22, "X", colValue);
+
+  // Title
+  DrawPanelTextCentered(dl, c, px, py + 10, pw, "Inventory", colTitle);
+  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 32)),
+              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 32)), colBorder);
+
+  // Equipment section header
+  DrawPanelText(dl, c, px + 15, py + 36, "Equipment", colHeader);
+
+  // Equipment layout: body-shaped arrangement
+  //           Helm
+  //    R.Hand Armor L.Hand
+  //    Gloves Pants Boots
+  struct EquipPos { int slot; float x; float y; float w; float h; };
+  EquipPos equipLayout[] = {
+    {2, px+118, py+56,  54, 42},  // Helm - top center
+    {0, px+52,  py+102, 54, 54},  // R.Hand - left
+    {3, px+118, py+102, 54, 54},  // Armor - center
+    {1, px+184, py+102, 54, 54},  // L.Hand - right
+    {5, px+52,  py+162, 54, 42},  // Gloves - bottom left
+    {4, px+118, py+162, 54, 42},  // Pants - bottom center
+    {6, px+184, py+162, 54, 42},  // Boots - bottom right
+  };
+
+  char buf[64];
+  for (auto &ep : equipLayout) {
+    ImVec2 sMin(c.ToScreenX(ep.x), c.ToScreenY(ep.y));
+    ImVec2 sMax(c.ToScreenX(ep.x + ep.w), c.ToScreenY(ep.y + ep.h));
+
+    // Highlight if drag hovering over this slot
+    bool hoverSlot = mp.x >= sMin.x && mp.x < sMax.x && mp.y >= sMin.y && mp.y < sMax.y;
+
+    dl->AddRectFilled(sMin, sMax, colSlotBg, 3.0f);
+    dl->AddRect(sMin, sMax, hoverSlot && g_isDragging ? colDragHi : colSlotBr, 3.0f);
+
+    if (g_equipSlots[ep.slot].equipped) {
+      // Show abbreviated item name
+      const char* catNames[] = {"Sword", "Axe", "Mace", "Spear", "Bow", "Staff", "Shield"};
+      uint8_t cat = g_equipSlots[ep.slot].category;
+      const char* name = (cat < 7) ? catNames[cat] : "Item";
+      if (g_equipSlots[ep.slot].itemLevel > 0) {
+        snprintf(buf, sizeof(buf), "%s+%d", name, g_equipSlots[ep.slot].itemLevel);
+      } else {
+        snprintf(buf, sizeof(buf), "%s", name);
+      }
+      // Centered in slot
+      ImVec2 sz = ImGui::CalcTextSize(buf);
+      float tx = (sMin.x + sMax.x) * 0.5f - sz.x * 0.5f;
+      float ty = (sMin.y + sMax.y) * 0.5f - sz.y * 0.5f;
+      dl->AddText(ImVec2(tx + 1, ty + 1), IM_COL32(0,0,0,180), buf);
+      dl->AddText(ImVec2(tx, ty), colEquip, buf);
+    } else {
+      // Show slot name dimmed
+      const char* slotName = GetEquipSlotName(ep.slot);
+      ImVec2 sz = ImGui::CalcTextSize(slotName);
+      float tx = (sMin.x + sMax.x) * 0.5f - sz.x * 0.5f;
+      float ty = (sMin.y + sMax.y) * 0.5f - sz.y * 0.5f;
+      dl->AddText(ImVec2(tx, ty), IM_COL32(80, 80, 100, 150), slotName);
+    }
+  }
+
+  // Separator
+  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 210)),
+              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 210)), colBorder);
+
+  // Bag grid header
+  DrawPanelText(dl, c, px + 15, py + 214, "Bag", colHeader);
+
+  // 8x8 grid of items
+  float gridX = px + 15, gridY = py + 234;
+  float cellW = 32.0f, cellH = 32.0f, gap = 1.0f;
+
+  for (int row = 0; row < 8; row++) {
+    for (int col = 0; col < 8; col++) {
+      int slot = row * 8 + col;
+      float cx = gridX + col * (cellW + gap);
+      float cy = gridY + row * (cellH + gap);
+
+      ImVec2 sMin(c.ToScreenX(cx), c.ToScreenY(cy));
+      ImVec2 sMax(c.ToScreenX(cx + cellW), c.ToScreenY(cy + cellH));
+
+      bool hoverCell = mp.x >= sMin.x && mp.x < sMax.x && mp.y >= sMin.y && mp.y < sMax.y;
+      bool isBeingDragged = g_isDragging && g_dragFromSlot == slot;
+
+      dl->AddRectFilled(sMin, sMax, isBeingDragged ? IM_COL32(40,40,20,200) : colSlotBg, 2.0f);
+      dl->AddRect(sMin, sMax, hoverCell ? IM_COL32(100,100,140,200) : colSlotBr, 2.0f);
+
+      if (g_inventory[slot].occupied && !isBeingDragged) {
+        // Item abbreviation
+        const char* name = GetItemNameByDef(g_inventory[slot].defIndex);
+        // Truncate to ~4 chars
+        char abbr[8];
+        snprintf(abbr, sizeof(abbr), "%.4s", name);
+        if (g_inventory[slot].itemLevel > 0) {
+          snprintf(buf, sizeof(buf), "%s+%d", abbr, g_inventory[slot].itemLevel);
+        } else {
+          snprintf(buf, sizeof(buf), "%s", abbr);
+        }
+        ImVec2 sz = ImGui::CalcTextSize(buf);
+        float tx = (sMin.x + sMax.x) * 0.5f - sz.x * 0.5f;
+        float ty = (sMin.y + sMax.y) * 0.5f - sz.y * 0.5f;
+        dl->AddText(ImVec2(tx, ty), colValue, buf);
+      }
+    }
+  }
+
+  // Draw dragged item at cursor
+  if (g_isDragging) {
+    const char* name = GetItemNameByDef(g_dragDefIndex);
+    if (g_dragItemLevel > 0)
+      snprintf(buf, sizeof(buf), "%s +%d", name, g_dragItemLevel);
+    else
+      snprintf(buf, sizeof(buf), "%s", name);
+    ImVec2 sz = ImGui::CalcTextSize(buf);
+    dl->AddRectFilled(ImVec2(mp.x - 2, mp.y - 2), ImVec2(mp.x + sz.x + 4, mp.y + sz.y + 4),
+                      IM_COL32(30, 30, 50, 220), 3.0f);
+    dl->AddText(ImVec2(mp.x + 1, mp.y + 1), IM_COL32(0,0,0,180), buf);
+    dl->AddText(ImVec2(mp.x, mp.y), colEquip, buf);
+  }
+
+  // Separator
+  float zenLineY = py + 500;
+  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(zenLineY)),
+              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(zenLineY)), colBorder);
+
+  // Zen display
+  snprintf(buf, sizeof(buf), "%u Zen", g_zen);
+  DrawPanelTextCentered(dl, c, px, zenLineY + 8, pw, buf, colGold);
+
+  // Tooltip on hover (bag items)
+  for (int row = 0; row < 8; row++) {
+    for (int col = 0; col < 8; col++) {
+      int slot = row * 8 + col;
+      if (!g_inventory[slot].occupied) continue;
+      float cx = gridX + col * (cellW + gap);
+      float cy = gridY + row * (cellH + gap);
+      ImVec2 sMin(c.ToScreenX(cx), c.ToScreenY(cy));
+      ImVec2 sMax(c.ToScreenX(cx + cellW), c.ToScreenY(cy + cellH));
+      if (mp.x >= sMin.x && mp.x < sMax.x && mp.y >= sMin.y && mp.y < sMax.y && !g_isDragging) {
+        const char* name = GetItemNameByDef(g_inventory[slot].defIndex);
+        if (g_inventory[slot].itemLevel > 0)
+          snprintf(buf, sizeof(buf), "%s +%d (x%d)", name, g_inventory[slot].itemLevel, g_inventory[slot].quantity);
+        else
+          snprintf(buf, sizeof(buf), "%s (x%d)", name, g_inventory[slot].quantity);
+        ImVec2 tsz = ImGui::CalcTextSize(buf);
+        float ttx = mp.x + 10, tty = mp.y - tsz.y - 6;
+        dl->AddRectFilled(ImVec2(ttx - 4, tty - 2), ImVec2(ttx + tsz.x + 4, tty + tsz.y + 4),
+                          IM_COL32(20, 20, 35, 240), 3.0f);
+        dl->AddRect(ImVec2(ttx - 4, tty - 2), ImVec2(ttx + tsz.x + 4, tty + tsz.y + 4),
+                    colBorder, 3.0f);
+        dl->AddText(ImVec2(ttx, tty), colValue, buf);
+      }
+    }
+  }
+}
+
+// Handle panel click interactions (returns true if click was consumed)
+static bool HandlePanelClick(float vx, float vy) {
+  // Character Info panel
+  if (g_showCharInfo && IsPointInPanel(vx, vy, GetCharInfoPanelX())) {
+    float px = GetCharInfoPanelX(), py = PANEL_Y;
+
+    // Close button
+    if (vx >= px + PANEL_W - 28 && vx < px + PANEL_W - 6 && vy >= py + 6 && vy < py + 24) {
+      g_showCharInfo = false;
+      return true;
+    }
+
+    // Stat "+" buttons
+    if (g_serverLevelUpPoints > 0) {
+      for (int i = 0; i < 4; i++) {
+        float btnX = px + PANEL_W - 42, btnY = py + 150 + i * 32;
+        if (vx >= btnX && vx < btnX + 26 && vy >= btnY && vy < btnY + 20) {
+          // Send stat allocation request
+          PMSG_STAT_ALLOC_RECV pkt{};
+          pkt.h = MakeC1Header(sizeof(pkt), 0x37);
+          pkt.statType = static_cast<uint8_t>(i);
+          g_net.Send(&pkt, sizeof(pkt));
+          return true;
+        }
+      }
+    }
+    return true; // Consumed by panel area
+  }
+
+  // Inventory panel
+  if (g_showInventory && IsPointInPanel(vx, vy, GetInventoryPanelX())) {
+    float px = GetInventoryPanelX(), py = PANEL_Y;
+
+    // Close button
+    if (vx >= px + PANEL_W - 28 && vx < px + PANEL_W - 6 && vy >= py + 6 && vy < py + 24) {
+      g_showInventory = false;
+      return true;
+    }
+
+    // Bag grid: start drag
+    float gridX = px + 15, gridY = py + 234;
+    float cellW = 32.0f, cellH = 32.0f, gap = 1.0f;
+    for (int row = 0; row < 8; row++) {
+      for (int col = 0; col < 8; col++) {
+        int slot = row * 8 + col;
+        float cx = gridX + col * (cellW + gap);
+        float cy = gridY + row * (cellH + gap);
+        if (vx >= cx && vx < cx + cellW && vy >= cy && vy < cy + cellH) {
+          if (g_inventory[slot].occupied) {
+            g_dragFromSlot = slot;
+            g_dragDefIndex = g_inventory[slot].defIndex;
+            g_dragQuantity = g_inventory[slot].quantity;
+            g_dragItemLevel = g_inventory[slot].itemLevel;
+            g_isDragging = true;
+          }
+          return true;
+        }
+      }
+    }
+
+    return true; // Consumed by panel area
+  }
+  return false;
+}
+
+// Handle drag release (mouse up)
+static void HandlePanelMouseUp(float vx, float vy) {
+  if (!g_isDragging) return;
+  g_isDragging = false;
+
+  // Check if dropped on an equipment slot
+  if (g_showInventory) {
+    float px = GetInventoryPanelX(), py = PANEL_Y;
+    struct EquipPos { int slot; float x; float y; float w; float h; };
+    EquipPos equipLayout[] = {
+      {2, px+118, py+56,  54, 42},
+      {0, px+52,  py+102, 54, 54},
+      {3, px+118, py+102, 54, 54},
+      {1, px+184, py+102, 54, 54},
+      {5, px+52,  py+162, 54, 42},
+      {4, px+118, py+162, 54, 42},
+      {6, px+184, py+162, 54, 42},
+    };
+
+    for (auto &ep : equipLayout) {
+      if (vx >= ep.x && vx < ep.x + ep.w && vy >= ep.y && vy < ep.y + ep.h) {
+        // Drop item into equipment slot
+        // Check if item category matches the slot
+        // For simplicity: slot 0/1 = weapons/shields (cat 0-6), slot 2 = helm, etc.
+        // Just equip it and send to server
+        g_equipSlots[ep.slot].category = 0; // TODO: resolve from defIndex
+        g_equipSlots[ep.slot].itemIndex = 0;
+        g_equipSlots[ep.slot].itemLevel = g_dragItemLevel;
+        g_equipSlots[ep.slot].equipped = true;
+
+        // Remove from bag
+        if (g_dragFromSlot >= 0 && g_dragFromSlot < INVENTORY_SLOTS) {
+          g_inventory[g_dragFromSlot] = {};
+        }
+
+        // Send equip packet to server
+        PMSG_EQUIP_RECV eq{};
+        eq.h = MakeC1Header(sizeof(eq), 0x27);
+        eq.characterId = 1;
+        eq.slot = static_cast<uint8_t>(ep.slot);
+        eq.category = g_equipSlots[ep.slot].category;
+        eq.itemIndex = g_equipSlots[ep.slot].itemIndex;
+        eq.itemLevel = g_dragItemLevel;
+        g_net.Send(&eq, sizeof(eq));
+
+        printf("[UI] Equipped item from bag slot %d to equip slot %d\n", g_dragFromSlot, ep.slot);
+        break;
+      }
+    }
+  }
+
+  g_dragFromSlot = -1;
 }
 
 int main(int argc, char **argv) {
@@ -623,7 +1541,7 @@ int main(int argc, char **argv) {
   glfwWindowHint(GLFW_STENCIL_BITS, 8);
 
   GLFWwindow *window = glfwCreateWindow(
-      1280, 720, "Mu Online Remaster (Native macOS C++)", nullptr, nullptr);
+      1920, 1080, "Mu Online Remaster (Native macOS C++)", nullptr, nullptr);
   if (!window) {
     std::cerr << "Failed to create GLFW window" << std::endl;
     glfwTerminate();
@@ -676,6 +1594,39 @@ int main(int argc, char **argv) {
   glfwSetCharCallback(window, char_callback);
   ImGui_ImplOpenGL3_Init(glsl_version);
 
+  // Load larger font for HUD text overlays (Retina-aware)
+  float contentScale = 1.0f;
+  {
+    float xscale, yscale;
+    glfwGetWindowContentScale(window, &xscale, &yscale);
+    contentScale = xscale; // 2.0 on Retina, 1.0 on non-Retina
+  }
+  ImFont* hudFont = nullptr;
+  {
+    ImFontConfig cfg;
+    cfg.SizePixels = 18.0f * contentScale; // Render at native framebuffer resolution
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    hudFont = io.Fonts->AddFontDefault(&cfg);
+    io.Fonts->Build();
+    io.FontGlobalScale = 1.0f / contentScale; // Keep screen-space coordinates
+  }
+
+  // Initialize modern HUD (centered at 70% scale)
+  g_hudCoords.window = window;
+  g_hudCoords.SetCenteredScale(0.7f);
+
+  std::string hudAssetPath = "../lab-studio/modern-ui/assets";
+  HUD g_hud;
+  g_hud.Init(hudAssetPath, window);
+  g_hud.hudFont = hudFont;
+
+  // Wire HUD button callbacks to panel toggles
+  g_hud.onToggleCharInfo = []() { g_showCharInfo = !g_showCharInfo; };
+  g_hud.onToggleInventory = []() { g_showInventory = !g_showInventory; };
+
+  MockData hudData = MockData::CreateDK50();
+
   // Load Terrain for testing
   std::string data_path = "/Users/karlisfeldmanis/Desktop/mu_remaster/"
                           "references/other/MuMain/src/bin/Data";
@@ -693,8 +1644,8 @@ int main(int argc, char **argv) {
         continue;
       int gz = (int)(obj.position.x / 100.0f);
       int gx = (int)(obj.position.z / 100.0f);
-      float angZ = std::abs(
-          std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
+      float angZ =
+          std::abs(std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
       bool spanAlongGZ = (std::abs(angZ - 90.0f) < 45.0f);
       // +1 buffer for bilinear neighbor coverage in shader
       int rGZ = spanAlongGZ ? 4 : 2;
@@ -771,7 +1722,8 @@ int main(int argc, char **argv) {
   for (auto &inst : g_objectRenderer.GetInstances()) {
     auto &offsets = GetFireOffsets(inst.type);
     for (auto &off : offsets) {
-      // Extract rotation without scale (original CreateFire only rotates, no scale)
+      // Extract rotation without scale (original CreateFire only rotates, no
+      // scale)
       glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
       glm::mat3 rot;
       for (int c = 0; c < 3; c++)
@@ -820,19 +1772,41 @@ int main(int argc, char **argv) {
   g_clickEffect.SetTerrainData(&terrainData);
   checkGLError("hero init");
 
-  // Connect to server — receives NPCs and equipment from database
+  // Connect to server via persistent NetworkClient
   g_npcManager.SetTerrainData(&terrainData);
-  auto serverData = connectToServer("127.0.0.1", 44405);
+  ServerData serverData;
+
+  // Set up packet handler BEFORE connecting so no packets are lost
+  g_net.onPacket = [&serverData](const uint8_t *pkt, int size) {
+    parseInitialPacket(pkt, size, serverData);
+  };
+
+  if (g_net.Connect("127.0.0.1", 44405)) {
+    serverData.connected = true;
+
+    // Receive initial data burst (welcome + NPCs + monsters + equipment + stats)
+    // Give server time to send all initial packets, poll to parse them
+    for (int attempt = 0; attempt < 100; attempt++) {
+      g_net.Poll();
+      usleep(10000); // 10ms
+    }
+  }
+
+  // Switch to ongoing packet handler for game loop
+  g_net.onPacket = [](const uint8_t *pkt, int size) {
+    handleServerPacket(pkt, size);
+  };
+
   if (serverData.connected && !serverData.npcs.empty()) {
-    // Server mode: load models, then place NPCs from server data
     g_npcManager.InitModels(data_path);
     for (auto &npc : serverData.npcs) {
       g_npcManager.AddNpcByType(npc.type, npc.gridX, npc.gridY, npc.dir);
     }
-    std::cout << "[NPC] Loaded " << serverData.npcs.size() << " NPCs from server" << std::endl;
+    std::cout << "[NPC] Loaded " << serverData.npcs.size()
+              << " NPCs from server" << std::endl;
   } else {
-    // Fallback: hardcoded NPC positions
-    std::cout << "[NPC] No server connection, using hardcoded NPCs" << std::endl;
+    std::cout << "[NPC] No server connection, using hardcoded NPCs"
+              << std::endl;
     g_npcManager.Init(data_path);
   }
 
@@ -844,12 +1818,69 @@ int main(int argc, char **argv) {
   g_npcManager.SetPointLights(g_pointLights);
   checkGLError("npc init");
 
+  // Initialize monster manager and spawn monsters from server data
+  g_monsterManager.InitModels(data_path);
+  g_monsterManager.SetTerrainData(&terrainData);
+  g_monsterManager.SetTerrainLightmap(terrainData.lightmap);
+  g_monsterManager.SetPointLights(g_pointLights);
+  if (!serverData.monsters.empty()) {
+    for (auto &mon : serverData.monsters) {
+      g_monsterManager.AddMonster(mon.monsterType, mon.gridX, mon.gridY,
+                                  mon.dir, mon.serverIndex);
+    }
+    std::cout << "[Monster] Spawned " << serverData.monsters.size()
+              << " monsters from server" << std::endl;
+  }
+  checkGLError("monster init");
+
   // Load saved camera state (persists position/angle/zoom across restarts)
   g_camera.LoadState("camera_save.txt");
 
   // Sync hero position from loaded camera state
   g_hero.SetPosition(g_camera.GetPosition());
   g_hero.SnapToTerrain();
+
+  // Fix: if hero spawned on a non-walkable tile, move to a known safe position
+  {
+    glm::vec3 heroPos = g_hero.GetPosition();
+    const int S = TerrainParser::TERRAIN_SIZE;
+    int gz = (int)(heroPos.x / 100.0f);
+    int gx = (int)(heroPos.z / 100.0f);
+    bool walkable = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
+                    (terrainData.mapping.attributes[gz * S + gx] & 0x04) == 0;
+    if (!walkable) {
+      std::cout << "[Hero] Spawn position non-walkable (attr=0x"
+                << std::hex << (int)terrainData.mapping.attributes[gz * S + gx]
+                << std::dec << "), searching for walkable tile..." << std::endl;
+      // Spiral search from Lorencia town center for nearest walkable tile
+      int startGX = 125, startGZ = 135;
+      bool found = false;
+      for (int radius = 0; radius < 30 && !found; radius++) {
+        for (int dy = -radius; dy <= radius && !found; dy++) {
+          for (int dx = -radius; dx <= radius && !found; dx++) {
+            if (radius > 0 && std::abs(dx) != radius && std::abs(dy) != radius) continue;
+            int cx = startGX + dx, cz = startGZ + dy;
+            if (cx < 1 || cz < 1 || cx >= S-1 || cz >= S-1) continue;
+            uint8_t attr = terrainData.mapping.attributes[cz * S + cx];
+            if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
+              float wx = (float)cz * 100.0f;
+              float wz = (float)cx * 100.0f;
+              std::cout << "[Hero] Found walkable tile at grid (" << cx << "," << cz
+                        << ") attr=0x" << std::hex << (int)attr << std::dec << std::endl;
+              g_hero.SetPosition(glm::vec3(wx, 0.0f, wz));
+              g_hero.SnapToTerrain();
+              found = true;
+            }
+          }
+        }
+      }
+      if (!found) {
+        std::cout << "[Hero] WARNING: No walkable tile found nearby" << std::endl;
+        g_hero.SetPosition(glm::vec3(13000.0f, 0.0f, 13000.0f));
+        g_hero.SnapToTerrain();
+      }
+    }
+  }
   g_camera.SetPosition(g_hero.GetPosition());
 
   // Auto-diagnostic mode: --diag flag captures all debug views and exits
@@ -976,6 +2007,131 @@ int main(int argc, char **argv) {
     processInput(window, deltaTime);
     g_camera.Update(deltaTime);
 
+    // Poll persistent network connection for server packets
+    g_net.Poll();
+    g_net.Flush();
+
+    // Send player position to server periodically (~4Hz)
+    {
+      static float posTimer = 0.0f;
+      posTimer += deltaTime;
+      if (posTimer >= 0.25f) {
+        posTimer = 0.0f;
+        glm::vec3 hp = g_hero.GetPosition();
+        PMSG_PRECISE_POS_RECV posPkt{};
+        posPkt.h = MakeC1Header(sizeof(posPkt), 0xD7);
+        posPkt.worldX = hp.x;
+        posPkt.worldZ = hp.z;
+        g_net.Send(&posPkt, sizeof(posPkt));
+      }
+    }
+
+    // Update monster manager (state machines, animation)
+    g_monsterManager.SetPlayerPosition(g_hero.GetPosition());
+    g_monsterManager.SetPlayerDead(g_hero.IsDead());
+    g_monsterManager.Update(deltaTime);
+
+    // Hero combat: update attack state machine, send attack packet on hit
+    g_hero.UpdateAttack(deltaTime);
+    g_hero.UpdateState(deltaTime);
+    if (g_hero.CheckAttackHit()) {
+      int targetIdx = g_hero.GetAttackTarget();
+      if (targetIdx >= 0 && targetIdx < g_monsterManager.GetMonsterCount()) {
+        uint16_t serverIdx = g_monsterManager.GetServerIndex(targetIdx);
+        PMSG_ATTACK_RECV atkPkt{};
+        atkPkt.h = MakeC1Header(sizeof(atkPkt), 0x28);
+        atkPkt.monsterIndex = serverIdx;
+        g_net.Send(&atkPkt, sizeof(atkPkt));
+      }
+    }
+    // Auto-attack: re-engage after cooldown if target still alive
+    if (g_hero.GetAttackState() == AttackState::NONE &&
+        g_hero.GetAttackTarget() >= 0) {
+      int targetIdx = g_hero.GetAttackTarget();
+      if (targetIdx < g_monsterManager.GetMonsterCount()) {
+        MonsterInfo mi = g_monsterManager.GetMonsterInfo(targetIdx);
+        if (mi.state != MonsterState::DYING && mi.state != MonsterState::DEAD &&
+            mi.hp > 0) {
+          g_hero.AttackMonster(targetIdx, mi.position);
+        }
+      }
+    }
+
+    // Hero respawn: after death timer expires, respawn in Lorencia safe zone
+    if (g_hero.ReadyToRespawn()) {
+      // Find walkable safe zone tile (same spiral search as init)
+      const int S = TerrainParser::TERRAIN_SIZE;
+      int startGX = 125, startGZ = 133;
+      glm::vec3 spawnPos(13300.0f, 0.0f, 12300.0f);
+      for (int radius = 0; radius < 30; radius++) {
+        bool found = false;
+        for (int dy = -radius; dy <= radius && !found; dy++) {
+          for (int dx = -radius; dx <= radius && !found; dx++) {
+            if (radius > 0 && std::abs(dx) != radius && std::abs(dy) != radius) continue;
+            int cx = startGX + dx, cz = startGZ + dy;
+            if (cx < 1 || cz < 1 || cx >= S-1 || cz >= S-1) continue;
+            uint8_t attr = g_terrainDataPtr->mapping.attributes[cz * S + cx];
+            if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
+              spawnPos = glm::vec3((float)cz * 100.0f, 0.0f, (float)cx * 100.0f);
+              found = true;
+            }
+          }
+        }
+        if (found) break;
+      }
+      g_hero.Respawn(spawnPos);
+      g_hero.SnapToTerrain();
+      g_camera.SetPosition(g_hero.GetPosition());
+      g_serverHP = g_serverMaxHP; // Reset HUD HP
+
+      // Notify server that player is alive (clears session.dead)
+      {
+        PMSG_CHARSAVE_RECV save{};
+        save.h = MakeC1Header(sizeof(save), 0x26);
+        save.characterId = 1;
+        save.level = (uint16_t)g_serverLevel;
+        save.strength = (uint16_t)g_serverStr;
+        save.dexterity = (uint16_t)g_serverDex;
+        save.vitality = (uint16_t)g_serverVit;
+        save.energy = (uint16_t)g_serverEne;
+        save.life = (uint16_t)g_serverMaxHP;
+        save.maxLife = (uint16_t)g_serverMaxHP;
+        save.levelUpPoints = (uint16_t)g_serverLevelUpPoints;
+        save.experienceLo = (uint32_t)((uint64_t)g_serverXP & 0xFFFFFFFF);
+        save.experienceHi = (uint32_t)((uint64_t)g_serverXP >> 32);
+        g_net.Send(&save, sizeof(save));
+      }
+    }
+
+    // Auto-pickup: walk near a ground item to pick it up
+    {
+      glm::vec3 heroPos = g_hero.GetPosition();
+      for (auto &gi : g_groundItems) {
+        if (!gi.active) continue;
+        gi.timer += deltaTime;
+        // Snap drop Y to terrain
+        if (gi.position.y == 0.0f && g_terrainDataPtr) {
+          float gx = gi.position.z / 100.0f;
+          float gz = gi.position.x / 100.0f;
+          int ix = (int)gx, iz = (int)gz;
+          if (ix >= 0 && iz >= 0 && ix < 256 && iz < 256) {
+            float h = g_terrainDataPtr->heightmap[iz * 256 + ix] * 1.5f;
+            gi.position.y = h + 5.0f;
+          }
+        }
+        float dist = glm::length(glm::vec3(heroPos.x - gi.position.x, 0, heroPos.z - gi.position.z));
+        if (dist < 120.0f && !g_hero.IsDead()) {
+          PMSG_PICKUP_RECV pkt{};
+          pkt.h = MakeC1Header(sizeof(pkt), 0x2C);
+          pkt.dropIndex = gi.dropIndex;
+          g_net.Send(&pkt, sizeof(pkt));
+          gi.active = false; // Optimistic remove
+        }
+        // Despawn after 60s
+        if (gi.timer > 60.0f) gi.active = false;
+      }
+    }
+
     // Roof hiding: read layer1 tile at hero position, fade types 125/126
     if (g_terrainDataPtr) {
       glm::vec3 heroPos = g_hero.GetPosition();
@@ -1011,10 +2167,17 @@ int main(int argc, char **argv) {
       }
     }
 
+    // Use framebuffer size for viewport (Retina displays are 2x window size)
+    int fbW, fbH;
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+    glViewport(0, 0, fbW, fbH);
+
     glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glm::mat4 projection = g_camera.GetProjectionMatrix(1280.0f, 720.0f);
+    int winW, winH;
+    glfwGetWindowSize(window, &winW, &winH);
+    glm::mat4 projection = g_camera.GetProjectionMatrix((float)winW, (float)winH);
     glm::mat4 view = g_camera.GetViewMatrix();
     glm::vec3 camPos = g_camera.GetPosition();
 
@@ -1031,7 +2194,11 @@ int main(int argc, char **argv) {
                             currentFrame);
 
     // Render grass billboards (after objects so grass doesn't occlude fences)
-    g_grass.Render(view, projection, currentFrame, camPos, g_hero.GetPosition());
+    {
+      std::vector<GrassRenderer::PushSource> pushSources;
+      pushSources.push_back({g_hero.GetPosition(), 100.0f});
+      g_grass.Render(view, projection, currentFrame, camPos, pushSources);
+    }
 
     // Update and render fire effects
     g_fireEffect.Update(deltaTime);
@@ -1045,7 +2212,12 @@ int main(int argc, char **argv) {
     if (g_hoveredNpc >= 0)
       g_npcManager.RenderOutline(g_hoveredNpc, view, projection);
 
-    // Render hero character, shadow, and click effect (after all world geometry)
+    // Render monsters with shadows
+    g_monsterManager.RenderShadows(view, projection);
+    g_monsterManager.Render(view, projection, camPos, deltaTime);
+
+    // Render hero character, shadow, and click effect (after all world
+    // geometry)
     g_clickEffect.Render(view, projection, deltaTime, g_hero.GetShader());
     g_hero.Render(view, projection, camPos, deltaTime);
     g_hero.RenderShadow(view, projection);
@@ -1067,49 +2239,187 @@ int main(int argc, char **argv) {
       break; // GIF saved, exit
     }
 
-    // Auto-screenshot: capture after enough frames for fire particles to build
-    // up Capture BEFORE ImGui rendering so debug overlay is not in the output
-    if (autoScreenshot && diagFrame == 60) {
-      std::string ssPath;
-      if (!outputName.empty()) {
-        ssPath = "screenshots/" + outputName + ".jpg";
-      } else if (!objectDebugName.empty()) {
-        ssPath = "screenshots/" + objectDebugName + ".jpg";
-      } else {
-        // Use a timestamp to ensure uniqueness
-        ssPath =
-            "screenshots/verif_" + std::to_string(std::time(nullptr)) + ".jpg";
-      }
-      int sw, sh;
-      glfwGetFramebufferSize(window, &sw, &sh);
-      std::vector<unsigned char> px(sw * sh * 3);
-      glPixelStorei(GL_PACK_ALIGNMENT, 1);
-      glReadPixels(0, 0, sw, sh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
-      // ... (capture logic)
-      std::vector<unsigned char> flipped(sw * sh * 3);
-      for (int y = 0; y < sh; ++y)
-        memcpy(&flipped[y * sw * 3], &px[(sh - 1 - y) * sw * 3], sw * 3);
-      tjhandle comp = tjInitCompress();
-      unsigned char *jbuf = nullptr;
-      unsigned long jsize = 0;
-      tjCompress2(comp, flipped.data(), sw, 0, sh, TJPF_RGB, &jbuf, &jsize,
-                  TJSAMP_444, 95, TJFLAG_FASTDCT);
-      std::filesystem::create_directories("screenshots");
-      FILE *f = fopen(ssPath.c_str(), "wb");
-      if (f) {
-        fwrite(jbuf, 1, jsize, f);
-        fclose(f);
-      }
-      tjFree(jbuf);
-      tjDestroy(comp);
-      std::cout << "[screenshot] Saved " << ssPath << std::endl;
-      break;
-    }
+    // Auto-screenshot flag (capture happens after ImGui render to include HUD)
+    bool captureScreenshot = (autoScreenshot && diagFrame == 60);
 
     // Start the Dear ImGui frame
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+
+    // Update and render modern HUD (via ImGui foreground draw list)
+    {
+      // Feed server stats to HUD
+      hudData.hp = g_serverHP;
+      hudData.maxHp = g_serverMaxHP;
+      hudData.mp = g_serverMP;
+      hudData.maxMp = g_serverMaxMP;
+      hudData.level = g_serverLevel;
+      hudData.strength = g_serverStr;
+      hudData.agility = g_serverDex;
+      hudData.vitality = g_serverVit;
+      hudData.energy = g_serverEne;
+      hudData.levelUpPoints = g_serverLevelUpPoints;
+      hudData.xp = g_serverXP;
+      g_hud.Update(hudData);
+
+      // Recalculate centered scale each frame (handles window resize)
+      g_hudCoords.SetCenteredScale(0.7f);
+
+      ImDrawList* dl = ImGui::GetForegroundDrawList();
+      g_hud.Render(dl, g_hudCoords);
+
+      // ── Character Info and Inventory panels ──
+      if (g_showCharInfo) RenderCharInfoPanel(dl, g_hudCoords);
+      if (g_showInventory) RenderInventoryPanel(dl, g_hudCoords);
+
+      // ── Floating damage numbers (world-space → screen projection) ──
+      {
+        glm::mat4 vp = projection * view;
+        for (auto &d : g_floatingDmg) {
+          if (!d.active) continue;
+          d.timer += deltaTime;
+          if (d.timer >= d.maxTime) { d.active = false; continue; }
+
+          // Float upward
+          glm::vec3 pos = d.worldPos + glm::vec3(0, d.timer * 60.0f, 0);
+
+          // Project to screen
+          glm::vec4 clip = vp * glm::vec4(pos, 1.0f);
+          if (clip.w <= 0.0f) continue;
+          float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * winW;
+          float sy = ((1.0f - (clip.y / clip.w)) * 0.5f) * winH;
+
+          // Fade out in last 0.5s
+          float alpha = d.timer > 1.0f ? 1.0f - (d.timer - 1.0f) / 0.5f : 1.0f;
+          alpha = std::max(0.0f, std::min(1.0f, alpha));
+
+          // Color by type
+          ImU32 col;
+          const char* text;
+          char buf[16];
+          if (d.type == 7) {
+            col = IM_COL32(180, 180, 180, (int)(alpha * 255));
+            text = "MISS";
+          } else {
+            snprintf(buf, sizeof(buf), "%d", d.damage);
+            text = buf;
+            if (d.type == 8) // incoming (red)
+              col = IM_COL32(255, 60, 60, (int)(alpha * 255));
+            else if (d.type == 2) // critical (blue)
+              col = IM_COL32(80, 180, 255, (int)(alpha * 255));
+            else if (d.type == 3) // excellent (green)
+              col = IM_COL32(80, 255, 120, (int)(alpha * 255));
+            else // normal (orange)
+              col = IM_COL32(255, 200, 60, (int)(alpha * 255));
+          }
+
+          // Draw with shadow
+          float scale = 1.5f - d.timer * 0.3f;
+          float fontSize = 18.0f * scale;
+          ImVec2 tpos(sx, sy);
+          // Shadow
+          dl->AddText(hudFont, fontSize, ImVec2(tpos.x + 1, tpos.y + 1),
+                      IM_COL32(0, 0, 0, (int)(alpha * 200)), text);
+          // Main text
+          dl->AddText(hudFont, fontSize, tpos, col, text);
+        }
+      }
+
+      // ── Monster nameplates (name + level + HP bar) ──
+      {
+        glm::mat4 vp = projection * view;
+        for (int i = 0; i < g_monsterManager.GetMonsterCount(); ++i) {
+          MonsterInfo mi = g_monsterManager.GetMonsterInfo(i);
+          if (mi.state == MonsterState::DEAD) continue;
+
+          // Project nameplate position (above monster head)
+          glm::vec3 namePos = mi.position + glm::vec3(0, mi.height + 15.0f, 0);
+          glm::vec4 clip = vp * glm::vec4(namePos, 1.0f);
+          if (clip.w <= 0.0f) continue;
+          float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * winW;
+          float sy = ((1.0f - (clip.y / clip.w)) * 0.5f) * winH;
+
+          // Distance culling — don't show names for far-away monsters
+          float dist = glm::length(mi.position - camPos);
+          if (dist > 2000.0f) continue;
+
+          // Fade based on distance
+          float alpha = dist < 1000.0f ? 1.0f : 1.0f - (dist - 1000.0f) / 1000.0f;
+          alpha = std::max(0.0f, std::min(1.0f, alpha));
+          if (mi.state == MonsterState::DYING) alpha *= 0.5f;
+
+          // Name + level text
+          char nameText[64];
+          snprintf(nameText, sizeof(nameText), "%s  Lv.%d", mi.name.c_str(), mi.level);
+          ImVec2 textSize = hudFont->CalcTextSizeA(14.0f, FLT_MAX, 0, nameText);
+          float tx = sx - textSize.x * 0.5f;
+          float ty = sy - textSize.y;
+
+          // Name color: white normally, red if attacking hero
+          ImU32 nameCol = (mi.state == MonsterState::ATTACKING || mi.state == MonsterState::CHASING)
+            ? IM_COL32(255, 100, 100, (int)(alpha * 255))
+            : IM_COL32(255, 255, 255, (int)(alpha * 220));
+
+          // Shadow + text
+          dl->AddText(hudFont, 14.0f, ImVec2(tx + 1, ty + 1),
+                      IM_COL32(0, 0, 0, (int)(alpha * 180)), nameText);
+          dl->AddText(hudFont, 14.0f, ImVec2(tx, ty), nameCol, nameText);
+
+          // HP bar below name
+          float barW = 50.0f, barH = 4.0f;
+          float barX = sx - barW * 0.5f;
+          float barY = sy + 2.0f;
+          float hpFrac = mi.maxHp > 0 ? (float)mi.hp / mi.maxHp : 0.0f;
+          hpFrac = std::max(0.0f, std::min(1.0f, hpFrac));
+          // Background
+          dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH),
+                            IM_COL32(0, 0, 0, (int)(alpha * 160)));
+          // HP fill (green → yellow → red)
+          ImU32 hpCol = hpFrac > 0.5f ? IM_COL32(60, 220, 60, (int)(alpha * 220))
+                      : hpFrac > 0.25f ? IM_COL32(220, 220, 60, (int)(alpha * 220))
+                      : IM_COL32(220, 60, 60, (int)(alpha * 220));
+          if (hpFrac > 0.0f)
+            dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW * hpFrac, barY + barH), hpCol);
+        }
+      }
+
+      // ── Ground item labels (floating above drops) ──
+      {
+        glm::mat4 vp = projection * view;
+        for (auto &gi : g_groundItems) {
+          if (!gi.active) continue;
+          // Bob animation
+          float bob = sinf(gi.timer * 3.0f) * 5.0f;
+          glm::vec3 labelPos = gi.position + glm::vec3(0, 30.0f + bob, 0);
+          glm::vec4 clip = vp * glm::vec4(labelPos, 1.0f);
+          if (clip.w <= 0.0f) continue;
+          float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * winW;
+          float sy = ((1.0f - (clip.y / clip.w)) * 0.5f) * winH;
+
+          float dist = glm::length(gi.position - camPos);
+          if (dist > 1500.0f) continue;
+
+          const char *name = GetDropName(gi.defIndex);
+          char label[64];
+          if (gi.defIndex == -1)
+            snprintf(label, sizeof(label), "%d Zen", gi.quantity);
+          else if (gi.itemLevel > 0)
+            snprintf(label, sizeof(label), "%s +%d", name, gi.itemLevel);
+          else
+            snprintf(label, sizeof(label), "%s", name);
+
+          ImVec2 ts = hudFont->CalcTextSizeA(13.0f, FLT_MAX, 0, label);
+          float tx = sx - ts.x * 0.5f, ty = sy - ts.y * 0.5f;
+          // Yellow for items, gold for Zen
+          ImU32 col = gi.defIndex == -1
+            ? IM_COL32(255, 215, 0, 220)
+            : IM_COL32(180, 255, 180, 220);
+          dl->AddText(hudFont, 13.0f, ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 160), label);
+          dl->AddText(hudFont, 13.0f, ImVec2(tx, ty), col, label);
+        }
+      }
+    }
 
     // Add some debug info
     ImGui::Begin("Terrain Debug");
@@ -1154,15 +2464,12 @@ int main(int argc, char **argv) {
         int gx = (int)(hPos.z / 100.0f);
         if (gx >= 0 && gz >= 0 && gx < S && gz < S) {
           uint8_t attr = g_terrainDataPtr->mapping.attributes[gz * S + gx];
-          ImGui::Text("Attr: 0x%02X%s%s%s%s%s", attr,
-                      (attr & 0x01) ? " SAFE" : "",
-                      (attr & 0x04) ? " NOMOVE" : "",
-                      (attr & 0x08) ? " NOGROUND" : "",
-                      (attr & 0x10) ? " WATER" : "",
-                      (attr & 0x20) ? " ACTION" : "");
+          ImGui::Text(
+              "Attr: 0x%02X%s%s%s%s%s", attr, (attr & 0x01) ? " SAFE" : "",
+              (attr & 0x04) ? " NOMOVE" : "", (attr & 0x08) ? " NOGROUND" : "",
+              (attr & 0x10) ? " WATER" : "", (attr & 0x20) ? " ACTION" : "");
           uint8_t tile = g_terrainDataPtr->mapping.layer1[gz * S + gx];
-          ImGui::Text("Tile: %d%s", tile,
-                      (tile == 4) ? " (ROOF HIDE)" : "");
+          ImGui::Text("Tile: %d%s", tile, (tile == 4) ? " (ROOF HIDE)" : "");
           ImGui::Text("Roof: %.0f%%", g_typeAlpha[125] * 100.0f);
         }
       }
@@ -1170,8 +2477,8 @@ int main(int argc, char **argv) {
     }
 
     // NPC name labels — original MU style (ZzzInterface.cpp RenderBoolean)
-    // NPC text color: RGB(150, 255, 240) cyan, BG: RGBA(10, 30, 50, 150) dark blue
-    // Hovered NPC: brighter green text, green-tinted BG
+    // NPC text color: RGB(150, 255, 240) cyan, BG: RGBA(10, 30, 50, 150) dark
+    // blue Hovered NPC: brighter green text, green-tinted BG
     {
       int winW, winH;
       glfwGetWindowSize(window, &winW, &winH);
@@ -1180,14 +2487,18 @@ int main(int argc, char **argv) {
 
       for (int i = 0; i < g_npcManager.GetNpcCount(); ++i) {
         NpcInfo info = g_npcManager.GetNpcInfo(i);
-        if (info.name.empty()) continue;
+        if (info.name.empty())
+          continue;
 
         float dist = glm::distance(camPos, info.position);
-        if (dist > 2000.0f) continue;
+        if (dist > 2000.0f)
+          continue;
 
-        glm::vec3 labelPos = info.position + glm::vec3(0, info.height + 30.0f, 0);
+        glm::vec3 labelPos =
+            info.position + glm::vec3(0, info.height + 30.0f, 0);
         glm::vec4 clip = projection * view * glm::vec4(labelPos, 1.0f);
-        if (clip.w <= 0) continue;
+        if (clip.w <= 0)
+          continue;
         glm::vec3 ndc = glm::vec3(clip) / clip.w;
         float sx = (ndc.x * 0.5f + 0.5f) * (float)winW;
         float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * (float)winH;
@@ -1199,15 +2510,14 @@ int main(int argc, char **argv) {
         float y1 = sy + textSize.y / 2 + padY;
 
         bool hovered = (i == g_hoveredNpc);
-        ImU32 bgCol = hovered ? IM_COL32(10, 50, 20, 180)
-                              : IM_COL32(10, 30, 50, 150);
+        ImU32 bgCol =
+            hovered ? IM_COL32(10, 50, 20, 180) : IM_COL32(10, 30, 50, 150);
         ImU32 textCol = hovered ? IM_COL32(100, 255, 100, 255)
                                 : IM_COL32(150, 255, 240, 255);
 
         drawList->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), bgCol);
-        drawList->AddText(
-            ImVec2(sx - textSize.x / 2, sy - textSize.y / 2),
-            textCol, info.name.c_str());
+        drawList->AddText(ImVec2(sx - textSize.x / 2, sy - textSize.y / 2),
+                          textCol, info.name.c_str());
       }
     }
 
@@ -1216,15 +2526,19 @@ int main(int argc, char **argv) {
       NpcInfo info = g_npcManager.GetNpcInfo(g_selectedNpc);
       int winW, winH;
       glfwGetWindowSize(window, &winW, &winH);
-      ImGui::SetNextWindowPos(ImVec2((float)winW / 2 - 150, (float)winH / 2 - 100),
-                              ImGuiCond_Always);
+      ImGui::SetNextWindowPos(
+          ImVec2((float)winW / 2 - 150, (float)winH / 2 - 100),
+          ImGuiCond_Always);
       ImGui::SetNextWindowSize(ImVec2(300, 200));
       ImGui::Begin("NPC Dialog", nullptr,
                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
       ImGui::TextWrapped("Hello adventurer! I am %s.", info.name.c_str());
       ImGui::Separator();
-      if (ImGui::Button("Shop (Coming Soon)", ImVec2(-1, 0))) {}
-      if (ImGui::Button("Close", ImVec2(-1, 0))) { g_selectedNpc = -1; }
+      if (ImGui::Button("Shop (Coming Soon)", ImVec2(-1, 0))) {
+      }
+      if (ImGui::Button("Close", ImVec2(-1, 0))) {
+        g_selectedNpc = -1;
+      }
       ImGui::End();
 
       // Close on Escape
@@ -1234,6 +2548,42 @@ int main(int argc, char **argv) {
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    // Auto-screenshot: capture AFTER ImGui render (includes HUD overlay)
+    if (captureScreenshot) {
+      std::string ssPath;
+      if (!outputName.empty()) {
+        ssPath = "screenshots/" + outputName + ".jpg";
+      } else if (!objectDebugName.empty()) {
+        ssPath = "screenshots/" + objectDebugName + ".jpg";
+      } else {
+        ssPath =
+            "screenshots/verif_" + std::to_string(std::time(nullptr)) + ".jpg";
+      }
+      int sw, sh;
+      glfwGetFramebufferSize(window, &sw, &sh);
+      std::vector<unsigned char> px(sw * sh * 3);
+      glPixelStorei(GL_PACK_ALIGNMENT, 1);
+      glReadPixels(0, 0, sw, sh, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+      std::vector<unsigned char> flipped(sw * sh * 3);
+      for (int y = 0; y < sh; ++y)
+        memcpy(&flipped[y * sw * 3], &px[(sh - 1 - y) * sw * 3], sw * 3);
+      tjhandle comp = tjInitCompress();
+      unsigned char *jbuf = nullptr;
+      unsigned long jsize = 0;
+      tjCompress2(comp, flipped.data(), sw, 0, sh, TJPF_RGB, &jbuf, &jsize,
+                  TJSAMP_444, 95, TJFLAG_FASTDCT);
+      std::filesystem::create_directories("screenshots");
+      FILE *f = fopen(ssPath.c_str(), "wb");
+      if (f) {
+        fwrite(jbuf, 1, jsize, f);
+        fclose(f);
+      }
+      tjFree(jbuf);
+      tjDestroy(comp);
+      std::cout << "[screenshot] Saved " << ssPath << std::endl;
+      break;
+    }
 
     // Auto-diagnostic: capture AFTER render, BEFORE swap (back buffer has
     // current frame)
@@ -1286,7 +2636,12 @@ int main(int argc, char **argv) {
   g_camera.SetPosition(g_hero.GetPosition());
   g_camera.SaveState("camera_save.txt");
 
+  // Disconnect from server
+  g_net.Disconnect();
+
   // Cleanup
+  g_hud.Cleanup();
+  g_monsterManager.Cleanup();
   g_npcManager.Cleanup();
   g_hero.Cleanup();
   g_clickEffect.Cleanup();

@@ -2,8 +2,152 @@
 #include "TextureLoader.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
+
+// ─── DK Stat Formulas (MuEmu-0.97k ObjectManager.cpp) ──────────────────
+
+uint64_t HeroCharacter::CalcXPForLevel(int level) {
+  // gObjSetExperienceTable: cubic curve, MaxLevel=400
+  // scaleFactor = (UINT32_MAX * 0.95) / 400^3 ≈ 63.7
+  static constexpr double kScale =
+      ((double)0xFFFFFFFF * 0.95) / (400.0 * 400.0 * 400.0);
+  return (uint64_t)(kScale * (double)level * (double)level * (double)level);
+}
+
+void HeroCharacter::RecalcStats() {
+  // MaxHP = 110 + 2.0*(Level-1) + (VIT-25)*3.0
+  m_maxHp = (int)(DK_BASE_HP + DK_LEVEL_LIFE * (m_level - 1) +
+                   (m_vitality - DK_BASE_VIT) * DK_VIT_TO_LIFE);
+  if (m_maxHp < 1) m_maxHp = 1;
+
+  // Damage = STR / 8 + weapon .. STR / 4 + weapon (original MU formula)
+  m_damageMin = std::max(1, (int)m_strength / 8 + m_weaponDamageMin);
+  m_damageMax = std::max(m_damageMin, (int)m_strength / 4 + m_weaponDamageMax);
+
+  // Defense = DEX / 3 + equipped armor/shield defense
+  m_defense = (int)m_dexterity / 3 + m_equipDefenseBonus;
+
+  // AttackSuccessRate = Level*5 + (DEX*3)/2 + STR/4
+  m_attackSuccessRate = m_level * 5 + ((int)m_dexterity * 3) / 2 +
+                        (int)m_strength / 4;
+
+  // DefenseSuccessRate = DEX / 3
+  m_defenseSuccessRate = (int)m_dexterity / 3;
+
+  // XP threshold for next level
+  m_nextExperience = CalcXPForLevel(m_level);
+}
+
+void HeroCharacter::GainExperience(uint64_t xp) {
+  m_experience += xp;
+  m_leveledUpThisFrame = false;
+
+  while (m_experience >= m_nextExperience && m_level < 400) {
+    m_level++;
+    m_levelUpPoints += DK_POINTS_PER_LEVEL;
+    m_leveledUpThisFrame = true;
+    RecalcStats();
+    m_hp = m_maxHp; // Full heal on level-up
+    std::cout << "[Hero] Level up! Now level " << m_level
+              << " (HP=" << m_maxHp << ", points=" << m_levelUpPoints
+              << ", nextXP=" << m_nextExperience << ")" << std::endl;
+  }
+}
+
+bool HeroCharacter::AddStatPoint(int stat) {
+  if (m_levelUpPoints <= 0) return false;
+  switch (stat) {
+  case 0: m_strength++;  break;
+  case 1: m_dexterity++; break;
+  case 2: m_vitality++;  break;
+  case 3: m_energy++;    break;
+  default: return false;
+  }
+  m_levelUpPoints--;
+  int oldMaxHp = m_maxHp;
+  RecalcStats();
+  // If max HP increased, add the difference to current HP
+  if (m_maxHp > oldMaxHp)
+    m_hp += (m_maxHp - oldMaxHp);
+  return true;
+}
+
+void HeroCharacter::LoadStats(int level, uint16_t str, uint16_t dex,
+                              uint16_t vit, uint16_t ene,
+                              uint64_t experience, int levelUpPoints,
+                              int currentHp) {
+  m_level = level;
+  m_strength = str;
+  m_dexterity = dex;
+  m_vitality = vit;
+  m_energy = ene;
+  m_experience = experience;
+  m_levelUpPoints = levelUpPoints;
+  RecalcStats();
+  // Restore current HP from server (clamped to new maxHP)
+  m_hp = std::min(currentHp, m_maxHp);
+  if (m_hp <= 0) m_hp = m_maxHp; // Don't load as dead
+  std::cout << "[Hero] Loaded stats from server: Lv" << m_level
+            << " STR=" << m_strength << " DEX=" << m_dexterity
+            << " VIT=" << m_vitality << " ENE=" << m_energy
+            << " HP=" << m_hp << "/" << m_maxHp
+            << " XP=" << m_experience << " pts=" << m_levelUpPoints
+            << std::endl;
+}
+
+void HeroCharacter::Heal(int amount) {
+  if (m_heroState != HeroState::ALIVE)
+    return;
+  m_hp = std::min(m_hp + amount, m_maxHp);
+}
+
+void HeroCharacter::SetWeaponBonus(int dmin, int dmax) {
+  m_weaponDamageMin = dmin;
+  m_weaponDamageMax = dmax;
+  RecalcStats();
+}
+
+void HeroCharacter::SetDefenseBonus(int def) {
+  m_equipDefenseBonus = def;
+  RecalcStats();
+}
+
+DamageResult HeroCharacter::RollAttack(int targetDefense,
+                                        int targetDefSuccessRate) const {
+  // 1. Miss check (reference Attack.cpp)
+  int atkRate = m_attackSuccessRate;
+  int defRate = targetDefSuccessRate;
+  if (atkRate < defRate) {
+    // Attacker weaker: 95% miss
+    if (rand() % 100 >= 5) return {0, DamageType::MISS};
+  } else if (defRate > 0 && atkRate > 0) {
+    // Normal: miss chance = defRate / atkRate
+    if (rand() % atkRate < defRate) return {0, DamageType::MISS};
+  }
+
+  // 2. Critical check: rate = DEX / 5, cap 20%
+  int critRate = std::min((int)m_dexterity / 5, 20);
+  if (rand() % 100 < critRate) {
+    int dmg = m_damageMax + m_level / 2; // Max + level bonus
+    return {std::max(1, dmg - targetDefense), DamageType::CRITICAL};
+  }
+
+  // 3. Excellent check: rate = DEX / 10, cap 10%
+  int excRate = std::min((int)m_dexterity / 10, 10);
+  if (rand() % 100 < excRate) {
+    int dmg = (m_damageMax * 120) / 100; // 120% of max
+    return {std::max(1, dmg - targetDefense), DamageType::EXCELLENT};
+  }
+
+  // 4. Normal hit: random in [min, max]
+  int dmg = m_damageMin;
+  if (m_damageMax > m_damageMin)
+    dmg += rand() % (m_damageMax - m_damageMin + 1);
+  dmg -= targetDefense;
+  return {std::max(1, dmg), DamageType::NORMAL};
+}
 
 glm::vec3 HeroCharacter::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
   const int SIZE = 256;
@@ -127,6 +271,13 @@ void HeroCharacter::Init(const std::string &dataPath) {
     }
   }
 
+  // Compute initial stats from DK formulas
+  RecalcStats();
+  m_hp = m_maxHp;
+  std::cout << "[Hero] DK Level " << m_level << " — HP=" << m_maxHp
+            << " Dmg=" << m_damageMin << "-" << m_damageMax
+            << " Def=" << m_defense << " AtkRate=" << m_attackSuccessRate
+            << " NextXP=" << m_nextExperience << std::endl;
   std::cout << "[Hero] Character initialized (DK Naked)" << std::endl;
 }
 
@@ -143,10 +294,18 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     lockPos = m_skeleton->Actions[m_action].LockPositions;
   }
   if (numKeys > 1) {
+    // Don't loop die animation — clamp to last frame when dying/dead
+    bool clampAnim = (m_heroState == HeroState::DYING ||
+                      m_heroState == HeroState::DEAD);
     m_animFrame += ANIM_SPEED * deltaTime;
-    int wrapKeys = lockPos ? (numKeys - 1) : numKeys;
-    if (m_animFrame >= (float)wrapKeys)
-      m_animFrame = std::fmod(m_animFrame, (float)wrapKeys);
+    if (clampAnim) {
+      if (m_animFrame >= (float)(numKeys - 1))
+        m_animFrame = (float)(numKeys - 1);
+    } else {
+      int wrapKeys = lockPos ? (numKeys - 1) : numKeys;
+      if (m_animFrame >= (float)wrapKeys)
+        m_animFrame = std::fmod(m_animFrame, (float)wrapKeys);
+    }
   }
 
   // Compute bones for current animation frame
@@ -324,6 +483,81 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
     }
   }
+
+  // --- Render shield on left hand (bone 42) ---
+  auto &sCat = GetWeaponCategoryRender(6); // category 6 = shield
+  int shieldBone = sCat.attachBone;        // bone 42 = left hand
+  if (m_shieldBmd && !m_shieldMeshBuffers.empty() &&
+      shieldBone < (int)bones.size()) {
+
+    BoneWorldMatrix shieldOffsetMat = MuMath::BuildWeaponOffsetMatrix(
+        glm::vec3(0, 0, 0), glm::vec3(0, 0, 0));
+
+    BoneWorldMatrix shieldParentMat;
+    MuMath::ConcatTransforms(
+        (const float(*)[4])bones[shieldBone].data(),
+        (const float(*)[4])shieldOffsetMat.data(),
+        (float(*)[4])shieldParentMat.data());
+
+    auto sLocalBones = ComputeBoneMatrices(m_shieldBmd.get());
+    std::vector<BoneWorldMatrix> sFinalBones(sLocalBones.size());
+    for (int bi = 0; bi < (int)sLocalBones.size(); ++bi) {
+      MuMath::ConcatTransforms(
+          (const float(*)[4])shieldParentMat.data(),
+          (const float(*)[4])sLocalBones[bi].data(),
+          (float(*)[4])sFinalBones[bi].data());
+    }
+
+    for (int mi = 0; mi < (int)m_shieldMeshBuffers.size() &&
+                      mi < (int)m_shieldBmd->Meshes.size();
+         ++mi) {
+      auto &mesh = m_shieldBmd->Meshes[mi];
+      auto &mb = m_shieldMeshBuffers[mi];
+      if (mb.indexCount == 0)
+        continue;
+
+      std::vector<ViewerVertex> verts;
+      verts.reserve(mesh.NumTriangles * 3);
+      for (int ti = 0; ti < mesh.NumTriangles; ++ti) {
+        auto &tri = mesh.Triangles[ti];
+        for (int v = 0; v < 3; ++v) {
+          ViewerVertex vv;
+          auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+          glm::vec3 srcPos = srcVert.Position;
+          glm::vec3 srcNorm =
+              (tri.NormalIndex[v] < mesh.NumNormals)
+                  ? mesh.Normals[tri.NormalIndex[v]].Normal
+                  : glm::vec3(0, 0, 1);
+
+          int boneIdx = srcVert.Node;
+          if (boneIdx >= 0 && boneIdx < (int)sFinalBones.size()) {
+            vv.pos = MuMath::TransformPoint(
+                (const float(*)[4])sFinalBones[boneIdx].data(), srcPos);
+            vv.normal = MuMath::RotateVector(
+                (const float(*)[4])sFinalBones[boneIdx].data(), srcNorm);
+          } else {
+            vv.pos = MuMath::TransformPoint(
+                (const float(*)[4])shieldParentMat.data(), srcPos);
+            vv.normal = MuMath::RotateVector(
+                (const float(*)[4])shieldParentMat.data(), srcNorm);
+          }
+          vv.tex = (tri.TexCoordIndex[v] < mesh.NumTexCoords)
+                       ? glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                                   mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV)
+                       : glm::vec2(0);
+          verts.push_back(vv);
+        }
+      }
+
+      glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
+      glBufferSubData(GL_ARRAY_BUFFER, 0,
+                      verts.size() * sizeof(ViewerVertex), verts.data());
+
+      glBindTexture(GL_TEXTURE_2D, mb.texture);
+      glBindVertexArray(mb.vao);
+      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+    }
+  }
 }
 
 void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
@@ -445,7 +679,7 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
 }
 
 void HeroCharacter::ProcessMovement(float deltaTime) {
-  if (!m_terrainData || !m_moving)
+  if (!m_terrainData || !m_moving || IsDead())
     return;
 
   glm::vec3 dir = m_target - m_pos;
@@ -477,14 +711,14 @@ void HeroCharacter::ProcessMovement(float deltaTime) {
 }
 
 void HeroCharacter::MoveTo(const glm::vec3 &target) {
+  if (IsDead()) return;
   m_target = target;
-  if (!m_moving) {
-    // Use weapon-specific walk action when outside SafeZone with weapon
-    if (!m_inSafeZone && m_weaponBmd) {
-      m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionWalk;
-    } else {
-      m_action = ACTION_WALK_MALE;
-    }
+  // Only reset walk animation if not already walking
+  int walkAction = (!m_inSafeZone && m_weaponBmd)
+      ? GetWeaponCategoryRender(m_weaponInfo.category).actionWalk
+      : ACTION_WALK_MALE;
+  if (!m_moving || m_action != walkAction) {
+    m_action = walkAction;
     m_animFrame = 0.0f;
   }
   m_moving = true;
@@ -579,10 +813,61 @@ void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
             << " (" << m_weaponMeshBuffers.size() << " GPU meshes)" << std::endl;
 }
 
+void HeroCharacter::EquipShield(const WeaponEquipInfo &shield) {
+  if (shield.modelFile.empty()) {
+    std::cout << "[Hero] No shield model to equip" << std::endl;
+    return;
+  }
+
+  m_shieldInfo = shield;
+
+  std::string shieldPath = m_dataPath + "/Item/" + shield.modelFile;
+  m_shieldBmd = BMDParser::Parse(shieldPath);
+  if (!m_shieldBmd) {
+    std::cerr << "[Hero] Failed to load shield: " << shieldPath << std::endl;
+    return;
+  }
+
+  std::cout << "[Hero] Loaded shield " << shield.modelFile
+            << ": " << m_shieldBmd->Meshes.size() << " meshes, "
+            << m_shieldBmd->Bones.size() << " bones" << std::endl;
+
+  std::string texPath = m_dataPath + "/Item/";
+  AABB shieldAABB{};
+
+  std::vector<BoneWorldMatrix> shieldBones;
+  if (!m_shieldBmd->Bones.empty()) {
+    shieldBones = ComputeBoneMatrices(m_shieldBmd.get());
+  } else {
+    BoneWorldMatrix identity{};
+    identity[0] = {1, 0, 0, 0};
+    identity[1] = {0, 1, 0, 0};
+    identity[2] = {0, 0, 1, 0};
+    shieldBones.push_back(identity);
+  }
+
+  CleanupMeshBuffers(m_shieldMeshBuffers);
+  for (auto &mesh : m_shieldBmd->Meshes) {
+    UploadMeshWithBones(mesh, texPath, shieldBones, m_shieldMeshBuffers,
+                        shieldAABB, true);
+  }
+
+  std::cout << "[Hero] Shield equipped: " << shield.modelFile
+            << " (" << m_shieldMeshBuffers.size() << " GPU meshes)" << std::endl;
+}
+
 void HeroCharacter::AttackMonster(int monsterIndex,
                                   const glm::vec3 &monsterPos) {
-  if (!m_weaponBmd)
-    return; // Can't attack without a weapon
+  if (IsDead())
+    return;
+
+  // Already attacking same target — just update position, don't reset cycle
+  if (monsterIndex == m_attackTargetMonster &&
+      (m_attackState == AttackState::SWINGING ||
+       m_attackState == AttackState::COOLDOWN)) {
+    m_attackTargetPos = monsterPos;
+    return;
+  }
 
   m_attackTargetMonster = monsterIndex;
   m_attackTargetPos = monsterPos;
@@ -602,9 +887,13 @@ void HeroCharacter::AttackMonster(int monsterIndex,
     // Face the target
     m_facing = atan2f(dir.z, -dir.x);
 
-    // Alternate between two sword swing actions
-    m_action = (m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
-                                             : ACTION_ATTACK_SWORD_R2;
+    // Use fist attack when no weapon, sword swings when armed
+    if (m_weaponBmd) {
+      m_action = (m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
+                                               : ACTION_ATTACK_SWORD_R2;
+    } else {
+      m_action = ACTION_ATTACK_FIST;
+    }
     m_animFrame = 0.0f;
     m_swordSwingCount++;
   } else {
@@ -635,8 +924,12 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       // Face the target
       m_facing = atan2f(dir.z, -dir.x);
 
-      m_action = (m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
-                                               : ACTION_ATTACK_SWORD_R2;
+      if (m_weaponBmd) {
+        m_action = (m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
+                                                 : ACTION_ATTACK_SWORD_R2;
+      } else {
+        m_action = ACTION_ATTACK_FIST;
+      }
       m_animFrame = 0.0f;
       m_swordSwingCount++;
     } else if (!m_moving) {
@@ -660,9 +953,12 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       m_attackState = AttackState::COOLDOWN;
       m_attackCooldown = ATTACK_COOLDOWN_TIME;
 
-      // Return to combat idle
-      auto &catRender = GetWeaponCategoryRender(m_weaponInfo.category);
-      m_action = catRender.actionIdle;
+      // Return to combat idle (weapon stance or unarmed)
+      if (m_weaponBmd) {
+        m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+      } else {
+        m_action = ACTION_STOP_MALE;
+      }
       m_animFrame = 0.0f;
     }
     break;
@@ -709,6 +1005,7 @@ void HeroCharacter::CancelAttack() {
   m_attackState = AttackState::NONE;
   m_attackTargetMonster = -1;
   m_swordSwingCount = 0;
+  m_moving = false; // Stop any approach movement
 
   // Return to appropriate idle
   if (!m_inSafeZone && m_weaponBmd) {
@@ -719,10 +1016,96 @@ void HeroCharacter::CancelAttack() {
   m_animFrame = 0.0f;
 }
 
-int HeroCharacter::RollDamage() const {
-  if (m_damageMax <= m_damageMin)
-    return m_damageMin;
-  return m_damageMin + (rand() % (m_damageMax - m_damageMin + 1));
+void HeroCharacter::TakeDamage(int damage) {
+  // Accept damage when ALIVE or HIT_STUN (so rapid hits can kill)
+  if (m_heroState != HeroState::ALIVE && m_heroState != HeroState::HIT_STUN)
+    return;
+
+  m_hp -= damage;
+  if (m_hp <= 0) {
+    m_hp = 0;
+    m_heroState = HeroState::DYING;
+    m_stateTimer = 0.0f;
+    CancelAttack();
+    m_moving = false;
+    m_action = ACTION_DIE1;
+    m_animFrame = 0.0f;
+    std::cout << "[Hero] Dying — action=" << ACTION_DIE1
+              << " numActions=" << (m_skeleton ? (int)m_skeleton->Actions.size() : 0)
+              << std::endl;
+  } else {
+    m_heroState = HeroState::HIT_STUN;
+    m_stateTimer = HIT_STUN_TIME;
+    // Brief shock animation — don't interrupt attack swing
+    if (m_attackState != AttackState::SWINGING) {
+      m_action = ACTION_SHOCK;
+      m_animFrame = 0.0f;
+    }
+  }
+}
+
+void HeroCharacter::UpdateState(float deltaTime) {
+  switch (m_heroState) {
+  case HeroState::ALIVE:
+    break; // Normal operation
+  case HeroState::HIT_STUN:
+    m_stateTimer -= deltaTime;
+    if (m_stateTimer <= 0.0f) {
+      m_heroState = HeroState::ALIVE;
+      // Return to appropriate idle if not attacking/moving
+      if (m_attackState == AttackState::NONE && !m_moving) {
+        if (!m_inSafeZone && m_weaponBmd) {
+          m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+        } else {
+          m_action = ACTION_STOP_MALE;
+        }
+        m_animFrame = 0.0f;
+      }
+    }
+    break;
+  case HeroState::DYING: {
+    // Play die animation to completion, then transition to DEAD
+    m_stateTimer += deltaTime; // Count up as safety timeout
+    int numKeys = 1;
+    if (ACTION_DIE1 < (int)m_skeleton->Actions.size())
+      numKeys = m_skeleton->Actions[ACTION_DIE1].NumAnimationKeys;
+    if (m_animFrame >= (float)(numKeys - 1) || m_stateTimer > 3.0f) {
+      m_animFrame = (float)(numKeys - 1); // Freeze on last frame
+      m_heroState = HeroState::DEAD;
+      m_stateTimer = DEAD_WAIT_TIME;
+      std::cout << "[Hero] Now DEAD, respawn in " << DEAD_WAIT_TIME << "s" << std::endl;
+    }
+    break;
+  }
+  case HeroState::DEAD:
+    m_stateTimer -= deltaTime;
+    // Respawn is triggered externally by main.cpp after timer expires
+    break;
+  case HeroState::RESPAWNING:
+    // Brief invuln after respawn — return to ALIVE after timer
+    m_stateTimer -= deltaTime;
+    if (m_stateTimer <= 0.0f)
+      m_heroState = HeroState::ALIVE;
+    break;
+  }
+}
+
+void HeroCharacter::Respawn(const glm::vec3 &spawnPos) {
+  m_pos = spawnPos;
+  SnapToTerrain();
+  m_hp = m_maxHp;
+  m_heroState = HeroState::RESPAWNING;
+  m_stateTimer = 2.0f; // 2 seconds invulnerability
+  m_moving = false;
+  m_attackState = AttackState::NONE;
+  m_attackTargetMonster = -1;
+  // Return to idle
+  if (!m_inSafeZone && m_weaponBmd) {
+    m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+  } else {
+    m_action = ACTION_STOP_MALE;
+  }
+  m_animFrame = 0.0f;
 }
 
 void HeroCharacter::SnapToTerrain() {
@@ -748,6 +1131,8 @@ void HeroCharacter::Cleanup() {
     CleanupMeshBuffers(m_parts[p].meshBuffers);
   CleanupMeshBuffers(m_weaponMeshBuffers);
   m_weaponBmd.reset();
+  CleanupMeshBuffers(m_shieldMeshBuffers);
+  m_shieldBmd.reset();
   for (auto &sm : m_shadowMeshes) {
     if (sm.vao)
       glDeleteVertexArrays(1, &sm.vao);

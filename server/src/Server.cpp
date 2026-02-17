@@ -1,6 +1,8 @@
 #include "Server.hpp"
 #include "PacketHandler.hpp"
+#include "PacketDefs.hpp"
 #include <arpa/inet.h>
+#include <chrono>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -21,13 +23,19 @@ bool Server::Start(uint16_t port) {
     }
     m_db.CreateDefaultAccount();
     m_db.SeedNpcSpawns();
+    m_db.SeedMonsterSpawns();
     m_db.SeedItemDefinitions();
 
     // Seed default equipment for character 1 (TestDK)
     m_db.SeedDefaultEquipment(1);
 
-    // Load NPC data from database
+    // Load terrain attributes for walkability checks (monster AI)
+    // Path relative to server build dir → client data dir
+    m_world.LoadTerrainAttributes("../../references/other/MuMain/src/bin/Data/World1/EncTerrain1.att");
+
+    // Load NPC and monster data from database
     m_world.LoadNpcsFromDB(m_db, 0); // map 0 = Lorencia
+    m_world.LoadMonstersFromDB(m_db, 0);
 
     // Create listen socket
     m_listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -69,17 +77,111 @@ void Server::Run() {
     signal(SIGINT, sigHandler);
     signal(SIGPIPE, SIG_IGN); // Ignore broken pipe
 
+    auto lastTick = std::chrono::steady_clock::now();
+
     while (m_running && !g_sigint) {
+        // Calculate delta time
+        auto now = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration<float>(now - lastTick).count();
+        lastTick = now;
+
+        // Game tick: update monster states, drop aging, wander AI
+        std::vector<GameWorld::MonsterMoveUpdate> wanderMoves;
+        m_world.Update(dt, [this](uint16_t dropIndex) {
+            // Drop expired — broadcast removal to all clients
+            PMSG_DROP_REMOVE_SEND pkt{};
+            pkt.h = MakeC1Header(sizeof(pkt), 0x2E);
+            pkt.dropIndex = dropIndex;
+            Broadcast(&pkt, sizeof(pkt));
+        }, &wanderMoves);
+
+        // Broadcast wander moves to all clients
+        for (auto &mv : wanderMoves) {
+            PMSG_MONSTER_MOVE_SEND movePkt{};
+            movePkt.h = MakeC1Header(sizeof(movePkt), 0x35);
+            movePkt.monsterIndex = mv.monsterIndex;
+            movePkt.targetX = mv.targetX;
+            movePkt.targetY = mv.targetY;
+            movePkt.chasing = mv.chasing;
+            Broadcast(&movePkt, sizeof(movePkt));
+        }
+
+        // Check for monster respawns and broadcast them
+        for (auto &mon : const_cast<std::vector<MonsterInstance>&>(m_world.GetMonsterInstances())) {
+            if (mon.justRespawned) {
+                mon.justRespawned = false;
+                PMSG_MONSTER_RESPAWN_SEND pkt{};
+                pkt.h = MakeC1Header(sizeof(pkt), 0x30);
+                pkt.monsterIndex = mon.index;
+                pkt.x = mon.gridX;
+                pkt.y = mon.gridY;
+                pkt.hp = static_cast<uint16_t>(mon.hp);
+                Broadcast(&pkt, sizeof(pkt));
+            }
+        }
+
+        // Monster AI: aggro + attack players
+        {
+            std::vector<GameWorld::PlayerTarget> targets;
+            for (auto &s : m_sessions) {
+                if (!s->IsAlive() || !s->inWorld) continue;
+                GameWorld::PlayerTarget pt;
+                pt.fd = s->GetFd();
+                pt.worldX = s->worldX;
+                pt.worldZ = s->worldZ;
+                pt.defense = s->totalDefense;
+                pt.defenseRate = (int)s->dexterity / 4; // simplified defense rate
+                pt.dead = s->dead;
+                targets.push_back(pt);
+            }
+            std::vector<GameWorld::MonsterMoveUpdate> moves;
+            auto attacks = m_world.ProcessMonsterAI(dt, targets, moves);
+
+            // Broadcast monster target updates to all clients (event-driven)
+            for (auto &mv : moves) {
+                PMSG_MONSTER_MOVE_SEND movePkt{};
+                movePkt.h = MakeC1Header(sizeof(movePkt), 0x35);
+                movePkt.monsterIndex = mv.monsterIndex;
+                movePkt.targetX = mv.targetX;
+                movePkt.targetY = mv.targetY;
+                movePkt.chasing = mv.chasing;
+                Broadcast(&movePkt, sizeof(movePkt));
+            }
+
+            for (auto &atk : attacks) {
+                // Find the target session and apply damage server-side
+                for (auto &s : m_sessions) {
+                    if (s->GetFd() == atk.targetFd && s->IsAlive()) {
+                        // Subtract damage from server-tracked HP
+                        s->hp -= atk.damage;
+                        if (s->hp <= 0) {
+                            s->hp = 0;
+                            s->dead = true;
+                        }
+
+                        // Send monster attack packet to client
+                        PMSG_MONSTER_ATTACK_SEND pkt{};
+                        pkt.h = MakeC1Header(sizeof(pkt), 0x2F);
+                        pkt.monsterIndex = atk.monsterIndex;
+                        pkt.damage = atk.damage;
+                        pkt.remainingHp = static_cast<uint16_t>(s->hp);
+                        s->Send(&pkt, sizeof(pkt));
+                        break;
+                    }
+                }
+            }
+        }
+
         // Build poll fd array: listen socket + all sessions
         std::vector<struct pollfd> fds;
         fds.push_back({m_listenFd, POLLIN, 0});
         for (auto &s : m_sessions) {
             short events = POLLIN;
-            events |= POLLOUT; // Always check if we can write
+            events |= POLLOUT;
             fds.push_back({s->GetFd(), events, 0});
         }
 
-        int ret = poll(fds.data(), static_cast<nfds_t>(fds.size()), 100); // 100ms timeout
+        int ret = poll(fds.data(), static_cast<nfds_t>(fds.size()), 16); // 16ms for ~60Hz tick
         if (ret < 0) {
             if (errno == EINTR) continue;
             perror("[Server] poll");
@@ -94,7 +196,7 @@ void Server::Run() {
         // Process sessions
         for (size_t i = 0; i < m_sessions.size(); i++) {
             auto &session = m_sessions[i];
-            auto &pfd = fds[i + 1]; // +1 because [0] is listen socket
+            auto &pfd = fds[i + 1];
 
             if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
                 session->Kill();
@@ -169,13 +271,82 @@ void Server::OnClientConnected(Session &session) {
     // Send welcome immediately
     PacketHandler::SendWelcome(session);
 
-    // For our remaster client: send NPCs right away (no login needed)
+    // For our remaster client: send NPCs + monsters right away (no login needed)
     PacketHandler::SendNpcViewport(session, m_world);
+    PacketHandler::SendMonsterViewport(session, m_world);
+
+    // Send v2 monster viewport with HP/state/index
+    auto v2pkt = m_world.BuildMonsterViewportV2Packet();
+    if (!v2pkt.empty())
+        session.Send(v2pkt.data(), v2pkt.size());
 
     // Send default character equipment from database
     PacketHandler::SendEquipment(session, m_db, 1); // characterId=1 (TestDK)
+
+    // Send character stats (level, STR/DEX/VIT/ENE, XP, stat points)
+    PacketHandler::SendCharStats(session, m_db, 1);
+
+    // Cache combat stats for default character (no login flow)
+    session.characterId = 1;
+    session.inWorld = true;
+    auto c = m_db.GetCharacter("TestDK");
+    if (c.id > 0) {
+        session.strength = c.strength;
+        session.dexterity = c.dexterity;
+        session.worldX = c.posY * 100.0f;
+        session.worldZ = c.posX * 100.0f;
+        session.hp = c.life;
+        session.maxHp = c.maxLife;
+        session.dead = false;
+    }
+    auto equip = m_db.GetCharacterEquipment(1);
+    session.weaponDamageMin = 0;
+    session.weaponDamageMax = 0;
+    session.totalDefense = 0;
+    for (auto &slot : equip) {
+        auto itemDef = m_db.GetItemDefinition(slot.category, slot.itemIndex);
+        if (itemDef.id > 0) {
+            if (slot.slot == 0) {
+                session.weaponDamageMin = itemDef.damageMin + slot.itemLevel * 3;
+                session.weaponDamageMax = itemDef.damageMax + slot.itemLevel * 3;
+            }
+            session.totalDefense += itemDef.defense + slot.itemLevel * 2;
+        }
+    }
+    printf("[Server] Default char combat stats: STR=%d weapon=%d-%d def=%d\n",
+           session.strength, session.weaponDamageMin, session.weaponDamageMax,
+           session.totalDefense);
+
+    // Send existing ground drops so late-joining clients see them
+    for (auto &drop : m_world.GetDrops()) {
+        PMSG_DROP_SPAWN_SEND dpkt{};
+        dpkt.h = MakeC1Header(sizeof(dpkt), 0x2B);
+        dpkt.dropIndex = drop.index;
+        dpkt.defIndex = drop.defIndex;
+        dpkt.quantity = drop.quantity;
+        dpkt.itemLevel = drop.itemLevel;
+        dpkt.worldX = drop.worldX;
+        dpkt.worldZ = drop.worldZ;
+        session.Send(&dpkt, sizeof(dpkt));
+    }
 }
 
 void Server::HandlePacket(Session &session, const std::vector<uint8_t> &packet) {
-    PacketHandler::Handle(session, packet, m_db, m_world);
+    PacketHandler::Handle(session, packet, m_db, m_world, *this);
+}
+
+void Server::Broadcast(const void *data, size_t len) {
+    for (auto &s : m_sessions) {
+        if (s->IsAlive() && s->inWorld) {
+            s->Send(data, len);
+        }
+    }
+}
+
+void Server::BroadcastExcept(int excludeFd, const void *data, size_t len) {
+    for (auto &s : m_sessions) {
+        if (s->IsAlive() && s->inWorld && s->GetFd() != excludeFd) {
+            s->Send(data, len);
+        }
+    }
 }

@@ -5,14 +5,20 @@
 #include <GL/glew.h>
 #include <glm/glm.hpp>
 #include <string>
+#include <vector>
 
 class GrassRenderer {
 public:
+  struct PushSource {
+    glm::vec3 pos;
+    float radius;
+  };
+
   void Init();
   void Load(const TerrainData &data, int worldID, const std::string &dataPath);
   void Render(const glm::mat4 &view, const glm::mat4 &projection, float time,
               const glm::vec3 &viewPos,
-              const glm::vec3 &ballPos = glm::vec3(0.0f));
+              const std::vector<PushSource> &pushSources = {});
   void Cleanup();
 
 private:

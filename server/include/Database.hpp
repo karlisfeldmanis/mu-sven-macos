@@ -16,6 +16,15 @@ struct NpcSpawnData {
     std::string name;
 };
 
+struct MonsterSpawnData {
+    int id = 0;
+    uint16_t type = 0;     // Monster type (3=Spider, etc.)
+    uint8_t mapId = 0;
+    uint8_t posX = 0;
+    uint8_t posY = 0;
+    uint8_t direction = 0;
+};
+
 struct CharacterData {
     int id = 0;
     int accountId = 0;
@@ -37,6 +46,7 @@ struct CharacterData {
     uint16_t maxMana = 50;
     uint32_t money = 0;
     uint64_t experience = 0;
+    uint16_t levelUpPoints = 0;
 };
 
 // Equipment slot constants (matching original MU inventory layout)
@@ -70,6 +80,7 @@ struct ItemDefinition {
     uint16_t level = 0;      // Level requirement
     uint16_t damageMin = 0;
     uint16_t damageMax = 0;
+    uint16_t defense = 0;    // Base defense (for shields/armor)
     uint8_t attackSpeed = 0;
     uint8_t twoHanded = 0;
 };
@@ -93,17 +104,42 @@ public:
     CharacterData GetCharacter(const std::string &name);
 
     void UpdatePosition(int charId, uint8_t x, uint8_t y);
+    void UpdateCharacterStats(int charId, uint16_t level, uint16_t strength,
+                              uint16_t dexterity, uint16_t vitality, uint16_t energy,
+                              uint16_t life, uint16_t maxLife, uint16_t levelUpPoints,
+                              uint64_t experience);
     void CreateDefaultAccount();
 
     // NPC spawns
     std::vector<NpcSpawnData> GetNpcSpawns(uint8_t mapId);
     void SeedNpcSpawns();
 
+    // Monster spawns
+    std::vector<MonsterSpawnData> GetMonsterSpawns(uint8_t mapId);
+    void SeedMonsterSpawns();
+
     // Items and equipment
     void SeedItemDefinitions();
     ItemDefinition GetItemDefinition(uint8_t category, uint8_t itemIndex);
     std::vector<EquipmentSlot> GetCharacterEquipment(int characterId);
     void SeedDefaultEquipment(int characterId);
+    void UpdateEquipment(int characterId, uint8_t slot, uint8_t category,
+                         uint8_t itemIndex, uint8_t itemLevel);
+
+    // Inventory bag (8x8 grid of picked-up items)
+    struct InventorySlotData {
+        uint8_t slot;
+        int8_t defIndex;
+        uint8_t quantity;
+        uint8_t itemLevel;
+    };
+    std::vector<InventorySlotData> GetCharacterInventory(int characterId);
+    void SaveCharacterInventory(int characterId, int8_t defIndex, uint8_t quantity,
+                                uint8_t itemLevel, uint8_t slot);
+    void ClearCharacterInventory(int characterId);
+
+    // Money / Zen
+    void UpdateCharacterMoney(int characterId, uint32_t money);
 
 private:
     void CreateTables();

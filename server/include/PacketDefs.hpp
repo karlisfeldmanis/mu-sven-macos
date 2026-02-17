@@ -126,12 +126,34 @@ struct PMSG_VIEWPORT_NPC {
     uint8_t dirAndPk;   // (dir << 4) | pkLevel
 };
 
+// --- Server → Client: Monster Viewport (0x1F) ---
+struct PMSG_MONSTER_VIEWPORT_HEAD {
+    PBMSG_HEAD h; // C1:0x1F
+    uint8_t count;
+};
+
+struct PMSG_MONSTER_VIEWPORT_ENTRY {
+    uint8_t typeH;      // Monster type high
+    uint8_t typeL;      // Monster type low
+    uint8_t x;          // Grid X
+    uint8_t y;          // Grid Y
+    uint8_t dir;        // Direction (0-7)
+};
+
 // --- Client → Server: Movement (0xD4) ---
 struct PMSG_MOVE_RECV {
     PBMSG_HEAD h; // C1:0xD4
     uint8_t x;
     uint8_t y;
     uint8_t path[8];
+};
+
+// --- Client → Server: Precise Position (0xD7) ---
+// Float-precision position update for accurate monster AI distance checks
+struct PMSG_PRECISE_POS_RECV {
+    PBMSG_HEAD h; // C1:0xD7
+    float worldX;
+    float worldZ;
 };
 
 // --- Server → Client: Position Update (0x15) ---
@@ -157,6 +179,173 @@ struct PMSG_EQUIPMENT_SLOT {
     uint8_t itemLevel;   // Enhancement level (+0 to +15)
     // Model file name (null-terminated, 32 chars max)
     char modelFile[32];
+};
+
+// --- Server → Client: Character Stats (0x25) ---
+// Remaster packet: sends DK stats, level, XP on connect
+struct PMSG_CHARSTATS_SEND {
+    PBMSG_HEAD h;              // C1:0x25
+    uint16_t characterId;
+    uint16_t level;
+    uint16_t strength;
+    uint16_t dexterity;
+    uint16_t vitality;
+    uint16_t energy;
+    uint16_t life;
+    uint16_t maxLife;
+    uint16_t levelUpPoints;
+    uint32_t experienceLo;     // Low 32 bits of uint64_t experience
+    uint32_t experienceHi;     // High 32 bits
+};
+
+// --- Client → Server: Equipment Change (0x27) ---
+// Remaster packet: client tells server which item was equipped
+struct PMSG_EQUIP_RECV {
+    PBMSG_HEAD h;              // C1:0x27
+    uint16_t characterId;
+    uint8_t slot;              // EquipSlot (0=right_hand, 1=left_hand, 3=armor, 6=boots)
+    uint8_t category;          // ItemCategory
+    uint8_t itemIndex;         // Index within category
+    uint8_t itemLevel;         // Enhancement +0..+15
+};
+
+// --- Client → Server: Character Save (0x26) ---
+// Remaster packet: client saves stats/XP/level on shutdown
+struct PMSG_CHARSAVE_RECV {
+    PBMSG_HEAD h;              // C1:0x26
+    uint16_t characterId;
+    uint16_t level;
+    uint16_t strength;
+    uint16_t dexterity;
+    uint16_t vitality;
+    uint16_t energy;
+    uint16_t life;
+    uint16_t maxLife;
+    uint16_t levelUpPoints;
+    uint32_t experienceLo;
+    uint32_t experienceHi;
+};
+
+// --- Server → Client: Monster Viewport V2 (0x34) ---
+// Enhanced viewport with index, HP, and state per monster
+struct PMSG_MONSTER_VIEWPORT_ENTRY_V2 {
+    uint8_t indexH;     // Monster unique index high
+    uint8_t indexL;     // Monster unique index low
+    uint8_t typeH;      // Monster type high
+    uint8_t typeL;      // Monster type low
+    uint8_t x;          // Grid X
+    uint8_t y;          // Grid Y
+    uint8_t dir;        // Direction (0-7)
+    uint16_t hp;        // Current HP
+    uint16_t maxHp;     // Max HP
+    uint8_t state;      // 0=alive, 1=dying, 2=dead
+};
+
+// --- Client → Server: Attack Request (0x28) ---
+struct PMSG_ATTACK_RECV {
+    PBMSG_HEAD h;           // C1:0x28
+    uint16_t monsterIndex;  // Target monster unique index
+};
+
+// --- Server → Client: Damage Result (0x29) ---
+struct PMSG_DAMAGE_SEND {
+    PBMSG_HEAD h;           // C1:0x29
+    uint16_t monsterIndex;
+    uint16_t damage;
+    uint8_t damageType;     // 0=miss, 1=normal, 2=critical, 3=excellent
+    uint16_t remainingHp;
+    uint16_t attackerCharId; // Which player attacked
+};
+
+// --- Server → Client: Monster Death + XP (0x2A) ---
+struct PMSG_MONSTER_DEATH_SEND {
+    PBMSG_HEAD h;           // C1:0x2A
+    uint16_t monsterIndex;
+    uint16_t killerCharId;
+    uint32_t xpReward;
+};
+
+// --- Server → Client: Ground Drop Spawned (0x2B) ---
+struct PMSG_DROP_SPAWN_SEND {
+    PBMSG_HEAD h;           // C1:0x2B
+    uint16_t dropIndex;     // Unique drop ID
+    int8_t defIndex;        // -1=Zen, 0-5=item def index
+    uint8_t quantity;
+    uint8_t itemLevel;      // Enhancement +0..+2
+    float worldX;
+    float worldZ;
+};
+
+// --- Client → Server: Pickup Request (0x2C) ---
+struct PMSG_PICKUP_RECV {
+    PBMSG_HEAD h;           // C1:0x2C
+    uint16_t dropIndex;
+};
+
+// --- Server → Client: Pickup Result (0x2D) ---
+struct PMSG_PICKUP_RESULT_SEND {
+    PBMSG_HEAD h;           // C1:0x2D
+    uint16_t dropIndex;
+    int8_t defIndex;        // -1=Zen, 0-5=item def index (for client to know what was picked up)
+    uint8_t quantity;
+    uint8_t itemLevel;
+    uint8_t success;        // 1=ok, 0=already taken
+};
+
+// --- Server → Client: Drop Removed (0x2E) ---
+struct PMSG_DROP_REMOVE_SEND {
+    PBMSG_HEAD h;           // C1:0x2E
+    uint16_t dropIndex;
+};
+
+// --- Server → Client: Monster Attack Player (0x2F) ---
+struct PMSG_MONSTER_ATTACK_SEND {
+    PBMSG_HEAD h;           // C1:0x2F
+    uint16_t monsterIndex;
+    uint16_t damage;        // 0=miss
+    uint16_t remainingHp;   // Player's remaining HP
+};
+
+// --- Server → Client: Monster Respawn (0x30) ---
+struct PMSG_MONSTER_RESPAWN_SEND {
+    PBMSG_HEAD h;           // C1:0x30
+    uint16_t monsterIndex;
+    uint8_t x, y;           // New grid position
+    uint16_t hp;
+};
+
+// --- Server → Client: Monster Move/Chase (0x35) ---
+// Server sends target grid cell; client smoothly moves monster there
+struct PMSG_MONSTER_MOVE_SEND {
+    PBMSG_HEAD h;           // C1:0x35
+    uint16_t monsterIndex;
+    uint8_t targetX;        // Target grid X (where monster is heading)
+    uint8_t targetY;        // Target grid Y
+    uint8_t chasing;        // 1=chasing player, 0=returning to spawn/idle
+};
+
+// --- Client → Server: Stat Allocation Request (0x37) ---
+struct PMSG_STAT_ALLOC_RECV {
+    PBMSG_HEAD h;        // C1:0x37
+    uint8_t statType;    // 0=STR, 1=DEX, 2=VIT, 3=ENE
+};
+
+// --- Server → Client: Stat Allocation Response (0x38) ---
+struct PMSG_STAT_ALLOC_SEND {
+    PBMSG_HEAD h;           // C1:0x38
+    uint8_t result;         // 1=success, 0=fail (no points)
+    uint8_t statType;       // Which stat was incremented
+    uint16_t newValue;      // New stat value
+    uint16_t levelUpPoints; // Remaining points
+    uint16_t maxLife;       // Updated maxLife (VIT affects HP)
+};
+
+// --- Server → Client: Inventory Sync Item (0x36, C2 variable-length) ---
+struct PMSG_INVENTORY_ITEM {
+    uint8_t slot;        // 0-63
+    int8_t defIndex;     // Item def index
+    uint8_t quantity;
+    uint8_t itemLevel;
 };
 
 #pragma pack(pop)

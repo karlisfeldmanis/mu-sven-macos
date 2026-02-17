@@ -6,7 +6,11 @@
 #include "Shader.hpp"
 #include "TextureLoader.hpp"
 #include "ViewerCommon.hpp"
+#include <filesystem>
 #include <fstream>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -51,12 +55,8 @@ static bool HasUVScrollAnimation(const std::string &filename) {
 
 namespace fs = std::filesystem;
 
-static const std::string DATA_PATH =
-    "/Users/karlisfeldmanis/Desktop/mu_remaster/"
-    "references/other/MuMain/src/bin/Data/Object1/";
-static const std::string EFFECT_PATH =
-    "/Users/karlisfeldmanis/Desktop/mu_remaster/"
-    "references/other/MuMain/src/bin/Data/Effect";
+static const std::string DATA_PATH = "Data/Object1/";
+static const std::string EFFECT_PATH = "Data/Effect";
 static const int WIN_WIDTH = 1280;
 static const int WIN_HEIGHT = 720;
 
@@ -588,6 +588,17 @@ private:
 };
 
 int main(int argc, char **argv) {
+#ifdef __APPLE__
+  { // Fix CWD when launched via 'open' or Finder
+    char buf[1024];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+      auto dir = std::filesystem::path(buf).parent_path();
+      if (!dir.empty())
+        std::filesystem::current_path(dir);
+    }
+  }
+#endif
   ObjectBrowser browser;
   browser.Run();
   return 0;

@@ -243,15 +243,14 @@ static TextureLoadResult LoadByExtensionWithInfo(const std::string &path) {
     glBindTexture(GL_TEXTURE_2D, result.textureID);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT,
                              &internalFormat);
-    result.hasAlpha =
-        (internalFormat == GL_RGBA || internalFormat == GL_RGBA8);
+    result.hasAlpha = (internalFormat == GL_RGBA || internalFormat == GL_RGBA8);
   }
   return result;
 }
 
 // Case-insensitive file lookup in a directory
 static std::string FindFileCI(const std::string &dir,
-                               const std::string &filename) {
+                              const std::string &filename) {
   std::string lower = filename;
   std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
   for (auto &entry : fs::directory_iterator(dir)) {
@@ -268,7 +267,7 @@ static std::string FindFileCI(const std::string &dir,
 }
 
 GLuint TextureLoader::Resolve(const std::string &directory,
-                               const std::string &bmdTextureName) {
+                              const std::string &bmdTextureName) {
   // Strip any Windows path prefix (e.g. "Data2\\Object1\\candle.jpg")
   std::string baseName = bmdTextureName;
   auto pos = baseName.find_last_of("\\/");
