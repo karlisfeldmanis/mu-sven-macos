@@ -2916,6 +2916,172 @@ static void InitItemDefinitions() {
          1);
   addDef(913, 15, 13, "Scroll of Inferno", "Book14.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
+
+  // ── Additional 0.97d items (Main 5.2 deep dive) ──
+
+  // Missing Swords (0)
+  addDef(0, 0, 19, "Sword of Destruction", "Sword20.bmd", 1, 4, 124, 44, 0, 0,
+         76, 8, 68, 93);
+  addDef(0, 0, 20, "Spirit Sword", "Sword21.bmd", 1, 4, 140, 48, 0, 0, 88, 2,
+         92, 112);
+  addDef(0, 0, 21, "Dark Master Sword", "Sword22.bmd", 1, 4, 154, 50, 0, 0, 98,
+         8, 108, 132);
+
+  // Missing Maces (2)
+  addDef(0, 2, 7, "Battle Scepter", "Mace08.bmd", 2, 4, 132, 32, 0, 0, 80, 2,
+         85, 110);
+  addDef(0, 2, 8, "Master Scepter", "Mace09.bmd", 2, 4, 142, 38, 0, 0, 86, 2,
+         92, 126);
+  addDef(0, 2, 9, "Great Scepter", "Mace10.bmd", 2, 4, 152, 42, 0, 0, 92, 2,
+         105, 140);
+  addDef(0, 2, 10, "Lord Scepter", "Mace11.bmd", 2, 4, 158, 44, 0, 0, 96, 2,
+         110, 148);
+  addDef(0, 2, 11, "Great Lord Scepter", "Mace12.bmd", 2, 4, 164, 48, 0, 0, 100,
+         2, 118, 156);
+  addDef(0, 2, 12, "Divine Scepter", "Mace13.bmd", 2, 4, 170, 50, 0, 0, 104, 2,
+         125, 168);
+  addDef(0, 2, 13, "Saint Scepter", "Saint.bmd", 1, 3, 72, 18, 0, 0, 96, 1, 106,
+         144);
+
+  // Missing Spears (3)
+  addDef(0, 3, 10, "Dragon Spear", "Spear11.bmd", 2, 4, 170, 60, 0, 0, 92, 2,
+         112, 140);
+
+  // Missing Bows (4)
+  addDef(0, 4, 17, "Celestial Bow", "Bow18.bmd", 2, 4, 54, 198, 0, 0, 92, 4,
+         127, 155);
+  addDef(0, 4, 18, "Divine CB of Archangel", "CrossBow17.bmd", 2, 3, 40, 110, 0,
+         0, 100, 4, 144, 166);
+
+  // Missing Staffs (5)
+  addDef(0, 5, 9, "Dragon Soul Staff", "Staff10.bmd", 1, 4, 52, 16, 0, 0, 100,
+         1, 46, 48);
+  addDef(0, 5, 10, "Staff of Imperial", "Staff11.bmd", 2, 4, 36, 4, 0, 0, 104,
+         1, 50, 53);
+  addDef(0, 5, 11, "Divine Staff of Archangel", "Staff12.bmd", 2, 4, 36, 4, 0,
+         0, 104, 1, 53, 55);
+
+  // Missing Shields (6)
+  addDef(0, 6, 15, "Grand Soul Shield", "Shield16.bmd", 2, 3, 70, 23, 0, 0, 74,
+         1, 0, 0, 55);
+  addDef(0, 6, 16, "Elemental Shield", "Shield17.bmd", 2, 3, 50, 110, 0, 0, 78,
+         4, 0, 0, 58);
+
+  // Missing Helms (7) — indices 15-21
+  addDef(0, 7, 15, "Storm Crow Helm", "HelmMale11.bmd", 2, 2, 150, 70, 0, 0, 72,
+         8, 0, 0, 50);
+  addDef(0, 7, 16, "Black Dragon Helm", "HelmMale12.bmd", 2, 2, 170, 60, 0, 0,
+         82, 2, 0, 0, 55);
+  addDef(0, 7, 17, "Dark Phoenix Helm", "HelmMale13.bmd", 2, 2, 205, 62, 0, 0,
+         92, 10, 0, 0, 60);
+  addDef(0, 7, 18, "Grand Soul Helm", "HelmClass10.bmd", 2, 2, 59, 20, 0, 0, 81,
+         1, 0, 0, 48);
+  addDef(0, 7, 19, "Divine Helm", "HelmClass11.bmd", 2, 2, 50, 110, 0, 0, 85, 4,
+         0, 0, 52);
+  addDef(0, 7, 20, "Thunder Hawk Helm", "HelmMale14.bmd", 2, 2, 150, 70, 0, 0,
+         88, 8, 0, 0, 54);
+  addDef(0, 7, 21, "Great Dragon Helm", "HelmMale15.bmd", 2, 2, 200, 58, 0, 0,
+         104, 10, 0, 0, 66);
+
+  // Missing Armors (8) — indices 15-21
+  addDef(0, 8, 15, "Storm Crow Armor", "ArmorMale11.bmd", 2, 3, 150, 70, 0, 0,
+         80, 8, 0, 0, 58);
+  addDef(0, 8, 16, "Black Dragon Armor", "ArmorMale12.bmd", 2, 3, 170, 60, 0, 0,
+         90, 2, 0, 0, 63);
+  addDef(0, 8, 17, "Dark Phoenix Armor", "ArmorMale13.bmd", 2, 3, 214, 65, 0, 0,
+         100, 10, 0, 0, 70);
+  addDef(0, 8, 18, "Grand Soul Armor", "ArmorClass10.bmd", 2, 3, 59, 20, 0, 0,
+         91, 1, 0, 0, 52);
+  addDef(0, 8, 19, "Divine Armor", "ArmorClass11.bmd", 2, 2, 50, 110, 0, 0, 92,
+         4, 0, 0, 56);
+  addDef(0, 8, 20, "Thunder Hawk Armor", "ArmorMale14.bmd", 2, 3, 170, 70, 0, 0,
+         107, 8, 0, 0, 68);
+  addDef(0, 8, 21, "Great Dragon Armor", "ArmorMale15.bmd", 2, 3, 200, 58, 0, 0,
+         126, 10, 0, 0, 80);
+
+  // Missing Pants (9) — indices 15-21
+  addDef(0, 9, 15, "Storm Crow Pants", "PantMale11.bmd", 2, 2, 150, 70, 0, 0,
+         74, 8, 0, 0, 50);
+  addDef(0, 9, 16, "Black Dragon Pants", "PantMale12.bmd", 2, 2, 170, 60, 0, 0,
+         84, 2, 0, 0, 55);
+  addDef(0, 9, 17, "Dark Phoenix Pants", "PantMale13.bmd", 2, 2, 207, 63, 0, 0,
+         96, 10, 0, 0, 62);
+  addDef(0, 9, 18, "Grand Soul Pants", "PantClass10.bmd", 2, 2, 59, 20, 0, 0,
+         86, 1, 0, 0, 48);
+  addDef(0, 9, 19, "Divine Pants", "PantClass11.bmd", 2, 2, 50, 110, 0, 0, 88,
+         4, 0, 0, 52);
+  addDef(0, 9, 20, "Thunder Hawk Pants", "PantMale14.bmd", 2, 2, 150, 70, 0, 0,
+         99, 8, 0, 0, 60);
+  addDef(0, 9, 21, "Great Dragon Pants", "PantMale15.bmd", 2, 2, 200, 58, 0, 0,
+         113, 10, 0, 0, 72);
+
+  // Missing Gloves (10) — indices 15-21
+  addDef(0, 10, 15, "Storm Crow Gloves", "GloveMale11.bmd", 2, 2, 150, 70, 0, 0,
+         70, 8, 0, 0, 46);
+  addDef(0, 10, 16, "Black Dragon Gloves", "GloveMale12.bmd", 2, 2, 170, 60, 0,
+         0, 76, 2, 0, 0, 50);
+  addDef(0, 10, 17, "Dark Phoenix Gloves", "GloveMale13.bmd", 2, 2, 205, 63, 0,
+         0, 86, 10, 0, 0, 56);
+  addDef(0, 10, 18, "Grand Soul Gloves", "GloveClass10.bmd", 2, 2, 49, 10, 0, 0,
+         70, 1, 0, 0, 44);
+  addDef(0, 10, 19, "Divine Gloves", "GloveClass11.bmd", 2, 2, 50, 110, 0, 0,
+         72, 4, 0, 0, 48);
+  addDef(0, 10, 20, "Thunder Hawk Gloves", "GloveMale14.bmd", 2, 2, 150, 70, 0,
+         0, 88, 8, 0, 0, 54);
+  addDef(0, 10, 21, "Great Dragon Gloves", "GloveMale15.bmd", 2, 2, 200, 58, 0,
+         0, 94, 10, 0, 0, 64);
+
+  // Missing Boots (11) — indices 15-21
+  addDef(0, 11, 15, "Storm Crow Boots", "BootMale11.bmd", 2, 2, 150, 70, 0, 0,
+         72, 8, 0, 0, 48);
+  addDef(0, 11, 16, "Black Dragon Boots", "BootMale12.bmd", 2, 2, 170, 60, 0, 0,
+         78, 2, 0, 0, 52);
+  addDef(0, 11, 17, "Dark Phoenix Boots", "BootMale13.bmd", 2, 2, 198, 60, 0, 0,
+         93, 10, 0, 0, 58);
+  addDef(0, 11, 18, "Grand Soul Boots", "BootClass10.bmd", 2, 2, 59, 10, 0, 0,
+         76, 1, 0, 0, 44);
+  addDef(0, 11, 19, "Divine Boots", "BootClass11.bmd", 2, 2, 50, 110, 0, 0, 81,
+         4, 0, 0, 50);
+  addDef(0, 11, 20, "Thunder Hawk Boots", "BootMale14.bmd", 2, 2, 150, 70, 0, 0,
+         92, 8, 0, 0, 56);
+  addDef(0, 11, 21, "Great Dragon Boots", "BootMale15.bmd", 2, 2, 200, 58, 0, 0,
+         98, 10, 0, 0, 68);
+
+  // Missing Helpers/Jewelry (13)
+  addDef(0, 13, 4, "Dark Horse Horn", "DarkHorseHorn.bmd", 1, 1, 0, 0, 0, 0,
+         110, 15);
+  addDef(0, 13, 5, "Spirit Bill", "SpiritBill.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 13, 7, "Covenant", "Covenant.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 13, 11, "Summon Book", "SummonBook.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 13, 21, "Fire Ring", "FireRing.bmd", 1, 1, 0, 0, 0, 0, 68, 15);
+  addDef(0, 13, 22, "Ground Ring", "GroundRing.bmd", 1, 1, 0, 0, 0, 0, 76, 15);
+  addDef(0, 13, 23, "Wind Ring", "WindRing.bmd", 1, 1, 0, 0, 0, 0, 84, 15);
+  addDef(0, 13, 24, "Mana Ring", "ManaRing.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 13, 25, "Ice Necklace", "IceNecklace.bmd", 1, 1, 0, 0, 0, 0, 68,
+         15);
+  addDef(0, 13, 26, "Wind Necklace", "WindNecklace.bmd", 1, 1, 0, 0, 0, 0, 76,
+         15);
+  addDef(0, 13, 27, "Water Necklace", "WaterNecklace.bmd", 1, 1, 0, 0, 0, 0, 84,
+         15);
+  addDef(0, 13, 28, "AG Necklace", "AgNecklace.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 13, 29, "Chaos Castle Invitation", "EventChaosCastle.bmd", 1, 1, 0,
+         0, 0, 0, 0, 15);
+
+  // Missing Potions/Consumables (14)
+  addDef(0, 14, 7, "Special Healing Potion", "SpecialPotion.bmd", 1, 1, 0, 0, 0,
+         0, 0, 15);
+  addDef(0, 14, 11, "Box of Luck", "MagicBox01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 14, 12, "Heart of Love", "Event01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 14, 15, "Zen", "Gold01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 14, 17, "Devil Square Key (Bronze)", "Devil00.bmd", 1, 1, 0, 0, 0,
+         0, 0, 15);
+  addDef(0, 14, 18, "Devil Square Key (Silver)", "Devil01.bmd", 1, 1, 0, 0, 0,
+         0, 0, 15);
+  addDef(0, 14, 19, "Devil Square Key (Gold)", "Devil02.bmd", 1, 1, 0, 0, 0, 0,
+         0, 15);
+  addDef(0, 14, 20, "Remedy of Love", "Drink00.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(0, 14, 31, "Guardian Angel Scroll", "Suho.bmd", 1, 2, 0, 0, 0, 0, 0,
+         15);
 }
 
 static const char *GetItemNameByDef(int16_t defIndex) {

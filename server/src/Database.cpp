@@ -648,7 +648,110 @@ void Database::SeedItemDefinitions() {
              (15, 10, 'Scroll of Power Wave', 'Book11.bmd', 9, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 56, 1),
              (15, 11, 'Scroll of Aqua Beam', 'Book12.bmd', 74, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 345, 1),
              (15, 12, 'Scroll of Cometfall', 'Book13.bmd', 80, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 436, 1),
-             (15, 13, 'Scroll of Inferno', 'Book14.bmd', 88, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 578, 1)
+             (15, 13, 'Scroll of Inferno', 'Book14.bmd', 88, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 578, 1),
+
+            -- Additional 0.97d items (Main 5.2 deep dive)
+
+            -- Missing Swords (0)
+            (0, 19, 'Sword of Destruction', 'Sword20.bmd', 76, 68, 93, 0, 30, 0, 1, 4, 124, 44, 0, 0, 8),
+            (0, 20, 'Spirit Sword', 'Sword21.bmd', 88, 92, 112, 0, 35, 0, 1, 4, 140, 48, 0, 0, 2),
+            (0, 21, 'Dark Master Sword', 'Sword22.bmd', 98, 108, 132, 0, 40, 0, 1, 4, 154, 50, 0, 0, 8),
+
+            -- Missing Maces (2)
+            (2, 7, 'Battle Scepter', 'Mace08.bmd', 80, 85, 110, 0, 30, 1, 2, 4, 132, 32, 0, 0, 2),
+            (2, 8, 'Master Scepter', 'Mace09.bmd', 86, 92, 126, 0, 30, 1, 2, 4, 142, 38, 0, 0, 2),
+            (2, 9, 'Great Scepter', 'Mace10.bmd', 92, 105, 140, 0, 35, 1, 2, 4, 152, 42, 0, 0, 2),
+            (2, 10, 'Lord Scepter', 'Mace11.bmd', 96, 110, 148, 0, 35, 1, 2, 4, 158, 44, 0, 0, 2),
+            (2, 11, 'Great Lord Scepter', 'Mace12.bmd', 100, 118, 156, 0, 35, 1, 2, 4, 164, 48, 0, 0, 2),
+            (2, 12, 'Divine Scepter', 'Mace13.bmd', 104, 125, 168, 0, 40, 1, 2, 4, 170, 50, 0, 0, 2),
+            (2, 13, 'Saint Scepter', 'Saint.bmd', 96, 106, 144, 0, 35, 0, 1, 3, 72, 18, 0, 0, 1),
+
+            -- Missing Spears (3)
+            (3, 10, 'Dragon Spear', 'Spear11.bmd', 92, 112, 140, 0, 35, 1, 2, 4, 170, 60, 0, 0, 2),
+
+            -- Missing Bows (4)
+            (4, 17, 'Celestial Bow', 'Bow18.bmd', 92, 127, 155, 0, 35, 1, 2, 4, 54, 198, 0, 0, 4),
+            (4, 18, 'Divine CB of Archangel', 'CrossBow17.bmd', 100, 144, 166, 0, 35, 0, 2, 3, 40, 110, 0, 0, 4),
+
+            -- Missing Staffs (5)
+            (5, 9, 'Dragon Soul Staff', 'Staff10.bmd', 100, 46, 48, 0, 30, 0, 1, 4, 52, 16, 0, 0, 1),
+            (5, 10, 'Staff of Imperial', 'Staff11.bmd', 104, 50, 53, 0, 30, 0, 2, 4, 36, 4, 0, 0, 1),
+            (5, 11, 'Divine Staff of Archangel', 'Staff12.bmd', 104, 53, 55, 0, 20, 0, 2, 4, 36, 4, 0, 0, 1),
+
+            -- Missing Shields (6)
+            (6, 15, 'Grand Soul Shield', 'Shield16.bmd', 74, 0, 0, 55, 0, 0, 2, 3, 70, 23, 0, 0, 1),
+            (6, 16, 'Elemental Shield', 'Shield17.bmd', 78, 0, 0, 58, 0, 0, 2, 3, 50, 110, 0, 0, 4),
+
+            -- Missing Helms (7)
+            (7, 15, 'Storm Crow Helm', 'HelmMale11.bmd', 72, 0, 0, 50, 0, 0, 2, 2, 150, 70, 0, 0, 8),
+            (7, 16, 'Black Dragon Helm', 'HelmMale12.bmd', 82, 0, 0, 55, 0, 0, 2, 2, 170, 60, 0, 0, 2),
+            (7, 17, 'Dark Phoenix Helm', 'HelmMale13.bmd', 92, 0, 0, 60, 0, 0, 2, 2, 205, 62, 0, 0, 10),
+            (7, 18, 'Grand Soul Helm', 'HelmClass10.bmd', 81, 0, 0, 48, 0, 0, 2, 2, 59, 20, 0, 0, 1),
+            (7, 19, 'Divine Helm', 'HelmClass11.bmd', 85, 0, 0, 52, 0, 0, 2, 2, 50, 110, 0, 0, 4),
+            (7, 20, 'Thunder Hawk Helm', 'HelmMale14.bmd', 88, 0, 0, 54, 0, 0, 2, 2, 150, 70, 0, 0, 8),
+            (7, 21, 'Great Dragon Helm', 'HelmMale15.bmd', 104, 0, 0, 66, 0, 0, 2, 2, 200, 58, 0, 0, 10),
+
+            -- Missing Armors (8)
+            (8, 15, 'Storm Crow Armor', 'ArmorMale11.bmd', 80, 0, 0, 58, 0, 0, 2, 3, 150, 70, 0, 0, 8),
+            (8, 16, 'Black Dragon Armor', 'ArmorMale12.bmd', 90, 0, 0, 63, 0, 0, 2, 3, 170, 60, 0, 0, 2),
+            (8, 17, 'Dark Phoenix Armor', 'ArmorMale13.bmd', 100, 0, 0, 70, 0, 0, 2, 3, 214, 65, 0, 0, 10),
+            (8, 18, 'Grand Soul Armor', 'ArmorClass10.bmd', 91, 0, 0, 52, 0, 0, 2, 3, 59, 20, 0, 0, 1),
+            (8, 19, 'Divine Armor', 'ArmorClass11.bmd', 92, 0, 0, 56, 0, 0, 2, 2, 50, 110, 0, 0, 4),
+            (8, 20, 'Thunder Hawk Armor', 'ArmorMale14.bmd', 107, 0, 0, 68, 0, 0, 2, 3, 170, 70, 0, 0, 8),
+            (8, 21, 'Great Dragon Armor', 'ArmorMale15.bmd', 126, 0, 0, 80, 0, 0, 2, 3, 200, 58, 0, 0, 10),
+
+            -- Missing Pants (9)
+            (9, 15, 'Storm Crow Pants', 'PantMale11.bmd', 74, 0, 0, 50, 0, 0, 2, 2, 150, 70, 0, 0, 8),
+            (9, 16, 'Black Dragon Pants', 'PantMale12.bmd', 84, 0, 0, 55, 0, 0, 2, 2, 170, 60, 0, 0, 2),
+            (9, 17, 'Dark Phoenix Pants', 'PantMale13.bmd', 96, 0, 0, 62, 0, 0, 2, 2, 207, 63, 0, 0, 10),
+            (9, 18, 'Grand Soul Pants', 'PantClass10.bmd', 86, 0, 0, 48, 0, 0, 2, 2, 59, 20, 0, 0, 1),
+            (9, 19, 'Divine Pants', 'PantClass11.bmd', 88, 0, 0, 52, 0, 0, 2, 2, 50, 110, 0, 0, 4),
+            (9, 20, 'Thunder Hawk Pants', 'PantMale14.bmd', 99, 0, 0, 60, 0, 0, 2, 2, 150, 70, 0, 0, 8),
+            (9, 21, 'Great Dragon Pants', 'PantMale15.bmd', 113, 0, 0, 72, 0, 0, 2, 2, 200, 58, 0, 0, 10),
+
+            -- Missing Gloves (10)
+            (10, 15, 'Storm Crow Gloves', 'GloveMale11.bmd', 70, 0, 0, 46, 0, 0, 2, 2, 150, 70, 0, 0, 8),
+            (10, 16, 'Black Dragon Gloves', 'GloveMale12.bmd', 76, 0, 0, 50, 0, 0, 2, 2, 170, 60, 0, 0, 2),
+            (10, 17, 'Dark Phoenix Gloves', 'GloveMale13.bmd', 86, 0, 0, 56, 0, 0, 2, 2, 205, 63, 0, 0, 10),
+            (10, 18, 'Grand Soul Gloves', 'GloveClass10.bmd', 70, 0, 0, 44, 0, 0, 2, 2, 49, 10, 0, 0, 1),
+            (10, 19, 'Divine Gloves', 'GloveClass11.bmd', 72, 0, 0, 48, 0, 0, 2, 2, 50, 110, 0, 0, 4),
+            (10, 20, 'Thunder Hawk Gloves', 'GloveMale14.bmd', 88, 0, 0, 54, 0, 0, 2, 2, 150, 70, 0, 0, 8),
+            (10, 21, 'Great Dragon Gloves', 'GloveMale15.bmd', 94, 0, 0, 64, 0, 0, 2, 2, 200, 58, 0, 0, 10),
+
+            -- Missing Boots (11)
+            (11, 15, 'Storm Crow Boots', 'BootMale11.bmd', 72, 0, 0, 48, 0, 0, 2, 2, 150, 70, 0, 0, 8),
+            (11, 16, 'Black Dragon Boots', 'BootMale12.bmd', 78, 0, 0, 52, 0, 0, 2, 2, 170, 60, 0, 0, 2),
+            (11, 17, 'Dark Phoenix Boots', 'BootMale13.bmd', 93, 0, 0, 58, 0, 0, 2, 2, 198, 60, 0, 0, 10),
+            (11, 18, 'Grand Soul Boots', 'BootClass10.bmd', 76, 0, 0, 44, 0, 0, 2, 2, 59, 10, 0, 0, 1),
+            (11, 19, 'Divine Boots', 'BootClass11.bmd', 81, 0, 0, 50, 0, 0, 2, 2, 50, 110, 0, 0, 4),
+            (11, 20, 'Thunder Hawk Boots', 'BootMale14.bmd', 92, 0, 0, 56, 0, 0, 2, 2, 150, 70, 0, 0, 8),
+            (11, 21, 'Great Dragon Boots', 'BootMale15.bmd', 98, 0, 0, 68, 0, 0, 2, 2, 200, 58, 0, 0, 10),
+
+            -- Missing Helpers/Jewelry (13)
+            (13, 4, 'Dark Horse Horn', 'DarkHorseHorn.bmd', 110, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 5, 'Spirit Bill', 'SpiritBill.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 7, 'Covenant', 'Covenant.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 11, 'Summon Book', 'SummonBook.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 21, 'Fire Ring', 'FireRing.bmd', 68, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 22, 'Ground Ring', 'GroundRing.bmd', 76, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 23, 'Wind Ring', 'WindRing.bmd', 84, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 24, 'Mana Ring', 'ManaRing.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 25, 'Ice Necklace', 'IceNecklace.bmd', 68, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 26, 'Wind Necklace', 'WindNecklace.bmd', 76, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 27, 'Water Necklace', 'WaterNecklace.bmd', 84, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 28, 'AG Necklace', 'AgNecklace.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 29, 'Chaos Castle Invitation', 'EventChaosCastle.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+
+            -- Missing Potions/Consumables (14)
+            (14, 7, 'Special Healing Potion', 'SpecialPotion.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 11, 'Box of Luck', 'MagicBox01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 12, 'Heart of Love', 'Event01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 15, 'Zen', 'Gold01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 17, 'Devil Square Key (Bronze)', 'Devil00.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 18, 'Devil Square Key (Silver)', 'Devil01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 19, 'Devil Square Key (Gold)', 'Devil02.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 20, 'Remedy of Love', 'Drink00.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 31, 'Guardian Angel Scroll', 'Suho.bmd', 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 15)
      )";
   char *err = nullptr;
   if (sqlite3_exec(m_db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
