@@ -99,6 +99,13 @@ struct EquipmentSlot {
   uint8_t itemLevel = 0; // +0 to +15 enhancement
 };
 
+struct ItemDropInfo {
+  uint8_t category;
+  uint8_t itemIndex;
+  std::string name;
+  uint16_t level;
+};
+
 class Database {
 public:
   bool Open(const std::string &dbPath);
@@ -129,6 +136,7 @@ public:
   void SeedItemDefinitions();
   ItemDefinition GetItemDefinition(uint8_t category, uint8_t itemIndex);
   ItemDefinition GetItemDefinition(int id);
+  std::vector<ItemDropInfo> GetItemsByLevelRange(int minLevel, int maxLevel);
   std::vector<EquipmentSlot> GetCharacterEquipment(int characterId);
   void SeedDefaultEquipment(int characterId);
   void UpdateEquipment(int characterId, uint8_t slot, uint8_t category,

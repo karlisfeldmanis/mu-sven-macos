@@ -385,18 +385,8 @@ std::vector<NpcSpawnData> Database::GetNpcSpawns(uint8_t mapId) {
 }
 
 void Database::SeedItemDefinitions() {
-  // Check if already seeded
-  sqlite3_stmt *stmt = nullptr;
-  sqlite3_prepare_v2(m_db, "SELECT COUNT(*) FROM item_definitions", -1, &stmt,
-                     nullptr);
-  int count = 0;
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    count = sqlite3_column_int(stmt, 0);
-  sqlite3_finalize(stmt);
-  if (count > 0) {
-    printf("[DB] Item definitions already seeded (%d entries)\n", count);
-    return;
-  }
+  // Force re-seeding to apply model filename fixes
+  sqlite3_exec(m_db, "DELETE FROM item_definitions", nullptr, nullptr, nullptr);
 
   // Seed all item definitions (MU 0.97d complete database — OpenMU
   // authoritative) Format: (category, item_index, name, model_file, level_req,
@@ -410,7 +400,7 @@ void Database::SeedItemDefinitions() {
             (0, 0, 'Kris', 'Sword01.bmd', 6, 6, 11, 0, 50, 0, 1, 2, 40, 40, 0, 0, 11),
             (0, 1, 'Short Sword', 'Sword02.bmd', 3, 3, 7, 0, 20, 0, 1, 3, 60, 0, 0, 0, 7),
             (0, 2, 'Rapier', 'Sword03.bmd', 9, 9, 15, 0, 40, 0, 1, 3, 50, 40, 0, 0, 6),
-            (0, 3, 'Katache', 'Sword04.bmd', 16, 16, 26, 0, 35, 0, 1, 3, 80, 40, 0, 0, 2),
+            (0, 3, 'Katana', 'Sword04.bmd', 16, 16, 26, 0, 35, 0, 1, 3, 80, 40, 0, 0, 2),
             (0, 4, 'Sword of Assassin', 'Sword05.bmd', 12, 12, 18, 0, 30, 0, 1, 3, 60, 40, 0, 0, 2),
             (0, 5, 'Blade', 'Sword06.bmd', 36, 36, 47, 0, 30, 0, 1, 3, 80, 50, 0, 0, 7),
             (0, 6, 'Gladius', 'Sword07.bmd', 20, 20, 30, 0, 20, 0, 1, 3, 110, 0, 0, 0, 6),
@@ -421,7 +411,7 @@ void Database::SeedItemDefinitions() {
             (0, 11, 'Legendary Sword', 'Sword12.bmd', 44, 56, 72, 0, 20, 1, 2, 3, 120, 0, 0, 0, 2),
             (0, 12, 'Heliacal Sword', 'Sword13.bmd', 56, 73, 98, 0, 25, 1, 2, 3, 140, 0, 0, 0, 2),
             (0, 13, 'Double Blade', 'Sword14.bmd', 48, 48, 56, 0, 30, 0, 1, 3, 70, 70, 0, 0, 6),
-            (0, 14, 'Lighting Sword', 'Sword15.bmd', 59, 59, 67, 0, 30, 0, 1, 3, 90, 50, 0, 0, 6),
+            (0, 14, 'Lightning Sword', 'Sword15.bmd', 59, 59, 67, 0, 30, 0, 1, 3, 90, 50, 0, 0, 6),
             (0, 15, 'Giant Sword', 'Sword16.bmd', 52, 60, 85, 0, 20, 1, 2, 3, 140, 0, 0, 0, 2),
             (0, 16, 'Sword of Destruction', 'Sword17.bmd', 82, 82, 90, 0, 35, 0, 1, 4, 160, 60, 0, 0, 10),
             (0, 17, 'Dark Breaker', 'Sword18.bmd', 104, 128, 153, 0, 40, 1, 2, 4, 180, 50, 0, 0, 2),
@@ -594,28 +584,39 @@ void Database::SeedItemDefinitions() {
 
             -- Category 12: Wings/Orbs/Jewels (Group 12 — OpenMU 0.95d)
             -- Wings (Level 1 only in 0.95d)
-            (12, 0, 'Wings of Elf', 'Wings01.bmd', 180, 0, 0, 10, 0, 0, 3, 2, 0, 0, 0, 0, 4),
-            (12, 1, 'Wings of Heaven', 'Wings02.bmd', 180, 0, 0, 10, 0, 0, 5, 3, 0, 0, 0, 0, 1),
-            (12, 2, 'Wings of Satan', 'Wings03.bmd', 180, 0, 0, 20, 0, 0, 5, 2, 0, 0, 0, 0, 2),
-            -- Orbs (0.95d: v0.75 base + Twisting Slash)
-            (12, 7, 'Orb of Twisting Slash', 'Orb01.bmd', 47, 0, 0, 0, 0, 0, 1, 1, 80, 0, 0, 0, 10),
-            (12, 8, 'Orb of Healing', 'Orb02.bmd', 8, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
-            (12, 9, 'Orb of Greater Defense', 'Orb03.bmd', 13, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
-            (12, 10, 'Orb of Greater Damage', 'Orb04.bmd', 18, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
-            (12, 11, 'Orb of Summoning', 'Orb05.bmd', 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 4),
+             (12, 0, 'Wings of Elf', 'Wing01.bmd', 180, 0, 0, 10, 0, 0, 3, 2, 0, 0, 0, 0, 4),
+             (12, 1, 'Wings of Heaven', 'Wing02.bmd', 180, 0, 0, 10, 0, 0, 3, 2, 0, 0, 0, 0, 1),
+             (12, 2, 'Wings of Satan', 'Wing03.bmd', 180, 0, 0, 20, 0, 0, 3, 2, 0, 0, 0, 0, 2),
+             (12, 3, 'Wings of Spirits', 'Wing04.bmd', 180, 0, 0, 20, 0, 0, 4, 3, 0, 0, 0, 0, 4),
+             (12, 4, 'Wings of Soul', 'Wing05.bmd', 180, 0, 0, 20, 0, 0, 4, 3, 0, 0, 0, 0, 1),
+             (12, 5, 'Wings of Dragon', 'Wing06.bmd', 180, 0, 0, 20, 0, 0, 4, 3, 0, 0, 0, 0, 2),
+             (12, 6, 'Wings of Darkness', 'Wing07.bmd', 180, 0, 0, 20, 0, 0, 4, 3, 0, 0, 0, 0, 8),
+             -- Orbs (Research confirmed: GemXX.bmd)
+             (12, 7, 'Orb of Twisting Slash', 'Gem01.bmd', 47, 0, 0, 0, 0, 0, 1, 1, 80, 0, 0, 0, 10),
+             (12, 8, 'Orb of Healing', 'Gem02.bmd', 8, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
+             (12, 9, 'Orb of Greater Defense', 'Gem03.bmd', 13, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
+             (12, 10, 'Orb of Greater Damage', 'Gem04.bmd', 18, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
+             (12, 11, 'Orb of Summoning', 'Gem05.bmd', 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 4),
+             (12, 12, 'Orb of Rageful Blow', 'Gem06.bmd', 78, 0, 0, 0, 0, 0, 1, 1, 170, 0, 0, 0, 2),
+             (12, 13, 'Orb of Impale', 'Gem07.bmd', 20, 0, 0, 0, 0, 0, 1, 1, 28, 0, 0, 0, 2),
+             (12, 14, 'Orb of Greater Fortitude', 'Gem08.bmd', 60, 0, 0, 0, 0, 0, 1, 1, 120, 0, 0, 0, 2),
+             (12, 16, 'Orb of Fire Slash', 'Gem10.bmd', 60, 0, 0, 0, 0, 0, 1, 1, 320, 0, 0, 0, 8),
+             (12, 17, 'Orb of Penetration', 'Gem11.bmd', 64, 0, 0, 0, 0, 0, 1, 1, 130, 0, 0, 0, 4),
+             (12, 18, 'Orb of Ice Arrow', 'Gem12.bmd', 81, 0, 0, 0, 0, 0, 1, 1, 0, 258, 0, 0, 4),
+             (12, 19, 'Orb of Death Stab', 'Gem13.bmd', 72, 0, 0, 0, 0, 0, 1, 1, 160, 0, 0, 0, 2),
             -- Jewel of Chaos
             (12, 15, 'Jewel of Chaos', 'Jewel01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
 
             -- Category 13: Pets/Jewelry (OpenMU 0.95d)
-            (13, 0, 'Guardian Angel', 'Pet01.bmd', 23, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
-            (13, 1, 'Imp', 'Pet02.bmd', 28, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
-            (13, 2, 'Horn of Uniria', 'Pet03.bmd', 25, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 0, 'Guardian Angel', 'Helper01.bmd', 23, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 1, 'Imp', 'Helper02.bmd', 28, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 2, 'Horn of Uniria', 'Helper03.bmd', 25, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (13, 3, 'Horn of Dinorant', 'Pet04.bmd', 110, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (13, 8, 'Ring of Ice', 'Ring01.bmd', 20, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (13, 9, 'Ring of Poison', 'Ring02.bmd', 17, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
-            (13, 10, 'Transformation Ring', 'Ring03.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
-            (13, 12, 'Pendant of Lighting', 'Pendant01.bmd', 21, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
-            (13, 13, 'Pendant of Fire', 'Pendant02.bmd', 13, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 10, 'Transformation Ring', 'Ring01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 12, 'Pendant of Lighting', 'Necklace01.bmd', 21, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 13, 'Pendant of Fire', 'Necklace02.bmd', 13, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
 
             -- Category 14: Consumables (Potions & Jewels — OpenMU 0.97d)
             (14, 0, 'Apple', 'Apple.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
@@ -625,30 +626,30 @@ void Database::SeedItemDefinitions() {
             (14, 4, 'Small Mana Potion', 'Potion04.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (14, 5, 'Medium Mana Potion', 'Potion05.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (14, 6, 'Large Mana Potion', 'Potion06.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
-            (14, 8, 'Antidote', 'Potion08.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (14, 8, 'Antidote', 'Antidote01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (14, 9, 'Ale', 'Potion09.bmd', 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 15),
-            (14, 10, 'Town Portal Scroll', 'ScrollTw.bmd', 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 15),
+            (14, 10, 'Town Portal Scroll', 'Scroll01.bmd', 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 15),
             (14, 13, 'Jewel of Bless', 'Jewel02.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (14, 14, 'Jewel of Soul', 'Jewel03.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (14, 16, 'Jewel of Life', 'Jewel04.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (14, 22, 'Jewel of Creation', 'Jewel05.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
 
-            -- Category 15: Scrolls (Dark Wizard — OpenMU 0.95d)
-            (15, 0, 'Scroll of Poison', 'Scroll01.bmd', 30, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 140, 1),
-            (15, 1, 'Scroll of Meteorite', 'Scroll02.bmd', 21, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 104, 1),
-            (15, 2, 'Scroll of Lighting', 'Scroll03.bmd', 13, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 72, 1),
-            (15, 3, 'Scroll of Fire Ball', 'Scroll04.bmd', 5, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 40, 1),
-            (15, 4, 'Scroll of Flame', 'Scroll05.bmd', 35, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 160, 1),
-            (15, 5, 'Scroll of Teleport', 'Scroll06.bmd', 17, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 88, 1),
-            (15, 6, 'Scroll of Ice', 'Scroll07.bmd', 25, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 120, 1),
-            (15, 7, 'Scroll of Twister', 'Scroll08.bmd', 40, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 180, 1),
-            (15, 8, 'Scroll of Evil Spirit', 'Scroll09.bmd', 50, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 220, 1),
-            (15, 9, 'Scroll of Hellfire', 'Scroll10.bmd', 60, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 260, 1),
-            (15, 10, 'Scroll of Power Wave', 'Scroll11.bmd', 9, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 56, 1),
-            (15, 11, 'Scroll of Aqua Beam', 'Scroll12.bmd', 74, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 345, 1),
-            (15, 12, 'Scroll of Cometfall', 'Scroll13.bmd', 80, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 436, 1),
-            (15, 13, 'Scroll of Inferno', 'Scroll14.bmd', 88, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 578, 1)
-    )";
+             -- Category 15: Scrolls (Dark Wizard — Research confirmed: BookXX.bmd)
+             (15, 0, 'Scroll of Poison', 'Book01.bmd', 30, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 140, 1),
+             (15, 1, 'Scroll of Meteorite', 'Book02.bmd', 21, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 104, 1),
+             (15, 2, 'Scroll of Lighting', 'Book03.bmd', 13, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 72, 1),
+             (15, 3, 'Scroll of Fire Ball', 'Book04.bmd', 5, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 40, 1),
+             (15, 4, 'Scroll of Flame', 'Book05.bmd', 35, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 160, 1),
+             (15, 5, 'Scroll of Teleport', 'Book06.bmd', 17, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 88, 1),
+             (15, 6, 'Scroll of Ice', 'Book07.bmd', 25, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 120, 1),
+             (15, 7, 'Scroll of Twister', 'Book08.bmd', 40, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 180, 1),
+             (15, 8, 'Scroll of Evil Spirit', 'Book09.bmd', 50, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 220, 1),
+             (15, 9, 'Scroll of Hellfire', 'Book10.bmd', 60, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 260, 1),
+             (15, 10, 'Scroll of Power Wave', 'Book11.bmd', 9, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 56, 1),
+             (15, 11, 'Scroll of Aqua Beam', 'Book12.bmd', 74, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 345, 1),
+             (15, 12, 'Scroll of Cometfall', 'Book13.bmd', 80, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 436, 1),
+             (15, 13, 'Scroll of Inferno', 'Book14.bmd', 88, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 578, 1)
+     )";
   char *err = nullptr;
   if (sqlite3_exec(m_db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
     printf("[DB] SeedItemDefinitions error: %s\n", err);
@@ -740,6 +741,34 @@ ItemDefinition Database::GetItemDefinition(uint8_t category,
   }
   sqlite3_finalize(stmt);
   return item;
+}
+
+std::vector<ItemDropInfo> Database::GetItemsByLevelRange(int minLevel,
+                                                         int maxLevel) {
+  std::vector<ItemDropInfo> items;
+  sqlite3_stmt *stmt = nullptr;
+  // Exclude Wings (12+), Orbs, Quest Items, etc. Only allow Categories 0-11
+  // (Gear)
+  const char *sql =
+      "SELECT category, item_index, name, level_req FROM item_definitions "
+      "WHERE level_req BETWEEN ? AND ? AND category <= 11";
+
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return items;
+
+  sqlite3_bind_int(stmt, 1, minLevel);
+  sqlite3_bind_int(stmt, 2, maxLevel);
+
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    ItemDropInfo info;
+    info.category = static_cast<uint8_t>(sqlite3_column_int(stmt, 0));
+    info.itemIndex = static_cast<uint8_t>(sqlite3_column_int(stmt, 1));
+    info.name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 2));
+    info.level = static_cast<uint16_t>(sqlite3_column_int(stmt, 3));
+    items.push_back(info);
+  }
+  sqlite3_finalize(stmt);
+  return items;
 }
 
 std::vector<EquipmentSlot> Database::GetCharacterEquipment(int characterId) {
@@ -863,50 +892,19 @@ std::vector<MonsterSpawnData> Database::GetMonsterSpawns(uint8_t mapId) {
 }
 
 void Database::SeedDefaultEquipment(int characterId) {
-  // Check if character already has equipment
-  sqlite3_stmt *stmt = nullptr;
-  const char *sql_check =
-      "SELECT COUNT(*) FROM character_equipment WHERE character_id=?";
-  if (sqlite3_prepare_v2(m_db, sql_check, -1, &stmt, nullptr) != SQLITE_OK)
-    return;
-  sqlite3_bind_int(stmt, 1, characterId);
-  int count = 0;
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    count = sqlite3_column_int(stmt, 0);
-  sqlite3_finalize(stmt);
-  if (count > 0)
-    return;
+  // Reset gear for verification: clear all existing equipment and inventory
+  char sql[128];
+  snprintf(sql, sizeof(sql),
+           "DELETE FROM character_equipment WHERE character_id=%d",
+           characterId);
+  sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
 
-  // Give DK a Short Sword (category=0, index=1) in right hand (slot 0)
-  UpdateEquipment(characterId, 0, 0, 1, 0); // Short Sword (Req Str: 60)
-  // Give DK a Small Shield (category=6, index=0) in left hand (slot 1)
-  UpdateEquipment(characterId, 1, 6, 0, 0); // Small Shield (Req Str: 70)
-  // Give DK full Leather Set (category 7-11, index 5)
-  UpdateEquipment(characterId, 2, 7, 5, 0);  // Leather Helm (Req Str: 80)
-  UpdateEquipment(characterId, 3, 8, 5, 0);  // Leather Armor (Req Str: 80)
-  UpdateEquipment(characterId, 4, 9, 5, 0);  // Leather Pants (Req Str: 80)
-  UpdateEquipment(characterId, 5, 10, 5, 0); // Leather Gloves (Req Str: 80)
-  UpdateEquipment(characterId, 6, 11, 5, 0); // Leather Boots (Req Str: 80)
+  snprintf(sql, sizeof(sql),
+           "DELETE FROM character_inventory WHERE character_id=%d",
+           characterId);
+  sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
 
-  // Add starting items to inventory
-  // Add starting items to inventory (Jewel of Bless + Small HP Potions)
-  ItemDefinition bless = GetItemDefinition(14, 13);
-  if (bless.id > 0)
-    SaveCharacterInventory(characterId, bless.id, 1, 0, 0);
-
-  ItemDefinition potion = GetItemDefinition(14, 1);
-  if (potion.id > 0) {
-    SaveCharacterInventory(characterId, potion.id, 5, 0, 1);
-    SaveCharacterInventory(characterId, potion.id, 5, 0, 2);
-    SaveCharacterInventory(characterId, potion.id, 5, 0, 3);
-    SaveCharacterInventory(characterId, potion.id, 5, 0, 4);
-    SaveCharacterInventory(characterId, potion.id, 5, 0, 5);
-  }
-
-  printf("[DB] Seeded realistic 0.97d equipment (Leather Set + Short Sword + "
-         "Small Shield) for "
-         "character %d\n",
-         characterId);
+  printf("[DB] Cleared inventory for character %d\n", characterId);
 }
 
 void Database::UpdateEquipment(int characterId, uint8_t slot, uint8_t category,

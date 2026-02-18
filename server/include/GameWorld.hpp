@@ -43,6 +43,10 @@ struct MonsterInstance {
   uint8_t lastBroadcastTargetY = 0;  // Last broadcasted target grid Y
   bool lastBroadcastChasing = false; // Last broadcasted chasing state
 
+  // Aggro memory
+  int aggroTargetFd = -1;  // FD of player who attacked us
+  float aggroTimer = 0.0f; // Duration to keep aggro on attacker
+
   // Per-type AI parameters (from Monster.txt: AtkSpeed, MvRange, ViewRange)
   float atkCooldownTime = 1.8f; // AtkSpeed/1000 (seconds between attacks)
   float wanderRange = 200.0f;   // MvRange * 100 (world units)
@@ -57,8 +61,8 @@ struct MonsterInstance {
 
 // Server-side ground drop
 struct GroundDrop {
-  uint16_t index;  // Unique drop ID
-  int8_t defIndex; // -1=Zen, 0-5=item def index
+  uint16_t index;   // Unique drop ID
+  int16_t defIndex; // -1=Zen, 0-511+=item def index
   uint8_t quantity;
   uint8_t itemLevel; // Enhancement +0..+2
   float worldX, worldZ;
@@ -123,8 +127,10 @@ public:
   std::vector<uint8_t>
   BuildMonsterViewportV2Packet() const; // New 0x34 with HP/state
 
-  // Drop management
-  std::vector<GroundDrop> SpawnDrops(float worldX, float worldZ);
+  // Drops
+  // Spawns drops based on monster level using DB for item lookups
+  std::vector<GroundDrop> SpawnDrops(float worldX, float worldZ,
+                                     int monsterLevel, Database &db);
   GroundDrop *FindDrop(uint16_t dropIndex);
   bool RemoveDrop(uint16_t dropIndex);
   const std::vector<GroundDrop> &GetDrops() const { return m_drops; }

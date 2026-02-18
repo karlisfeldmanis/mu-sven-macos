@@ -392,6 +392,7 @@ void GameWorld::Update(float dt,
       mon.isChasing = false;
       mon.isReturning = false;
       mon.isWandering = false;
+      mon.aggroTargetFd = -1; // Clear aggro
       if (mon.stateTimer >= DYING_DURATION) {
         mon.state = MonsterInstance::DEAD;
         mon.stateTimer = 0.0f;
@@ -415,6 +416,7 @@ void GameWorld::Update(float dt,
         mon.lastBroadcastTargetX = 0;
         mon.lastBroadcastTargetY = 0;
         mon.lastBroadcastChasing = false;
+        mon.aggroTargetFd = -1; // Clear aggro
         mon.justRespawned = true;
         printf("[World] Monster %d (type %d) respawned at grid (%d,%d)\n",
                mon.index, mon.type, mon.gridX, mon.gridY);
@@ -496,22 +498,59 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
 
     // If returning to spawn after leash, keep returning — don't re-aggro
     if (mon.isReturning) {
+      mon.aggroTargetFd = -1; // Drop aggro when returning
       moveTowardSpawn(mon);
       continue;
     }
 
-    // Find closest alive player (skip dead)
+    // Update aggro timer
+    if (mon.aggroTargetFd != -1) {
+      mon.aggroTimer -= dt;
+      if (mon.aggroTimer <= 0.0f) {
+        mon.aggroTargetFd = -1; // Aggro expired
+        printf("[AI] Mon %d (type %d): aggro expired\n", mon.index, mon.type);
+      }
+    }
+
+    // Find best target (prioritize aggro target)
     float bestDist = 1e9f;
     const PlayerTarget *bestTarget = nullptr;
-    for (auto &p : players) {
-      if (p.dead)
-        continue;
-      float dx = mon.worldX - p.worldX;
-      float dz = mon.worldZ - p.worldZ;
-      float dist = std::sqrt(dx * dx + dz * dz);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestTarget = &p;
+
+    // First check aggro target
+    if (mon.aggroTargetFd != -1) {
+      for (auto &p : players) {
+        if (p.fd == mon.aggroTargetFd && !p.dead) {
+          float dx = mon.worldX - p.worldX;
+          float dz = mon.worldZ - p.worldZ;
+          float dist = std::sqrt(dx * dx + dz * dz);
+          // Only stick to aggro target if within reasonable range (2x aggro)
+          if (dist < mon.aggroRange * 2.0f) {
+            bestDist = dist;
+            bestTarget = &p;
+          } else {
+            mon.aggroTargetFd = -1; // Lost track
+          }
+          break;
+        }
+      }
+      // If aggro target not found (disconnected) or dead, clear it
+      if (!bestTarget && mon.aggroTargetFd != -1) {
+        mon.aggroTargetFd = -1;
+      }
+    }
+
+    // If no aggro target, look for closest player
+    if (!bestTarget) {
+      for (auto &p : players) {
+        if (p.dead)
+          continue;
+        float dx = mon.worldX - p.worldX;
+        float dz = mon.worldZ - p.worldZ;
+        float dist = std::sqrt(dx * dx + dz * dz);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestTarget = &p;
+        }
       }
     }
     if (!bestTarget) {
@@ -723,13 +762,14 @@ std::vector<uint8_t> GameWorld::BuildMonsterViewportV2Packet() const {
 }
 
 // Drop system
-std::vector<GroundDrop> GameWorld::SpawnDrops(float worldX, float worldZ) {
+std::vector<GroundDrop> GameWorld::SpawnDrops(float worldX, float worldZ,
+                                              int monsterLevel, Database &db) {
   std::vector<GroundDrop> spawned;
 
-  auto makeDrop = [&](int8_t defIdx, uint8_t qty, uint8_t lvl) {
+  auto makeDrop = [&](int16_t defIndex, uint8_t qty, uint8_t lvl) {
     GroundDrop drop{};
     drop.index = m_nextDropIndex++;
-    drop.defIndex = defIdx;
+    drop.defIndex = defIndex;
     drop.quantity = qty;
     drop.itemLevel = lvl;
     drop.worldX = worldX + (float)(rand() % 60 - 30);
@@ -739,20 +779,89 @@ std::vector<GroundDrop> GameWorld::SpawnDrops(float worldX, float worldZ) {
     spawned.push_back(drop);
   };
 
-  // Zen: 83% chance
-  if (rand() % 12 < 10) {
-    uint8_t zen = 1 + rand() % 20;
+  // 1. Zen Drop (Money)
+  // Chance: ~30% (Standard MU rate is roughly 1/3 for Zen)
+  if (rand() % 100 < 30) {
+    // Formula: MonsterLevel * 10 to MonsterLevel * 20
+    uint32_t zenAmount = monsterLevel * 10 + (rand() % (monsterLevel * 10 + 1));
+    if (zenAmount < 1)
+      zenAmount = 1;
+    // Zen defIndex is -1 (or handled specially by client)
+    // We use defIndex -1 for Zen, quantity = amount
+    // Note: quantity is 8-bit, so for large Zen we might need a different
+    // mechanism but for now let's assume client handles small amounts or we
+    // strictly use Drop packet money field Actually, packet 0x2B uses specific
+    // fields. Internal representation: If defIndex == -1, it's Zen. Wait,
+    // GroundDrop.quantity is uint8_t? Let's check GroundDrop struct. Assuming
+    // for now standard items. Zen drops might need a separate handling or type.
+    // Re-reading PacketHandler code: PMSG_DROP_SPAWN_SEND sends quantity.
+    // If it's Zen, usually a specific ID is used OR the quantity field holds
+    // the value if it fits. Standard MU sends Zen as a separate "Money" drop or
+    // Item with ID for Zen. Let's stick to the previous logic for Zen for now
+    // but use money amount if possible. The previous code used: makeDrop(-1,
+    // zen, 0); Let's keep that but scale it. Limitation: uint8_t quantity max
+    // 255. If Zen > 255, we might need to clamp or finding out how standard MU
+    // sends large Zen drops. Standard MU sends "Money" item. For this strict
+    // implementation, we'll clamp to 255 or just drop "a pile of gold". Let's
+    // drop a reasonable amount for low lvl.
+    uint8_t zen = std::min(255, (int)zenAmount);
     makeDrop(-1, zen, 0);
+    return spawned; // Zen drops alone usually
   }
-  // Item: 16.7% chance — weapons, shield, armor
-  if (rand() % 120 < 20) {
-    int8_t idx = (int8_t)(rand() % 5);        // indices 0-4
-    uint8_t enhLevel = (uint8_t)(rand() % 3); // +0, +1, +2
-    makeDrop(idx, 1, enhLevel);
+
+  // 2. Item Drop
+  // Chance: ~10% for an item
+  if (rand() % 100 < 10) {
+    // Calculate Level Range
+    // Drop items with level requirement: [MonsterLevel - 20, MonsterLevel + 4]
+    // Minimum level 0.
+    int minLvl = std::max(0, monsterLevel - 20);
+    int maxLvl = monsterLevel; // Cap at monster level mostly
+
+    // Query DB for items in this range
+    auto possibleItems = db.GetItemsByLevelRange(minLvl, maxLvl);
+
+    if (!possibleItems.empty()) {
+      // Pick one random item
+      const auto &picked = possibleItems[rand() % possibleItems.size()];
+
+      // Calculate DefIndex: Group * 32 + Index (Standard MU indexing)
+      // client expects this unique index.
+      // But wait, our `GroundDrop.defIndex` is usually the "Item ID" which
+      // might be the composite one. The previous code used `int8_t idx`
+      // directly. Let's assuming defIndex is the composite ID (0-511 usually).
+      // Category (0-15) * 32 + Index (0-31) = Max 512.
+      // `GroundDrop.defIndex` is `int16_t` in `GameWorld.hpp`?
+      // Checking previous view... it used `int8_t` in lambda but let's check
+      // struct. Previous lambda: `auto makeDrop = [&](int8_t defIdx, ...)`
+      // Let's coerce to int16_t to be safe.
+
+      int16_t itemCode = (picked.category * 32) + picked.itemIndex;
+
+      // Random Option/Level
+      // +0 to +2 for simple mobs
+      uint8_t dropLvl = 0;
+      if (rand() % 3 == 0)
+        dropLvl = 1;
+      if (rand() % 10 == 0)
+        dropLvl = 2;
+
+      makeDrop(itemCode, 1, dropLvl);
+
+      printf("[World] Mon Lv%d dropping %s (Lv%d Item) Code=%d\n", monsterLevel,
+             picked.name.c_str(), picked.level, itemCode);
+
+      return spawned;
+    }
   }
-  // Potion: 25% chance
-  if (rand() % 4 == 0) {
-    makeDrop(5, 1, 0); // Small Healing Potion
+
+  // 3. Potion Drop (Separate high chance for utility)
+  // Chance: 20%
+  if (rand() % 5 == 0) {
+    // Apple (14,0), Small Potion (14,1)
+    int potType = rand() % 2;
+    int16_t potCode = (14 * 32) + potType;
+    makeDrop(potCode, 1, 0);
   }
 
   return spawned;

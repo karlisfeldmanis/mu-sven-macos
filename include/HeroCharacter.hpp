@@ -108,6 +108,8 @@ public:
   void TakeDamage(int damage);
   int GetHP() const { return m_hp; }
   int GetMaxHP() const { return m_maxHp; }
+  int GetMana() const { return m_mana; }
+  int GetMaxMana() const { return m_maxMana; }
   bool IsDead() const {
     return m_heroState == HeroState::DYING || m_heroState == HeroState::DEAD;
   }
@@ -124,7 +126,7 @@ public:
   // Load stats from server (overrides defaults, calls RecalcStats)
   void LoadStats(int level, uint16_t str, uint16_t dex, uint16_t vit,
                  uint16_t ene, uint64_t experience, int levelUpPoints,
-                 int currentHp);
+                 int currentHp, int currentMana);
   bool AddStatPoint(int stat); // 0=STR, 1=DEX, 2=VIT, 3=ENE
   int GetLevel() const { return m_level; }
   uint64_t GetExperience() const { return m_experience; }
@@ -243,6 +245,8 @@ private:
   // HP system (m_maxHp computed by RecalcStats)
   int m_hp = 110;
   int m_maxHp = 110;
+  int m_mana = 25;
+  int m_maxMana = 25;
   HeroState m_heroState = HeroState::ALIVE;
   float m_stateTimer = 0.0f;
   static constexpr float HIT_STUN_TIME = 0.4f;

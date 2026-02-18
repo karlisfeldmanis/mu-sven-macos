@@ -17,6 +17,7 @@
 #include "Terrain.hpp"
 #include "TerrainParser.hpp"
 #include "UICoords.hpp"
+#include "UITexture.hpp"
 #include "VFXManager.hpp"
 #include "ViewerCommon.hpp"
 #include "imgui.h"
@@ -162,8 +163,29 @@ static MonsterManager g_monsterManager;
 static NetworkClient g_net;
 
 // NPC interaction state
-static int g_hoveredNpc = -1;  // Index of NPC under mouse cursor
-static int g_selectedNpc = -1; // Index of NPC that was clicked (dialog open)
+static int g_hoveredNpc = -1;     // Index of NPC under mouse cursor
+static int g_hoveredMonster = -1; // Index of Monster under mouse cursor
+static int g_selectedNpc = -1;    // Index of NPC that was clicked (dialog open)
+
+// Client-side inventory (synced from server via 0x36)
+struct ClientItemDefinition {
+  uint8_t category = 0;
+  uint8_t itemIndex = 0;
+  std::string name;
+  std::string modelFile;
+  uint16_t reqStr = 0;
+  uint16_t reqDex = 0;
+  uint16_t reqVit = 0;
+  uint16_t reqEne = 0;
+  uint16_t levelReq = 0;
+  uint8_t width = 1;
+  uint8_t height = 1;
+  uint32_t classFlags = 0xFFFFFFFF;
+  uint16_t dmgMin = 0;
+  uint16_t dmgMax = 0;
+  uint16_t defense = 0;
+};
+static std::map<int16_t, ClientItemDefinition> g_itemDefs;
 
 // ── Floating damage numbers ──
 struct FloatingDamage {
@@ -182,17 +204,21 @@ static FloatingDamage g_floatingDmg[MAX_FLOATING_DAMAGE] = {};
 struct GroundItem {
   uint16_t dropIndex;
   int16_t defIndex; // -1=Zen
-  uint8_t quantity;
+  int quantity;
   uint8_t itemLevel;
   glm::vec3 position;
   float timer; // Time alive (for bob animation)
   bool active;
+
+  // Physics state
+  glm::vec3 angle;
+  float gravity;
+  float scale;
+  bool isResting;
 };
 static constexpr int MAX_GROUND_ITEMS = 64;
 static GroundItem g_groundItems[MAX_GROUND_ITEMS] = {};
-static const std::string g_dataPath =
-    "/Users/karlisfeldmanis/Desktop/mu_remaster/references/other/MuMain/src/"
-    "bin/Data"; // Default, updated in main
+static const std::string g_dataPath = "Data";
 
 // Helper to get model filename for drop index
 // Drop item definitions (Name, Model)
@@ -204,133 +230,304 @@ struct DropDef {
   int defense; // Armor defense bonus
 };
 
+static const DropDef zen = {"Zen", "Gold01.bmd", 0, 0, 0};
+// MU 0.97d complete item database (Mapped to Cat * 32 + Idx)
+static const DropDef items[] = {
+    // Category 0: Swords (0-31)
+    [0] = {"Kris", "Sword01.bmd", 6, 11, 0},
+    {"Short Sword", "Sword02.bmd", 3, 7, 0},
+    {"Rapier", "Sword03.bmd", 9, 13, 0},
+    {"Katana", "Sword04.bmd", 12, 18, 0},
+    {"Sword of Assassin", "Sword05.bmd", 15, 22, 0},
+    {"Blade", "Sword06.bmd", 21, 31, 0},
+    {"Gladius", "Sword07.bmd", 18, 26, 0},
+    {"Falchion", "Sword08.bmd", 24, 34, 0},
+    {"Serpent Sword", "Sword09.bmd", 30, 42, 0},
+    {"Salamander", "Sword10.bmd", 36, 51, 0},
+    {"Light Sabre", "Sword11.bmd", 42, 57, 0},
+    {"Legendary Sword", "Sword12.bmd", 48, 64, 0},
+    {"Heliacal Sword", "Sword13.bmd", 56, 72, 0},
+    {"Double Blade", "Sword14.bmd", 44, 61, 0},
+    {"Lighting Sword", "Sword15.bmd", 52, 68, 0},
+    {"Giant Sword", "Sword16.bmd", 64, 82, 0},
+    {"Sword of Destruction", "Sword17.bmd", 84, 108, 0},
+    {"Dark Breaker", "Sword18.bmd", 96, 124, 0},
+    {"Thunder Blade", "Sword19.bmd", 102, 132, 0},
+    {"Divine Sword", "Sword20.bmd", 110, 140, 0},
+
+    // Category 1: Axes (32-63)
+    [32] = {"Small Axe", "Axe01.bmd", 1, 6, 0},
+    {"Hand Axe", "Axe02.bmd", 4, 9, 0},
+    {"Double Axe", "Axe03.bmd", 14, 24, 0},
+    {"Tomahawk", "Axe04.bmd", 18, 28, 0},
+    {"Elven Axe", "Axe05.bmd", 26, 38, 0},
+    {"Battle Axe", "Axe06.bmd", 30, 44, 0},
+    {"Nikea Axe", "Axe07.bmd", 34, 50, 0},
+    {"Larkan Axe", "Axe08.bmd", 46, 67, 0},
+    {"Crescent Axe", "Axe09.bmd", 54, 69, 0},
+
+    // Category 2: Maces (64-95)
+    [64] = {"Mace", "Mace01.bmd", 7, 13, 0},
+    {"Morning Star", "Mace02.bmd", 13, 22, 0},
+    {"Flail", "Mace03.bmd", 22, 32, 0},
+    {"Great Hammer", "Mace04.bmd", 38, 56, 0},
+    {"Crystal Morning Star", "Mace05.bmd", 66, 107, 0},
+    {"Crystal Sword", "Mace06.bmd", 72, 120, 0},
+    {"Chaos Dragon Axe", "Mace07.bmd", 75, 130, 0},
+    {"Elemental Mace", "Mace08.bmd", 62, 80, 0},
+    {"Mace of the King", "Mace09.bmd", 40, 51, 0},
+
+    // Category 3: Spears (96-127)
+    [96] = {"Light Spear", "Spear01.bmd", 42, 63, 0},
+    {"Spear", "Spear02.bmd", 30, 41, 0},
+    {"Dragon Lance", "Spear03.bmd", 21, 33, 0},
+    {"Giant Trident", "Spear04.bmd", 35, 43, 0},
+    {"Serpent Spear", "Spear05.bmd", 58, 80, 0},
+    {"Double Poleaxe", "Spear06.bmd", 19, 31, 0},
+    {"Halberd", "Spear07.bmd", 25, 35, 0},
+    {"Berdysh", "Spear08.bmd", 42, 54, 0},
+    {"Great Scythe", "Spear09.bmd", 71, 92, 0},
+    {"Bill of Balrog", "Spear10.bmd", 76, 102, 0},
+    {"Dragon Spear", "Spear11.bmd", 112, 140, 0},
+
+    // Category 4: Bows (128-159)
+    [128] = {"Short Bow", "Bow01.bmd", 3, 5, 0},
+    {"Bow", "Bow02.bmd", 9, 13, 0},
+    {"Elven Bow", "Bow03.bmd", 17, 24, 0},
+    {"Battle Bow", "Bow04.bmd", 28, 37, 0},
+    {"Tiger Bow", "Bow05.bmd", 42, 52, 0},
+    {"Silver Bow", "Bow06.bmd", 59, 71, 0},
+    {"Chaos Nature Bow", "Bow07.bmd", 88, 106, 0},
+    [136] = {"Crossbow", "Bow09.bmd", 5, 8, 0}, // C4I8
+    {"Golden Crossbow", "Bow10.bmd", 13, 19, 0},
+    {"Arquebus", "Bow11.bmd", 22, 30, 0},
+    {"Light Crossbow", "Bow12.bmd", 35, 44, 0},
+    {"Serpent Crossbow", "Bow13.bmd", 50, 61, 0},
+    {"Bluewing Crossbow", "Bow14.bmd", 68, 82, 0},
+    {"Aquagold Crossbow", "Bow15.bmd", 78, 92, 0},
+
+    // Category 5: Staffs (160-191)
+    [160] = {"Skull Staff", "Staff01.bmd", 6, 11, 0},
+    {"Angelic Staff", "Staff02.bmd", 18, 26, 0},
+    {"Serpent Staff", "Staff03.bmd", 30, 42, 0},
+    {"Thunder Staff", "Staff04.bmd", 42, 57, 0},
+    {"Gorgon Staff", "Staff05.bmd", 56, 72, 0},
+    {"Legendary Staff", "Staff06.bmd", 73, 98, 0},
+    {"Staff of Resurrection", "Staff07.bmd", 88, 106, 0},
+    {"Chaos Lightning Staff", "Staff08.bmd", 102, 132, 0},
+    {"Staff of Destruction", "Staff09.bmd", 110, 140, 0},
+
+    // Category 6: Shields (192-223)
+    [192] = {"Small Shield", "Shield01.bmd", 0, 0, 3},
+    {"Horn Shield", "Shield02.bmd", 0, 0, 6},
+    {"Kite Shield", "Shield03.bmd", 0, 0, 10},
+    {"Elven Shield", "Shield04.bmd", 0, 0, 15},
+    {"Buckler", "Shield05.bmd", 0, 0, 20},
+    {"Dragon Slayer Shield", "Shield06.bmd", 0, 0, 26},
+    {"Skull Shield", "Shield07.bmd", 0, 0, 33},
+    {"Spiked Shield", "Shield08.bmd", 0, 0, 41},
+    {"Tower Shield", "Shield09.bmd", 0, 0, 50},
+    {"Plate Shield", "Shield10.bmd", 0, 0, 60},
+    {"Big Round Shield", "Shield11.bmd", 0, 0, 72},
+    {"Serpent Shield", "Shield12.bmd", 0, 0, 85},
+    {"Bronze Shield", "Shield13.bmd", 0, 0, 100},
+    {"Dragon Shield", "Shield14.bmd", 0, 0, 115},
+    {"Legendary Shield", "Shield15.bmd", 0, 0, 132},
+
+    // Category 7: Helms (224-255)
+    [224] = {"Bronze Helm", "HelmMale01.bmd", 0, 0, 8},
+    {"Dragon Helm", "HelmMale10.bmd", 0, 0, 48},
+    {"Pad Helm", "HelmClass01.bmd", 0, 0, 2},
+    {"Legendary Helm", "HelmClass02.bmd", 0, 0, 28},
+    {"Bone Helm", "HelmClass03.bmd", 0, 0, 14},
+    {"Leather Helm", "HelmMale06.bmd", 0, 0, 4},
+    {"Scale Helm", "HelmMale03.bmd", 0, 0, 12},   // Added for variety
+    {"Sphinx Helm", "HelmClass04.bmd", 0, 0, 21}, // Added for variety
+    {"Brass Helm", "HelmMale07.bmd", 0, 0, 18},   // Added for variety
+    {"Plate Helm", "HelmMale08.bmd", 0, 0, 35},   // Added for variety
+
+    // Category 8: Armor (256-287)
+    [256] = {"Bronze Armor", "ArmorMale01.bmd", 0, 0, 15},
+    {"Dragon Armor", "ArmorMale10.bmd", 0, 0, 65},
+    {"Pad Armor", "ArmorClass01.bmd", 0, 0, 5},
+    {"Legendary Armor", "ArmorClass02.bmd", 0, 0, 42},
+    {"Bone Armor", "ArmorClass03.bmd", 0, 0, 24},
+    {"Leather Armor", "ArmorMale06.bmd", 0, 0, 8},
+    {"Scale Armor", "ArmorMale03.bmd", 0, 0, 20},
+    {"Sphinx Armor", "ArmorClass04.bmd", 0, 0, 32},
+    {"Brass Armor", "ArmorMale07.bmd", 0, 0, 28},
+    {"Plate Armor", "ArmorMale08.bmd", 0, 0, 50},
+
+    // Category 9: Pants (288-319)
+    [288] = {"Bronze Pants", "PantMale01.bmd", 0, 0, 12},
+    {"Dragon Pants", "PantMale10.bmd", 0, 0, 55},
+    {"Pad Pants", "PantClass01.bmd", 0, 0, 4},
+    {"Legendary Pants", "PantClass02.bmd", 0, 0, 35},
+    {"Bone Pants", "PantClass03.bmd", 0, 0, 19},
+    {"Leather Pants", "PantMale06.bmd", 0, 0, 6},
+    {"Scale Pants", "PantMale03.bmd", 0, 0, 16},
+    {"Sphinx Pants", "PantClass04.bmd", 0, 0, 27},
+    {"Brass Pants", "PantMale07.bmd", 0, 0, 23},
+    {"Plate Pants", "PantMale08.bmd", 0, 0, 43},
+
+    // Category 10: Gloves (320-351)
+    [320] = {"Bronze Gloves", "GloveMale01.bmd", 0, 0, 6},
+    {"Dragon Gloves", "GloveMale10.bmd", 0, 0, 40},
+    {"Pad Gloves", "GloveClass01.bmd", 0, 0, 1},
+    {"Legendary Gloves", "GloveClass02.bmd", 0, 0, 22},
+    {"Bone Gloves", "GloveClass03.bmd", 0, 0, 10},
+    {"Leather Gloves", "GloveMale06.bmd", 0, 0, 2},
+    {"Scale Gloves", "GloveMale03.bmd", 0, 0, 8},
+    {"Sphinx Gloves", "GloveClass04.bmd", 0, 0, 15},
+    {"Brass Gloves", "GloveMale07.bmd", 0, 0, 12},
+    {"Plate Gloves", "GloveMale08.bmd", 0, 0, 28},
+
+    // Category 11: Boots (352-383)
+    [352] = {"Bronze Boots", "BootMale01.bmd", 0, 0, 6},
+    {"Dragon Boots", "BootMale10.bmd", 0, 0, 40},
+    {"Pad Boots", "BootClass01.bmd", 0, 0, 1},
+    {"Legendary Boots", "BootClass02.bmd", 0, 0, 22},
+    {"Bone Boots", "BootClass03.bmd", 0, 0, 10},
+    {"Leather Boots", "BootMale06.bmd", 0, 0, 2},
+    {"Scale Boots", "BootMale03.bmd", 0, 0, 8},
+    {"Sphinx Boots", "BootClass04.bmd", 0, 0, 15},
+    {"Brass Boots", "BootMale07.bmd", 0, 0, 12},
+    {"Plate Boots", "BootMale08.bmd", 0, 0, 28},
+
+    // Category 12: Wings/Orbs (384-415)
+    [384] = {"Wings of Elf", "Wing01.bmd", 0, 0, 0},
+    {"Wings of Heaven", "Wing02.bmd", 0, 0, 0},
+    {"Wings of Satan", "Wing03.bmd", 0, 0, 0},
+    {"Wings of Spirit", "Wing04.bmd", 0, 0, 0},
+    {"Wings of Soul", "Wing05.bmd", 0, 0, 0},
+    {"Wings of Dragon", "Wing06.bmd", 0, 0, 0},
+    {"Wings of Darkness", "Wing07.bmd", 0, 0, 0},
+
+    // Category 13: Rings (416-447)
+    [416] = {"Ring of Ice", "Ring01.bmd", 0, 0, 0},
+    {"Ring of Poison", "Ring02.bmd", 0, 0, 0},
+    {"Ring of Fire", "Ring01.bmd", 0, 0, 0},  // Reusing Ring01
+    {"Ring of Earth", "Ring02.bmd", 0, 0, 0}, // Reusing Ring02
+    {"Ring of Wind", "Ring01.bmd", 0, 0, 0},  // Reusing Ring01
+    {"Ring of Magic", "Ring02.bmd", 0, 0, 0}, // Reusing Ring02
+
+    // Category 14: Potions (448-479)
+    [448] = {"Apple", "Potion01.bmd", 0, 0, 0},
+    {"Small Health Potion", "Potion02.bmd", 0, 0, 0},
+    {"Medium Health Potion", "Potion03.bmd", 0, 0, 0},
+    {"Large Health Potion", "Potion04.bmd", 0, 0, 0},
+    {"Small Mana Potion", "Potion05.bmd", 0, 0, 0},
+    {"Medium Mana Potion", "Potion06.bmd", 0, 0, 0},
+    {"Large Mana Potion", "Potion07.bmd", 0, 0, 0},
+
+    // Misc Items (Cat 13/14 overlap or special IDs in standard MU, but using
+    // our logic)
+    // Zen is special index -1
+    // Jewels typically Cat 14 or 12 or 13 depending on version.
+    // Item.txt says Jewels are Cat 14 (Index 13, 14, 16) or Cat 12.
+    // 0.97k Item.txt: Jewel of Bless is 14, 13
+    [461] = {"Jewel of Bless", "Jewel01.bmd", 0, 0, 0},
+    {"Jewel of Soul", "Jewel02.bmd", 0, 0, 0},
+    {"Jewel of Life", "Jewel03.bmd", 0, 0, 0},
+    {"Jewel of Chaos", "Jewel04.bmd", 0, 0, 0},
+};
+
 static const DropDef *GetDropInfo(int16_t defIndex) {
-  static const DropDef zen = {"Zen", "Zen.bmd", 0, 0, 0};
-  // MU 0.97d complete item database (Mapped to Cat/Idx)
-  static const DropDef items[] = {
-      // Category 0: Swords
-      {"Kris", "Sword01.bmd", 6, 11, 0},                   // 0
-      {"Short Sword", "Sword02.bmd", 3, 7, 0},             // 1
-      {"Rapier", "Sword03.bmd", 9, 13, 0},                 // 2
-      {"Katane", "Sword04.bmd", 12, 18, 0},                // 3
-      {"Sword of Assassin", "Sword05.bmd", 15, 22, 0},     // 4
-      {"Blade", "Sword06.bmd", 21, 31, 0},                 // 5
-      {"Gladius", "Sword07.bmd", 18, 26, 0},               // 6
-      {"Falchion", "Sword08.bmd", 24, 34, 0},              // 7
-      {"Serpent Sword", "Sword09.bmd", 30, 42, 0},         // 8
-      {"Salamander", "Sword10.bmd", 36, 51, 0},            // 9
-      {"Light Sabre", "Sword11.bmd", 42, 57, 0},           // 10
-      {"Legendary Sword", "Sword12.bmd", 48, 64, 0},       // 11
-      {"Heliacal Sword", "Sword13.bmd", 56, 72, 0},        // 12
-      {"Double Blade", "Sword14.bmd", 44, 61, 0},          // 13
-      {"Lighting Sword", "Sword15.bmd", 52, 68, 0},        // 14
-      {"Giant Sword", "Sword16.bmd", 64, 82, 0},           // 15
-      {"Sword of Destruction", "Sword17.bmd", 84, 108, 0}, // 16
-      {"Dark Breaker", "Sword18.bmd", 96, 124, 0},         // 17
-      {"Thunder Blade", "Sword19.bmd", 102, 132, 0},       // 18
-      {"Divine Sword", "Sword20.bmd", 110, 140, 0},        // 19
-
-      // Category 6: Shields (Starting at index 100 for better mapping)
-      [100] = {"Small Shield", "Shield01.bmd", 0, 0, 3},
-      {"Horn Shield", "Shield02.bmd", 0, 0, 6},
-      {"Kite Shield", "Shield03.bmd", 0, 0, 10},
-      {"Elven Shield", "Shield04.bmd", 0, 0, 15},
-      {"Buckler", "Shield05.bmd", 0, 0, 20},
-      {"Dragon Slayer Shield", "Shield06.bmd", 0, 0, 26},
-      {"Skull Shield", "Shield07.bmd", 0, 0, 33},
-      {"Spiked Shield", "Shield08.bmd", 0, 0, 41},
-      {"Tower Shield", "Shield09.bmd", 0, 0, 50},
-      {"Plate Shield", "Shield10.bmd", 0, 0, 60},
-      {"Big Round Shield", "Shield11.bmd", 0, 0, 72},
-      {"Serpent Shield", "Shield12.bmd", 0, 0, 85},
-      {"Bronze Shield", "Shield13.bmd", 0, 0, 100},
-      {"Dragon Shield", "Shield14.bmd", 0, 0, 115},
-      {"Legendary Shield", "Shield15.bmd", 0, 0, 132},
-
-      // Category 8: Armor (Starting at index 175)
-      [175] = {"Bronze Armor", "ArmorMale01.bmd", 0, 0, 15},
-      {"Dragon Armor", "ArmorMale10.bmd", 0, 0, 65},
-      {"Pad Armor", "ArmorClass01.bmd", 0, 0, 5},
-      {"Legendary Armor", "ArmorClass02.bmd", 0, 0, 42},
-      {"Bone Armor", "ArmorClass03.bmd", 0, 0, 24},
-      {"Leather Armor", "ArmorMale06.bmd", 0, 0, 8},
-
-      // Category 7: Helms (Starting at index 150)
-      [150] = {"Bronze Helm", "HelmMale01.bmd", 0, 0, 8},
-      {"Dragon Helm", "HelmMale10.bmd", 0, 0, 48},
-      {"Pad Helm", "HelmClass01.bmd", 0, 0, 2},
-      {"Legendary Helm", "HelmClass02.bmd", 0, 0, 28},
-      {"Bone Helm", "HelmClass03.bmd", 0, 0, 14},
-      {"Leather Helm", "HelmMale06.bmd", 0, 0, 4},
-
-      // Category 9: Pants (Starting at index 200)
-      [200] = {"Bronze Pants", "PantMale01.bmd", 0, 0, 12},
-      {"Dragon Pants", "PantMale10.bmd", 0, 0, 55},
-      {"Pad Pants", "PantClass01.bmd", 0, 0, 4},
-      {"Legendary Pants", "PantClass02.bmd", 0, 0, 35},
-      {"Bone Pants", "PantClass03.bmd", 0, 0, 19},
-      {"Leather Pants", "PantMale06.bmd", 0, 0, 6},
-
-      // Category 10: Gloves (Starting at index 225)
-      [225] = {"Bronze Gloves", "GloveMale01.bmd", 0, 0, 6},
-      {"Dragon Gloves", "GloveMale10.bmd", 0, 0, 40},
-      {"Pad Gloves", "GloveClass01.bmd", 0, 0, 1},
-      {"Legendary Gloves", "GloveClass02.bmd", 0, 0, 22},
-      {"Bone Gloves", "GloveClass03.bmd", 0, 0, 10},
-      {"Leather Gloves", "GloveMale06.bmd", 0, 0, 2},
-
-      // Category 11: Boots (Starting at index 250)
-      [250] = {"Bronze Boots", "BootMale01.bmd", 0, 0, 6},
-      {"Dragon Boots", "BootMale10.bmd", 0, 0, 40},
-      {"Pad Boots", "BootClass01.bmd", 0, 0, 1},
-      {"Legendary Boots", "BootClass02.bmd", 0, 0, 22},
-      {"Bone Boots", "BootClass03.bmd", 0, 0, 10},
-      {"Leather Boots", "BootMale06.bmd", 0, 0, 2},
-
-      // Category 14: Potions (Starting at index 400)
-      [400] = {"Apple", "Potion01.bmd", 0, 0, 0},
-      {"Small Health Potion", "Potion01.bmd", 0, 0, 0},
-      {"Medium Health Potion", "Potion02.bmd", 0, 0, 0},
-      {"Large Health Potion", "Potion03.bmd", 0, 0, 0},
-      {"Small Mana Potion", "Potion04.bmd", 0, 0, 0},
-      {"Medium Mana Potion", "Potion05.bmd", 0, 0, 0},
-      {"Large Mana Potion", "Potion06.bmd", 0, 0, 0},
-      [413] = {"Jewel of Bless", "Jewel01.bmd", 0, 0, 0},
-      {"Jewel of Soul", "Jewel02.bmd", 0, 0, 0},
-      {"Zen", "Zen.bmd", 0, 0, 0},
-      {"Jewel of Life", "Jewel03.bmd", 0, 0, 0},
-  };
-
   if (defIndex == -1)
     return &zen;
+
   if (defIndex >= 0 && defIndex < (int)(sizeof(items) / sizeof(items[0])))
     return &items[defIndex];
+
   return nullptr;
 }
 
+// Category names for fallback item naming
+static const char *kCatNames[] = {
+    "Sword",      "Axe",       "Mace",         "Spear",       "Bow",    "Staff",
+    "Shield",     "Helm",      "Armor",        "Pants",       "Gloves", "Boots",
+    "Wings/Misc", "Accessory", "Jewel/Potion", "Scroll/Skill"};
+
+// Fallback model per category (used when item not in g_itemDefs)
+static const char *kCatFallbackModel[] = {
+    "Sword01.bmd",      // 0 Swords
+    "Axe01.bmd",        // 1 Axes
+    "Mace01.bmd",       // 2 Maces
+    "Spear01.bmd",      // 3 Spears
+    "Bow01.bmd",        // 4 Bows
+    "Staff01.bmd",      // 5 Staffs
+    "Shield01.bmd",     // 6 Shields
+    "HelmClass02.bmd",  // 7 Helms
+    "ArmorClass02.bmd", // 8 Armor
+    "PantClass02.bmd",  // 9 Pants
+    "GloveClass02.bmd", // 10 Gloves
+    "BootClass02.bmd",  // 11 Boots
+    "Ring01.bmd",       // 12 Rings
+    "Pendant01.bmd",    // 13 Pendants
+    "Potion01.bmd",     // 14 Potions
+    "Scroll01.bmd",     // 15 Scrolls
+};
+
+// Thread-local buffer for fallback name (avoids static lifetime issues)
+static std::string g_fallbackNameBuf;
+
 static const char *GetDropName(int16_t defIndex) {
-  auto *def = GetDropInfo(defIndex);
-  return def ? def->name : "Item";
+  if (defIndex == -1)
+    return "Zen";
+  auto it = g_itemDefs.find(defIndex);
+  if (it != g_itemDefs.end())
+    return it->second.name.c_str();
+  // Generate fallback: "Bow [15]" from category*32+idx
+  int cat = (defIndex >= 0) ? (defIndex / 32) : 0;
+  int idx = (defIndex >= 0) ? (defIndex % 32) : 0;
+  const char *catName = (cat >= 0 && cat < 16) ? kCatNames[cat] : "Item";
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%s [%d]", catName, idx);
+  g_fallbackNameBuf = buf;
+  return g_fallbackNameBuf.c_str();
 }
 
 static const char *GetDropModelName(int16_t defIndex) {
-  auto *def = GetDropInfo(defIndex);
-  return def ? def->model : nullptr;
+  if (defIndex == -1)
+    return "Gold01.bmd";
+  auto it = g_itemDefs.find(defIndex);
+  if (it != g_itemDefs.end())
+    return it->second.modelFile.c_str();
+  // Return category-appropriate fallback model
+  int cat = (defIndex >= 0) ? (defIndex / 32) : 14;
+  if (cat >= 0 && cat < 16)
+    return kCatFallbackModel[cat];
+  return "Potion01.bmd"; // last resort
 }
 
 // Map equipment category+index to Player body part BMD filename
 // Returns empty string if not a body part (e.g. weapons/potions)
 static std::string GetBodyPartModelFile(uint8_t category, uint8_t index) {
-  // Category 7=Helm, 8=Armor, 9=Pants, 10=Gloves, 11=Boots
-  // MU Online naming: HelmMale01.bmd, ArmorMale02.bmd, etc.
-  // index is 0-based in our system, files are XX = index+1 padded to 2 digits
+  // Category 7=Helm...11=Boot
   const char *prefixes[] = {"Helm", "Armor", "Pant", "Glove", "Boot"};
   int partCat = category - 7; // 0=Helm...4=Boot
   if (partCat < 0 || partCat > 4)
     return "";
-  char buf[64];
-  snprintf(buf, sizeof(buf), "%sMale%02d.bmd", prefixes[partCat], index + 1);
-  return buf;
+
+  // Class specific prefixes
+  // Simplification: We only have Male/Class01/Class02/Class03/Class04 mapped in
+  // code We need to map exact filenames. For now, let's assume a simple mapping
+  // or use the filename from GetDropInfo? Actually, GetDropInfo already has the
+  // model filename! We can just reverse look up? No, that's slow. Or we can
+  // rely on standard naming conventions if possible. The current function uses
+  // a simple mapping. Let's keep it but ideally use the DropDef.
+
+  // BUT: GetDropInfo stores "Drop Model".
+  // Armor/Helm in Drop is usually same BMD as equipped?
+  // Drop: ArmorMale01.bmd. Equipped: ArmorMale01.bmd. YES.
+  // So we can use GetDropInfo to find the model file!
+
+  int16_t defIndex = (category * 32) + index;
+  auto *def = GetDropInfo(defIndex);
+  if (def && def->model) {
+    return def->model;
+  }
+  return "";
 }
 
 // Map category to body part index (0=Helm, 1=Armor, 2=Pants, 3=Gloves, 4=Boots)
@@ -342,43 +539,16 @@ static int GetBodyPartIndex(uint8_t category) {
 }
 
 // Minimal mapping from Client DefIndex -> Server Category/Index
-// Based on GetDropInfo table:
-// 0: Kris          -> Cat 0,  Idx 0
-// 1: Short Sword   -> Cat 0,  Idx 1
-// 100: Small Shield -> Cat 6,  Idx 0
-// 155: Leather Armor -> Cat 8,  Idx 5
-// 201: Small HP    -> Cat 14, Idx 1
-// 204: Small MP    -> Cat 14, Idx 4
+// Use standard 32 offset
 static void GetItemCategoryAndIndex(int16_t defIndex, uint8_t &cat,
                                     uint8_t &idx) {
-  if (defIndex >= 0 && defIndex < 100) {
-    cat = 0; // Swords
-    idx = defIndex;
-  } else if (defIndex >= 100 && defIndex < 150) {
-    cat = 6; // Shields
-    idx = defIndex - 100;
-  } else if (defIndex >= 150 && defIndex < 175) {
-    cat = 7; // Helms
-    idx = defIndex - 150;
-  } else if (defIndex >= 175 && defIndex < 200) {
-    cat = 8; // Armor
-    idx = defIndex - 175;
-  } else if (defIndex >= 200 && defIndex < 225) {
-    cat = 9; // Pants
-    idx = defIndex - 200;
-  } else if (defIndex >= 225 && defIndex < 250) {
-    cat = 10; // Gloves
-    idx = defIndex - 225;
-  } else if (defIndex >= 250 && defIndex < 275) {
-    cat = 11; // Boots
-    idx = defIndex - 250;
-  } else if (defIndex >= 400 && defIndex < 450) {
-    cat = 14; // Potions
-    idx = defIndex - 400;
-  } else {
+  if (defIndex < 0) {
     cat = 0xFF;
     idx = 0;
+    return;
   }
+  cat = defIndex / 32;
+  idx = defIndex % 32;
 }
 
 static int g_dragFromEquipSlot = -1; // -1 if dragging from inventory, else 0-6
@@ -411,21 +581,6 @@ static bool g_showCharInfo = false;
 static bool g_showInventory = false;
 
 // Client-side inventory (synced from server via 0x36)
-struct ClientItemDefinition {
-  uint8_t category = 0;
-  uint8_t itemIndex = 0;
-  std::string name;
-  std::string modelFile;
-  uint16_t reqStr = 0;
-  uint16_t reqDex = 0;
-  uint16_t reqVit = 0;
-  uint16_t reqEne = 0;
-  uint16_t levelReq = 0;
-  uint8_t width = 1;
-  uint8_t height = 1;
-  uint32_t classFlags = 0xFFFFFFFF;
-};
-static std::map<int16_t, ClientItemDefinition> g_itemDefs;
 
 static int16_t GetDefIndexFromCategory(uint8_t category, uint8_t index) {
   for (auto const &[id, def] : g_itemDefs) {
@@ -492,17 +647,29 @@ static void SetBagItem(int slot, int16_t defIdx, uint8_t qty, uint8_t lvl) {
   int r = slot / 8;
   int c = slot % 8;
 
+  // Defensive: check if entire footprint is within bounds and free
+  if (c + w > 8 || r + h > 8)
+    return;
+
+  // Pass 1: check occupancy
   for (int hh = 0; hh < h; hh++) {
     for (int ww = 0; ww < w; ww++) {
       int s = (r + hh) * 8 + (c + ww);
-      if (s < INVENTORY_SLOTS) {
-        g_inventory[s].occupied = true;
-        g_inventory[s].primary = (hh == 0 && ww == 0);
-        g_inventory[s].defIndex = defIdx;
-        if (g_inventory[s].primary) {
-          g_inventory[s].quantity = qty;
-          g_inventory[s].itemLevel = lvl;
-        }
+      if (s >= INVENTORY_SLOTS || g_inventory[s].occupied)
+        return; // Target area is busy or out of bounds
+    }
+  }
+
+  // Pass 2: mark slots
+  for (int hh = 0; hh < h; hh++) {
+    for (int ww = 0; ww < w; ww++) {
+      int s = (r + hh) * 8 + (c + ww);
+      g_inventory[s].occupied = true;
+      g_inventory[s].primary = (hh == 0 && ww == 0);
+      g_inventory[s].defIndex = defIdx;
+      if (g_inventory[s].primary) {
+        g_inventory[s].quantity = qty;
+        g_inventory[s].itemLevel = lvl;
       }
     }
   }
@@ -516,12 +683,49 @@ struct ClientEquipSlot {
   std::string modelFile;
   bool equipped = false;
 };
-static ClientEquipSlot g_equipSlots[7] = {}; // 7 equipment slots
+static ClientEquipSlot g_equipSlots[12] =
+    {}; // 12 equipment slots (0.97d scope)
+static UITexture g_texInventoryBg;
+
+// UI Static Globals
+static constexpr float g_uiPanelScale = 1.2f;
+// g_charInfoTab removed (no more tabs)
+static ImFont *g_fontDefault = nullptr;
+static ImFont *g_fontBold = nullptr;
+
+struct EquipSlotRect {
+  int slot;
+  float rx, ry, rw, rh;
+};
+static const EquipSlotRect g_equipLayoutRects[] = {
+    {8, 15, 44, 46, 46},    // Pet
+    {2, 75, 44, 46, 46},    // Helm
+    {7, 120, 44, 61, 46},   // Wings
+    {0, 15, 87, 46, 66},    // R.Hand
+    {3, 75, 87, 46, 66},    // Armor
+    {1, 135, 87, 46, 66},   // L.Hand
+    {9, 54, 87, 28, 28},    // Pendant
+    {10, 54, 150, 28, 28},  // Ring 1
+    {11, 114, 150, 28, 28}, // Ring 2
+    {5, 15, 150, 46, 46},   // Gloves
+    {4, 75, 150, 46, 46},   // Pants
+    {6, 135, 150, 46, 46}   // Boots
+};
+
+// Textures removed for simplification
+
+// Map equipment slot index to silhouette texture (Main 5.2
+// SetEquipmentSlotInfo)
+// getSlotTex removed
+
+// Buttons removed for simplification
+
+// Table borders removed for simplification
 
 // Recalculate weapon/defense bonuses from all equipped items
 static void RecalcEquipmentStats() {
   int totalDmgMin = 0, totalDmgMax = 0, totalDef = 0;
-  for (int s = 0; s < 7; ++s) {
+  for (int s = 0; s < 12; ++s) {
     if (!g_equipSlots[s].equipped)
       continue;
     int16_t defIdx = GetDefIndexFromCategory(g_equipSlots[s].category,
@@ -547,14 +751,12 @@ struct LoadedItemModel {
 
 static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
                              const std::vector<BoneWorldMatrix> &bones,
+                             const std::string &modelFile,
                              std::vector<MeshBuffers> &outBuffers) {
   MeshBuffers mb;
-  mb.vertexCount = (int)mesh.Vertices.size();
-  mb.indexCount = (int)mesh.Triangles.size() * 3;
   mb.isDynamic = false;
 
   // Resolve texture
-  std::string fullTexPath = texPath + mesh.TextureName;
   auto texInfo = TextureLoader::ResolveWithInfo(texPath, mesh.TextureName);
   mb.texture = texInfo.textureID;
   mb.hasAlpha = texInfo.hasAlpha;
@@ -565,58 +767,73 @@ static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
   mb.hidden = flags.hidden;
   mb.noneBlend = flags.noneBlend;
 
+  // Force additive blending for Wings and specific pets to hide black JPEG
+  // backgrounds
+  {
+    std::string texLower = mesh.TextureName;
+    std::transform(texLower.begin(), texLower.end(), texLower.begin(),
+                   ::tolower);
+    std::string modelLower = modelFile;
+    std::transform(modelLower.begin(), modelLower.end(), modelLower.begin(),
+                   ::tolower);
+
+    if (texLower.find("wing") != std::string::npos ||
+        modelLower.find("wing") != std::string::npos ||
+        texLower.find("fairy2") != std::string::npos ||
+        texLower.find("satan2") != std::string::npos ||
+        texLower.find("unicon01") != std::string::npos) {
+      mb.bright = true;
+    }
+  }
+
   if (mb.hidden)
     return;
 
-  // Build static vertices (transform by bind pose)
-  std::vector<float> vertices;
-  vertices.reserve(mb.vertexCount * 8); // Pos(3) + Norm(3) + UV(2)
-
-  // Map vertex index to normal
-  std::vector<glm::vec3> finalNormals(mb.vertexCount, glm::vec3(0, 1, 0));
-  for (const auto &n : mesh.Normals) {
-    if (n.Node >= 0 && n.Node < (int)bones.size() && n.BindVertex >= 0 &&
-        n.BindVertex < mb.vertexCount) {
-      glm::vec3 worldNorm =
-          MuMath::RotateVector((const float(*)[4]) & bones[n.Node], n.Normal);
-      finalNormals[n.BindVertex] = worldNorm;
-    }
-  }
-
-  for (int i = 0; i < mb.vertexCount; ++i) {
-    const auto &v = mesh.Vertices[i];
-    glm::vec3 pos = v.Position;
-    if (v.Node >= 0 && v.Node < (int)bones.size()) {
-      pos = MuMath::TransformPoint((const float(*)[4]) & bones[v.Node], pos);
-    }
-
-    // Pos
-    vertices.push_back(pos.x);
-    vertices.push_back(pos.y);
-    vertices.push_back(pos.z);
-
-    // Norm
-    vertices.push_back(finalNormals[i].x);
-    vertices.push_back(finalNormals[i].y);
-    vertices.push_back(finalNormals[i].z);
-
-    // UV
-    if (i < (int)mesh.TexCoords.size()) {
-      vertices.push_back(mesh.TexCoords[i].TexCoordU);
-      vertices.push_back(mesh.TexCoords[i].TexCoordV);
-    } else {
-      vertices.push_back(0.0f);
-      vertices.push_back(0.0f);
-    }
-  }
-
-  // Build indices
+  // Expand vertices per-triangle-corner (matching ObjectRenderer::UploadMesh).
+  // BMD stores separate VertexIndex, NormalIndex, TexCoordIndex per triangle
+  // corner — we must create a unique vertex for each corner to preserve
+  // per-face normals and UVs.
+  struct Vertex {
+    glm::vec3 pos;
+    glm::vec3 normal;
+    glm::vec2 tex;
+  };
+  std::vector<Vertex> vertices;
   std::vector<unsigned int> indices;
-  indices.reserve(mb.indexCount);
-  for (const auto &t : mesh.Triangles) {
-    indices.push_back(t.VertexIndex[0]);
-    indices.push_back(t.VertexIndex[1]);
-    indices.push_back(t.VertexIndex[2]);
+
+  for (int i = 0; i < mesh.NumTriangles; ++i) {
+    auto &tri = mesh.Triangles[i];
+    int startIdx = (int)vertices.size();
+    for (int v = 0; v < 3; ++v) {
+      Vertex vert;
+      auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+      auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
+
+      int boneIdx = srcVert.Node;
+      if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
+        const auto &bm = bones[boneIdx];
+        vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
+                                          srcVert.Position);
+        vert.normal =
+            MuMath::RotateVector((const float(*)[4])bm.data(), srcNorm.Normal);
+      } else {
+        vert.pos = srcVert.Position;
+        vert.normal = srcNorm.Normal;
+      }
+
+      vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                           mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+      vertices.push_back(vert);
+      indices.push_back(startIdx + v);
+    }
+  }
+
+  mb.vertexCount = (int)vertices.size();
+  mb.indexCount = (int)indices.size();
+
+  if (mb.indexCount == 0) {
+    outBuffers.push_back(mb);
+    return;
   }
 
   // Upload to GPU
@@ -627,25 +844,23 @@ static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
   glBindVertexArray(mb.vao);
 
   glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
-  glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float),
+  glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex),
                vertices.data(), GL_STATIC_DRAW);
 
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mb.ebo);
   glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int),
                indices.data(), GL_STATIC_DRAW);
 
-  // Layout matches shaders/model.vert:
-  // 0: Pos(3), 1: Norm(3), 2: UV(2)
-  // Stride = 8 * float
-  GLsizei stride = 8 * sizeof(float);
+  // Layout: Pos(3) + Norm(3) + UV(2) = 8 floats stride
+  GLsizei stride = sizeof(Vertex);
   glEnableVertexAttribArray(0);
   glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void *)0);
   glEnableVertexAttribArray(1);
   glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
-                        (void *)(3 * sizeof(float)));
+                        (void *)(sizeof(float) * 3));
   glEnableVertexAttribArray(2);
   glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
-                        (void *)(6 * sizeof(float)));
+                        (void *)(sizeof(float) * 6));
 
   glBindVertexArray(0);
   outBuffers.push_back(mb);
@@ -687,7 +902,7 @@ public:
     // Compute transformed AABB from bone-transformed vertices
     glm::vec3 tMin(1e9f), tMax(-1e9f);
     for (const auto &mesh : model.bmd->Meshes) {
-      UploadStaticMesh(mesh, texPath, bones, model.meshes);
+      UploadStaticMesh(mesh, texPath, bones, filename, model.meshes);
       // Accumulate AABB from transformed positions
       for (int vi = 0; vi < (int)mesh.Vertices.size(); ++vi) {
         glm::vec3 pos = mesh.Vertices[vi].Position;
@@ -708,9 +923,9 @@ public:
   }
 
   // Render for Inventory/UI (uses glViewport)
-  static void RenderItemUI(const std::string &filename, int x, int y, int w,
-                           int h) {
-    LoadedItemModel *model = Get(filename);
+  static void RenderItemUI(const std::string &modelFile, int16_t defIndex,
+                           int x, int y, int w, int h, bool hovered = false) {
+    LoadedItemModel *model = Get(modelFile);
     if (!model || !model->bmd)
       return;
 
@@ -736,39 +951,94 @@ public:
     glm::vec3 size = max - min;
     glm::vec3 center = (min + max) * 0.5f;
     float maxDim = std::max(std::max(size.x, size.y), size.z);
-    if (maxDim < 10.0f)
-      maxDim = 10.0f; // Prevent div/0 or tiny items
+    if (maxDim < 1.0f)
+      maxDim = 1.0f;
 
-    // Fit to view: FOV 45 deg
-    float scale = 60.0f / maxDim;
+    // Use Orthographic projection for UI items to fill grid space perfectly
+    float aspect = (float)w / (float)h;
+    glm::mat4 proj = glm::ortho(-aspect, aspect, -1.0f, 1.0f, -100.0f, 100.0f);
 
-    float camDist = 150.0f;
-    glm::mat4 proj =
-        glm::perspective(glm::radians(45.0f), (float)w / h, 1.0f, 1000.0f);
-
-    // Camera looking at origin from front
-    glm::mat4 view = glm::lookAt(glm::vec3(0, 0, camDist), glm::vec3(0, 0, 0),
+    // Camera looking at origin
+    glm::mat4 view = glm::lookAt(glm::vec3(0, 0, 50.0f), glm::vec3(0, 0, 0),
                                  glm::vec3(0, 1, 0));
 
-    // Model: static upright orientation with slight tilt for classic MU look
-    // Rotate -90° around X to stand items upright (BMD models lie flat in XZ)
+    // Model Transformation
     glm::mat4 mod = glm::mat4(1.0f);
-    mod = glm::rotate(mod, glm::radians(-90.0f),
-                      glm::vec3(1, 0, 0)); // Stand upright
-    mod = glm::rotate(mod, glm::radians(15.0f),
-                      glm::vec3(0, 0, 1)); // Slight tilt
-    mod = glm::scale(mod, glm::vec3(scale));
-    mod = glm::translate(mod, -center);
+
+    // 1. Orientation to make the item "stand up" vertically in the grid
+    if (defIndex != -1) {
+      int category = 0;
+      auto it = g_itemDefs.find(defIndex);
+      if (it != g_itemDefs.end()) {
+        category = it->second.category;
+      } else {
+        category = defIndex / 32;
+      }
+
+      // 1. Orientation to make the item "stand up" vertically in the grid
+      if (category <= 5) {
+        // Weapons and Staffs (0-5): Use smart axis-detection to ensure they are
+        // strictly vertical pointing UP.
+        if (size.z >= size.x && size.z >= size.y) {
+          mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(1, 0, 0));
+          if (size.x < size.y)
+            mod = glm::rotate(mod, glm::radians(90.0f), glm::vec3(0, 1, 0));
+        } else if (size.x >= size.y && size.x >= size.z) {
+          mod = glm::rotate(mod, glm::radians(90.0f), glm::vec3(0, 0, 1));
+          if (size.z < size.y)
+            mod = glm::rotate(mod, glm::radians(90.0f), glm::vec3(0, 1, 0));
+        } else {
+          if (size.x < size.z)
+            mod = glm::rotate(mod, glm::radians(90.0f), glm::vec3(0, 1, 0));
+        }
+      } else {
+        // Other items (Shields 6, Armor 7-11, Wings 12, etc):
+        // These are typically modeled lying flat. Use standard MU pose (-90 X).
+        mod = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
+                          glm::vec3(1, 0, 0));
+      }
+    } else {
+      // Zen/Default: Use -90 X to make the Zen coins/box stand up
+      mod = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
+                        glm::vec3(1, 0, 0));
+    }
+
+    // 2. Consistent 360 spin around the GRID'S vertical axis (Y) on hover
+    if (hovered) {
+      float spin = (float)glfwGetTime() * 180.0f;
+      // Apply spin AFTER orientation so it's always around the screen's Y axis
+      mod =
+          glm::rotate(glm::mat4(1.0f), glm::radians(spin), glm::vec3(0, 1, 0)) *
+          mod;
+    }
+
+    // 3. Transformation order: Scale * (Spin * Orientation) * Translation
+    // Scale to fit: map maxDim to ~1.8 (leaving small margin in 2.0 range)
+    float scale = 1.8f / maxDim;
+    mod = glm::scale(glm::mat4(1.0f), glm::vec3(scale)) * mod;
+
+    // Center the model locally before any rotation
+    mod = mod * glm::translate(glm::mat4(1.0f), -center);
 
     shader->setMat4("projection", proj);
     shader->setMat4("view", view);
     shader->setMat4("model", mod);
-    // Light at camera position for even, bright illumination
-    shader->setVec3("lightPos", glm::vec3(0, 50, camDist));
-    shader->setVec3("viewPos", glm::vec3(0, 0, camDist));
-    shader->setFloat("luminosity", 2.0f); // Bright for UI items
+    // Set ALL lighting uniforms explicitly for UI — don't rely on stale
+    // world-pass values
+    shader->setVec3("lightPos", glm::vec3(0, 50, 50.0f));
+    shader->setVec3("viewPos", glm::vec3(0, 0, 50.0f));
+    shader->setVec3("lightColor",
+                    glm::vec3(1.0f, 1.0f, 1.0f)); // Pure white light
+    shader->setFloat("blendMeshLight", 1.0f);     // No mesh darkening
+    shader->setVec3("terrainLight",
+                    glm::vec3(1.0f, 1.0f, 1.0f)); // No terrain darkening
+    shader->setFloat("luminosity", 1.0f);         // Full brightness
+    shader->setInt("numPointLights", 0);          // No point lights in UI
+    shader->setBool("useFog", false);             // No fog in UI
+    shader->setFloat("objectAlpha", 1.0f);        // Fully opaque
 
-    // Render
+    // Render — disable face culling for double-sided meshes (pet wings etc.)
+    glDisable(GL_CULL_FACE);
     for (const auto &mb : model->meshes) {
       if (mb.hidden)
         continue;
@@ -782,16 +1052,20 @@ public:
       // Alpha blend if needed
       if (mb.hasAlpha || mb.bright) {
         glEnable(GL_BLEND);
+        glDepthMask(GL_FALSE); // Disable depth writes for transparent layers
         if (mb.bright)
           glBlendFunc(GL_SRC_ALPHA, GL_ONE);
         else
           glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       } else {
-        glDisable(GL_BLEND); // Opaque
+        glDisable(GL_BLEND);  // Opaque
+        glDepthMask(GL_TRUE); // Enable depth writes
       }
 
       glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+      glDepthMask(GL_TRUE); // Restore state after draw
     }
+    glEnable(GL_CULL_FACE);
     glBindVertexArray(0);
 
     // Restore
@@ -805,7 +1079,8 @@ public:
   // Render for World (Ground drops)
   static void RenderItemWorld(const std::string &filename, const glm::vec3 &pos,
                               const glm::mat4 &view, const glm::mat4 &proj,
-                              float scale = 1.0f) {
+                              float scale = 1.0f,
+                              glm::vec3 rotation = glm::vec3(0)) {
     LoadedItemModel *model = Get(filename);
     if (!model || !model->bmd)
       return;
@@ -818,8 +1093,18 @@ public:
     // Center the model using transformed AABB before rotating
     glm::vec3 tCenter = (model->transformedMin + model->transformedMax) * 0.5f;
     glm::mat4 mod = glm::translate(glm::mat4(1.0f), pos);
-    mod = glm::rotate(mod, (float)glfwGetTime() * 2.0f,
-                      glm::vec3(0, 1, 0)); // Spin
+
+    // Apply resting rotation
+    if (rotation.x != 0)
+      mod = glm::rotate(mod, glm::radians(rotation.x), glm::vec3(1, 0, 0));
+    if (rotation.y != 0)
+      mod = glm::rotate(mod, glm::radians(rotation.y), glm::vec3(0, 1, 0));
+    if (rotation.z != 0)
+      mod = glm::rotate(mod, glm::radians(rotation.z), glm::vec3(0, 0, 1));
+
+    // Spin only if hovering? No, ground items just lie there usually
+    // mod = glm::rotate(mod, (float)glfwGetTime() * 2.0f, glm::vec3(0, 1, 0));
+
     mod = glm::scale(mod, glm::vec3(scale));
     mod = glm::translate(mod, -tCenter); // Center before rotate
 
@@ -861,9 +1146,170 @@ std::map<std::string, LoadedItemModel> ItemModelManager::s_cache;
 // Render queue for items (to render on top of UI)
 struct ItemRenderJob {
   std::string modelFile;
+  int16_t defIndex;
   int x, y, w, h;
+  bool hovered;
 };
 static std::vector<ItemRenderJob> g_renderQueue;
+
+// Deferred tooltip: populated during UI pass, drawn AFTER 3D render queue
+// so it always appears on top of 3D items.
+struct PendingTooltipLine {
+  ImU32 color;
+  std::string text;
+};
+struct PendingTooltip {
+  bool active = false;
+  ImVec2 pos; // top-left of tooltip box
+  float w = 0, h = 0;
+  std::vector<PendingTooltipLine> lines;
+};
+static PendingTooltip g_pendingTooltip;
+
+// Helper: begin a new pending tooltip at mouse position
+static void BeginPendingTooltip(float tw, float th) {
+  ImVec2 mp = ImGui::GetIO().MousePos;
+  ImVec2 tPos(mp.x + 15, mp.y + 15);
+  float winW = ImGui::GetIO().DisplaySize.x;
+  float winH = ImGui::GetIO().DisplaySize.y;
+  if (tPos.x + tw > winW)
+    tPos.x = winW - tw - 5;
+  if (tPos.y + th > winH)
+    tPos.y = winH - th - 5;
+  g_pendingTooltip.active = true;
+  g_pendingTooltip.pos = tPos;
+  g_pendingTooltip.w = tw;
+  g_pendingTooltip.h = th;
+  g_pendingTooltip.lines.clear();
+}
+static void AddPendingTooltipLine(ImU32 color, const std::string &text) {
+  g_pendingTooltip.lines.push_back({color, text});
+}
+
+// Unified tooltip logic for items
+static void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
+  auto it = g_itemDefs.find(defIndex);
+  const ClientItemDefinition *def = nullptr;
+  ClientItemDefinition fallback;
+
+  if (it != g_itemDefs.end()) {
+    def = &it->second;
+  } else {
+    fallback.name = GetDropName(defIndex);
+    fallback.category = (uint8_t)(defIndex / 32);
+    fallback.width = 1;
+    fallback.height = 1;
+    def = &fallback;
+  }
+
+  // Calculate tooltip height
+  float lineH = 18.0f; // Increased for ProggyClean clarity
+  float th = 10.0f;    // Padding
+  th += lineH;         // name
+  const char *catDesc = (def->category < 16) ? kCatNames[def->category] : "";
+  if (catDesc[0])
+    th += lineH;
+  if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0))
+    th += lineH;
+  if (def->category >= 7 && def->category <= 11 && def->defense > 0)
+    th += lineH;
+  th += 8; // separator
+  if (def->levelReq > 0)
+    th += lineH;
+  if (def->reqStr > 0)
+    th += lineH;
+  if (def->reqDex > 0)
+    th += lineH;
+  if (def->reqVit > 0)
+    th += lineH;
+  if (def->reqEne > 0)
+    th += lineH;
+  th += 10; // bottom padding
+
+  BeginPendingTooltip(185.0f, th);
+
+  // Name color based on level
+  ImU32 nameColor = IM_COL32(255, 255, 255, 255);
+  if (itemLevel >= 7)
+    nameColor = IM_COL32(255, 215, 0, 255);
+  else if (itemLevel >= 4)
+    nameColor = IM_COL32(100, 180, 255, 255);
+
+  char nameBuf[64];
+  if (itemLevel > 0)
+    snprintf(nameBuf, sizeof(nameBuf), "%s +%d", def->name.c_str(), itemLevel);
+  else
+    snprintf(nameBuf, sizeof(nameBuf), "%s", def->name.c_str());
+  AddPendingTooltipLine(nameColor, nameBuf);
+
+  if (catDesc[0])
+    AddPendingTooltipLine(IM_COL32(160, 160, 160, 200), catDesc);
+
+  if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0)) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Dmg: %d~%d", def->dmgMin, def->dmgMax);
+    AddPendingTooltipLine(IM_COL32(255, 140, 140, 255), buf);
+  }
+  if (def->category >= 7 && def->category <= 11 && def->defense > 0) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Def: %d", def->defense);
+    AddPendingTooltipLine(IM_COL32(140, 200, 255, 255), buf);
+  }
+
+  AddPendingTooltipLine(IM_COL32(80, 80, 120, 0), "---");
+
+  auto addReq = [&](const char *label, int current, int req) {
+    char rBuf[48];
+    snprintf(rBuf, sizeof(rBuf), "%s: %d", label, req);
+    ImU32 rcol = (current >= req) ? IM_COL32(180, 220, 180, 255)
+                                  : IM_COL32(255, 80, 80, 255);
+    AddPendingTooltipLine(rcol, rBuf);
+  };
+
+  if (def->levelReq > 0)
+    addReq("Level", g_serverLevel, def->levelReq);
+  if (def->reqStr > 0)
+    addReq("STR", g_serverStr, def->reqStr);
+  if (def->reqDex > 0)
+    addReq("DEX", g_serverDex, def->reqDex);
+  if (def->reqVit > 0)
+    addReq("VIT", g_serverVit, def->reqVit);
+  if (def->reqEne > 0)
+    addReq("ENE", g_serverEne, def->reqEne);
+}
+
+// Draw the pending tooltip using a raw draw list (called after 3D render)
+static void FlushPendingTooltip() {
+  if (!g_pendingTooltip.active)
+    return;
+  g_pendingTooltip.active = false;
+  ImDrawList *dl = ImGui::GetForegroundDrawList();
+  ImVec2 tPos = g_pendingTooltip.pos;
+  float tw = g_pendingTooltip.w, th = g_pendingTooltip.h;
+  dl->AddRectFilled(tPos, ImVec2(tPos.x + tw, tPos.y + th),
+                    IM_COL32(10, 10, 20, 245), 4.0f);
+  dl->AddRect(tPos, ImVec2(tPos.x + tw, tPos.y + th),
+              IM_COL32(120, 120, 200, 200), 4.0f);
+  float curY = tPos.y + 8;
+  if (g_fontDefault)
+    ImGui::PushFont(g_fontDefault);
+
+  for (auto &line : g_pendingTooltip.lines) {
+    if (line.text == "---") {
+      // Horizontal separator
+      dl->AddLine(ImVec2(tPos.x + 6, curY + 4),
+                  ImVec2(tPos.x + tw - 6, curY + 4),
+                  IM_COL32(80, 80, 120, 180));
+      curY += 12;
+    } else {
+      dl->AddText(ImVec2(tPos.x + 10, curY), line.color, line.text.c_str());
+      curY += 18.0f; // Matches lineH in AddPendingItemTooltip
+    }
+  }
+
+  if (g_fontDefault)
+    ImGui::PopFont();
+}
 
 // Forward declarations for panel rendering
 static UICoords g_hudCoords; // File-scope for mouse callback access
@@ -873,6 +1319,124 @@ struct ServerEquipSlot {
   uint8_t slot = 0;
   WeaponEquipInfo info;
 };
+
+// ── Drop Physics & Rotation Logic ──
+
+static void GetItemRestingAngle(int defIndex, glm::vec3 &angle, float &scale) {
+  angle = glm::vec3(90.0f, 0.0f, 0.0f); // Default: lay flat on ground
+  scale = 1.0f;
+
+  if (defIndex == -1) { // Zen
+    angle = glm::vec3(0, 0, 0);
+    return;
+  }
+
+  int category = 0;
+  int index = 0;
+
+  auto it = g_itemDefs.find(defIndex);
+  if (it != g_itemDefs.end()) {
+    category = it->second.category;
+    index = it->second.itemIndex;
+  } else {
+    category = defIndex / 32;
+    index = defIndex % 32;
+  }
+
+  // All weapons lay flat (90° X tilt) — vary Y for visual interest
+  if (category == 0) { // Swords — diagonal
+    angle = glm::vec3(90.0f, 45.0f, 0.0f);
+    scale = 1.0f;
+    if (index == 19)
+      scale = 0.7f;           // Divine Sword
+  } else if (category == 1) { // Axes
+    angle = glm::vec3(90.0f, 30.0f, 0.0f);
+  } else if (category == 2) { // Maces
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+  } else if (category == 3) { // Spears — longer, lay along Y
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+    scale = 0.9f;
+  } else if (category == 4) { // Bows/Crossbows
+    angle = glm::vec3(90.0f, 90.0f, 0.0f);
+    scale = 0.9f;
+  } else if (category == 5) { // Staffs
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+  } else if (category == 6) { // Shields — lay face-up
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+    scale = 0.9f;
+  } else if (category == 7 || category == 8) { // Helms / Armor
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+  } else if (category == 14) { // Potions — stand upright
+    angle = glm::vec3(0.0f, 0.0f, 0.0f);
+    scale = 0.6f;
+  }
+}
+
+static void UpdateGroundItemPhysics(GroundItem &gi, float terrainHeight) {
+  if (gi.isResting) {
+    gi.position.y = terrainHeight + 0.5f; // Snap to ground
+    return;
+  }
+
+  // Apply gravity
+  gi.position.y += gi.gravity * 0.5f; // Integrate velocity (using Y as UP)
+  gi.gravity -= 1.0f;                 // Gravity accel
+
+  // Floor check (bounce)
+  if (gi.position.y <= terrainHeight + 0.5f) {
+    gi.position.y = terrainHeight + 0.5f;
+
+    // Bounce
+    if (abs(gi.gravity) > 2.0f) {
+      gi.gravity = -gi.gravity * 0.4f; // Bounce with damping
+    } else {
+      gi.gravity = 0;
+      gi.isResting = true;
+    }
+  }
+}
+
+static void RenderZenPile(int quantity, glm::vec3 pos, glm::vec3 angle,
+                          float scale, const glm::mat4 &view,
+                          const glm::mat4 &proj) {
+  // Procedural pile based on quantity
+  int coinCount = (int)sqrtf((float)quantity) / 2;
+  if (coinCount < 3)
+    coinCount = 3;
+  if (coinCount > 20)
+    coinCount = 20;
+
+  // Seed rand with quantity to keep pile consistent per frame
+  srand(quantity + (int)pos.x);
+
+  for (int i = 0; i < coinCount; ++i) {
+    glm::vec3 offset;
+    offset.x = (rand() % 40) - 20.0f;
+    offset.z =
+        (rand() % 40) -
+        20.0f; // Z is horizontal in MU-space relative to model center? No, X/Z
+               // are ground plane in Physics, but RenderItemWorld takes Pos.
+    // Wait, RenderItemWorld takes world pos. In World: X/Z are ground, Y is up.
+    offset.y = 0;
+
+    float rotY = (float)(rand() % 360);
+
+    // Simple stacking effect check
+    if (i > 5)
+      offset.y += 2.0f;
+    if (i > 10)
+      offset.y += 4.0f;
+
+    // RenderItemWorld handles the transform, but we need to pass a modified
+    // pos? Actually, RenderItemWorld centers the model. We want to offset from
+    // the "center" of the item. Let's call ItemModelManager::RenderItemWorld
+    // multiple times with different positions.
+
+    // We need random offsets in X/Z plane.
+    ItemModelManager::RenderItemWorld("Gold01.bmd", pos + offset, view, proj,
+                                      scale);
+  }
+}
 
 struct ServerData {
   std::vector<ServerNpcSpawn> npcs;
@@ -949,14 +1513,18 @@ static void parseInitialPacket(const uint8_t *pkt, int pktSize,
       for (auto &item : g_inventory)
         item = {};
       for (int i = 0; i < count; i++) {
-        int off = 9 + i * 5; // Updated entrySize to 5
-        if (off + 5 > pktSize)
+        int off = 9 + i * sizeof(PMSG_INVENTORY_ITEM);
+        if (off + (int)sizeof(PMSG_INVENTORY_ITEM) > pktSize)
           break;
-        uint8_t slot = pkt[off];
+        const auto *item =
+            reinterpret_cast<const PMSG_INVENTORY_ITEM *>(pkt + off);
+        uint8_t slot = item->slot;
         if (slot < INVENTORY_SLOTS) {
-          int16_t defIdx = (int16_t)(pkt[off + 1] | (pkt[off + 2] << 8));
-          uint8_t qty = pkt[off + 3];
-          uint8_t lvl = pkt[off + 4];
+          // Server sends category + itemIndex separately; compute defIndex
+          int16_t defIdx =
+              (int16_t)((int)item->category * 32 + (int)item->itemIndex);
+          uint8_t qty = item->quantity;
+          uint8_t lvl = item->itemLevel;
 
           g_inventory[slot].defIndex = defIdx;
           g_inventory[slot].quantity = qty;
@@ -964,7 +1532,7 @@ static void parseInitialPacket(const uint8_t *pkt, int pktSize,
           g_inventory[slot].occupied = true;
           g_inventory[slot].primary = true;
 
-          // Mark secondary slots
+          // Mark secondary slots based on item dimensions
           auto it = g_itemDefs.find(defIdx);
           if (it != g_itemDefs.end()) {
             int w = it->second.width;
@@ -1018,7 +1586,7 @@ static void parseInitialPacket(const uint8_t *pkt, int pktSize,
         // Collect ALL equipment slots (weapon, shield, armor etc.)
         result.equipment.push_back({slot, weapon});
         // Populate all equipment display slots
-        if (slot < 7) {
+        if (slot < 12) {
           g_equipSlots[slot].category = weapon.category;
           g_equipSlots[slot].itemIndex = weapon.itemIndex;
           g_equipSlots[slot].itemLevel = weapon.itemLevel;
@@ -1065,11 +1633,21 @@ static void parseInitialPacket(const uint8_t *pkt, int pktSize,
       g_serverEne = stats->energy;
       g_serverHP = stats->life;
       g_serverMaxHP = stats->maxLife;
+      g_serverMP = stats->mana;
+      g_serverMaxMP = stats->maxMana;
       g_serverLevelUpPoints = stats->levelUpPoints;
       g_serverXP = ((int64_t)stats->experienceHi << 32) | stats->experienceLo;
+
+      // CRITICAL: Initialize g_hero with server data to prevent re-leveling
+      // bugs
+      g_hero.LoadStats(g_serverLevel, g_serverStr, g_serverDex, g_serverVit,
+                       g_serverEne, (uint64_t)g_serverXP, g_serverLevelUpPoints,
+                       g_serverHP, g_serverMP);
+
       std::cout << "[Net] Character stats: Lv." << g_serverLevel
                 << " HP=" << g_serverHP << "/" << g_serverMaxHP
-                << " STR=" << g_serverStr << " XP=" << g_serverXP << std::endl;
+                << " STR=" << g_serverStr << " XP=" << g_serverXP
+                << " Pts=" << g_serverLevelUpPoints << std::endl;
     }
   }
 }
@@ -1108,12 +1686,27 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
         glm::vec3 monPos = g_monsterManager.GetMonsterInfo(idx).position;
         g_vfxManager.SpawnBurst(ParticleType::BLOOD,
                                 monPos + glm::vec3(0, 50, 0), 12);
-        g_vfxManager.SpawnBurst(ParticleType::HIT_SPARK,
-                                monPos + glm::vec3(0, 50, 0), 6);
+        // g_vfxManager.SpawnBurst(ParticleType::HIT_SPARK,
+        //                         monPos + glm::vec3(0, 50, 0), 6);
 
-        // Floating damage number above monster (simple version)
+        // Floating damage number above monster
+        // Map server damage types to our client display types:
+        // Server: 0=miss, 1=normal, 2=critical, 3=excellent
+        // Client: 7=miss, 0=normal, 2=critical, 3=excellent
+        uint8_t dmgType = 0;
+        if (p->damageType == 0)
+          dmgType = 7; // Miss
+        else if (p->damageType == 2)
+          dmgType = 2; // Critical
+        else if (p->damageType == 3)
+          dmgType = 3; // Excellent
+
+        // Spawn slightly above head (assuming height ~80-120)
+        SpawnDamageNumber(monPos + glm::vec3(0, 80, 0), p->damage, dmgType);
+
         std::cout << "[Combat] Hit monster " << p->monsterIndex << " for "
-                  << p->damage << " damage" << std::endl;
+                  << p->damage << " damage (type=" << (int)p->damageType << ")"
+                  << std::endl;
       }
     }
 
@@ -1202,6 +1795,22 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
         std::cout << "[Net] Stat alloc OK: type=" << (int)resp->statType
                   << " val=" << resp->newValue << " pts=" << resp->levelUpPoints
                   << std::endl;
+
+        // Force a save to ensure persistence
+        PMSG_CHARSAVE_RECV save{};
+        save.h = MakeC1Header(sizeof(save), 0x26);
+        save.characterId = 1;
+        save.level = (uint16_t)g_serverLevel;
+        save.strength = (uint16_t)g_serverStr;
+        save.dexterity = (uint16_t)g_serverDex;
+        save.vitality = (uint16_t)g_serverVit;
+        save.energy = (uint16_t)g_serverEne;
+        save.life = (uint16_t)g_serverHP;
+        save.maxLife = (uint16_t)g_serverMaxHP;
+        save.levelUpPoints = (uint16_t)g_serverLevelUpPoints;
+        save.experienceLo = (uint32_t)((uint64_t)g_serverXP & 0xFFFFFFFF);
+        save.experienceHi = (uint32_t)((uint64_t)g_serverXP >> 32);
+        g_net.Send(&save, sizeof(save));
       }
     }
 
@@ -1214,12 +1823,23 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
           gi.defIndex = p->defIndex;
           gi.quantity = p->quantity;
           gi.itemLevel = p->itemLevel;
-          gi.position = glm::vec3(p->worldX, 0.0f, p->worldZ);
+
+          float h = g_terrain.GetHeight(p->worldX, p->worldZ);
+          gi.position =
+              glm::vec3(p->worldX, h + 100.0f, p->worldZ); // Start high
           gi.timer = 0.0f;
+          gi.gravity = 15.0f; // Initial Drop Velocity
+          gi.scale = 1.0f;
+          gi.isResting = false;
+
+          GetItemRestingAngle(gi.defIndex, gi.angle, gi.scale);
+          gi.angle.y += (float)(rand() % 360); // Add random Y rotation
+
+          if (gi.defIndex == -1) { // Zen
+            gi.quantity = 1000;    // Visual placeholder for Zen pile size
+          }
+
           gi.active = true;
-          std::cout << "[Drop] Spawned " << GetDropName(p->defIndex)
-                    << " (idx=" << p->dropIndex << ") at (" << p->worldX << ","
-                    << p->worldZ << ")" << std::endl;
           break;
         }
       }
@@ -1250,32 +1870,6 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
       }
     }
 
-    // Stat allocation response (0x38)
-    if (headcode == 0x38 && pktSize >= (int)sizeof(PMSG_STAT_ALLOC_SEND)) {
-      auto *resp = reinterpret_cast<const PMSG_STAT_ALLOC_SEND *>(pkt);
-      if (resp->result) {
-        switch (resp->statType) {
-        case 0:
-          g_serverStr = resp->newValue;
-          break;
-        case 1:
-          g_serverDex = resp->newValue;
-          break;
-        case 2:
-          g_serverVit = resp->newValue;
-          break;
-        case 3:
-          g_serverEne = resp->newValue;
-          break;
-        }
-        g_serverLevelUpPoints = resp->levelUpPoints;
-        g_serverMaxHP = resp->maxLife;
-        std::cout << "[Net] Stat alloc: type=" << (int)resp->statType
-                  << " val=" << resp->newValue << " pts=" << resp->levelUpPoints
-                  << std::endl;
-      }
-    }
-
     // Equipment (0x24) - Sync during gameplay
     if (headcode == 0x24 && pktSize >= 4) {
       uint8_t count = pkt[3];
@@ -1285,15 +1879,40 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
         int off = entryStart + i * entrySize;
         if (off + entrySize > pktSize)
           break;
+
         uint8_t slot = pkt[off + 0];
-        if (slot < 7) {
-          g_equipSlots[slot].category = pkt[off + 1];
-          g_equipSlots[slot].itemIndex = pkt[off + 2];
-          g_equipSlots[slot].itemLevel = pkt[off + 3];
-          char modelFile[33] = {};
-          std::memcpy(modelFile, &pkt[off + 4], 32);
-          g_equipSlots[slot].modelFile = modelFile;
-          g_equipSlots[slot].equipped = true;
+        WeaponEquipInfo weapon;
+        weapon.category = pkt[off + 1];
+        weapon.itemIndex = pkt[off + 2];
+        weapon.itemLevel = pkt[off + 3];
+        char modelBuf[33] = {};
+        std::memcpy(modelBuf, &pkt[off + 4], 32);
+        weapon.modelFile = modelBuf;
+        std::cout << "  Slot " << (int)slot << ": " << weapon.modelFile
+                  << std::endl;
+
+        // Apply to g_hero immediately
+        if (slot == 0) {
+          g_hero.EquipWeapon(weapon);
+        } else if (slot == 1) {
+          g_hero.EquipShield(weapon);
+        } else {
+          int bodyPart = GetBodyPartIndex(weapon.category);
+          if (bodyPart >= 0) {
+            std::string partModel =
+                GetBodyPartModelFile(weapon.category, weapon.itemIndex);
+            if (!partModel.empty())
+              g_hero.EquipBodyPart(bodyPart, partModel);
+          }
+        }
+
+        // Apply to UI slots
+        if (slot < 12) {
+          g_equipSlots[slot].category = weapon.category;
+          g_equipSlots[slot].itemIndex = weapon.itemIndex;
+          g_equipSlots[slot].itemLevel = weapon.itemLevel;
+          g_equipSlots[slot].modelFile = weapon.modelFile;
+          g_equipSlots[slot].equipped = (weapon.category != 0xFF);
         }
       }
     }
@@ -1381,7 +2000,7 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
         }
 
         // Apply to UI slots
-        if (slot < 7) {
+        if (slot < 12) {
           g_equipSlots[slot].category = weapon.category;
           g_equipSlots[slot].itemIndex = weapon.itemIndex;
           g_equipSlots[slot].itemLevel = weapon.itemLevel;
@@ -1450,16 +2069,23 @@ static const LightTemplate *GetLightProperties(int type) {
 
 // Forward declaration for NPC ray picking
 static int rayPickNpc(GLFWwindow *window, double mouseX, double mouseY);
+static int rayPickMonster(GLFWwindow *window, double mouseX, double mouseY);
 
 void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
   ImGui_ImplGlfw_CursorPosCallback(window, xpos, ypos);
   // Camera rotation disabled — fixed isometric angle like original MU
 
-  // Update NPC hover state on cursor move
+  // Update NPC and Monster hover state on cursor move
   if (!ImGui::GetIO().WantCaptureMouse) {
     g_hoveredNpc = rayPickNpc(window, xpos, ypos);
+    if (g_hoveredNpc < 0) {
+      g_hoveredMonster = rayPickMonster(window, xpos, ypos);
+    } else {
+      g_hoveredMonster = -1;
+    }
   } else {
     g_hoveredNpc = -1;
+    g_hoveredMonster = -1;
   }
 }
 
@@ -1467,6 +2093,18 @@ void scroll_callback(GLFWwindow *window, double xoffset, double yoffset) {
   ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
   g_camera.ProcessMouseScroll(yoffset);
 }
+
+// Init Inventory Grid
+// This code snippet was likely intended for an initialization function.
+// Placing it here as a standalone block would cause a syntax error.
+// Assuming it should be part of a larger initialization routine,
+// but without context, it's difficult to place correctly.
+// For now, I'll place the logging statement where it makes sense,
+// and comment out the `invX` line as it's incomplete and context-dependent.
+// If this was meant to be a new function, it needs a function signature.
+// float invX = g_windowWidth - 250.0f; // This line is incomplete without
+// context. std::cout << "[Init] Loaded " << g_itemDefs.size() << " item
+// definitions." << std::endl;
 
 // --- Terrain helpers ---
 
@@ -1593,7 +2231,7 @@ static int rayPickNpc(GLFWwindow *window, double mouseX, double mouseY) {
 
   for (int i = 0; i < g_npcManager.GetNpcCount(); ++i) {
     NpcInfo info = g_npcManager.GetNpcInfo(i);
-    float r = info.radius;
+    float r = info.radius * 0.8f; // Slightly tighter for NPCs
     float yMin = info.position.y;
     float yMax = info.position.y + info.height;
 
@@ -1659,8 +2297,8 @@ static int rayPickMonster(GLFWwindow *window, double mouseX, double mouseY) {
     MonsterInfo info = g_monsterManager.GetMonsterInfo(i);
     if (info.state == MonsterState::DEAD || info.state == MonsterState::DYING)
       continue;
-    float r =
-        info.radius * 3.5f; // Inflated pick radius for easier monster targeting
+    float r = info.radius *
+              1.2f; // Reduced from 3.5f for more precise hover targeting
     float yMin = info.position.y;
     float yMax = info.position.y + info.height;
 
@@ -1717,6 +2355,64 @@ static uint8_t g_dragItemLevel = 0;
 static bool g_isDragging = false;
 
 // Forward declarations for panel interaction (defined later)
+// ═══════════════════════════════════════════════════════════════════════
+// Input Handling
+// ═══════════════════════════════════════════════════════════════════════
+
+static void HandlePickupClick(GLFWwindow *window, double mx, double my) {
+  if (g_showInventory || g_showCharInfo)
+    return; // UI blocks pickup
+
+  int winW, winH;
+  glfwGetWindowSize(window, &winW, &winH);
+  glm::mat4 projection = g_camera.GetProjectionMatrix((float)winW, (float)winH);
+  glm::mat4 view = g_camera.GetViewMatrix();
+
+  glm::mat4 vp = projection * view;
+  float bestZ = 1.0f;
+  int bestIdx = -1;
+
+  for (int i = 0; i < 64; ++i) {
+    if (!g_groundItems[i].active)
+      continue;
+
+    glm::vec3 pos = g_groundItems[i].position;
+    glm::vec4 clip = vp * glm::vec4(pos, 1.0f);
+    if (clip.w <= 0)
+      continue;
+
+    glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    float sx = (ndc.x * 0.5f + 0.5f) * winW;
+    float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * winH;
+
+    float dx = sx - (float)mx;
+    float dy = sy - (float)my;
+    float distSq = dx * dx + dy * dy;
+
+    if (distSq < 1600.0f) {
+      if (ndc.z < bestZ) {
+        bestZ = ndc.z;
+        bestIdx = i;
+      }
+    }
+  }
+
+  if (bestIdx != -1) {
+    float distToHero =
+        glm::distance(g_hero.GetPosition(), g_groundItems[bestIdx].position);
+    if (distToHero < 300.0f) {
+      PMSG_PICKUP_RECV pkt{};
+      pkt.h = MakeC1Header(sizeof(pkt), 0x2C);
+      pkt.dropIndex = g_groundItems[bestIdx].dropIndex;
+      g_net.Send(&pkt, sizeof(pkt));
+      std::cout << "[Input] Pickup request for idx=" << pkt.dropIndex
+                << std::endl;
+    } else {
+      std::cout << "[Input] Item too far (" << distToHero << ")" << std::endl;
+    }
+  }
+}
+
 static bool HandlePanelClick(float vx, float vy);
 static void HandlePanelMouseUp(float vx, float vy);
 
@@ -1740,6 +2436,9 @@ void mouse_button_callback(GLFWwindow *window, int button, int action,
           return;
       }
 
+      // Check pickup FIRST (highest priority on ground)
+      HandlePickupClick(window, mx, my);
+
       // Check NPC click first, then monster, then ground
       int npcHit = rayPickNpc(window, mx, my);
       if (npcHit >= 0) {
@@ -1747,11 +2446,10 @@ void mouse_button_callback(GLFWwindow *window, int button, int action,
         g_hero.CancelAttack();
       } else {
         g_selectedNpc = -1;
-        // Check monster click
-        int monHit = rayPickMonster(window, mx, my);
-        if (monHit >= 0) {
-          MonsterInfo info = g_monsterManager.GetMonsterInfo(monHit);
-          g_hero.AttackMonster(monHit, info.position);
+        // Check monster click (use hovered monster)
+        if (g_hoveredMonster >= 0) {
+          MonsterInfo info = g_monsterManager.GetMonsterInfo(g_hoveredMonster);
+          g_hero.AttackMonster(g_hoveredMonster, info.position);
         } else {
           // Ground click — move to terrain
           if (g_hero.IsAttacking())
@@ -1783,8 +2481,8 @@ void mouse_button_callback(GLFWwindow *window, int button, int action,
 void key_callback(GLFWwindow *window, int key, int scancode, int action,
                   int mods) {
   ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
-  if (ImGui::GetIO().WantCaptureKeyboard)
-    return;
+  // Note: do NOT check WantCaptureKeyboard here — it blocks game hotkeys
+  // when ImGui panels have focus. Only text-input widgets need that guard.
 
   if (action == GLFW_PRESS) {
     if (key == GLFW_KEY_C)
@@ -1799,6 +2497,10 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action,
     }
   }
 }
+
+// Removed duplicate forward declaration
+// void mouse_button_callback(GLFWwindow* window, int button, int action, int
+// mods);
 
 void char_callback(GLFWwindow *window, unsigned int c) {
   ImGui_ImplGlfw_CharCallback(window, c);
@@ -1834,9 +2536,10 @@ void processInput(GLFWwindow *window, float deltaTime) {
 // ═══════════════════════════════════════════════════════════════════════
 
 static const char *GetEquipSlotName(int slot) {
-  static const char *names[] = {"R.Hand", "L.Hand", "Helm", "Armor",
-                                "Pants",  "Gloves", "Boots"};
-  if (slot >= 0 && slot < 7)
+  static const char *names[] = {"R.Hand", "L.Hand",  "Helm",   "Armor",
+                                "Pants",  "Gloves",  "Boots",  "Wings",
+                                "Pet",    "Pendant", "Ring 1", "Ring 2"};
+  if (slot >= 0 && slot < 12)
     return names[slot];
   return "???";
 }
@@ -1845,8 +2548,9 @@ static void InitItemDefinitions() {
   // Matches 0.97d server seeding
   auto addDef = [](int16_t id, uint8_t cat, uint8_t idx, const char *name,
                    const char *mod, uint8_t w, uint8_t h, uint16_t s,
-                   uint16_t d, uint16_t v, uint16_t e, uint16_t l,
-                   uint32_t cf) {
+                   uint16_t d, uint16_t v, uint16_t e, uint16_t l, uint32_t cf,
+                   uint16_t dmgMin = 0, uint16_t dmgMax = 0,
+                   uint16_t defense = 0) {
     ClientItemDefinition cd;
     cd.category = cat;
     cd.itemIndex = idx;
@@ -1860,7 +2564,14 @@ static void InitItemDefinitions() {
     cd.reqEne = e;
     cd.levelReq = l;
     cd.classFlags = cf;
-    g_itemDefs[id] = cd;
+    cd.dmgMin = dmgMin;
+    cd.dmgMax = dmgMax;
+    cd.defense = defense;
+
+    // Use Standard ID (Cat*32 + Idx) as key
+    // This matches what the server sends for drops and ensures consistency
+    int16_t standardId = (int16_t)cat * 32 + idx;
+    g_itemDefs[standardId] = cd;
   };
 
   // IDs are used locally as keys in g_itemDefs.
@@ -1881,11 +2592,12 @@ static void InitItemDefinitions() {
   addDef(8, 0, 8, "Serpent Sword", "Sword09.bmd", 1, 3, 130, 0, 0, 0, 0, 2);
   addDef(9, 0, 9, "Sword of Salamander", "Sword10.bmd", 2, 3, 103, 0, 0, 0, 0,
          2);
-  addDef(10, 0, 10, "Light Base", "Sword11.bmd", 2, 4, 80, 60, 0, 0, 0, 15);
+  addDef(10, 0, 10, "Light Saber", "Sword11.bmd", 2, 4, 80, 60, 0, 0, 0, 15);
   addDef(11, 0, 11, "Legendary Sword", "Sword12.bmd", 2, 3, 120, 0, 0, 0, 0, 2);
   addDef(12, 0, 12, "Heliacal Sword", "Sword13.bmd", 2, 3, 140, 0, 0, 0, 0, 2);
   addDef(13, 0, 13, "Double Blade", "Sword14.bmd", 1, 3, 70, 70, 0, 0, 0, 15);
-  addDef(14, 0, 14, "Lighting Sword", "Sword15.bmd", 1, 3, 90, 50, 0, 0, 0, 15);
+  addDef(14, 0, 14, "Lightning Sword", "Sword15.bmd", 1, 3, 90, 50, 0, 0, 0,
+         15);
   addDef(15, 0, 15, "Giant Sword", "Sword16.bmd", 2, 3, 140, 0, 0, 0, 0, 2);
 
   // Category 1: Axes
@@ -2105,106 +2817,104 @@ static void InitItemDefinitions() {
          0, 4);
 
   // Category 12: Wings (IDs 700+)
-  addDef(700, 12, 0, "Wings of Elf", "Wings01.bmd", 2, 3, 0, 0, 0, 0, 100, 4);
-  addDef(701, 12, 1, "Wings of Heaven", "Wings02.bmd", 3, 5, 0, 0, 0, 0, 100,
-         1);
-  addDef(702, 12, 2, "Wings of Satan", "Wings03.bmd", 2, 5, 0, 0, 0, 0, 100, 2);
-  addDef(703, 12, 3, "Wings of Spirits", "Wings04.bmd", 3, 5, 0, 0, 0, 0, 150,
+  addDef(700, 12, 0, "Wings of Elf", "Wing01.bmd", 3, 2, 0, 0, 0, 0, 100, 4);
+  addDef(701, 12, 1, "Wings of Heaven", "Wing02.bmd", 3, 2, 0, 0, 0, 0, 100, 1);
+  addDef(702, 12, 2, "Wings of Satan", "Wing03.bmd", 3, 2, 0, 0, 0, 0, 100, 2);
+  addDef(703, 12, 3, "Wings of Spirits", "Wing04.bmd", 4, 3, 0, 0, 0, 0, 150,
          4);
-  addDef(704, 12, 4, "Wings of Soul", "Wings05.bmd", 3, 5, 0, 0, 0, 0, 150, 1);
-  addDef(705, 12, 5, "Wings of Dragon", "Wings06.bmd", 3, 3, 0, 0, 0, 0, 150,
-         2);
-  addDef(706, 12, 6, "Wings of Darkness", "Wings07.bmd", 3, 4, 0, 0, 0, 0, 150,
+  addDef(704, 12, 4, "Wings of Soul", "Wing05.bmd", 4, 3, 0, 0, 0, 0, 150, 1);
+  addDef(705, 12, 5, "Wings of Dragon", "Wing06.bmd", 4, 3, 0, 0, 0, 0, 150, 2);
+  addDef(706, 12, 6, "Wings of Darkness", "Wing07.bmd", 4, 3, 0, 0, 0, 0, 150,
          8);
 
   // Category 12: Orbs (IDs 750+)
-  addDef(757, 12, 7, "Orb of Twisting Slash", "Orb01.bmd", 1, 1, 0, 0, 0, 0, 47,
+  addDef(757, 12, 7, "Orb of Twisting Slash", "Gem01.bmd", 1, 1, 0, 0, 0, 0, 47,
          2);
-  addDef(758, 12, 8, "Orb of Healing", "Orb02.bmd", 1, 1, 0, 0, 0, 100, 8, 4);
-  addDef(759, 12, 9, "Orb of Greater Defense", "Orb03.bmd", 1, 1, 0, 0, 0, 100,
+  addDef(758, 12, 8, "Orb of Healing", "Gem02.bmd", 1, 1, 0, 0, 0, 100, 8, 4);
+  addDef(759, 12, 9, "Orb of Greater Defense", "Gem03.bmd", 1, 1, 0, 0, 0, 100,
          13, 4);
-  addDef(760, 12, 10, "Orb of Greater Damage", "Orb04.bmd", 1, 1, 0, 0, 0, 100,
+  addDef(760, 12, 10, "Orb of Greater Damage", "Gem04.bmd", 1, 1, 0, 0, 0, 100,
          18, 4);
-  addDef(761, 12, 11, "Orb of Summoning", "Orb05.bmd", 1, 1, 0, 0, 0, 0, 3, 4);
-  addDef(762, 12, 12, "Orb of Rageful Blow", "Orb06.bmd", 1, 1, 170, 0, 0, 0,
+  addDef(761, 12, 11, "Orb of Summoning", "Gem05.bmd", 1, 1, 0, 0, 0, 0, 3, 4);
+  addDef(762, 12, 12, "Orb of Rageful Blow", "Gem06.bmd", 1, 1, 170, 0, 0, 0,
          78, 2);
-  addDef(763, 12, 13, "Orb of Impale", "Orb07.bmd", 1, 1, 28, 0, 0, 0, 20, 2);
-  addDef(764, 12, 14, "Orb of Greater Fortitude", "Orb08.bmd", 1, 1, 120, 0, 0,
+  addDef(763, 12, 13, "Orb of Impale", "Gem07.bmd", 1, 1, 28, 0, 0, 0, 20, 2);
+  addDef(764, 12, 14, "Orb of Greater Fortitude", "Gem08.bmd", 1, 1, 120, 0, 0,
          0, 60, 2);
-  addDef(766, 12, 16, "Orb of Fire Slash", "Orb09.bmd", 1, 1, 320, 0, 0, 0, 60,
+  addDef(766, 12, 16, "Orb of Fire Slash", "Gem10.bmd", 1, 1, 320, 0, 0, 0, 60,
          8);
-  addDef(767, 12, 17, "Orb of Penetration", "Orb10.bmd", 1, 1, 130, 0, 0, 0, 64,
+  addDef(767, 12, 17, "Orb of Penetration", "Gem11.bmd", 1, 1, 130, 0, 0, 0, 64,
          4);
-  addDef(768, 12, 18, "Orb of Ice Arrow", "Orb11.bmd", 1, 1, 0, 258, 0, 0, 81,
+  addDef(768, 12, 18, "Orb of Ice Arrow", "Gem12.bmd", 1, 1, 0, 258, 0, 0, 81,
          4);
-  addDef(769, 12, 19, "Orb of Death Stab", "Orb12.bmd", 1, 1, 160, 0, 0, 0, 72,
+  addDef(769, 12, 19, "Orb of Death Stab", "Gem13.bmd", 1, 1, 160, 0, 0, 0, 72,
          2);
 
   // Category 12 (Jewels mix) & Category 13 (Jewelry/Pets) (IDs 800+)
-  addDef(815, 12, 15, "Jewel of Chaos", "Jewel01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
-  addDef(800, 13, 0, "Guardian Angel", "Pet01.bmd", 1, 1, 0, 0, 0, 0, 23, 15);
-  addDef(801, 13, 1, "Imp", "Pet02.bmd", 1, 1, 0, 0, 0, 0, 28, 15);
-  addDef(802, 13, 2, "Horn of Uniria", "Pet03.bmd", 1, 1, 0, 0, 0, 0, 25, 15);
+  addDef(815, 12, 15, "Jewel of Chaos", "Jewel15.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(800, 13, 0, "Guardian Angel", "Helper01.bmd", 1, 1, 0, 0, 0, 0, 23,
+         15);
+  addDef(801, 13, 1, "Imp", "Helper02.bmd", 1, 1, 0, 0, 0, 0, 28, 15);
+  addDef(802, 13, 2, "Horn of Uniria", "Helper03.bmd", 1, 1, 0, 0, 0, 0, 25,
+         15);
   addDef(803, 13, 3, "Horn of Dinorant", "Pet04.bmd", 1, 1, 0, 0, 0, 0, 110,
          15);
   addDef(808, 13, 8, "Ring of Ice", "Ring01.bmd", 1, 1, 0, 0, 0, 0, 20, 15);
   addDef(809, 13, 9, "Ring of Poison", "Ring02.bmd", 1, 1, 0, 0, 0, 0, 17, 15);
-  addDef(810, 13, 10, "Transformation Ring", "Ring03.bmd", 1, 1, 0, 0, 0, 0, 0,
+  addDef(810, 13, 10, "Transformation Ring", "Ring01.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
-  addDef(812, 13, 12, "Pendant of Lighting", "Pendant01.bmd", 1, 1, 0, 0, 0, 0,
+  addDef(812, 13, 12, "Pendant of Lighting", "Necklace01.bmd", 1, 1, 0, 0, 0, 0,
          21, 15);
-  addDef(813, 13, 13, "Pendant of Fire", "Pendant02.bmd", 1, 1, 0, 0, 0, 0, 13,
+  addDef(813, 13, 13, "Pendant of Fire", "Necklace02.bmd", 1, 1, 0, 0, 0, 0, 13,
          15);
 
   // Category 14: Consumables (IDs 850+)
-  addDef(850, 14, 0, "Apple", "Apple.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
-  addDef(851, 14, 1, "Small HP Potion", "Potion01.bmd", 1, 1, 0, 0, 0, 0, 0,
+  addDef(850, 14, 0, "Apple", "Potion01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(851, 14, 1, "Small HP Potion", "Potion02.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
-  addDef(852, 14, 2, "Medium HP Potion", "Potion02.bmd", 1, 1, 0, 0, 0, 0, 0,
+  addDef(852, 14, 2, "Medium HP Potion", "Potion03.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
-  addDef(853, 14, 3, "Large HP Potion", "Potion03.bmd", 1, 1, 0, 0, 0, 0, 0,
+  addDef(853, 14, 3, "Large HP Potion", "Potion04.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
-  addDef(854, 14, 4, "Small Mana Potion", "Potion04.bmd", 1, 1, 0, 0, 0, 0, 0,
+  addDef(854, 14, 4, "Small Mana Potion", "Potion05.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
-  addDef(855, 14, 5, "Medium Mana Potion", "Potion05.bmd", 1, 1, 0, 0, 0, 0, 0,
+  addDef(855, 14, 5, "Medium Mana Potion", "Potion06.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
-  addDef(856, 14, 6, "Large Mana Potion", "Potion06.bmd", 1, 1, 0, 0, 0, 0, 0,
+  addDef(856, 14, 6, "Large Mana Potion", "Potion07.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
-  addDef(858, 14, 8, "Antidote", "Potion08.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
+  addDef(858, 14, 8, "Antidote", "Antidote01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
   addDef(859, 14, 9, "Ale", "Potion09.bmd", 1, 2, 0, 0, 0, 0, 0, 15);
-  addDef(860, 14, 10, "Town Portal", "ScrollTw.bmd", 1, 2, 0, 0, 0, 0, 0, 15);
+  addDef(860, 14, 10, "Town Portal", "Scroll01.bmd", 1, 2, 0, 0, 0, 0, 0, 15);
   addDef(863, 14, 13, "Jewel of Bless", "Jewel01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
   addDef(864, 14, 14, "Jewel of Soul", "Jewel02.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
   addDef(866, 14, 16, "Jewel of Life", "Jewel03.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
-  addDef(872, 14, 22, "Jewel of Creation", "Jewel04.bmd", 1, 1, 0, 0, 0, 0, 0,
+  addDef(872, 14, 22, "Jewel of Creation", "Gem01.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
 
   // Category 15: Scrolls (IDs 900+)
-  addDef(900, 15, 0, "Scroll of Poison", "Scroll01.bmd", 1, 2, 0, 0, 0, 0, 0,
+  addDef(900, 15, 0, "Scroll of Poison", "Book01.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
+  addDef(901, 15, 1, "Scroll of Meteorite", "Book02.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
-  addDef(901, 15, 1, "Scroll of Meteorite", "Scroll02.bmd", 1, 2, 0, 0, 0, 0, 0,
+  addDef(902, 15, 2, "Scroll of Lightning", "Book03.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
-  addDef(902, 15, 2, "Scroll of Lightning", "Scroll03.bmd", 1, 2, 0, 0, 0, 0, 0,
+  addDef(903, 15, 3, "Scroll of Fire Ball", "Book04.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
-  addDef(903, 15, 3, "Scroll of Fire Ball", "Scroll04.bmd", 1, 2, 0, 0, 0, 0, 0,
+  addDef(904, 15, 4, "Scroll of Flame", "Book05.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
+  addDef(905, 15, 5, "Scroll of Teleport", "Book06.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
-  addDef(904, 15, 4, "Scroll of Flame", "Scroll05.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
-  addDef(905, 15, 5, "Scroll of Teleport", "Scroll06.bmd", 1, 2, 0, 0, 0, 0, 0,
+  addDef(906, 15, 6, "Scroll of Ice", "Book07.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
+  addDef(907, 15, 7, "Scroll of Twister", "Book08.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
+  addDef(908, 15, 8, "Scroll of Evil Spirit", "Book09.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
-  addDef(906, 15, 6, "Scroll of Ice", "Scroll07.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
-  addDef(907, 15, 7, "Scroll of Twister", "Scroll08.bmd", 1, 2, 0, 0, 0, 0, 0,
+  addDef(909, 15, 9, "Scroll of Hellfire", "Book10.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
-  addDef(908, 15, 8, "Scroll of Evil Spirit", "Scroll09.bmd", 1, 2, 0, 0, 0, 0,
-         0, 1);
-  addDef(909, 15, 9, "Scroll of Hellfire", "Scroll10.bmd", 1, 2, 0, 0, 0, 0, 0,
+  addDef(910, 15, 10, "Scroll of Power Wave", "Book11.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
-  addDef(910, 15, 10, "Scroll of Power Wave", "Scroll11.bmd", 1, 2, 0, 0, 0, 0,
-         0, 1);
-  addDef(911, 15, 11, "Scroll of Aqua Beam", "Scroll12.bmd", 1, 2, 0, 0, 0, 0,
-         0, 1);
-  addDef(912, 15, 12, "Scroll of Cometfall", "Scroll13.bmd", 1, 2, 0, 0, 0, 0,
-         0, 1);
-  addDef(913, 15, 13, "Scroll of Inferno", "Scroll14.bmd", 1, 2, 0, 0, 0, 0, 0,
+  addDef(911, 15, 11, "Scroll of Aqua Beam", "Book12.bmd", 1, 2, 0, 0, 0, 0, 0,
+         1);
+  addDef(912, 15, 12, "Scroll of Cometfall", "Book13.bmd", 1, 2, 0, 0, 0, 0, 0,
+         1);
+  addDef(913, 15, 13, "Scroll of Inferno", "Book14.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
 }
 
@@ -2216,14 +2926,16 @@ static const char *GetItemNameByDef(int16_t defIndex) {
 }
 
 // Panel layout constants (virtual coords 1280x720)
-static constexpr float PANEL_W = 290.0f;
-static constexpr float PANEL_H = 560.0f;
+static constexpr float BASE_PANEL_W = 190.0f;
+static constexpr float BASE_PANEL_H = 429.0f;
+static constexpr float PANEL_W = BASE_PANEL_W * g_uiPanelScale;
+static constexpr float PANEL_H = BASE_PANEL_H * g_uiPanelScale;
 static constexpr float PANEL_Y = 20.0f;
-static constexpr float PANEL_X_RIGHT = 970.0f;
+static constexpr float PANEL_X_RIGHT = 1270.0f - PANEL_W; // Snug to right
 
 static float GetCharInfoPanelX() { return PANEL_X_RIGHT; }
 static float GetInventoryPanelX() {
-  return g_showCharInfo ? PANEL_X_RIGHT - PANEL_W - 10.0f : PANEL_X_RIGHT;
+  return g_showCharInfo ? PANEL_X_RIGHT - PANEL_W - 5.0f : PANEL_X_RIGHT;
 }
 
 // Check if virtual point is inside a panel
@@ -2232,94 +2944,145 @@ static bool IsPointInPanel(float vx, float vy, float panelX) {
          vy < PANEL_Y + PANEL_H;
 }
 
-// Helper: draw centered text with shadow
-static void DrawPanelText(ImDrawList *dl, const UICoords &c, float vx, float vy,
-                          const char *text, ImU32 color,
+// Helper: draw textured quad at virtual coords (handles scaling + OZT V-flip)
+static void DrawPanelImage(ImDrawList *dl, const UICoords &c,
+                           const UITexture &tex, float px, float py, float relX,
+                           float relY, float vw, float vh) {
+  if (tex.id == 0)
+    return;
+  float vx = px + relX * g_uiPanelScale;
+  float vy = py + relY * g_uiPanelScale;
+  float sw = vw * g_uiPanelScale;
+  float sh = vh * g_uiPanelScale;
+
+  ImVec2 pMin(c.ToScreenX(vx), c.ToScreenY(vy));
+  ImVec2 pMax(c.ToScreenX(vx + sw), c.ToScreenY(vy + sh));
+  ImVec2 uvMin(0, 0), uvMax(1, 1);
+  if (tex.isOZT) {
+    uvMin.y = 1.0f;
+    uvMax.y = 0.0f;
+  } // V-flip for OZT
+  dl->AddImage((ImTextureID)(uintptr_t)tex.id, pMin, pMax, uvMin, uvMax);
+}
+
+// Helper: draw centered text with shadow (handles scaling)
+static void DrawPanelText(ImDrawList *dl, const UICoords &c, float px, float py,
+                          float relX, float relY, const char *text, ImU32 color,
                           ImFont *font = nullptr) {
+  float vx = px + relX * g_uiPanelScale;
+  float vy = py + relY * g_uiPanelScale;
   float sx = c.ToScreenX(vx), sy = c.ToScreenY(vy);
-  if (font)
-    dl->AddText(font, font->LegacySize, ImVec2(sx + 1, sy + 1),
-                IM_COL32(0, 0, 0, 180), text);
-  dl->AddText(ImVec2(sx + 1, sy + 1), IM_COL32(0, 0, 0, 180), text);
-  if (font)
-    dl->AddText(font, font->LegacySize, ImVec2(sx, sy), color, text);
-  else
+  float fs = (font ? font->LegacySize : 13.0f);
+
+  if (font) {
+    dl->AddText(font, fs, ImVec2(sx + 1, sy + 1), IM_COL32(0, 0, 0, 180), text);
+    dl->AddText(font, fs, ImVec2(sx, sy), color, text);
+  } else {
+    dl->AddText(ImVec2(sx + 1, sy + 1), IM_COL32(0, 0, 0, 180), text);
     dl->AddText(ImVec2(sx, sy), color, text);
+  }
 }
 
-// Helper: draw right-aligned text
-static void DrawPanelTextRight(ImDrawList *dl, const UICoords &c, float vx,
-                               float vy, float width, const char *text,
-                               ImU32 color) {
+// Helper: draw right-aligned text (handles scaling)
+static void DrawPanelTextRight(ImDrawList *dl, const UICoords &c, float px,
+                               float py, float relX, float relY, float width,
+                               const char *text, ImU32 color) {
+  float vx = px + relX * g_uiPanelScale;
+  float vy = py + relY * g_uiPanelScale;
+  float sw = width * g_uiPanelScale;
   ImVec2 sz = ImGui::CalcTextSize(text);
-  float sx = c.ToScreenX(vx + width) - sz.x;
+  float sx = c.ToScreenX(vx + sw) - sz.x;
   float sy = c.ToScreenY(vy);
   dl->AddText(ImVec2(sx + 1, sy + 1), IM_COL32(0, 0, 0, 180), text);
   dl->AddText(ImVec2(sx, sy), color, text);
 }
 
-// Helper: draw centered text horizontally
-static void DrawPanelTextCentered(ImDrawList *dl, const UICoords &c, float vx,
-                                  float vy, float width, const char *text,
-                                  ImU32 color) {
-  ImVec2 sz = ImGui::CalcTextSize(text);
-  float sx = c.ToScreenX(vx + width * 0.5f) - sz.x * 0.5f;
+// Helper: draw centered text horizontally (handles scaling)
+static void DrawPanelTextCentered(ImDrawList *dl, const UICoords &c, float px,
+                                  float py, float relX, float relY, float width,
+                                  const char *text, ImU32 color,
+                                  ImFont *font = nullptr) {
+  float vx = px + relX * g_uiPanelScale;
+  float vy = py + relY * g_uiPanelScale;
+  float sw = width * g_uiPanelScale;
+  float fs = (font ? font->LegacySize : 13.0f);
+
+  ImVec2 sz;
+  if (font) {
+    sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text);
+  } else {
+    sz = ImGui::CalcTextSize(text);
+  }
+
+  // vx + sw*0.5 is the virtual center of the area
+  float sx = c.ToScreenX(vx + sw * 0.5f) - sz.x * 0.5f;
   float sy = c.ToScreenY(vy);
-  dl->AddText(ImVec2(sx + 1, sy + 1), IM_COL32(0, 0, 0, 180), text);
-  dl->AddText(ImVec2(sx, sy), color, text);
+
+  if (font) {
+    dl->AddText(font, fs, ImVec2(sx + 1, sy + 1), IM_COL32(0, 0, 0, 180), text);
+    dl->AddText(font, fs, ImVec2(sx, sy), color, text);
+  } else {
+    dl->AddText(ImVec2(sx + 1, sy + 1), IM_COL32(0, 0, 0, 180), text);
+    dl->AddText(ImVec2(sx, sy), color, text);
+  }
 }
+
+// RenderTableDecorations removed
 
 static void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   float px = GetCharInfoPanelX(), py = PANEL_Y;
   float pw = PANEL_W, ph = PANEL_H;
 
   // Colors
-  const ImU32 colBg = IM_COL32(15, 15, 25, 235);
-  const ImU32 colBorder = IM_COL32(60, 65, 90, 200);
+  const ImU32 colBg = IM_COL32(15, 15, 25, 240);
+  const ImU32 colBr = IM_COL32(60, 65, 90, 200);
   const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
-  const ImU32 colHeader = IM_COL32(200, 180, 120, 255);
   const ImU32 colLabel = IM_COL32(170, 170, 190, 255);
   const ImU32 colValue = IM_COL32(255, 255, 255, 255);
   const ImU32 colGreen = IM_COL32(100, 255, 100, 255);
-  const ImU32 colBtnN = IM_COL32(40, 80, 40, 200);
-  const ImU32 colBtnH = IM_COL32(60, 120, 60, 230);
-  const ImU32 colClose = IM_COL32(200, 60, 60, 200);
-  const ImU32 colCloseH = IM_COL32(255, 80, 80, 230);
-  const ImU32 colBar = IM_COL32(30, 30, 45, 200);
+  char buf[256];
 
-  // Background + border
-  ImVec2 pMin(c.ToScreenX(px), c.ToScreenY(py));
-  ImVec2 pMax(c.ToScreenX(px + pw), c.ToScreenY(py + ph));
-  dl->AddRectFilled(pMin, pMax, colBg, 6.0f);
-  dl->AddRect(pMin, pMax, colBorder, 6.0f);
-
-  // Close button [X]
-  float closeX = px + pw - 28, closeY = py + 6;
-  ImVec2 cMin(c.ToScreenX(closeX), c.ToScreenY(closeY));
-  ImVec2 cMax(c.ToScreenX(closeX + 22), c.ToScreenY(closeY + 18));
-  ImVec2 mp = ImGui::GetIO().MousePos;
-  bool hoverClose =
-      mp.x >= cMin.x && mp.x < cMax.x && mp.y >= cMin.y && mp.y < cMax.y;
-  dl->AddRectFilled(cMin, cMax, hoverClose ? colCloseH : colClose, 3.0f);
-  DrawPanelTextCentered(dl, c, closeX, closeY + 1, 22, "X", colValue);
+  // Simple Rect Background
+  dl->AddRectFilled(ImVec2(c.ToScreenX(px), c.ToScreenY(py)),
+                    ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBg,
+                    5.0f);
+  dl->AddRect(ImVec2(c.ToScreenX(px), c.ToScreenY(py)),
+              ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBr, 5.0f,
+              0, 1.5f);
 
   // Title
-  DrawPanelTextCentered(dl, c, px, py + 10, pw, "Character Info", colTitle);
+  DrawPanelTextCentered(dl, c, px, py, 0, 11, BASE_PANEL_W, "Character Info",
+                        colTitle, g_fontDefault);
 
-  // Separator
-  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 32)),
-              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 32)),
-              colBorder);
+  // Close button visual
+  {
+    float bx = BASE_PANEL_W - 24;
+    float by = 6;
+    float bw = 16, bh = 14;
+    ImVec2 bMin(c.ToScreenX(px + bx * g_uiPanelScale),
+                c.ToScreenY(py + by * g_uiPanelScale));
+    ImVec2 bMax(c.ToScreenX(px + (bx + bw) * g_uiPanelScale),
+                c.ToScreenY(py + (by + bh) * g_uiPanelScale));
+    dl->AddRectFilled(bMin, bMax, IM_COL32(100, 20, 20, 200), 2.0f);
 
-  // Name + Class + Level
-  DrawPanelTextCentered(dl, c, px, py + 40, pw, "TestDK", colValue);
-  DrawPanelTextCentered(dl, c, px, py + 58, pw, "Dark Knight", colLabel);
+    ImVec2 xSize = ImGui::CalcTextSize("X");
+    ImVec2 xPos(bMin.x + (bMax.x - bMin.x) * 0.5f - xSize.x * 0.5f,
+                bMin.y + (bMax.y - bMin.y) * 0.5f - xSize.y * 0.5f);
+    dl->AddText(xPos, colValue, "X");
+  }
 
-  char buf[64];
-  snprintf(buf, sizeof(buf), "Level %d", g_serverLevel);
-  DrawPanelTextCentered(dl, c, px, py + 78, pw, buf, colHeader);
+  // Basic Info - Stacked for better readability
+  DrawPanelText(dl, c, px, py, 20, 45, "Name", colLabel);
+  DrawPanelTextRight(dl, c, px, py, 20, 45, 145, "TestDK", colValue);
 
-  // XP bar
+  DrawPanelText(dl, c, px, py, 20, 65, "Class", colLabel);
+  DrawPanelTextRight(dl, c, px, py, 20, 65, 145, "Dark Knight", colValue);
+
+  DrawPanelText(dl, c, px, py, 20, 85, "Level", colLabel);
+  snprintf(buf, sizeof(buf), "%d", g_serverLevel);
+  DrawPanelTextRight(dl, c, px, py, 20, 85, 145, buf, colGreen);
+
+  // XP bar (Simplified)
   float xpFrac = 0.0f;
   uint64_t nextXp = g_hero.GetNextExperience();
   uint64_t curXp = (uint64_t)g_serverXP;
@@ -2328,266 +3091,231 @@ static void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
     xpFrac = (float)(curXp - prevXp) / (float)(nextXp - prevXp);
   xpFrac = std::clamp(xpFrac, 0.0f, 1.0f);
 
-  float barX = px + 15, barY = py + 100, barW = pw - 30, barH = 14;
-  dl->AddRectFilled(ImVec2(c.ToScreenX(barX), c.ToScreenY(barY)),
-                    ImVec2(c.ToScreenX(barX + barW), c.ToScreenY(barY + barH)),
-                    colBar, 3.0f);
-  if (xpFrac > 0.0f)
-    dl->AddRectFilled(ImVec2(c.ToScreenX(barX + 1), c.ToScreenY(barY + 1)),
-                      ImVec2(c.ToScreenX(barX + 1 + (barW - 2) * xpFrac),
-                             c.ToScreenY(barY + barH - 1)),
-                      IM_COL32(40, 180, 80, 255), 2.0f);
-  snprintf(buf, sizeof(buf), "EXP %.1f%%", xpFrac * 100.0f);
-  DrawPanelTextCentered(dl, c, barX, barY, barW, buf, colValue);
+  float barX = 15, barY = 115, barW = 160, barH = 5;
+  dl->AddRectFilled(ImVec2(c.ToScreenX(px + barX * g_uiPanelScale),
+                           c.ToScreenY(py + barY * g_uiPanelScale)),
+                    ImVec2(c.ToScreenX(px + (barX + barW) * g_uiPanelScale),
+                           c.ToScreenY(py + (barY + barH) * g_uiPanelScale)),
+                    IM_COL32(20, 20, 30, 255));
+  if (xpFrac > 0.0f) {
+    dl->AddRectFilled(
+        ImVec2(c.ToScreenX(px + barX * g_uiPanelScale),
+               c.ToScreenY(py + barY * g_uiPanelScale)),
+        ImVec2(c.ToScreenX(px + (barX + barW * xpFrac) * g_uiPanelScale),
+               c.ToScreenY(py + (barY + barH) * g_uiPanelScale)),
+        IM_COL32(40, 180, 80, 255));
+  }
 
-  // Separator
-  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 122)),
-              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 122)),
-              colBorder);
-
-  // Stats section
-  DrawPanelText(dl, c, px + 15, py + 128, "Stats", colHeader);
-
-  const char *statNames[] = {"Strength", "Dexterity", "Vitality", "Energy"};
+  // Stats (Simplified, no custom textboxes)
+  const char *statLabels[] = {"Strength", "Agility", "Vitality", "Energy"};
   int statValues[] = {g_serverStr, g_serverDex, g_serverVit, g_serverEne};
+  float statYOffsets[] = {150, 182, 214, 246};
 
   for (int i = 0; i < 4; i++) {
-    float rowY = py + 150 + i * 32;
+    float ry = statYOffsets[i];
+    dl->AddRectFilled(ImVec2(c.ToScreenX(px + 15 * g_uiPanelScale),
+                             c.ToScreenY(py + ry * g_uiPanelScale)),
+                      ImVec2(c.ToScreenX(px + 175 * g_uiPanelScale),
+                             c.ToScreenY(py + (ry + 22) * g_uiPanelScale)),
+                      IM_COL32(30, 35, 50, 255), 2.0f);
 
-    // Stat label
-    DrawPanelText(dl, c, px + 20, rowY + 2, statNames[i], colLabel);
-
-    // Stat value
+    DrawPanelText(dl, c, px, py, 25, ry + 4, statLabels[i], colLabel);
     snprintf(buf, sizeof(buf), "%d", statValues[i]);
-    DrawPanelTextRight(dl, c, px + 100, rowY + 2, 80, buf, colValue);
+    DrawPanelTextRight(dl, c, px, py, 25, ry + 4, 120, buf, colValue);
 
-    // "+" button (if points available)
     if (g_serverLevelUpPoints > 0) {
-      float btnX = px + pw - 42, btnY = rowY;
-      ImVec2 bMin(c.ToScreenX(btnX), c.ToScreenY(btnY));
-      ImVec2 bMax(c.ToScreenX(btnX + 26), c.ToScreenY(btnY + 20));
-      bool hoverBtn =
-          mp.x >= bMin.x && mp.x < bMax.x && mp.y >= bMin.y && mp.y < bMax.y;
-      dl->AddRectFilled(bMin, bMax, hoverBtn ? colBtnH : colBtnN, 3.0f);
-      DrawPanelTextCentered(dl, c, btnX, btnY + 2, 26, "+", colValue);
+      dl->AddRectFilled(ImVec2(c.ToScreenX(px + 155 * g_uiPanelScale),
+                               c.ToScreenY(py + (ry + 2) * g_uiPanelScale)),
+                        ImVec2(c.ToScreenX(px + 173 * g_uiPanelScale),
+                               c.ToScreenY(py + (ry + 20) * g_uiPanelScale)),
+                        IM_COL32(50, 150, 50, 255), 2.0f);
+      DrawPanelText(dl, c, px, py, 158, ry + 3, "+", colValue);
     }
   }
 
-  // Available points
   if (g_serverLevelUpPoints > 0) {
     snprintf(buf, sizeof(buf), "Points: %d", g_serverLevelUpPoints);
-    DrawPanelText(dl, c, px + 20, py + 282, buf, colGreen);
+    DrawPanelText(dl, c, px, py, 15, 272, buf, colGreen);
   }
 
-  // Separator
-  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 302)),
-              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 302)),
-              colBorder);
+  // Combat Info
+  int dMin = g_serverStr / 8 + g_hero.GetWeaponBonusMin();
+  int dMax = g_serverStr / 4 + g_hero.GetWeaponBonusMax();
+  int def = g_serverDex / 3 + g_hero.GetDefenseBonus();
 
-  // Derived stats
-  DrawPanelText(dl, c, px + 15, py + 308, "Combat", colHeader);
+  snprintf(buf, sizeof(buf), "Damage: %d - %d", dMin, dMax);
+  DrawPanelText(dl, c, px, py, 15, 300, buf, colValue);
+  snprintf(buf, sizeof(buf), "Defense: %d", def);
+  DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
 
-  // Compute derived stats (DK formulas)
-  int dmgMin = g_serverStr / 8 + g_hero.GetWeaponBonusMin();
-  int dmgMax = g_serverStr / 4 + g_hero.GetWeaponBonusMax();
-  int defense = g_serverDex / 3 + g_hero.GetDefenseBonus();
-  int atkRate = g_serverLevel * 5 + g_serverDex * 3 / 2 + g_serverStr / 4;
-  int defRate = g_serverDex / 3;
+  // HP / MP Bars (Authoritative from g_hero)
+  int curHP = g_hero.GetHP();
+  int maxHP = g_hero.GetMaxHP();
+  int curMP = g_hero.GetMana();
+  int maxMP = g_hero.GetMaxMana();
 
-  struct {
-    const char *label;
-    int val;
-    char fmt[32];
-  } derived[] = {
-      {"Damage", 0, ""},
-      {"Defense", defense, ""},
-      {"Atk Rate", atkRate, ""},
-      {"Def Rate", defRate, ""},
-  };
-  snprintf(derived[0].fmt, 32, "%d - %d", dmgMin, dmgMax);
-  snprintf(derived[1].fmt, 32, "%d", defense);
-  snprintf(derived[2].fmt, 32, "%d", atkRate);
-  snprintf(derived[3].fmt, 32, "%d", defRate);
+  float hF = maxHP > 0 ? (float)curHP / maxHP : 0.0f;
+  float mF = maxMP > 0 ? (float)curMP / maxMP : 0.0f;
+  hF = std::clamp(hF, 0.0f, 1.0f);
+  mF = std::clamp(mF, 0.0f, 1.0f);
 
-  for (int i = 0; i < 4; i++) {
-    float rowY = py + 330 + i * 22;
-    DrawPanelText(dl, c, px + 20, rowY, derived[i].label, colLabel);
-    DrawPanelTextRight(dl, c, px + 130, rowY, 100, derived[i].fmt, colValue);
-  }
+  DrawPanelText(dl, c, px, py, 15, 372, "HP", colLabel);
+  ImVec2 hpBarMin(c.ToScreenX(px + 45 * g_uiPanelScale),
+                  c.ToScreenY(py + 374 * g_uiPanelScale));
+  ImVec2 hpBarMax(c.ToScreenX(px + 165 * g_uiPanelScale),
+                  c.ToScreenY(py + 384 * g_uiPanelScale));
+  dl->AddRectFilled(hpBarMin, hpBarMax, IM_COL32(20, 20, 30, 255));
+  dl->AddRectFilled(ImVec2(hpBarMin.x + 1, hpBarMin.y + 1),
+                    ImVec2(hpBarMin.x + 1 + (hpBarMax.x - hpBarMin.x - 2) * hF,
+                           hpBarMax.y - 1),
+                    IM_COL32(200, 40, 40, 255));
 
-  // Separator
-  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 422)),
-              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 422)),
-              colBorder);
+  // HP Text Label
+  snprintf(buf, sizeof(buf), "%d / %d", curHP, maxHP);
+  ImVec2 hpTxtSize = ImGui::CalcTextSize(buf);
+  dl->AddText(
+      ImVec2(hpBarMin.x + (hpBarMax.x - hpBarMin.x) * 0.5f - hpTxtSize.x * 0.5f,
+             hpBarMin.y + (hpBarMax.y - hpBarMin.y) * 0.5f -
+                 hpTxtSize.y * 0.5f),
+      colValue, buf);
 
-  // HP bar
-  float hpFrac = g_serverMaxHP > 0 ? (float)g_serverHP / g_serverMaxHP : 0.0f;
-  hpFrac = std::clamp(hpFrac, 0.0f, 1.0f);
-  float hpBarX = px + 15, hpBarY = py + 432, hpBarW = pw - 30, hpBarH = 16;
-  dl->AddRectFilled(
-      ImVec2(c.ToScreenX(hpBarX), c.ToScreenY(hpBarY)),
-      ImVec2(c.ToScreenX(hpBarX + hpBarW), c.ToScreenY(hpBarY + hpBarH)),
-      colBar, 3.0f);
-  if (hpFrac > 0)
-    dl->AddRectFilled(ImVec2(c.ToScreenX(hpBarX + 1), c.ToScreenY(hpBarY + 1)),
-                      ImVec2(c.ToScreenX(hpBarX + 1 + (hpBarW - 2) * hpFrac),
-                             c.ToScreenY(hpBarY + hpBarH - 1)),
-                      IM_COL32(180, 30, 30, 255), 2.0f);
-  snprintf(buf, sizeof(buf), "HP %d / %d", g_serverHP, g_serverMaxHP);
-  DrawPanelTextCentered(dl, c, hpBarX, hpBarY, hpBarW, buf, colValue);
+  DrawPanelText(dl, c, px, py, 15, 392, "MP", colLabel);
+  ImVec2 mpBarMin(c.ToScreenX(px + 45 * g_uiPanelScale),
+                  c.ToScreenY(py + 394 * g_uiPanelScale));
+  ImVec2 mpBarMax(c.ToScreenX(px + 165 * g_uiPanelScale),
+                  c.ToScreenY(py + 404 * g_uiPanelScale));
+  dl->AddRectFilled(mpBarMin, mpBarMax, IM_COL32(20, 20, 30, 255));
+  dl->AddRectFilled(ImVec2(mpBarMin.x + 1, mpBarMin.y + 1),
+                    ImVec2(mpBarMin.x + 1 + (mpBarMax.x - mpBarMin.x - 2) * mF,
+                           mpBarMax.y - 1),
+                    IM_COL32(40, 60, 200, 255));
 
-  // MP bar
-  float mpBarY = py + 454;
-  dl->AddRectFilled(
-      ImVec2(c.ToScreenX(hpBarX), c.ToScreenY(mpBarY)),
-      ImVec2(c.ToScreenX(hpBarX + hpBarW), c.ToScreenY(mpBarY + hpBarH)),
-      colBar, 3.0f);
-  dl->AddRectFilled(ImVec2(c.ToScreenX(hpBarX + 1), c.ToScreenY(mpBarY + 1)),
-                    ImVec2(c.ToScreenX(hpBarX + 1 + (hpBarW - 2)),
-                           c.ToScreenY(mpBarY + hpBarH - 1)),
-                    IM_COL32(40, 80, 200, 255), 2.0f);
-  snprintf(buf, sizeof(buf), "MP %d / %d", g_serverMP, g_serverMaxMP);
-  DrawPanelTextCentered(dl, c, hpBarX, mpBarY, hpBarW, buf, colValue);
+  // MP Text Label
+  snprintf(buf, sizeof(buf), "%d / %d", curMP, maxMP);
+  ImVec2 mpTxtSize = ImGui::CalcTextSize(buf);
+  dl->AddText(
+      ImVec2(mpBarMin.x + (mpBarMax.x - mpBarMin.x) * 0.5f - mpTxtSize.x * 0.5f,
+             mpBarMin.y + (mpBarMax.y - mpBarMin.y) * 0.5f -
+                 mpTxtSize.y * 0.5f),
+      colValue, buf);
 }
 
 static void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
   float px = GetInventoryPanelX(), py = PANEL_Y;
   float pw = PANEL_W, ph = PANEL_H;
+  ImVec2 mp = ImGui::GetIO().MousePos;
 
-  const ImU32 colBg = IM_COL32(15, 15, 25, 235);
-  const ImU32 colBorder = IM_COL32(60, 65, 90, 200);
+  // Colors
+  const ImU32 colBg = IM_COL32(15, 15, 25, 240);
+  const ImU32 colBr = IM_COL32(60, 65, 90, 200);
   const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
   const ImU32 colHeader = IM_COL32(200, 180, 120, 255);
-  const ImU32 colLabel = IM_COL32(170, 170, 190, 255);
-  const ImU32 colValue = IM_COL32(255, 255, 255, 255);
-  const ImU32 colSlotBg = IM_COL32(25, 25, 40, 220);
-  const ImU32 colSlotBr = IM_COL32(50, 50, 70, 180);
-  const ImU32 colEquip = IM_COL32(120, 200, 255, 255);
-  const ImU32 colClose = IM_COL32(200, 60, 60, 200);
-  const ImU32 colCloseH = IM_COL32(255, 80, 80, 230);
+  const ImU32 colSlotBg = IM_COL32(0, 0, 0, 150);
+  const ImU32 colSlotBr = IM_COL32(80, 75, 60, 255);
   const ImU32 colGold = IM_COL32(255, 215, 0, 255);
-  const ImU32 colDragHi = IM_COL32(255, 255, 100, 100);
+  const ImU32 colValue = IM_COL32(255, 255, 255, 255);
+  const ImU32 colDragHi = IM_COL32(255, 255, 0, 100);
+  char buf[256];
 
-  // Background + border
-  ImVec2 pMin(c.ToScreenX(px), c.ToScreenY(py));
-  ImVec2 pMax(c.ToScreenX(px + pw), c.ToScreenY(py + ph));
-  dl->AddRectFilled(pMin, pMax, colBg, 6.0f);
-  dl->AddRect(pMin, pMax, colBorder, 6.0f);
+  // Simple Rect Background
+  dl->AddRectFilled(ImVec2(c.ToScreenX(px), c.ToScreenY(py)),
+                    ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBg,
+                    5.0f);
+  dl->AddRect(ImVec2(c.ToScreenX(px), c.ToScreenY(py)),
+              ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBr, 5.0f,
+              0, 1.5f);
 
-  // Close button
-  float closeX = px + pw - 28, closeY = py + 6;
-  ImVec2 cMin(c.ToScreenX(closeX), c.ToScreenY(closeY));
-  ImVec2 cMax(c.ToScreenX(closeX + 22), c.ToScreenY(closeY + 18));
-  ImVec2 mp = ImGui::GetIO().MousePos;
-  bool hoverClose =
-      mp.x >= cMin.x && mp.x < cMax.x && mp.y >= cMin.y && mp.y < cMax.y;
-  dl->AddRectFilled(cMin, cMax, hoverClose ? colCloseH : colClose, 3.0f);
-  DrawPanelTextCentered(dl, c, closeX, closeY + 1, 22, "X", colValue);
+  // Title (reduced width to avoid close button overlap)
+  DrawPanelTextCentered(dl, c, px, py, 0, 11, BASE_PANEL_W, "Inventory",
+                        colTitle, g_fontDefault);
 
-  // Title
-  DrawPanelTextCentered(dl, c, px, py + 10, pw, "Inventory", colTitle);
-  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 32)),
-              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 32)),
-              colBorder);
+  // Close button visual
+  {
+    float bx = BASE_PANEL_W - 24;
+    float by = 6;
+    float bw = 16, bh = 14;
+    ImVec2 bMin(c.ToScreenX(px + bx * g_uiPanelScale),
+                c.ToScreenY(py + by * g_uiPanelScale));
+    ImVec2 bMax(c.ToScreenX(px + (bx + bw) * g_uiPanelScale),
+                c.ToScreenY(py + (by + bh) * g_uiPanelScale));
+    dl->AddRectFilled(bMin, bMax, IM_COL32(100, 20, 20, 200), 2.0f);
 
-  // Equipment section header
-  DrawPanelText(dl, c, px + 15, py + 36, "Equipment", colHeader);
+    // Centered "X" inside the box
+    ImVec2 xSize = ImGui::CalcTextSize("X");
+    ImVec2 xPos(bMin.x + (bMax.x - bMin.x) * 0.5f - xSize.x * 0.5f,
+                bMin.y + (bMax.y - bMin.y) * 0.5f - xSize.y * 0.5f);
+    dl->AddText(xPos, colValue, "X");
+  }
 
-  // Equipment layout: body-shaped arrangement
-  //           Helm
-  //    R.Hand Armor L.Hand
-  //    Gloves Pants Boots
-  struct EquipPos {
-    int slot;
-    float x;
-    float y;
-    float w;
-    float h;
-  };
-  EquipPos equipLayout[] = {
-      {2, px + 118, py + 56, 54, 42},  // Helm - top center
-      {0, px + 52, py + 102, 54, 54},  // R.Hand - left
-      {3, px + 118, py + 102, 54, 54}, // Armor - center
-      {1, px + 184, py + 102, 54, 54}, // L.Hand - right
-      {5, px + 52, py + 162, 54, 42},  // Gloves - bottom left
-      {4, px + 118, py + 162, 54, 42}, // Pants - bottom center
-      {6, px + 184, py + 162, 54, 42}, // Boots - bottom right
-  };
+  // Equipment Layout
+  for (auto &ep : g_equipLayoutRects) {
+    float vx = px + ep.rx * g_uiPanelScale;
+    float vy = py + ep.ry * g_uiPanelScale;
+    float sw = ep.rw * g_uiPanelScale;
+    float sh = ep.rh * g_uiPanelScale;
 
-  char buf[64];
-  for (auto &ep : equipLayout) {
-    ImVec2 sMin(c.ToScreenX(ep.x), c.ToScreenY(ep.y));
-    ImVec2 sMax(c.ToScreenX(ep.x + ep.w), c.ToScreenY(ep.y + ep.h));
+    ImVec2 sMin(c.ToScreenX(vx), c.ToScreenY(vy));
+    ImVec2 sMax(c.ToScreenX(vx + sw), c.ToScreenY(vy + sh));
 
-    // Highlight if drag hovering over this slot
     bool hoverSlot =
         mp.x >= sMin.x && mp.x < sMax.x && mp.y >= sMin.y && mp.y < sMax.y;
 
     dl->AddRectFilled(sMin, sMax, colSlotBg, 3.0f);
-
-    // Render 3D item if valid
-    bool hasItem = false;
-    std::string modelName;
-
-    if (g_equipSlots[ep.slot].equipped) {
-      hasItem = true;
-      modelName = g_equipSlots[ep.slot].modelFile;
-    }
-
-    if (hasItem && !modelName.empty()) {
-      // Queue render for AFTER ImGui
-      int winH = (int)ImGui::GetIO().DisplaySize.y;
-      int glX = (int)sMin.x;
-      int glY = winH - (int)sMax.y; // Convert top-y to bottom-y
-      int glW = (int)(sMax.x - sMin.x);
-      int glH = (int)(sMax.y - sMin.y);
-
-      g_renderQueue.push_back({modelName, glX, glY, glW, glH});
-    }
-
     dl->AddRect(sMin, sMax, hoverSlot && g_isDragging ? colDragHi : colSlotBr,
                 3.0f);
 
-    if (g_equipSlots[ep.slot].equipped) {
-      // Show abbreviated item name
-      const char *catNames[] = {"Sword", "Axe",   "Mace",  "Spear",
-                                "Bow",   "Staff", "Shield"};
-      uint8_t cat = g_equipSlots[ep.slot].category;
-      const char *name = (cat < 7) ? catNames[cat] : "Item";
-      if (g_equipSlots[ep.slot].itemLevel > 0) {
-        snprintf(buf, sizeof(buf), "%s+%d", name,
-                 g_equipSlots[ep.slot].itemLevel);
-      } else {
-        snprintf(buf, sizeof(buf), "%s", name);
+    bool isBeingDragged = (g_isDragging && g_dragFromEquipSlot == ep.slot);
+
+    if (g_equipSlots[ep.slot].equipped && !isBeingDragged) {
+      std::string modelName = g_equipSlots[ep.slot].modelFile;
+      if (!modelName.empty()) {
+        int winH = (int)ImGui::GetIO().DisplaySize.y;
+        int16_t defIdx = GetDefIndexFromCategory(
+            g_equipSlots[ep.slot].category, g_equipSlots[ep.slot].itemIndex);
+        g_renderQueue.push_back({modelName, defIdx, (int)sMin.x,
+                                 winH - (int)sMax.y, (int)(sMax.x - sMin.x),
+                                 (int)(sMax.y - sMin.y), hoverSlot});
       }
-      // Centered in slot
-      ImVec2 sz = ImGui::CalcTextSize(buf);
-      float tx = (sMin.x + sMax.x) * 0.5f - sz.x * 0.5f;
-      float ty = (sMin.y + sMax.y) * 0.5f - sz.y * 0.5f;
-      dl->AddText(ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 180), buf);
-      dl->AddText(ImVec2(tx, ty), colEquip, buf);
-    } else {
-      // Show slot name dimmed
-      const char *slotName = GetEquipSlotName(ep.slot);
-      ImVec2 sz = ImGui::CalcTextSize(slotName);
-      float tx = (sMin.x + sMax.x) * 0.5f - sz.x * 0.5f;
-      float ty = (sMin.y + sMax.y) * 0.5f - sz.y * 0.5f;
-      dl->AddText(ImVec2(tx, ty), IM_COL32(80, 80, 100, 150), slotName);
+      if (hoverSlot) {
+        AddPendingItemTooltip(
+            GetDefIndexFromCategory(g_equipSlots[ep.slot].category,
+                                    g_equipSlots[ep.slot].itemIndex),
+            g_equipSlots[ep.slot].itemLevel);
+      }
+      // Always show +Level overlay if > 0
+      if (g_equipSlots[ep.slot].itemLevel > 0) {
+        char lvlBuf[8];
+        snprintf(lvlBuf, sizeof(lvlBuf), "+%d",
+                 g_equipSlots[ep.slot].itemLevel);
+        dl->AddText(ImVec2(sMin.x + 2, sMin.y + 2), IM_COL32(255, 200, 80, 255),
+                    lvlBuf);
+      }
     }
   }
 
-  // Separator
-  dl->AddLine(ImVec2(c.ToScreenX(px + 10), c.ToScreenY(py + 210)),
-              ImVec2(c.ToScreenX(px + pw - 10), c.ToScreenY(py + 210)),
-              colBorder);
+  // Bag Grid
+  DrawPanelText(dl, c, px, py, 15, 198, "Bag", colHeader);
+  float gridRX = 15.0f, gridRY = 208.0f;
+  float cellW = 20.0f, cellH = 20.0f;
+  float gap = 0.0f;
 
-  // Bag grid header
-  DrawPanelText(dl, c, px + 15, py + 214, "Bag", colHeader);
+  for (int row = 0; row < 8; row++) {
+    for (int col = 0; col < 8; col++) {
+      float rX = gridRX + col * (cellW + gap);
+      float rY = gridRY + row * (cellH + gap);
+      float vX = px + rX * g_uiPanelScale;
+      float vY = py + rY * g_uiPanelScale;
+      float sW = cellW * g_uiPanelScale;
+      float sH = cellH * g_uiPanelScale;
 
-  // 8x8 grid of items
-  float gridX = px + 15, gridY = py + 234;
-  float cellW = 32.0f, cellH = 32.0f, gap = 1.0f;
+      ImVec2 sMin(c.ToScreenX(vX), c.ToScreenY(vY));
+      ImVec2 sMax(c.ToScreenX(vX + sW), c.ToScreenY(vY + sH));
+      dl->AddRectFilled(sMin, sMax, colSlotBg, 1.0f);
+      dl->AddRect(sMin, sMax, colSlotBr, 1.0f);
+    }
+  }
 
+  // Bag Items
   bool processed[INVENTORY_SLOTS] = {false};
   for (int row = 0; row < 8; row++) {
     for (int col = 0; col < 8; col++) {
@@ -2595,115 +3323,85 @@ static void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
       if (processed[slot])
         continue;
 
-      float cx = gridX + col * (cellW + gap);
-      float cy = gridY + row * (cellH + gap);
+      bool isThisBeingDragged = (g_isDragging && g_dragFromSlot == slot);
 
-      ImVec2 sMin(c.ToScreenX(cx), c.ToScreenY(cy));
-      ImVec2 sMax(c.ToScreenX(cx + cellW), c.ToScreenY(cy + cellH));
-
-      bool hoverCell =
-          mp.x >= sMin.x && mp.x < sMax.x && mp.y >= sMin.y && mp.y < sMax.y;
-
-      // Check if this cell belongs to the item currently being dragged
-      // (handles multi-slot items that span multiple grid cells)
-      bool isBeingDragged = false;
-      if (g_isDragging && g_dragFromSlot >= 0) {
-        int pRow = g_dragFromSlot / 8;
-        int pCol = g_dragFromSlot % 8;
-        auto dit = g_itemDefs.find(g_dragDefIndex);
-        if (dit != g_itemDefs.end()) {
-          int dw = dit->second.width;
-          int dh = dit->second.height;
-          if (row >= pRow && row < pRow + dh && col >= pCol &&
-              col < pCol + dw) {
-            isBeingDragged = true;
-          }
-        } else {
-          isBeingDragged = (g_dragFromSlot == slot);
-        }
-      }
-
-      dl->AddRectFilled(sMin, sMax,
-                        isBeingDragged ? IM_COL32(40, 40, 20, 200) : colSlotBg,
-                        2.0f);
-      dl->AddRect(sMin, sMax,
-                  hoverCell ? IM_COL32(100, 100, 140, 200) : colSlotBr, 2.0f);
-
-      if (g_inventory[slot].occupied && !isBeingDragged) {
+      if (g_inventory[slot].occupied) {
         auto it = g_itemDefs.find(g_inventory[slot].defIndex);
         if (it != g_itemDefs.end()) {
           const auto &def = it->second;
-          // Mark all occupied slots as processed
-          for (int hh = 0; hh < def.height; hh++) {
-            for (int ww = 0; ww < def.width; ww++) {
-              int s = (row + hh) * 8 + (col + ww);
-              if (s < INVENTORY_SLOTS)
-                processed[s] = true;
-            }
-          }
+          // Mark ENTIRE footprint as processed regardless of whether we render
+          // it
+          for (int hh = 0; hh < def.height; hh++)
+            for (int ww = 0; ww < def.width; ww++)
+              if (slot + hh * 8 + ww < INVENTORY_SLOTS)
+                processed[slot + hh * 8 + ww] = true;
 
-          // Draw item over its spanned area
-          ImVec2 iMin = sMin;
-          ImVec2 iMax(c.ToScreenX(cx + def.width * (cellW + gap) - gap),
-                      c.ToScreenY(cy + def.height * (cellH + gap) - gap));
+          if (isThisBeingDragged)
+            continue; // Skip rendering visual of the item AT source slot
 
-          // Draw background for multi-slot if hovered
+          float rX = gridRX + col * (cellW + gap);
+          float rY = gridRY + row * (cellH + gap);
+          float vX = px + rX * g_uiPanelScale;
+          float vY = py + rY * g_uiPanelScale;
+          ImVec2 iMin(c.ToScreenX(vX), c.ToScreenY(vY));
+          ImVec2 iMax(c.ToScreenX(vX + def.width * cellW * g_uiPanelScale),
+                      c.ToScreenY(vY + def.height * cellH * g_uiPanelScale));
           bool hoverItem = mp.x >= iMin.x && mp.x < iMax.x && mp.y >= iMin.y &&
                            mp.y < iMax.y;
-          if (hoverItem) {
-            dl->AddRectFilled(iMin, iMax, IM_COL32(200, 200, 255, 40), 2.0f);
-          }
 
-          // Queue 3D render for bag item
-          if (!def.modelFile.empty()) {
-            int winH = (int)ImGui::GetIO().DisplaySize.y;
-            int glX = (int)iMin.x;
-            int glY = winH - (int)iMax.y;
-            int glW = (int)(iMax.x - iMin.x);
-            int glH = (int)(iMax.y - iMin.y);
-            g_renderQueue.push_back({def.modelFile, glX, glY, glW, glH});
-          }
-
-          // Item name (abbreviated or full depending on size)
-          const char *name = def.name.c_str();
-          char abbr[32];
-          if (def.width < 2)
-            snprintf(abbr, sizeof(abbr), "%.4s", name);
+          if (hoverItem)
+            dl->AddRectFilled(iMin, iMax, IM_COL32(255, 255, 255, 30), 2.0f);
           else
-            snprintf(abbr, sizeof(abbr), "%s", name);
+            dl->AddRectFilled(iMin, iMax, IM_COL32(0, 0, 0, 40), 2.0f);
 
-          if (g_inventory[slot].itemLevel > 0) {
-            snprintf(buf, sizeof(buf), "%s+%d", abbr,
-                     g_inventory[slot].itemLevel);
-          } else {
-            snprintf(buf, sizeof(buf), "%s", abbr);
+          const char *model = def.modelFile.empty()
+                                  ? GetDropModelName(g_inventory[slot].defIndex)
+                                  : def.modelFile.c_str();
+          if (model && model[0]) {
+            int winH = (int)ImGui::GetIO().DisplaySize.y;
+            g_renderQueue.push_back({model, g_inventory[slot].defIndex,
+                                     (int)iMin.x, winH - (int)iMax.y,
+                                     (int)(iMax.x - iMin.x),
+                                     (int)(iMax.y - iMin.y), hoverItem});
           }
-          ImVec2 sz = ImGui::CalcTextSize(buf);
-          float tx = (iMin.x + iMax.x) * 0.5f - sz.x * 0.5f;
-          float ty = (iMin.y + iMax.y) * 0.5f - sz.y * 0.5f;
-          dl->AddText(ImVec2(tx, ty), colValue, buf);
-        } else {
-          processed[slot] = true; // Unknown item
+          if (hoverItem && !g_isDragging)
+            AddPendingItemTooltip(g_inventory[slot].defIndex,
+                                  g_inventory[slot].itemLevel);
+
+          // Level overlay
+          if (g_inventory[slot].itemLevel > 0) {
+            char lvlBuf[8];
+            snprintf(lvlBuf, sizeof(lvlBuf), "+%d",
+                     g_inventory[slot].itemLevel);
+            dl->AddText(ImVec2(iMin.x + 2, iMin.y + 2),
+                        IM_COL32(255, 200, 80, 255), lvlBuf);
+          }
         }
       }
     }
   }
+
   // Drop-target preview: highlight the item's footprint on the grid
   if (g_isDragging) {
     auto dit = g_itemDefs.find(g_dragDefIndex);
     if (dit != g_itemDefs.end()) {
       int iw = dit->second.width;
       int ih = dit->second.height;
+      float gridVX = px + gridRX * g_uiPanelScale;
+      float gridVY = py + gridRY * g_uiPanelScale;
+      float gridVW = 8 * cellW * g_uiPanelScale;
+      float gridVH = 8 * cellH * g_uiPanelScale;
+
       // Check if mouse is over the bag grid
-      if (mp.x >= c.ToScreenX(gridX) &&
-          mp.x < c.ToScreenX(gridX + 8 * (cellW + gap)) &&
-          mp.y >= c.ToScreenY(gridY) &&
-          mp.y < c.ToScreenY(gridY + 8 * (cellH + gap))) {
+      if (mp.x >= c.ToScreenX(gridVX) && mp.x < c.ToScreenX(gridVX + gridVW) &&
+          mp.y >= c.ToScreenY(gridVY) && mp.y < c.ToScreenY(gridVY + gridVH)) {
         // Compute which cell the mouse is over
-        float localX = (mp.x - c.ToScreenX(gridX)) /
-                       (c.ToScreenX(gridX + cellW + gap) - c.ToScreenX(gridX));
-        float localY = (mp.y - c.ToScreenY(gridY)) /
-                       (c.ToScreenY(gridY + cellH + gap) - c.ToScreenY(gridY));
+        float localX = (mp.x - c.ToScreenX(gridVX)) /
+                       (c.ToScreenX(gridVX + cellW * g_uiPanelScale) -
+                        c.ToScreenX(gridVX));
+        float localY = (mp.y - c.ToScreenY(gridVY)) /
+                       (c.ToScreenY(gridVY + cellH * g_uiPanelScale) -
+                        c.ToScreenY(gridVY));
         int hCol = (int)localX;
         int hRow = (int)localY;
         if (hCol >= 0 && hCol < 8 && hRow >= 0 && hRow < 8) {
@@ -2730,10 +3428,10 @@ static void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
           // Draw the preview outline
           ImU32 previewCol =
               fits ? IM_COL32(50, 200, 50, 160) : IM_COL32(200, 50, 50, 160);
-          float ox = gridX + hCol * (cellW + gap);
-          float oy = gridY + hRow * (cellH + gap);
-          float ow = iw * (cellW + gap) - gap;
-          float oh = ih * (cellH + gap) - gap;
+          float ox = px + (gridRX + hCol * cellW) * g_uiPanelScale;
+          float oy = py + (gridRY + hRow * cellH) * g_uiPanelScale;
+          float ow = iw * cellW * g_uiPanelScale;
+          float oh = ih * cellH * g_uiPanelScale;
           ImVec2 pMin(c.ToScreenX(ox), c.ToScreenY(oy));
           ImVec2 pMax(c.ToScreenX(ox + ow), c.ToScreenY(oy + oh));
           dl->AddRectFilled(pMin, pMax, (previewCol & 0x00FFFFFF) | 0x30000000,
@@ -2756,18 +3454,18 @@ static void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
       dl->AddRectFilled(iMin, iMax, IM_COL32(30, 30, 50, 180), 3.0f);
       // Queue 3D render for dragged item
       int winH = (int)ImGui::GetIO().DisplaySize.y;
-      g_renderQueue.push_back(
-          {def.modelFile, (int)iMin.x, winH - (int)iMax.y, (int)dw, (int)dh});
+      g_renderQueue.push_back({def.modelFile, g_dragDefIndex, (int)iMin.x,
+                               winH - (int)iMax.y, (int)dw, (int)dh, false});
 
       if (g_dragItemLevel > 0)
         snprintf(buf, sizeof(buf), "%s +%d", def.name.c_str(), g_dragItemLevel);
       else
         snprintf(buf, sizeof(buf), "%s", def.name.c_str());
-      dl->AddText(ImVec2(iMin.x, iMax.y + 2), colEquip, buf);
+      dl->AddText(ImVec2(iMin.x, iMax.y + 2), colGold, buf);
     }
   }
 
-  // Tooltip on hover (bag items)
+  // Tooltip on hover (bag items) — use GetForegroundDrawList for top z-order
   for (int row = 0; row < 8; row++) {
     for (int col = 0; col < 8; col++) {
       int slot = row * 8 + col;
@@ -2775,69 +3473,46 @@ static void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
         continue;
 
       auto it = g_itemDefs.find(g_inventory[slot].defIndex);
-      if (it == g_itemDefs.end())
-        continue;
-      const auto &def = it->second;
-
-      float cx = gridX + col * (cellW + gap);
-      float cy = gridY + row * (cellH + gap);
-      ImVec2 iMin(c.ToScreenX(cx), c.ToScreenY(cy));
-      ImVec2 iMax(c.ToScreenX(cx + def.width * (cellW + gap) - gap),
-                  c.ToScreenY(cy + def.height * (cellH + gap) - gap));
+      int dw = 1, dh = 1;
+      if (it != g_itemDefs.end()) {
+        dw = it->second.width;
+        dh = it->second.height;
+      }
+      float rX = gridRX + col * cellW;
+      float rY = gridRY + row * cellH;
+      float vX = px + rX * g_uiPanelScale;
+      float vY = py + rY * g_uiPanelScale;
+      ImVec2 iMin(c.ToScreenX(vX), c.ToScreenY(vY));
+      ImVec2 iMax(c.ToScreenX(vX + dw * cellW * g_uiPanelScale),
+                  c.ToScreenY(vY + dh * cellH * g_uiPanelScale));
 
       if (mp.x >= iMin.x && mp.x < iMax.x && mp.y >= iMin.y && mp.y < iMax.y &&
           !g_isDragging) {
-        // Render Tooltip Box
-        ImVec2 tPos(mp.x + 15, mp.y + 15);
-        float tw = 160.0f;
-        float th = 100.0f;
-
-        dl->AddRectFilled(tPos, ImVec2(tPos.x + tw, tPos.y + th),
-                          IM_COL32(0, 0, 0, 240), 4.0f);
-        dl->AddRect(tPos, ImVec2(tPos.x + tw, tPos.y + th),
-                    IM_COL32(150, 150, 255, 180), 4.0f);
-
-        float curY = tPos.y + 8;
-        ImU32 nameCol = (g_inventory[slot].itemLevel >= 7)
-                            ? IM_COL32(255, 255, 100, 255)
-                            : colValue;
-        dl->AddText(ImVec2(tPos.x + 10, curY), nameCol, def.name.c_str());
-        curY += 20;
-
-        auto addReq = [&](const char *label, int current, int req) {
-          char rBuf[64];
-          snprintf(rBuf, sizeof(rBuf), "%s: %d", label, req);
-          ImU32 col = (current >= req) ? IM_COL32(200, 200, 200, 255)
-                                       : IM_COL32(255, 100, 100, 255);
-          dl->AddText(ImVec2(tPos.x + 10, curY), col, rBuf);
-          curY += 15;
-        };
-
-        if (def.levelReq > 0)
-          addReq("Level", g_serverLevel, def.levelReq);
-        if (def.reqStr > 0)
-          addReq("Strength", g_serverStr, def.reqStr);
-        if (def.reqDex > 0)
-          addReq("Dexterity", g_serverDex, def.reqDex);
-        if (def.reqVit > 0)
-          addReq("Vitality", g_serverVit, def.reqVit);
-        if (def.reqEne > 0)
-          addReq("Energy", g_serverEne, def.reqEne);
+        AddPendingItemTooltip(g_inventory[slot].defIndex,
+                              g_inventory[slot].itemLevel);
       }
     }
   }
-}
 
-// Equipment slot layout (relative to panel origin)
-struct EquipSlotRect {
-  int slot;
-  float x, y, w, h;
-};
-static const EquipSlotRect g_equipLayoutRects[] = {
-    {2, 118, 56, 54, 42},  {0, 52, 102, 54, 54}, {3, 118, 102, 54, 54},
-    {1, 184, 102, 54, 54}, {5, 52, 162, 54, 42}, {4, 118, 162, 54, 42},
-    {6, 184, 162, 54, 42},
-};
+  // Zen display at the bottom
+  {
+    dl->AddRectFilled(ImVec2(c.ToScreenX(px + 10 * g_uiPanelScale),
+                             c.ToScreenY(py + 400 * g_uiPanelScale)),
+                      ImVec2(c.ToScreenX(px + 180 * g_uiPanelScale),
+                             c.ToScreenY(py + 424 * g_uiPanelScale)),
+                      IM_COL32(20, 25, 40, 255), 3.0f);
+    char zenBuf[64];
+    std::string s = std::to_string(g_zen);
+    int n = s.length() - 3;
+    while (n > 0) {
+      s.insert(n, ",");
+      n -= 3;
+    }
+    snprintf(zenBuf, sizeof(zenBuf), "%s Zen", s.c_str());
+    DrawPanelTextRight(dl, c, px, py, 10, 405, 160, zenBuf, colGold);
+  }
+}
+// End of RenderInventoryPanel
 
 // Handle panel click interactions (returns true if click was consumed)
 static bool CanEquipItem(int16_t defIdx) {
@@ -2901,8 +3576,8 @@ static bool CheckBagFit(int16_t defIdx, int targetSlot, int ignoreSlot = -1) {
         continue;
       if (g_inventory[s].occupied) {
         // If we are overlapping with exactly the same item (if we're moving
-        // it), we need to be careful. But we usually clear the old slots before
-        // checking fit for a new move.
+        // it), we need to be careful. But we usually clear the old slots
+        // before checking fit for a new move.
         return false;
       }
     }
@@ -2914,27 +3589,22 @@ static bool HandlePanelClick(float vx, float vy) {
   // Character Info panel
   if (g_showCharInfo && IsPointInPanel(vx, vy, GetCharInfoPanelX())) {
     float px = GetCharInfoPanelX(), py = PANEL_Y;
+    float relX = (vx - px) / g_uiPanelScale;
+    float relY = (vy - py) / g_uiPanelScale;
 
-    // Close button
-    if (vx >= px + PANEL_W - 28 && vx < px + PANEL_W - 6 && vy >= py + 6 &&
-        vy < py + 24) {
+    // Close button (relative: 190 - 24, 6, size 16, 12)
+    if (relX >= 190 - 24 && relX < 190 - 8 && relY >= 6 && relY < 18) {
       g_showCharInfo = false;
       return true;
     }
 
     // Stat "+" buttons
+    float statRowYOffsets[] = {150, 182, 214, 246};
     if (g_serverLevelUpPoints > 0) {
       for (int i = 0; i < 4; i++) {
-        float btnX = px + PANEL_W - 42, btnY = py + 150 + i * 32;
-        // Debug click coordinates
-        std::cout << "[UI] Check Stat " << i << ": Click(" << vx << "," << vy
-                  << ") vs Btn(" << btnX << "," << btnY << ",26,20)"
-                  << std::endl;
-        if (vx >= btnX && vx < btnX + 26 && vy >= btnY && vy < btnY + 20) {
-          std::cout << "[UI] Clicked Stat Button " << i
-                    << " (Pts=" << g_serverLevelUpPoints << ")" << std::endl;
-          // Send stat allocation request
-
+        float btnX = 155, btnY = statRowYOffsets[i] + 2;
+        if (relX >= btnX && relX < btnX + 18 && relY >= btnY &&
+            relY < btnY + 18) {
           PMSG_STAT_ALLOC_RECV pkt{};
           pkt.h = MakeC1Header(sizeof(pkt), 0x37);
           pkt.statType = static_cast<uint8_t>(i);
@@ -2943,30 +3613,32 @@ static bool HandlePanelClick(float vx, float vy) {
         }
       }
     }
-    return true; // Consumed by panel area
+    return true; // Click consumed by panel
   }
 
   // Inventory panel
   if (g_showInventory && IsPointInPanel(vx, vy, GetInventoryPanelX())) {
     float px = GetInventoryPanelX(), py = PANEL_Y;
+    float relX = (vx - px) / g_uiPanelScale;
+    float relY = (vy - py) / g_uiPanelScale;
 
     // Close button
-    if (vx >= px + PANEL_W - 28 && vx < px + PANEL_W - 6 && vy >= py + 6 &&
-        vy < py + 24) {
+    if (relX >= 190 - 24 && relX < 190 - 8 && relY >= 6 && relY < 18) {
       g_showInventory = false;
       return true;
     }
 
+    // Inventory Action Buttons removed
+
+    // Equipment slots: start drag
     // Equipment slots: start drag
     for (const auto &ep : g_equipLayoutRects) {
-      float ex = px + ep.x;
-      float ey = py + ep.y;
-      if (vx >= ex && vx < ex + ep.w && vy >= ey && vy < ey + ep.h) {
+      if (relX >= ep.rx && relX < ep.rx + ep.rw && relY >= ep.ry &&
+          relY < ep.ry + ep.rh) {
         if (g_equipSlots[ep.slot].equipped) {
           g_dragFromSlot = -1; // Flag for equipping vs inventory
           g_dragFromEquipSlot = ep.slot;
 
-          // Map category/index back to defIndex for display/logic
           g_dragDefIndex = GetDefIndexFromCategory(
               g_equipSlots[ep.slot].category, g_equipSlots[ep.slot].itemIndex);
           if (g_dragDefIndex == -1)
@@ -2981,14 +3653,17 @@ static bool HandlePanelClick(float vx, float vy) {
     }
 
     // Bag grid: start drag
-    float gridX = px + 15, gridY = py + 234;
-    float cellW = 32.0f, cellH = 32.0f, gap = 1.0f;
+    float gridRX = 15.0f, gridRY = 208.0f;
+    float cellW = 20.0f, cellH = 20.0f, gap = 0.0f;
+    // (relClickX/Y already declared above)
+
     for (int row = 0; row < 8; row++) {
       for (int col = 0; col < 8; col++) {
         int slot = row * 8 + col;
-        float cx = gridX + col * (cellW + gap);
-        float cy = gridY + row * (cellH + gap);
-        if (vx >= cx && vx < cx + cellW && vy >= cy && vy < cy + cellH) {
+        float cx = gridRX + col * (cellW + gap);
+        float cy = gridRY + row * (cellH + gap);
+        if (relX >= cx && relX < cx + cellW && relY >= cy &&
+            relY < cy + cellH) {
           if (g_inventory[slot].occupied) {
             // Find primary slot if this is a secondary one
             int primarySlot = slot;
@@ -3039,12 +3714,13 @@ static void HandlePanelMouseUp(float vx, float vy) {
 
   if (g_showInventory) {
     float px = GetInventoryPanelX(), py = PANEL_Y;
+    float relX = (vx - px) / g_uiPanelScale;
+    float relY = (vy - py) / g_uiPanelScale;
 
     // 1. Check drop on Equipment slots
     for (const auto &ep : g_equipLayoutRects) {
-      float ex = px + ep.x;
-      float ey = py + ep.y;
-      if (vx >= ex && vx < ex + ep.w && vy >= ey && vy < ey + ep.h) {
+      if (relX >= ep.rx && relX < ep.rx + ep.rw && relY >= ep.ry &&
+          relY < ep.ry + ep.rh) {
         // Dragging FROM Inventory TO Equipment
         if (g_dragFromSlot >= 0) {
           if (!CanEquipItem(g_dragDefIndex)) {
@@ -3140,14 +3816,13 @@ static void HandlePanelMouseUp(float vx, float vy) {
     }
 
     // 2. Check drop on Inventory Grid
-    float gridX = px + 15, gridY = py + 234;
-    float cellW = 32.0f, cellH = 32.0f, gap = 1.0f;
+    float gridRX = 15.0f, gridRY = 208.0f;
+    float cellW = 20.0f, cellH = 20.0f;
 
-    // Check if mouse is within grid bounds roughly
-    if (vx >= gridX && vx < gridX + 8 * (cellW + gap) && vy >= gridY &&
-        vy < gridY + 8 * (cellH + gap)) {
-      int col = (int)((vx - gridX) / (cellW + gap));
-      int row = (int)((vy - gridY) / (cellH + gap));
+    if (relX >= gridRX && relX < gridRX + 8 * cellW && relY >= gridRY &&
+        relY < gridRY + 8 * cellH) {
+      int col = (int)((relX - gridRX) / cellW);
+      int row = (int)((relY - gridRY) / cellH);
       if (col >= 0 && col < 8 && row >= 0 && row < 8) {
         int targetSlot = row * 8 + col;
 
@@ -3245,6 +3920,22 @@ int main(int argc, char **argv) {
     std::cerr.rdbuf(cerrTee);
   }
 
+  struct StreamRedirector {
+    std::streambuf *origCout, *origCerr;
+    TeeStreambuf *coutTee, *cerrTee;
+    StreamRedirector(std::streambuf *oc, std::streambuf *oce, TeeStreambuf *ct,
+                     TeeStreambuf *cet)
+        : origCout(oc), origCerr(oce), coutTee(ct), cerrTee(cet) {}
+    ~StreamRedirector() {
+      if (origCout)
+        std::cout.rdbuf(origCout);
+      if (origCerr)
+        std::cerr.rdbuf(origCerr);
+      delete coutTee;
+      delete cerrTee;
+    }
+  } redirector(origCout, origCerr, coutTee, cerrTee);
+
   if (!glfwInit()) {
     std::cerr << "Failed to initialize GLFW" << std::endl;
     return -1;
@@ -3309,26 +4000,32 @@ int main(int argc, char **argv) {
   glfwSetCursorPosCallback(window, mouse_callback);
   glfwSetScrollCallback(window, scroll_callback);
   glfwSetMouseButtonCallback(window, mouse_button_callback);
-  glfwSetKeyCallback(window, key_callback);
+  glfwSetKeyCallback(window,
+                     key_callback); // Register keyboard hotkeys (I, C, Escape)
   glfwSetCharCallback(window, char_callback);
   ImGui_ImplOpenGL3_Init(glsl_version);
 
-  // Load larger font for HUD text overlays (Retina-aware)
+  // Load fonts for high-fidelity UI
   float contentScale = 1.0f;
   {
     float xscale, yscale;
     glfwGetWindowContentScale(window, &xscale, &yscale);
-    contentScale = xscale; // 2.0 on Retina, 1.0 on non-Retina
+    contentScale = xscale;
   }
-  ImFont *hudFont = nullptr;
   {
     ImFontConfig cfg;
-    cfg.SizePixels = 16.0f * contentScale;
-    cfg.OversampleH = 3;
-    cfg.OversampleV = 3;
-    hudFont = io.Fonts->AddFontDefault(&cfg);
+    // ProggyClean is sharpest at 13px multiples
+    g_fontDefault = io.Fonts->AddFontFromFileTTF(
+        "external/imgui/misc/fonts/ProggyClean.ttf", 13.0f * contentScale);
+    if (!g_fontDefault)
+      g_fontDefault = io.Fonts->AddFontDefault(&cfg);
+
+    g_fontBold = io.Fonts->AddFontFromFileTTF(
+        "external/imgui/misc/fonts/ProggyClean.ttf", 15.0f * contentScale);
+    if (!g_fontBold)
+      g_fontBold = g_fontDefault;
+
     io.Fonts->Build();
-    io.FontGlobalScale = 1.0f / contentScale;
   }
 
   // Initialize modern HUD (centered at 70% scale)
@@ -3343,14 +4040,13 @@ int main(int argc, char **argv) {
   MockData hudData = MockData::CreateDK50();
 
   // Load Terrain for testing
-  std::string data_path = "/Users/karlisfeldmanis/Desktop/mu_remaster/"
-                          "references/other/MuMain/src/bin/Data";
+  std::string data_path = g_dataPath;
   TerrainData terrainData = TerrainParser::LoadWorld(1, data_path);
 
   // Reconstruct TW_NOGROUND for bridge cells.
-  // The .att file for this data version lacks these flags (verified: 0 cells).
-  // Original engine reads them from .att (ZzzLodTerrain.cpp:1665).
-  // We reconstruct from bridge objects (type 80) with orientation awareness.
+  // The .att file for this data version lacks these flags (verified: 0
+  // cells). Original engine reads them from .att (ZzzLodTerrain.cpp:1665). We
+  // reconstruct from bridge objects (type 80) with orientation awareness.
   {
     const int S = TerrainParser::TERRAIN_SIZE;
     int count = 0;
@@ -3479,11 +4175,28 @@ int main(int argc, char **argv) {
   // Initialize hero character and click effect
   g_hero.Init(data_path);
   g_hero.SetTerrainData(&terrainData);
+
+  // Seed inventory with test items (spread out to avoid overlaps)
+  SetBagItem(0, 0, 1, 0);   // Kris (0,0) - 1x2
+  SetBagItem(2, 1, 1, 3);   // Short Sword +3 (0,2) - 1x3
+  SetBagItem(4, 66, 1, 0);  // Flail (0,4) - 1x3
+  SetBagItem(6, 192, 1, 0); // Small Shield (0,6) - 2x2
+
+  SetBagItem(24, 224, 1, 0); // Bronze Helm (3,0) - 2x2
+  SetBagItem(26, 256, 1, 0); // Bronze Armor (3,2) - 2x3
+  SetBagItem(28, 288, 1, 0); // Bronze Pants (3,4) - 2x2
+
+  SetBagItem(48, 320, 1, 0); // Bronze Gloves (6,0) - 2x2
+  SetBagItem(50, 352, 1, 0); // Bronze Boots (6,2) - 2x2
   g_hero.SetTerrainLightmap(terrainData.lightmap);
   g_hero.SetPointLights(g_pointLights);
   g_hero.SnapToTerrain();
 
   g_clickEffect.Init();
+  g_texInventoryBg = UITexture::Load("Data/Interface/mu_inventory_bg.png");
+
+  // Simplification: removed Main 5.2 texture loading
+
   g_clickEffect.LoadAssets(data_path);
   g_clickEffect.SetTerrainData(&terrainData);
   checkGLError("hero init");
@@ -3494,6 +4207,10 @@ int main(int argc, char **argv) {
 
   // Set up packet handler BEFORE connecting so no packets are lost
   g_net.onPacket = [&serverData](const uint8_t *pkt, int size) {
+    if (size >= 3) {
+      std::cout << "[Net:Initial] Received packet type=0x" << std::hex
+                << (int)pkt[0] << std::dec << " size=" << size << std::endl;
+    }
     parseInitialPacket(pkt, size, serverData);
   };
 
@@ -3562,14 +4279,15 @@ int main(int argc, char **argv) {
   // Receive initial data burst (welcome + NPCs + monsters + equipment +
   // stats) Give server time to send all initial packets, poll to parse them
   std::cout << "[Net] Connected. Syncing initial state..." << std::endl;
-  for (int attempt = 0; attempt < 50; attempt++) {
+  int packetsReceived = 0;
+  for (int attempt = 0; attempt < 100; attempt++) {
     g_net.Poll();
     usleep(20000); // 20ms
   }
 
   if (serverData.npcs.empty() && !autoScreenshot && !autoDiag) {
-    // If we didn't get initial sync data (e.g. timeout), it's probably a stale
-    // connection
+    // If we didn't get initial sync data (e.g. timeout), it's probably a
+    // stale connection
     std::cerr << "[Net] FATAL: Server connected but failed to sync initial "
                  "game state."
               << std::endl;
@@ -3640,7 +4358,8 @@ int main(int argc, char **argv) {
   g_hero.SetPosition(g_camera.GetPosition());
   g_hero.SnapToTerrain();
 
-  // Fix: if hero spawned on a non-walkable tile, move to a known safe position
+  // Fix: if hero spawned on a non-walkable tile, move to a known safe
+  // position
   {
     glm::vec3 heroPos = g_hero.GetPosition();
     const int S = TerrainParser::TERRAIN_SIZE;
@@ -3719,7 +4438,8 @@ int main(int argc, char **argv) {
     }
   }
   if (autoDiag) {
-    // Top-down zoomed view over Lorencia tavern area for clear tile diagnostics
+    // Top-down zoomed view over Lorencia tavern area for clear tile
+    // diagnostics
     g_camera.SetPosition(glm::vec3(12800.0f, 3000.0f, 12800.0f));
     g_camera.SetAngles(0.0f, -89.0f); // Look straight down
     g_camera.SetZoom(3000.0f);
@@ -3825,29 +4545,45 @@ int main(int argc, char **argv) {
     g_monsterManager.Update(deltaTime);
 
     // Hero combat: update attack state machine, send attack packet on hit
-    g_hero.UpdateAttack(deltaTime);
-    g_hero.UpdateState(deltaTime);
-    if (g_hero.CheckAttackHit()) {
-      int targetIdx = g_hero.GetAttackTarget();
-      if (targetIdx >= 0 && targetIdx < g_monsterManager.GetMonsterCount()) {
-        uint16_t serverIdx = g_monsterManager.GetServerIndex(targetIdx);
-        PMSG_ATTACK_RECV atkPkt{};
-        atkPkt.h = MakeC1Header(sizeof(atkPkt), 0x28);
-        atkPkt.monsterIndex = serverIdx;
-        g_net.Send(&atkPkt, sizeof(atkPkt));
-      }
-    }
-    // Auto-attack: re-engage after cooldown if target still alive
-    if (g_hero.GetAttackState() == AttackState::NONE &&
-        g_hero.GetAttackTarget() >= 0) {
-      int targetIdx = g_hero.GetAttackTarget();
-      if (targetIdx < g_monsterManager.GetMonsterCount()) {
-        MonsterInfo mi = g_monsterManager.GetMonsterInfo(targetIdx);
-        if (mi.state != MonsterState::DYING && mi.state != MonsterState::DEAD &&
-            mi.hp > 0) {
-          g_hero.AttackMonster(targetIdx, mi.position);
+    // Block all combat in safe zone — but don't stop movement
+    {
+      bool nowInSafe = g_hero.IsInSafeZone();
+      static bool wasInSafe = false;
+      if (nowInSafe) {
+        // On transition INTO safe zone: cancel any active attack once
+        if (!wasInSafe &&
+            (g_hero.GetAttackTarget() >= 0 || g_hero.IsAttacking())) {
+          g_hero.CancelAttack();
+        }
+        // Don't update attack/state while in safe zone
+      } else {
+        g_hero.UpdateAttack(deltaTime);
+        g_hero.UpdateState(deltaTime);
+        if (g_hero.CheckAttackHit()) {
+          int targetIdx = g_hero.GetAttackTarget();
+          if (targetIdx >= 0 &&
+              targetIdx < g_monsterManager.GetMonsterCount()) {
+            uint16_t serverIdx = g_monsterManager.GetServerIndex(targetIdx);
+            PMSG_ATTACK_RECV atkPkt{};
+            atkPkt.h = MakeC1Header(sizeof(atkPkt), 0x28);
+            atkPkt.monsterIndex = serverIdx;
+            g_net.Send(&atkPkt, sizeof(atkPkt));
+          }
+        }
+        // Auto-attack: re-engage after cooldown if target still alive
+        if (g_hero.GetAttackState() == AttackState::NONE &&
+            g_hero.GetAttackTarget() >= 0) {
+          int targetIdx = g_hero.GetAttackTarget();
+          if (targetIdx < g_monsterManager.GetMonsterCount()) {
+            MonsterInfo mi = g_monsterManager.GetMonsterInfo(targetIdx);
+            if (mi.state != MonsterState::DYING &&
+                mi.state != MonsterState::DEAD && mi.hp > 0) {
+              g_hero.AttackMonster(targetIdx, mi.position);
+            }
+          }
         }
       }
+      wasInSafe = nowInSafe;
     }
 
     // Hero respawn: after death timer expires, respawn in Lorencia safe zone
@@ -3914,12 +4650,13 @@ int main(int argc, char **argv) {
           int ix = (int)gx, iz = (int)gz;
           if (ix >= 0 && iz >= 0 && ix < 256 && iz < 256) {
             float h = g_terrainDataPtr->heightmap[iz * 256 + ix] * 1.5f;
-            gi.position.y = h + 5.0f;
+            gi.position.y = h + 0.5f;
           }
         }
         float dist = glm::length(
             glm::vec3(heroPos.x - gi.position.x, 0, heroPos.z - gi.position.z));
-        if (dist < 120.0f && !g_hero.IsDead()) {
+        // Auto-pickup Zen only (items require explicit click)
+        if (gi.defIndex == -1 && dist < 120.0f && !g_hero.IsDead()) {
           PMSG_PICKUP_RECV pkt{};
           pkt.h = MakeC1Header(sizeof(pkt), 0x2C);
           pkt.dropIndex = gi.dropIndex;
@@ -4022,6 +4759,8 @@ int main(int argc, char **argv) {
     // Render NPC selection outline (green glow on hover)
     if (g_hoveredNpc >= 0)
       g_npcManager.RenderOutline(g_hoveredNpc, view, projection);
+    if (g_hoveredMonster >= 0)
+      g_monsterManager.RenderOutline(g_hoveredMonster, view, projection);
 
     // Render monsters with shadows
     g_monsterManager.RenderShadows(view, projection);
@@ -4050,11 +4789,13 @@ int main(int argc, char **argv) {
       break; // GIF saved, exit
     }
 
-    // Auto-screenshot flag (capture happens after ImGui render to include HUD)
+    // Auto-screenshot flag (capture happens after ImGui render to include
+    // HUD)
     bool captureScreenshot = (autoScreenshot && diagFrame == 60);
 
     // Start the Dear ImGui frame
     g_renderQueue.clear();
+    g_pendingTooltip.active = false; // Reset deferred tooltip each frame
     ImGui_ImplOpenGL3_NewFrame();
 
     ImGui_ImplGlfw_NewFrame();
@@ -4164,10 +4905,10 @@ int main(int argc, char **argv) {
           float fontSize = 18.0f * scale;
           ImVec2 tpos(sx, sy);
           // Shadow
-          dl->AddText(hudFont, fontSize, ImVec2(tpos.x + 1, tpos.y + 1),
+          dl->AddText(g_fontDefault, fontSize, ImVec2(tpos.x + 1, tpos.y + 1),
                       IM_COL32(0, 0, 0, (int)(alpha * 200)), text);
           // Main text
-          dl->AddText(hudFont, fontSize, tpos, col, text);
+          dl->AddText(g_fontDefault, fontSize, tpos, col, text);
         }
       }
 
@@ -4203,7 +4944,8 @@ int main(int argc, char **argv) {
           char nameText[64];
           snprintf(nameText, sizeof(nameText), "%s  Lv.%d", mi.name.c_str(),
                    mi.level);
-          ImVec2 textSize = hudFont->CalcTextSizeA(14.0f, FLT_MAX, 0, nameText);
+          ImVec2 textSize =
+              g_fontDefault->CalcTextSizeA(14.0f, FLT_MAX, 0, nameText);
           float tx = sx - textSize.x * 0.5f;
           float ty = sy - textSize.y;
 
@@ -4214,9 +4956,9 @@ int main(int argc, char **argv) {
                               : IM_COL32(255, 255, 255, (int)(alpha * 220));
 
           // Shadow + text
-          dl->AddText(hudFont, 14.0f, ImVec2(tx + 1, ty + 1),
+          dl->AddText(g_fontDefault, 14.0f, ImVec2(tx + 1, ty + 1),
                       IM_COL32(0, 0, 0, (int)(alpha * 180)), nameText);
-          dl->AddText(hudFont, 14.0f, ImVec2(tx, ty), nameCol, nameText);
+          dl->AddText(g_fontDefault, 14.0f, ImVec2(tx, ty), nameCol, nameText);
 
           // HP bar below name
           float barW = 50.0f, barH = 4.0f;
@@ -4248,21 +4990,27 @@ int main(int argc, char **argv) {
             continue;
 
           // Render 3D Model
+
+          // Update Physics
+          float terrainH = g_terrain.GetHeight(gi.position.x, gi.position.z);
+          UpdateGroundItemPhysics(gi, terrainH);
+
           const char *modelFile =
               GetDropModelName(gi.defIndex); // Use helper mapping
+
           if (modelFile) {
             ItemModelManager::RenderItemWorld(modelFile, gi.position, view,
-                                              projection);
+                                              projection, gi.scale, gi.angle);
           } else if (gi.defIndex == -1) {
-            // Zen model? "Zen.bmd" presumably or "money.bmd"
-            // ItemModelManager::RenderItemWorld("Zen.bmd", gi.position, view,
-            // projection);
+            // Zen model
+            RenderZenPile(gi.quantity, gi.position, gi.angle, gi.scale, view,
+                          projection);
           }
 
-          // Float label logic (existing)...
-          float bob = sinf(gi.timer * 3.0f) * 5.0f;
+          // Float label logic (static, no bobbing)
+          // float bob = sinf(gi.timer * 3.0f) * 5.0f;
 
-          glm::vec3 labelPos = gi.position + glm::vec3(0, 30.0f + bob, 0);
+          glm::vec3 labelPos = gi.position + glm::vec3(0, 15.0f, 0);
           glm::vec4 clip = vp * glm::vec4(labelPos, 1.0f);
           if (clip.w <= 0.0f)
             continue;
@@ -4282,14 +5030,66 @@ int main(int argc, char **argv) {
           else
             snprintf(label, sizeof(label), "%s", name);
 
-          ImVec2 ts = hudFont->CalcTextSizeA(13.0f, FLT_MAX, 0, label);
+          ImVec2 ts = g_fontDefault->CalcTextSizeA(13.0f, FLT_MAX, 0, label);
           float tx = sx - ts.x * 0.5f, ty = sy - ts.y * 0.5f;
           // Yellow for items, gold for Zen
           ImU32 col = gi.defIndex == -1 ? IM_COL32(255, 215, 0, 220)
                                         : IM_COL32(180, 255, 180, 220);
-          dl->AddText(hudFont, 13.0f, ImVec2(tx + 1, ty + 1),
+          dl->AddText(g_fontDefault, 13.0f, ImVec2(tx + 1, ty + 1),
                       IM_COL32(0, 0, 0, 160), label);
-          dl->AddText(hudFont, 13.0f, ImVec2(tx, ty), col, label);
+          dl->AddText(g_fontDefault, 13.0f, ImVec2(tx, ty), col, label);
+
+          // Hover tooltip: show item details when mouse is near the label
+          ImVec2 mousePos = ImGui::GetIO().MousePos;
+          float hoverRadius = std::max(ts.x * 0.5f + 10.0f, 20.0f);
+          if (std::abs(mousePos.x - sx) < hoverRadius &&
+              std::abs(mousePos.y - sy) < 20.0f) {
+            ImVec2 tPos(mousePos.x + 15, mousePos.y + 10);
+            // Clamp to screen
+            if (tPos.x + 180 > winW)
+              tPos.x = winW - 185;
+            if (tPos.y + 80 > winH)
+              tPos.y = winH - 85;
+            dl->AddRectFilled(tPos, ImVec2(tPos.x + 180, tPos.y + 80),
+                              IM_COL32(0, 0, 0, 240), 4.0f);
+            dl->AddRect(tPos, ImVec2(tPos.x + 180, tPos.y + 80),
+                        IM_COL32(150, 150, 255, 200), 4.0f);
+            float curY = tPos.y + 8;
+            // Name (gold)
+            dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(255, 215, 80, 255),
+                        label);
+            curY += 18;
+            if (gi.defIndex != -1) {
+              auto dit = g_itemDefs.find(gi.defIndex);
+              if (dit != g_itemDefs.end()) {
+                const auto &dd = dit->second;
+                if (dd.reqStr > 0) {
+                  char rb[32];
+                  snprintf(rb, sizeof(rb), "STR: %d", dd.reqStr);
+                  dl->AddText(ImVec2(tPos.x + 8, curY),
+                              IM_COL32(200, 200, 200, 255), rb);
+                  curY += 14;
+                }
+                if (dd.reqDex > 0) {
+                  char rb[32];
+                  snprintf(rb, sizeof(rb), "DEX: %d", dd.reqDex);
+                  dl->AddText(ImVec2(tPos.x + 8, curY),
+                              IM_COL32(200, 200, 200, 255), rb);
+                  curY += 14;
+                }
+                if (dd.levelReq > 0) {
+                  char rb[32];
+                  snprintf(rb, sizeof(rb), "Lv: %d", dd.levelReq);
+                  dl->AddText(ImVec2(tPos.x + 8, curY),
+                              IM_COL32(200, 200, 200, 255), rb);
+                  curY += 14;
+                }
+              }
+            } else {
+              dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(255, 215, 0, 200),
+                          "Click to pick up");
+            }
+          }
         }
       }
     }
@@ -4423,8 +5223,31 @@ int main(int argc, char **argv) {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     // Flatten render queue (items on top of UI)
-    for (const auto &job : g_renderQueue) {
-      ItemModelManager::RenderItemUI(job.modelFile, job.x, job.y, job.w, job.h);
+    // Scale logical pixel coords to physical framebuffer pixels (HiDPI/Retina
+    // fix)
+    {
+      int fbW, fbH;
+      glfwGetFramebufferSize(window, &fbW, &fbH);
+      float scaleX = (float)fbW / ImGui::GetIO().DisplaySize.x;
+      float scaleY = (float)fbH / ImGui::GetIO().DisplaySize.y;
+      for (const auto &job : g_renderQueue) {
+        int px = (int)(job.x * scaleX);
+        int py = (int)(job.y * scaleY);
+        int pw = (int)(job.w * scaleX);
+        int ph = (int)(job.h * scaleY);
+        ItemModelManager::RenderItemUI(job.modelFile, job.defIndex, px, py, pw,
+                                       ph, job.hovered);
+      }
+    }
+
+    // Second ImGui pass: draw deferred tooltip ON TOP of 3D items
+    if (g_pendingTooltip.active) {
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+      FlushPendingTooltip();
+      ImGui::Render();
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
 
     // Auto-screenshot: capture AFTER ImGui render (includes HUD overlay)
@@ -4533,13 +5356,7 @@ int main(int argc, char **argv) {
   glfwDestroyWindow(window);
   glfwTerminate();
 
-  // Restore original stream buffers before log file closes
-  if (origCout)
-    std::cout.rdbuf(origCout);
-  if (origCerr)
-    std::cerr.rdbuf(origCerr);
-  delete coutTee;
-  delete cerrTee;
+  // StreamRedirector handles restoration and deletion
 
   return 0;
 }

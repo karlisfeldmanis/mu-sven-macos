@@ -23,6 +23,11 @@ void HeroCharacter::RecalcStats() {
   if (m_maxHp < 1)
     m_maxHp = 1;
 
+  // MaxMana = 25 + (Level-1)*1.0 + (Energy-10)*1.5
+  m_maxMana = (int)(25 + (m_level - 1) * 1.0f + (m_energy - 10) * 1.5f);
+  if (m_maxMana < 1)
+    m_maxMana = 1;
+
   // Damage = STR / 8 + weapon .. STR / 4 + weapon (original MU formula)
   m_damageMin = std::max(1, (int)m_strength / 8 + m_weaponDamageMin);
   m_damageMax = std::max(m_damageMin, (int)m_strength / 4 + m_weaponDamageMax);
@@ -87,7 +92,8 @@ bool HeroCharacter::AddStatPoint(int stat) {
 
 void HeroCharacter::LoadStats(int level, uint16_t str, uint16_t dex,
                               uint16_t vit, uint16_t ene, uint64_t experience,
-                              int levelUpPoints, int currentHp) {
+                              int levelUpPoints, int currentHp,
+                              int currentMana) {
   m_level = level;
   m_strength = str;
   m_dexterity = dex;
@@ -96,15 +102,18 @@ void HeroCharacter::LoadStats(int level, uint16_t str, uint16_t dex,
   m_experience = experience;
   m_levelUpPoints = levelUpPoints;
   RecalcStats();
-  // Restore current HP from server (clamped to new maxHP)
+  // Restore current HP/Mana from server (clamped to new max values)
   m_hp = std::min(currentHp, m_maxHp);
-  if (m_hp <= 0)
-    m_hp = m_maxHp; // Don't load as dead
+  if (m_hp <= 0 && currentHp > 0)
+    m_hp = m_maxHp; // Don't load as dead if server says alive
+  m_mana = std::min(currentMana, m_maxMana);
+
   std::cout << "[Hero] Loaded stats from server: Lv" << m_level
             << " STR=" << m_strength << " DEX=" << m_dexterity
             << " VIT=" << m_vitality << " ENE=" << m_energy << " HP=" << m_hp
-            << "/" << m_maxHp << " XP=" << m_experience
-            << " pts=" << m_levelUpPoints << std::endl;
+            << "/" << m_maxHp << " MP=" << m_mana << "/" << m_maxMana
+            << " XP=" << m_experience << " pts=" << m_levelUpPoints
+            << std::endl;
 }
 
 void HeroCharacter::Heal(int amount) {

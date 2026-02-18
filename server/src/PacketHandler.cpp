@@ -88,6 +88,8 @@ void SendCharStats(Session &session, Database &db, int characterId) {
   pkt.energy = c.energy;
   pkt.life = c.life;
   pkt.maxLife = c.maxLife;
+  pkt.mana = c.mana;
+  pkt.maxMana = c.maxMana;
   pkt.levelUpPoints = c.levelUpPoints;
   pkt.experienceLo = static_cast<uint32_t>(c.experience & 0xFFFFFFFF);
   pkt.experienceHi = static_cast<uint32_t>(c.experience >> 32);
@@ -197,11 +199,20 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
   for (auto &slot : equip) {
     auto itemDef = db.GetItemDefinition(slot.category, slot.itemIndex);
     if (itemDef.id > 0) {
-      if (slot.slot == 0) {
-        session.weaponDamageMin = itemDef.damageMin + slot.itemLevel * 3;
-        session.weaponDamageMax = itemDef.damageMax + slot.itemLevel * 3;
+      if (slot.slot == 0 || slot.slot == 1) { // R.Hand or L.Hand
+        if (slot.category <= 5) {             // Weapon
+          session.weaponDamageMin += itemDef.damageMin + slot.itemLevel * 3;
+          session.weaponDamageMax += itemDef.damageMax + slot.itemLevel * 3;
+        }
       }
+      // Armor pieces + Wings/Rings/etc defense
       session.totalDefense += itemDef.defense + slot.itemLevel * 2;
+
+      // Special 0.97d bonuses for new slots
+      if (slot.slot == 7) { // Wings
+        session.weaponDamageMin += 15;
+        session.weaponDamageMax += 25;
+      }
     }
   }
 
@@ -388,40 +399,26 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   for (auto &slot : equip) {
     auto itemDef = db.GetItemDefinition(slot.category, slot.itemIndex);
     if (itemDef.id > 0) {
-      if (slot.slot == 0) { // Weapon slot
-        session.weaponDamageMin = itemDef.damageMin + slot.itemLevel * 3;
-        session.weaponDamageMax = itemDef.damageMax + slot.itemLevel * 3;
+      if (slot.slot == 0 || slot.slot == 1) { // R.Hand or L.Hand
+        if (slot.category <= 5) {             // Weapon
+          session.weaponDamageMin += itemDef.damageMin + slot.itemLevel * 3;
+          session.weaponDamageMax += itemDef.damageMax + slot.itemLevel * 3;
+        }
       }
+      // Armor pieces + Wings/Rings/etc defense
       session.totalDefense += itemDef.defense + slot.itemLevel * 2;
+
+      // Special 0.97d bonuses for new slots
+      if (slot.slot == 7) { // Wings
+        session.weaponDamageMin += 15;
+        session.weaponDamageMax += 25;
+      }
     }
   }
 
   // Load inventory from DB
   session.zen = c.money;
-  auto invItems = db.GetCharacterInventory(c.id);
-  printf("[Handler] Loaded %zu inventory items from DB for char %d\n",
-         invItems.size(), c.id);
-  for (auto &item : invItems) {
-    if (item.slot < 64) {
-      session.bag[item.slot].defIndex = item.defIndex;
-      session.bag[item.slot].quantity = item.quantity;
-      session.bag[item.slot].itemLevel = item.itemLevel;
-      session.bag[item.slot].occupied = true;
-      session.bag[item.slot].primary = true; // DB items are primary
-      // Also store category/index if available
-      auto def = db.GetItemDefinition(item.defIndex);
-      if (def.id > 0) {
-        session.bag[item.slot].category = def.category;
-        session.bag[item.slot].itemIndex = def.itemIndex;
-        printf("[Handler] Inv slot %d: defId=%d cat=%d idx=%d qty=%d '%s'\n",
-               item.slot, item.defIndex, def.category, def.itemIndex,
-               item.quantity, def.name.c_str());
-      } else {
-        printf("[Handler] Inv slot %d: defId=%d - DEFINITION NOT FOUND!\n",
-               item.slot, item.defIndex);
-      }
-    }
-  }
+  LoadInventory(session, db, c.id);
 
   // Send NPC viewport
   SendNpcViewport(session, world);
@@ -430,10 +427,9 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   SendInventorySync(session);
 
   printf("[Handler] Character '%s' entered Lorencia at (%d,%d) STR=%d "
-         "weapon=%d-%d def=%d zen=%u inv=%zu\n",
+         "weapon=%d-%d def=%d zen=%u\n",
          name, c.posX, c.posY, session.strength, session.weaponDamageMin,
-         session.weaponDamageMax, session.totalDefense, session.zen,
-         invItems.size());
+         session.weaponDamageMax, session.totalDefense, session.zen);
 }
 
 void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
@@ -480,6 +476,19 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
 
     damage = std::max(1, damage - mon->defense);
     mon->hp -= damage;
+
+    // Aggro logic: target the attacker
+    if (mon->aggroTargetFd != session.GetFd()) {
+      mon->aggroTargetFd = session.GetFd();
+      mon->aggroTimer = 10.0f; // Keep aggro for 10s
+      mon->isChasing = true;
+      mon->isReturning = false;
+      mon->isWandering = false;
+      printf("[AI] Mon %d (type %d): AGGRO on attacker fd=%d (dmg=%d)\n",
+             mon->index, mon->type, session.GetFd(), damage);
+    } else {
+      mon->aggroTimer = 10.0f; // Refresh timer
+    }
   }
 
   bool killed = mon->hp <= 0;
@@ -514,7 +523,8 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
     server.Broadcast(&deathPkt, sizeof(deathPkt));
 
     // Spawn drops and broadcast them
-    auto drops = world.SpawnDrops(mon->worldX, mon->worldZ);
+    auto drops =
+        world.SpawnDrops(mon->worldX, mon->worldZ, mon->level, server.GetDB());
     for (auto &drop : drops) {
       PMSG_DROP_SPAWN_SEND dropPkt{};
       dropPkt.h = MakeC1Header(sizeof(dropPkt), 0x2B);
@@ -627,6 +637,102 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
 
   printf("[Handler] Stat alloc: type=%d newVal=%d pts=%d maxHP=%d\n",
          req->statType, resp.newValue, session.levelUpPoints, session.maxHp);
+}
+
+void LoadInventory(Session &session, Database &db, int characterId) {
+  auto invItems = db.GetCharacterInventory(characterId);
+  if (invItems.empty()) {
+    printf("[Handler] Seeding test items for character %d\n", characterId);
+    struct SeedItem {
+      uint8_t slot;
+      int16_t defIndex;
+      uint8_t level;
+    };
+    std::vector<SeedItem> seeds = {
+        {0, 0, 0},   // Kris (0,0) - 1x2
+        {2, 1, 3},   // Short Sword +3 (0,2) - 1x3
+        {4, 66, 0},  // Flail (0,4) - 1x3
+        {6, 192, 0}, // Small Shield (0,6) - 2x2
+
+        {24, 224, 0}, // Bronze Helm (3,0) - 2x2
+        {26, 256, 0}, // Bronze Armor (3,2) - 2x3
+        {28, 288, 0}, // Bronze Pants (3,4) - 2x2
+
+        {48, 320, 0}, // Bronze Gloves (6,0) - 2x2
+        {50, 352, 0}  // Bronze Boots (6,2) - 2x2
+    };
+    for (auto &s : seeds) {
+      ItemDefinition itemDef = db.GetItemDefinition(s.defIndex);
+      int w = itemDef.width > 0 ? itemDef.width : 1;
+      int h = itemDef.height > 0 ? itemDef.height : 1;
+      int r = s.slot / 8;
+      int c = s.slot % 8;
+
+      for (int hh = 0; hh < h; hh++) {
+        for (int ww = 0; ww < w; ww++) {
+          int slot = (r + hh) * 8 + (c + ww);
+          if (slot < 64) {
+            session.bag[slot].defIndex = s.defIndex;
+            session.bag[slot].category = s.defIndex / 32;
+            session.bag[slot].itemIndex = s.defIndex % 32;
+            session.bag[slot].quantity = 1;
+            session.bag[slot].itemLevel = s.level;
+            session.bag[slot].occupied = true;
+            session.bag[slot].primary = (hh == 0 && ww == 0);
+          }
+        }
+      }
+      db.SaveCharacterInventory(characterId, s.defIndex, 1, s.level, s.slot);
+    }
+    return;
+  }
+  printf("[Handler] Loading %zu inventory items from DB for char %d\n",
+         invItems.size(), characterId);
+  for (auto &item : invItems) {
+    if (item.slot < 64) {
+      ItemDefinition itemDef = db.GetItemDefinition(item.defIndex);
+      int w = itemDef.width > 0 ? itemDef.width : 1;
+      int h = itemDef.height > 0 ? itemDef.height : 1;
+      int r = item.slot / 8;
+      int c = item.slot % 8;
+
+      for (int hh = 0; hh < h; hh++) {
+        for (int ww = 0; ww < w; ww++) {
+          int slot = (r + hh) * 8 + (c + ww);
+          if (slot < 64) {
+            session.bag[slot].defIndex = item.defIndex;
+            session.bag[slot].quantity = item.quantity;
+            session.bag[slot].itemLevel = item.itemLevel;
+            session.bag[slot].occupied = true;
+            session.bag[slot].primary = (hh == 0 && ww == 0);
+            session.bag[slot].category =
+                static_cast<uint8_t>(item.defIndex / 32);
+            session.bag[slot].itemIndex =
+                static_cast<uint8_t>(item.defIndex % 32);
+          }
+        }
+      }
+      // Derive category/itemIndex from defIndex (cat*32+idx encoding)
+      if (item.defIndex >= 0) {
+        session.bag[item.slot].category =
+            static_cast<uint8_t>(item.defIndex / 32);
+        session.bag[item.slot].itemIndex =
+            static_cast<uint8_t>(item.defIndex % 32);
+        auto def = db.GetItemDefinition(session.bag[item.slot].category,
+                                        session.bag[item.slot].itemIndex);
+        if (def.id > 0) {
+          printf("[Handler] Inv slot %d: defIdx=%d cat=%d idx=%d '%s'\n",
+                 item.slot, item.defIndex, def.category, def.itemIndex,
+                 def.name.c_str());
+        } else {
+          printf(
+              "[Handler] Inv slot %d: defIdx=%d (cat=%d idx=%d) - no DB def\n",
+              item.slot, item.defIndex, session.bag[item.slot].category,
+              session.bag[item.slot].itemIndex);
+        }
+      }
+    }
+  }
 }
 
 void HandleInventoryMove(Session &session, const std::vector<uint8_t> &packet,
@@ -743,45 +849,73 @@ void HandlePickup(Session &session, const std::vector<uint8_t> &packet,
              session.zen);
     } else {
       // Item pickup - find area that fits dimensions
-      auto itemDef =
-          db.GetItemDefinition(drop->defIndex); // Use ID-based lookup
-      int w = itemDef.width > 0 ? itemDef.width : 1;
-      int h = itemDef.height > 0 ? itemDef.height : 1;
+      // Correctly look up item by Category/Index, NOT by Row ID
+      uint8_t cat = static_cast<uint8_t>(drop->defIndex / 32);
+      uint8_t idx = static_cast<uint8_t>(drop->defIndex % 32);
+      ItemDefinition itemDef = db.GetItemDefinition(cat, idx);
+
+      if (itemDef.id == 0) {
+        printf("[Handler] Unknown item defIndex=%d (cat=%d idx=%d)\n",
+               drop->defIndex, cat, idx);
+      }
+
+      int w = itemDef.width;
+      int h = itemDef.height;
+      if (w == 0 || h == 0) {
+        w = 1;
+        h = 1;
+      }
 
       bool placed = false;
-      for (int row = 0; row <= 8 - h && !placed; row++) {
-        for (int col = 0; col <= 8 - w && !placed; col++) {
-          bool canFit = true;
-          for (int hh = 0; hh < h && canFit; hh++) {
-            for (int ww = 0; ww < w && canFit; ww++) {
-              if (session.bag[(row + hh) * 8 + (col + ww)].occupied)
-                canFit = false;
+      int startSlot = 0;
+      // Try to find space in inventory (grid 8x8, slots 12-75)
+      // ... (rest of logic uses itemDef correctly)
+      // But verify variable usage below
+
+      // Re-implement the loop with corrected dimensions
+      for (int r = 0; r <= 8 - h; r++) {
+        for (int c = 0; c <= 8 - w; c++) {
+          // Check collision
+          bool fits = true;
+          for (int rr = 0; rr < h; rr++) {
+            for (int cc = 0; cc < w; cc++) {
+              int slot = (r + rr) * 8 + (c + cc);
+              if (session.bag[slot].occupied) {
+                fits = false;
+                break;
+              }
             }
+            if (!fits)
+              break;
           }
 
-          if (canFit) {
-            int startSlot = row * 8 + col;
-            for (int hh = 0; hh < h; hh++) {
-              for (int ww = 0; ww < w; ww++) {
-                int s = (row + hh) * 8 + (col + ww);
+          if (fits) {
+            startSlot = r * 8 + c;
+            // Occupy slots
+            for (int rr = 0; rr < h; rr++) {
+              for (int cc = 0; cc < w; cc++) {
+                int s = (r + rr) * 8 + (c + cc);
                 session.bag[s].occupied = true;
-                session.bag[s].primary = (hh == 0 && ww == 0);
-                if (session.bag[s].primary) {
-                  session.bag[startSlot].defIndex = drop->defIndex;
-                  session.bag[startSlot].quantity = drop->quantity;
-                  session.bag[startSlot].itemLevel = drop->itemLevel;
-                }
+                session.bag[s].primary = (rr == 0 && cc == 0);
+                session.bag[s].category = cat;
+                session.bag[s].itemIndex = idx;
+                session.bag[s].defIndex = drop->defIndex;
+                session.bag[s].quantity = drop->quantity;
+                session.bag[s].itemLevel = drop->itemLevel;
               }
             }
             db.SaveCharacterInventory(session.characterId, drop->defIndex,
                                       drop->quantity, drop->itemLevel,
                                       static_cast<uint8_t>(startSlot));
-            printf("[Handler] Item (size %dx%d) to bag slot %d: def=%d +%d\n",
-                   w, h, startSlot, drop->defIndex, drop->itemLevel);
+            printf("[Handler] Pickup: def=%d (cat=%d idx=%d) -> bag slot %d\n",
+                   drop->defIndex, cat, idx, startSlot);
+            SendInventorySync(session);
             placed = true;
+            goto done_placement;
           }
         }
       }
+    done_placement:;
       if (!placed) {
         printf("[Handler] Bag full, cannot pick up item def=%d\n",
                drop->defIndex);

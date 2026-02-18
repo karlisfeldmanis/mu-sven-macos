@@ -5,8 +5,7 @@
 #include <vector>
 
 int main() {
-  std::string data_path = "/Users/karlisfeldmanis/Desktop/mu_remaster/"
-                          "references/other/MuMain/src/bin/Data";
+  std::string data_path = "Data";
   TerrainData td = TerrainParser::LoadWorld(1, data_path);
 
   // Target object 1898 pos

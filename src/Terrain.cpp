@@ -194,9 +194,44 @@ Terrain::~Terrain() {
 void Terrain::Load(const TerrainData &data, int worldID,
                    const std::string &data_path) {
   this->worldID = worldID;
+  m_heightmap = data.heightmap; // Store for physics
   setupMesh(data.heightmap, data.lightmap);
   std::string worldDir = data_path + "/World" + std::to_string(worldID);
   setupTextures(data, worldDir);
+}
+
+float Terrain::GetHeight(float x, float y) {
+  if (m_heightmap.empty())
+    return 0.0f;
+
+  // World coordinates to grid coordinates (1 tile = 100 units)
+  // MU Logic: Z is X, X is Y in grid terms generally, but let's stick to
+  // setupMesh logic: v.position = (z*100, h, x*100) So Input X is WorldX (Grid
+  // Z), Input Y(Z) is WorldZ (Grid X)
+
+  float gridZ = x / 100.0f;
+  float gridX = y / 100.0f;
+
+  int z = (int)gridZ;
+  int x_idx = (int)gridX; // Rename to avoid confusion with float x
+
+  if (z < 0 || z >= 255 || x_idx < 0 || x_idx >= 255)
+    return 0.0f;
+
+  // Bilinear interpolation
+  float fx = gridX - x_idx;
+  float fz = gridZ - z;
+
+  int size = 256;
+  float h00 = m_heightmap[z * size + x_idx];
+  float h10 = m_heightmap[z * size + (x_idx + 1)];
+  float h01 = m_heightmap[(z + 1) * size + x_idx];
+  float h11 = m_heightmap[(z + 1) * size + (x_idx + 1)];
+
+  float h0 = h00 * (1.0f - fx) + h10 * fx;
+  float h1 = h01 * (1.0f - fx) + h11 * fx;
+
+  return h0 * (1.0f - fz) + h1 * fz;
 }
 
 void Terrain::SetPointLights(const std::vector<glm::vec3> &positions,

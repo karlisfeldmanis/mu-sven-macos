@@ -17,7 +17,7 @@ static void sigHandler(int) { g_sigint = true; }
 
 bool Server::Start(uint16_t port) {
   // Open database
-  if (!m_db.Open("build/mu_server.db")) {
+  if (!m_db.Open("mu_server.db")) {
     printf("[Server] Failed to open database\n");
     return false;
   }
@@ -26,13 +26,17 @@ bool Server::Start(uint16_t port) {
   m_db.SeedMonsterSpawns();
   m_db.SeedItemDefinitions();
 
-  // Seed default equipment for character 1 (TestDK)
-  m_db.SeedDefaultEquipment(1);
+  // Seed default equipment for the test character (dynamic lookup)
+  CharacterData c = m_db.GetCharacter("TestDK");
+  if (c.id > 0) {
+    m_db.SeedDefaultEquipment(c.id);
+  } else {
+    printf("[Server] WARNING: Could not seed equipment, 'TestDK' not found.\n");
+  }
 
   // Load terrain attributes for walkability checks (monster AI)
-  // Path relative to server build dir → client data dir
-  m_world.LoadTerrainAttributes(
-      "references/other/MuMain/src/bin/Data/World1/EncTerrain1.att");
+  // Path relative to project root
+  m_world.LoadTerrainAttributes("Data/World1/EncTerrain1.att");
 
   // Load NPC and monster data from database
   m_world.LoadNpcsFromDB(m_db, 0); // map 0 = Lorencia
@@ -300,7 +304,8 @@ void Server::OnClientConnected(Session &session) {
     // Send character stats (level, STR/DEX/VIT/ENE, XP, stat points)
     PacketHandler::SendCharStats(session, m_db, c.id);
 
-    // Initial inventory sync
+    // Initial inventory sync - Load from DB first
+    PacketHandler::LoadInventory(session, m_db, c.id);
     PacketHandler::SendInventorySync(session);
 
     printf("[Server] FD=%d initialized with character '%s' (ID:%d)\n",
@@ -329,11 +334,18 @@ void Server::OnClientConnected(Session &session) {
   for (auto &slot : equip) {
     auto itemDef = m_db.GetItemDefinition(slot.category, slot.itemIndex);
     if (itemDef.id > 0) {
-      if (slot.slot == 0) {
-        session.weaponDamageMin = itemDef.damageMin + slot.itemLevel * 3;
-        session.weaponDamageMax = itemDef.damageMax + slot.itemLevel * 3;
+      if (slot.slot == 0 || slot.slot == 1) { // R.Hand or L.Hand
+        if (slot.category <= 5) {
+          session.weaponDamageMin += itemDef.damageMin + slot.itemLevel * 3;
+          session.weaponDamageMax += itemDef.damageMax + slot.itemLevel * 3;
+        }
       }
       session.totalDefense += itemDef.defense + slot.itemLevel * 2;
+
+      if (slot.slot == 7) { // Wings
+        session.weaponDamageMin += 15;
+        session.weaponDamageMax += 25;
+      }
     }
   }
   printf("[Server] Default char combat stats: STR=%d weapon=%d-%d def=%d\n",

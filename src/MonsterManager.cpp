@@ -239,9 +239,10 @@ void MonsterManager::InitModels(const std::string &dataPath) {
 
   // Load Debris models (not mapped to server types)
   std::string skillPath = dataPath + "/Skill/";
-  m_boneModelIdx = loadMonsterModel("Bone01.bmd", "Bone Debris", 0.5f, 0, 0);
+  m_boneModelIdx =
+      loadMonsterModel("../Skill/Bone01.bmd", "Bone Debris", 0.5f, 0, 0);
   m_stoneModelIdx =
-      loadMonsterModel("BigStone01.bmd", "Stone Debris", 0.6f, 0, 0);
+      loadMonsterModel("../Skill/BigStone01.bmd", "Stone Debris", 0.6f, 0, 0);
 
   m_modelsLoaded = true;
   std::cout << "[Monster] Models loaded: " << m_models.size() << " types"
@@ -978,7 +979,7 @@ void MonsterManager::RenderOutline(int monsterIndex, const glm::mat4 &view,
   m_shader->setMat4("projection", proj);
   m_shader->setMat4("view", view);
   m_shader->setVec3("lightPos", glm::vec3(0, 10000, 0));
-  m_shader->setVec3("lightColor", 0.0f, 0.0f, 0.0f);
+  m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f); // Enabled for outline
   m_shader->setVec3("viewPos", glm::vec3(0));
   m_shader->setBool("useFog", false);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
@@ -993,18 +994,36 @@ void MonsterManager::RenderOutline(int monsterIndex, const glm::mat4 &view,
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
 
-  // Slightly scaled model for edge visibility (1.08x = tight outline)
-  float edgeScale = mon.scale * 1.08f;
-  glm::mat4 model = glm::translate(glm::mat4(1.0f), mon.position);
-  model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-  model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-  model = glm::rotate(model, mon.facing, glm::vec3(0, 0, 1));
-  model = glm::scale(model, glm::vec3(edgeScale));
-  m_shader->setMat4("model", model);
+  // Build model matrix (Pass 1: tight outline)
+  float edgeScale1 = mon.scale * 1.08f;
+  glm::mat4 model1 = glm::translate(glm::mat4(1.0f), mon.position);
+  model1 = glm::rotate(model1, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+  model1 = glm::rotate(model1, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+  model1 = glm::rotate(model1, mon.facing, glm::vec3(0, 0, 1));
+  model1 = glm::scale(model1, glm::vec3(edgeScale1));
+  m_shader->setMat4("model", model1);
 
-  // Single-pass red outline glow (additive)
+  // Pass 1: Bright white core glow
   m_shader->setFloat("blendMeshLight", 1.0f);
-  m_shader->setVec3("terrainLight", 0.35f, 0.06f, 0.02f);
+  m_shader->setVec3("terrainLight", 0.8f, 0.8f, 0.8f);
+  for (auto &mb : mon.meshBuffers) {
+    if (mb.indexCount == 0 || mb.hidden)
+      continue;
+    glBindTexture(GL_TEXTURE_2D, mb.texture);
+    glBindVertexArray(mb.vao);
+    glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+  }
+
+  // Pass 2: Softer outer halo
+  float edgeScale2 = mon.scale * 1.15f;
+  glm::mat4 model2 = glm::translate(glm::mat4(1.0f), mon.position);
+  model2 = glm::rotate(model2, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+  model2 = glm::rotate(model2, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+  model2 = glm::rotate(model2, mon.facing, glm::vec3(0, 0, 1));
+  model2 = glm::scale(model2, glm::vec3(edgeScale2));
+  m_shader->setMat4("model", model2);
+
+  m_shader->setVec3("terrainLight", 0.4f, 0.4f, 0.4f);
   for (auto &mb : mon.meshBuffers) {
     if (mb.indexCount == 0 || mb.hidden)
       continue;
@@ -1107,8 +1126,10 @@ void MonsterManager::TriggerAttackAnimation(int index) {
     return;
   // Don't override HIT stun — let flinch animation play out before attacking
   // again
-  if (mon.state == MonsterState::HIT)
-    return;
+  // Don't override HIT stun — let flinch animation play out before attacking
+  // again
+  // if (mon.state == MonsterState::HIT)
+  //   return;
   // Attack packet confirms monster is actively chasing — refresh timeout
   std::cout << "[Client] Mon " << index << " (" << mon.name
             << "): ATTACKING (was " << (int)mon.state << ")" << std::endl;

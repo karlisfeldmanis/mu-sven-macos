@@ -201,6 +201,8 @@ struct PMSG_CHARSTATS_SEND {
   uint16_t energy;
   uint16_t life;
   uint16_t maxLife;
+  uint16_t mana;
+  uint16_t maxMana;
   uint16_t levelUpPoints;
   uint32_t experienceLo; // Low 32 bits of uint64_t experience
   uint32_t experienceHi; // High 32 bits
@@ -277,7 +279,7 @@ struct PMSG_MONSTER_DEATH_SEND {
 struct PMSG_DROP_SPAWN_SEND {
   PBMSG_HEAD h;       // C1:0x2B
   uint16_t dropIndex; // Unique drop ID
-  int8_t defIndex;    // -1=Zen, 0-5=item def index
+  int16_t defIndex;   // -1=Zen, 0-511+=item def index
   uint8_t quantity;
   uint8_t itemLevel; // Enhancement +0..+2
   float worldX;
@@ -294,8 +296,7 @@ struct PMSG_PICKUP_RECV {
 struct PMSG_PICKUP_RESULT_SEND {
   PBMSG_HEAD h; // C1:0x2D
   uint16_t dropIndex;
-  int8_t defIndex; // -1=Zen, 0-5=item def index (for client to know what was
-                   // picked up)
+  int16_t defIndex; // -1=Zen, 0-511+=item def index
   uint8_t quantity;
   uint8_t itemLevel;
   uint8_t success; // 1=ok, 0=already taken
@@ -311,8 +312,8 @@ struct PMSG_DROP_REMOVE_SEND {
 struct PMSG_MONSTER_ATTACK_SEND {
   PBMSG_HEAD h; // C1:0x2F
   uint16_t monsterIndex;
-  uint16_t damage;      // 0=miss
-  uint16_t remainingHp; // Player's remaining HP
+  float damage;      // Changed from uint16_t to float
+  float remainingHp; // Changed from uint16_t to float
 };
 
 // --- Server → Client: Monster Respawn (0x30) ---

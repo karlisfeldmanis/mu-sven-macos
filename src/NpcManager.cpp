@@ -9,10 +9,9 @@
 
 // NPC type → display name mapping (matches Database::SeedNpcSpawns)
 static const std::unordered_map<uint16_t, std::string> s_npcNames = {
-    {253, "Potion Girl Amy"}, {250, "Weapon Merchant"},
+    {253, "Potion Girl Amy"},      {250, "Weapon Merchant"},
     {251, "Hanzo the Blacksmith"}, {254, "Pasi the Mage"},
-    {255, "Lumen the Barmaid"}, {240, "Safety Guardian"}
-};
+    {255, "Lumen the Barmaid"},    {240, "Safety Guardian"}};
 
 glm::vec3 NpcManager::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
   const int SIZE = 256;
@@ -49,8 +48,8 @@ float NpcManager::snapToTerrain(float worldX, float worldZ) {
   float h10 = m_terrainData->heightmap[zi * S + (xi + 1)];
   float h01 = m_terrainData->heightmap[(zi + 1) * S + xi];
   float h11 = m_terrainData->heightmap[(zi + 1) * S + (xi + 1)];
-  return h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) +
-         h01 * (1 - xd) * zd + h11 * xd * zd;
+  return h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) + h01 * (1 - xd) * zd +
+         h11 * xd * zd;
 }
 
 int NpcManager::loadModel(const std::string &npcPath,
@@ -101,7 +100,7 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
   NpcInstance npc;
   npc.modelIdx = modelIdx;
   npc.scale = scale;
-  npc.action = 0; // Idle
+  npc.action = 0;  // Idle
   npc.npcType = 0; // Set by AddNpcByType or Init caller
 
   // Grid to world: WorldX = gridY * 100, WorldZ = gridX * 100
@@ -112,7 +111,8 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
 
   // Direction to facing angle from original MU source (WSclient.cpp:2564):
   //   Angle[2] = (Direction - 1) * 45.0f
-  // dir: 0=-45°(SW), 1=0°(S), 2=45°(SE), 3=90°(E), 4=135°(NE), 5=180°(N), 6=225°(NW), 7=270°(W)
+  // dir: 0=-45°(SW), 1=0°(S), 2=45°(SE), 3=90°(E), 4=135°(NE), 5=180°(N),
+  // 6=225°(NW), 7=270°(W)
   npc.facing = (float)(dir - 1) * (float)M_PI / 4.0f;
 
   // Random animation offset so NPCs don't all sync
@@ -192,7 +192,8 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
 }
 
 void NpcManager::InitModels(const std::string &dataPath) {
-  if (m_modelsLoaded) return;
+  if (m_modelsLoaded)
+    return;
 
   std::string npcPath = dataPath + "/NPC/";
   m_npcTexPath = npcPath;
@@ -215,23 +216,21 @@ void NpcManager::InitModels(const std::string &dataPath) {
       npcPath, "Man01.bmd",
       {"ManHead01.bmd", "ManUpper01.bmd", "ManGloves01.bmd", "ManBoots01.bmd"},
       "MerchantMan");
-  int girlIdx =
-      loadModel(npcPath, "Girl01.bmd",
-                {"GirlHead01.bmd", "GirlUpper01.bmd", "GirlLower01.bmd"},
-                "MerchantGirl");
-  int femaleIdx = loadModel(
-      npcPath, "Female01.bmd",
-      {"FemaleHead01.bmd", "FemaleUpper01.bmd", "FemaleLower01.bmd",
-       "FemaleBoots01.bmd"},
-      "MerchantFemale");
+  int girlIdx = loadModel(
+      npcPath, "Girl01.bmd",
+      {"GirlHead01.bmd", "GirlUpper01.bmd", "GirlLower01.bmd"}, "MerchantGirl");
+  int femaleIdx = loadModel(npcPath, "Female01.bmd",
+                            {"FemaleHead01.bmd", "FemaleUpper01.bmd",
+                             "FemaleLower01.bmd", "FemaleBoots01.bmd"},
+                            "MerchantFemale");
 
   // Map NPC type IDs to model indices
-  m_typeToModel[251] = smithIdx;    // Hanzo the Blacksmith
-  m_typeToModel[254] = wizardIdx;   // Pasi the Mage
-  m_typeToModel[240] = storageIdx;  // Safety Guardian (Vault)
-  m_typeToModel[250] = manIdx;      // Weapon Merchant
-  m_typeToModel[253] = girlIdx;     // Potion Girl Amy
-  m_typeToModel[255] = femaleIdx;   // Lumen the Barmaid
+  m_typeToModel[251] = smithIdx;   // Hanzo the Blacksmith
+  m_typeToModel[254] = wizardIdx;  // Pasi the Mage
+  m_typeToModel[240] = storageIdx; // Safety Guardian (Vault)
+  m_typeToModel[250] = manIdx;     // Weapon Merchant
+  m_typeToModel[253] = girlIdx;    // Potion Girl Amy
+  m_typeToModel[255] = femaleIdx;  // Lumen the Barmaid
 
   // Scale overrides
   m_typeScale[251] = 0.95f; // Blacksmith slightly smaller
@@ -242,16 +241,17 @@ void NpcManager::InitModels(const std::string &dataPath) {
 }
 
 void NpcManager::AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY,
-                               uint8_t dir) {
+                              uint8_t dir) {
   auto it = m_typeToModel.find(npcType);
   if (it == m_typeToModel.end()) {
-    std::cerr << "[NPC] Unknown NPC type " << npcType << " at ("
-              << (int)gridX << "," << (int)gridY << "), skipping" << std::endl;
+    std::cerr << "[NPC] Unknown NPC type " << npcType << " at (" << (int)gridX
+              << "," << (int)gridY << "), skipping" << std::endl;
     return;
   }
   float scale = 1.0f;
   auto scaleIt = m_typeScale.find(npcType);
-  if (scaleIt != m_typeScale.end()) scale = scaleIt->second;
+  if (scaleIt != m_typeScale.end())
+    scale = scaleIt->second;
 
   addNpc(it->second, gridX, gridY, dir, scale);
 
@@ -259,11 +259,12 @@ void NpcManager::AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY,
   auto &added = m_npcs.back();
   added.npcType = npcType;
   auto nameIt = s_npcNames.find(npcType);
-  if (nameIt != s_npcNames.end()) added.name = nameIt->second;
+  if (nameIt != s_npcNames.end())
+    added.name = nameIt->second;
 
-  std::cout << "[NPC] Server-spawned NPC type=" << npcType
-            << " at grid (" << (int)gridX << "," << (int)gridY
-            << ") dir=" << (int)dir << std::endl;
+  std::cout << "[NPC] Server-spawned NPC type=" << npcType << " at grid ("
+            << (int)gridX << "," << (int)gridY << ") dir=" << (int)dir
+            << std::endl;
 }
 
 void NpcManager::Init(const std::string &dataPath) {
@@ -271,23 +272,27 @@ void NpcManager::Init(const std::string &dataPath) {
   InitModels(dataPath);
 
   // Hardcoded fallback: place Lorencia NPCs from MonsterSetBase.txt
-  struct HardcodedNpc { uint16_t type; int gx, gy, dir; float scale; };
-  HardcodedNpc hardcoded[] = {
-    {253, 127, 86, 2, 1.0f}, {250, 183, 137, 2, 1.0f},
-    {251, 116, 141, 3, 0.95f}, {254, 118, 113, 3, 1.0f},
-    {255, 123, 135, 1, 1.0f}, {240, 146, 110, 3, 1.0f},
-    {240, 147, 145, 1, 1.0f}
+  struct HardcodedNpc {
+    uint16_t type;
+    int gx, gy, dir;
+    float scale;
   };
+  HardcodedNpc hardcoded[] = {
+      {253, 127, 86, 2, 1.0f},   {250, 183, 137, 2, 1.0f},
+      {251, 116, 141, 3, 0.95f}, {254, 118, 113, 3, 1.0f},
+      {255, 123, 135, 1, 1.0f},  {240, 146, 110, 3, 1.0f},
+      {240, 147, 145, 1, 1.0f}};
   for (auto &h : hardcoded) {
     addNpc(m_typeToModel[h.type], h.gx, h.gy, h.dir, h.scale);
     auto &added = m_npcs.back();
     added.npcType = h.type;
     auto nameIt = s_npcNames.find(h.type);
-    if (nameIt != s_npcNames.end()) added.name = nameIt->second;
+    if (nameIt != s_npcNames.end())
+      added.name = nameIt->second;
   }
 
-  std::cout << "[NPC] Initialized " << m_npcs.size() << " NPCs in Lorencia (hardcoded fallback)"
-            << std::endl;
+  std::cout << "[NPC] Initialized " << m_npcs.size()
+            << " NPCs in Lorencia (hardcoded fallback)" << std::endl;
 }
 
 void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
@@ -333,17 +338,16 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     }
 
     // Compute bone matrices
-    auto bones =
-        ComputeBoneMatricesInterpolated(mdl.skeleton, npc.action, npc.animFrame);
+    auto bones = ComputeBoneMatricesInterpolated(mdl.skeleton, npc.action,
+                                                 npc.animFrame);
     npc.cachedBones = bones;
 
     // Re-skin meshes
     int partIdx = 0;
     for (auto &bp : npc.bodyParts) {
-      BMDData *bmd =
-          (bp.bmdIdx < 0) ? mdl.skeleton : mdl.parts[bp.bmdIdx];
-      for (int mi = 0; mi < (int)bp.meshBuffers.size() &&
-                        mi < (int)bmd->Meshes.size();
+      BMDData *bmd = (bp.bmdIdx < 0) ? mdl.skeleton : mdl.parts[bp.bmdIdx];
+      for (int mi = 0;
+           mi < (int)bp.meshBuffers.size() && mi < (int)bmd->Meshes.size();
            ++mi) {
         RetransformMeshWithBones(bmd->Meshes[mi], bones, bp.meshBuffers[mi]);
       }
@@ -435,10 +439,9 @@ void NpcManager::RenderShadows(const glm::mat4 &view, const glm::mat4 &proj) {
 
     int smIdx = 0;
     for (auto &bp : npc.bodyParts) {
-      BMDData *bmd =
-          (bp.bmdIdx < 0) ? mdl.skeleton : mdl.parts[bp.bmdIdx];
-      for (int mi = 0; mi < (int)bmd->Meshes.size() &&
-                        smIdx < (int)npc.shadowMeshes.size();
+      BMDData *bmd = (bp.bmdIdx < 0) ? mdl.skeleton : mdl.parts[bp.bmdIdx];
+      for (int mi = 0;
+           mi < (int)bmd->Meshes.size() && smIdx < (int)npc.shadowMeshes.size();
            ++mi, ++smIdx) {
         auto &sm = npc.shadowMeshes[smIdx];
         if (sm.vertexCount == 0 || sm.vao == 0)
@@ -520,7 +523,8 @@ void NpcManager::RenderShadows(const glm::mat4 &view, const glm::mat4 &proj) {
 
 NpcInfo NpcManager::GetNpcInfo(int index) const {
   NpcInfo info{};
-  if (index < 0 || index >= (int)m_npcs.size()) return info;
+  if (index < 0 || index >= (int)m_npcs.size())
+    return info;
   const auto &npc = m_npcs[index];
   info.position = npc.position;
   info.radius = 80.0f;
@@ -531,13 +535,14 @@ NpcInfo NpcManager::GetNpcInfo(int index) const {
 }
 
 void NpcManager::RenderOutline(int npcIndex, const glm::mat4 &view,
-                                const glm::mat4 &proj) {
+                               const glm::mat4 &proj) {
   // Original MU selection outline (ZzzObject.cpp:301-328):
   // Two-pass scaled rendering with RENDER_BRIGHT (additive blend).
   // NPC colors: pass1 = (0.02, 0.1, 0), pass2 = (0.2, 0.2, 0)
   // BoneScale = 1.2 for both passes. LightEnable = false.
 
-  if (!m_shader || npcIndex < 0 || npcIndex >= (int)m_npcs.size()) return;
+  if (!m_shader || npcIndex < 0 || npcIndex >= (int)m_npcs.size())
+    return;
 
   auto &npc = m_npcs[npcIndex];
 
@@ -545,7 +550,7 @@ void NpcManager::RenderOutline(int npcIndex, const glm::mat4 &view,
   m_shader->setMat4("projection", proj);
   m_shader->setMat4("view", view);
   m_shader->setVec3("lightPos", glm::vec3(0, 10000, 0));
-  m_shader->setVec3("lightColor", 0.0f, 0.0f, 0.0f); // LightEnable = false
+  m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f); // Enabled for outline
   m_shader->setVec3("viewPos", glm::vec3(0));
   m_shader->setBool("useFog", false);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
@@ -575,7 +580,8 @@ void NpcManager::RenderOutline(int npcIndex, const glm::mat4 &view,
   m_shader->setVec3("terrainLight", 0.02f, 0.1f, 0.0f);
   for (auto &bp : npc.bodyParts) {
     for (auto &mb : bp.meshBuffers) {
-      if (mb.indexCount == 0 || mb.hidden) continue;
+      if (mb.indexCount == 0 || mb.hidden)
+        continue;
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
       glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
@@ -587,7 +593,8 @@ void NpcManager::RenderOutline(int npcIndex, const glm::mat4 &view,
   m_shader->setVec3("terrainLight", 0.2f, 0.2f, 0.0f);
   for (auto &bp : npc.bodyParts) {
     for (auto &mb : bp.meshBuffers) {
-      if (mb.indexCount == 0 || mb.hidden) continue;
+      if (mb.indexCount == 0 || mb.hidden)
+        continue;
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
       glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
