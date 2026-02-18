@@ -505,11 +505,20 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       continue;
     }
 
-    // Update aggro timer
+    // Tick respawn immunity timer toward 0 (negative = immune to proximity
+    // aggro)
+    if (mon.aggroTimer < 0.0f) {
+      mon.aggroTimer += dt;
+      if (mon.aggroTimer >= 0.0f)
+        mon.aggroTimer = 0.0f; // Immunity expired
+    }
+
+    // Update aggro timer (positive = time remaining on active aggro)
     if (mon.aggroTargetFd != -1) {
       mon.aggroTimer -= dt;
       if (mon.aggroTimer <= 0.0f) {
         mon.aggroTargetFd = -1; // Aggro expired
+        mon.aggroTimer = 0.0f;
         printf("[AI] Mon %d (type %d): aggro expired\n", mon.index, mon.type);
       }
     }
