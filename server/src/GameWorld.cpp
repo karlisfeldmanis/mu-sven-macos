@@ -574,12 +574,10 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       continue;
     }
 
-    // Safe zone check: don't aggro if player OR monster is in safe zone
-    if (IsSafeZone(bestTarget->worldX, bestTarget->worldZ) ||
-        IsSafeZone(mon.worldX, mon.worldZ)) {
+    // Safe zone check: don't aggro if player is in safe zone
+    if (IsSafeZone(bestTarget->worldX, bestTarget->worldZ)) {
       if (mon.isChasing) {
-        printf("[AI] Mon %d (type %d): safe zone (mon or target), "
-               "returning to spawn\n",
+        printf("[AI] Mon %d (type %d): target in SAFE ZONE, returning\n",
                mon.index, mon.type);
         mon.isChasing = false;
         mon.isReturning = true;
