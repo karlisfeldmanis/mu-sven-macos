@@ -416,7 +416,9 @@ void GameWorld::Update(float dt,
         mon.lastBroadcastTargetX = 0;
         mon.lastBroadcastTargetY = 0;
         mon.lastBroadcastChasing = false;
-        mon.aggroTargetFd = -1; // Clear aggro
+        mon.aggroTargetFd = -1;    // Clear aggro
+        mon.aggroTimer = -3.0f;    // 3s respawn immunity (negative = immune)
+        mon.attackCooldown = 1.5f; // Prevent instant attack on respawn
         mon.justRespawned = true;
         printf("[World] Monster %d (type %d) respawned at grid (%d,%d)\n",
                mon.index, mon.type, mon.gridX, mon.gridY);
@@ -563,15 +565,16 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       continue;
     }
 
-    // Safe zone check: don't aggro if player is in safe zone (TW_SAFEZONE from
-    // _define.h)
-    if (IsSafeZone(bestTarget->worldX, bestTarget->worldZ)) {
+    // Safe zone check: don't aggro if player OR monster is in safe zone
+    if (IsSafeZone(bestTarget->worldX, bestTarget->worldZ) ||
+        IsSafeZone(mon.worldX, mon.worldZ)) {
       if (mon.isChasing) {
-        printf("[AI] Mon %d (type %d): target in SAFE ZONE at (%.0f,%.0f), "
+        printf("[AI] Mon %d (type %d): safe zone (mon or target), "
                "returning to spawn\n",
-               mon.index, mon.type, bestTarget->worldX, bestTarget->worldZ);
+               mon.index, mon.type);
         mon.isChasing = false;
         mon.isReturning = true;
+        mon.aggroTargetFd = -1;
         moveTowardSpawn(mon);
       }
       continue;
@@ -604,7 +607,9 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       }
     } else {
       // Not chasing — initial aggro check
-      if (bestDist > mon.aggroRange || distFromSpawn > LEASH_RANGE) {
+      // Respawn immunity: aggroTimer < 0 means immune to proximity aggro
+      if (bestDist > mon.aggroRange || distFromSpawn > LEASH_RANGE ||
+          mon.aggroTimer < 0.0f) {
         continue;
       }
     }
@@ -631,6 +636,19 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
         step = bestDist;
       float nextX = mon.worldX + (dx / bestDist) * step;
       float nextZ = mon.worldZ + (dz / bestDist) * step;
+
+      // Don't move into safe zones
+      if (IsSafeZone(nextX, nextZ)) {
+        printf("[AI] Mon %d (type %d): refusing to enter SAFE ZONE, "
+               "returning\n",
+               mon.index, mon.type);
+        mon.isChasing = false;
+        mon.isReturning = true;
+        mon.aggroTargetFd = -1;
+        moveTowardSpawn(mon);
+        continue;
+      }
+
       if (IsWalkable(nextX, nextZ)) {
         mon.worldX = nextX;
         mon.worldZ = nextZ;
