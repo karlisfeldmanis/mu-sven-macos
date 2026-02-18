@@ -761,9 +761,280 @@ std::vector<uint8_t> GameWorld::BuildMonsterViewportV2Packet() const {
   return packet;
 }
 
-// Drop system
+// ── 0.97d Lorencia Drop Tables ──
+// defIndex = category*32 + itemIndex
+// Weight = relative chance within the pool (higher = more common)
+
+struct DropEntry {
+  int16_t defIndex; // category*32 + itemIndex (-1 = skip)
+  int weight;       // Relative weight for weighted random pick
+  uint8_t maxPlus;  // Max enhancement level (+0..+N)
+};
+
+// Helper: pick a weighted random entry
+static const DropEntry &PickWeighted(const std::vector<DropEntry> &pool) {
+  int total = 0;
+  for (auto &e : pool)
+    total += e.weight;
+  int roll = rand() % total;
+  int acc = 0;
+  for (auto &e : pool) {
+    acc += e.weight;
+    if (roll < acc)
+      return e;
+  }
+  return pool.back();
+}
+
+// Per-monster pools (defIndex = cat*32 + idx)
+// Cat  0=Sword  1=Axe   2=Mace  3=Spear  4=Bow   5=Staff
+// Cat  6=Shield 7=Helm  8=Armor 9=Pants 10=Glove 11=Boot
+// Cat 12=Wing  13=Helper 14=Potion 15=Scroll
+
+// Spider (type 3, Lv2) — weakest, almost no drops
+static const std::vector<DropEntry> s_spiderDrops = {
+    {14 * 32 + 1, 30, 0}, // Small Healing Potion
+    {14 * 32 + 4, 20, 0}, // Small Mana Potion
+    {0 * 32 + 0, 5, 0},   // Kris
+    {1 * 32 + 0, 5, 0},   // Small Axe
+    {15 * 32 + 3, 3, 0},  // Scroll of Fire Ball
+};
+
+// Budge Dragon (type 2, Lv4)
+static const std::vector<DropEntry> s_budgeDrops = {
+    {14 * 32 + 1, 25, 0}, // Small Healing Potion
+    {14 * 32 + 4, 20, 0}, // Small Mana Potion
+    {0 * 32 + 0, 8, 0},   // Kris
+    {0 * 32 + 1, 6, 0},   // Short Sword
+    {1 * 32 + 0, 6, 0},   // Small Axe
+    {1 * 32 + 1, 4, 0},   // Hand Axe
+    {5 * 32 + 0, 5, 0},   // Skull Staff
+    {6 * 32 + 0, 4, 0},   // Small Shield
+    {10 * 32 + 2, 3, 0},  // Pad Gloves
+    {11 * 32 + 2, 3, 0},  // Pad Boots
+    {15 * 32 + 3, 3, 0},  // Scroll of Fire Ball
+    {15 * 32 + 10, 2, 0}, // Scroll of Power Wave
+};
+
+// Bull Fighter (type 0, Lv6)
+static const std::vector<DropEntry> s_bullDrops = {
+    {14 * 32 + 1, 20, 0}, // Small Healing Potion
+    {14 * 32 + 2, 10, 0}, // Medium Healing Potion
+    {14 * 32 + 4, 15, 0}, // Small Mana Potion
+    {0 * 32 + 0, 6, 1},   // Kris +0/+1
+    {0 * 32 + 1, 5, 1},   // Short Sword
+    {0 * 32 + 2, 3, 0},   // Rapier
+    {1 * 32 + 0, 5, 1},   // Small Axe
+    {1 * 32 + 1, 4, 0},   // Hand Axe
+    {2 * 32 + 0, 3, 0},   // Mace
+    {5 * 32 + 0, 4, 1},   // Skull Staff
+    {6 * 32 + 0, 4, 1},   // Small Shield
+    {6 * 32 + 4, 3, 0},   // Buckler
+    {7 * 32 + 2, 3, 0},   // Pad Helm
+    {8 * 32 + 2, 3, 0},   // Pad Armor
+    {9 * 32 + 2, 2, 0},   // Pad Pants
+    {10 * 32 + 2, 3, 0},  // Pad Gloves
+    {11 * 32 + 2, 3, 0},  // Pad Boots
+    {7 * 32 + 5, 2, 0},   // Leather Helm
+    {8 * 32 + 5, 2, 0},   // Leather Armor
+    {15 * 32 + 3, 3, 0},  // Scroll of Fire Ball
+    {15 * 32 + 10, 2, 0}, // Scroll of Power Wave
+};
+
+// Hound (type 1, Lv9)
+static const std::vector<DropEntry> s_houndDrops = {
+    {14 * 32 + 2, 15, 0}, // Medium Healing Potion
+    {14 * 32 + 5, 12, 0}, // Medium Mana Potion
+    {0 * 32 + 1, 5, 1},   // Short Sword
+    {0 * 32 + 2, 5, 1},   // Rapier
+    {0 * 32 + 4, 3, 0},   // Sword of Assassin
+    {1 * 32 + 1, 4, 1},   // Hand Axe
+    {1 * 32 + 2, 3, 0},   // Double Axe
+    {2 * 32 + 0, 4, 1},   // Mace
+    {2 * 32 + 1, 3, 0},   // Morning Star
+    {4 * 32 + 0, 4, 0},   // Short Bow
+    {4 * 32 + 1, 3, 0},   // Bow
+    {4 * 32 + 8, 3, 0},   // Crossbow
+    {5 * 32 + 0, 3, 1},   // Skull Staff
+    {6 * 32 + 0, 3, 1},   // Small Shield
+    {6 * 32 + 1, 3, 0},   // Horn Shield
+    {6 * 32 + 4, 3, 1},   // Buckler
+    {7 * 32 + 2, 3, 1},   // Pad Helm
+    {7 * 32 + 5, 3, 0},   // Leather Helm
+    {7 * 32 + 10, 2, 0},  // Vine Helm
+    {8 * 32 + 2, 3, 1},   // Pad Armor
+    {8 * 32 + 5, 3, 0},   // Leather Armor
+    {8 * 32 + 10, 2, 0},  // Vine Armor
+    {15 * 32 + 2, 3, 0},  // Scroll of Lighting
+    {15 * 32 + 5, 2, 0},  // Scroll of Teleport
+    {13 * 32 + 8, 1, 0},  // Ring of Ice
+};
+
+// Elite Bull Fighter (type 4, Lv12)
+static const std::vector<DropEntry> s_eliteBullDrops = {
+    {14 * 32 + 2, 12, 0}, // Medium Healing Potion
+    {14 * 32 + 5, 10, 0}, // Medium Mana Potion
+    {0 * 32 + 2, 4, 1},   // Rapier
+    {0 * 32 + 3, 4, 1},   // Katana
+    {0 * 32 + 4, 3, 0},   // Sword of Assassin
+    {1 * 32 + 2, 4, 1},   // Double Axe
+    {1 * 32 + 3, 3, 0},   // Tomahawk
+    {2 * 32 + 1, 4, 1},   // Morning Star
+    {2 * 32 + 2, 3, 0},   // Flail
+    {3 * 32 + 5, 3, 0},   // Double Poleaxe
+    {3 * 32 + 2, 3, 0},   // Dragon Lance
+    {4 * 32 + 1, 3, 1},   // Bow
+    {4 * 32 + 9, 3, 0},   // Golden Crossbow
+    {5 * 32 + 1, 3, 0},   // Angelic Staff
+    {6 * 32 + 1, 3, 1},   // Horn Shield
+    {6 * 32 + 2, 3, 0},   // Kite Shield
+    {6 * 32 + 6, 2, 0},   // Skull Shield
+    {7 * 32 + 0, 3, 0},   // Bronze Helm
+    {7 * 32 + 4, 3, 0},   // Bone Helm
+    {8 * 32 + 0, 3, 0},   // Bronze Armor
+    {8 * 32 + 4, 3, 0},   // Bone Armor
+    {9 * 32 + 0, 2, 0},   // Bronze Pants
+    {10 * 32 + 0, 2, 0},  // Bronze Gloves
+    {11 * 32 + 0, 2, 0},  // Bronze Boots
+    {15 * 32 + 2, 3, 0},  // Scroll of Lighting
+    {15 * 32 + 6, 2, 0},  // Scroll of Ice
+    {13 * 32 + 9, 1, 0},  // Ring of Poison
+};
+
+// Lich (type 6, Lv14) — caster, drops staves and magic items
+static const std::vector<DropEntry> s_lichDrops = {
+    {14 * 32 + 2, 10, 0}, // Medium Healing Potion
+    {14 * 32 + 3, 5, 0},  // Large Healing Potion
+    {14 * 32 + 5, 8, 0},  // Medium Mana Potion
+    {14 * 32 + 6, 4, 0},  // Large Mana Potion
+    {0 * 32 + 3, 3, 1},   // Katana
+    {0 * 32 + 5, 3, 0},   // Blade
+    {0 * 32 + 6, 3, 0},   // Gladius
+    {1 * 32 + 3, 3, 1},   // Tomahawk
+    {1 * 32 + 4, 2, 0},   // Elven Axe
+    {2 * 32 + 2, 3, 1},   // Flail
+    {3 * 32 + 1, 3, 0},   // Spear
+    {3 * 32 + 6, 3, 0},   // Halberd
+    {4 * 32 + 2, 3, 0},   // Elven Bow
+    {4 * 32 + 10, 2, 0},  // Arquebus
+    {5 * 32 + 1, 3, 1},   // Angelic Staff
+    {5 * 32 + 2, 3, 0},   // Serpent Staff
+    {6 * 32 + 2, 3, 1},   // Kite Shield
+    {6 * 32 + 3, 2, 0},   // Elven Shield
+    {7 * 32 + 4, 3, 1},   // Bone Helm
+    {7 * 32 + 11, 2, 0},  // Silk Helm
+    {8 * 32 + 4, 3, 1},   // Bone Armor
+    {8 * 32 + 11, 2, 0},  // Silk Armor
+    {15 * 32 + 0, 3, 0},  // Scroll of Poison
+    {15 * 32 + 6, 3, 0},  // Scroll of Ice
+    {15 * 32 + 7, 2, 0},  // Scroll of Twister
+    {13 * 32 + 12, 1, 0}, // Pendant of Lighting
+    {13 * 32 + 8, 1, 0},  // Ring of Ice
+};
+
+// Giant (type 7, Lv17) — strong melee, drops DK gear
+static const std::vector<DropEntry> s_giantDrops = {
+    {14 * 32 + 3, 8, 0},  // Large Healing Potion
+    {14 * 32 + 6, 6, 0},  // Large Mana Potion
+    {0 * 32 + 5, 3, 1},   // Blade
+    {0 * 32 + 6, 3, 1},   // Gladius
+    {0 * 32 + 7, 2, 0},   // Falchion
+    {1 * 32 + 4, 3, 1},   // Elven Axe
+    {1 * 32 + 5, 2, 0},   // Battle Axe
+    {2 * 32 + 2, 3, 1},   // Flail
+    {2 * 32 + 3, 2, 0},   // Great Hammer
+    {3 * 32 + 6, 3, 1},   // Halberd
+    {3 * 32 + 7, 2, 0},   // Berdysh
+    {4 * 32 + 2, 3, 1},   // Elven Bow
+    {4 * 32 + 3, 2, 0},   // Battle Bow
+    {4 * 32 + 11, 2, 0},  // Light Crossbow
+    {5 * 32 + 2, 3, 1},   // Serpent Staff
+    {5 * 32 + 3, 2, 0},   // Thunder Staff
+    {6 * 32 + 6, 3, 1},   // Skull Shield
+    {6 * 32 + 9, 2, 0},   // Plate Shield
+    {6 * 32 + 10, 2, 0},  // Big Round Shield
+    {7 * 32 + 0, 3, 1},   // Bronze Helm
+    {7 * 32 + 6, 2, 0},   // Scale Helm
+    {7 * 32 + 12, 2, 0},  // Wind Helm
+    {8 * 32 + 0, 3, 1},   // Bronze Armor
+    {8 * 32 + 6, 2, 0},   // Scale Armor
+    {8 * 32 + 12, 2, 0},  // Wind Armor
+    {9 * 32 + 5, 2, 0},   // Leather Pants
+    {9 * 32 + 6, 2, 0},   // Scale Pants
+    {10 * 32 + 5, 2, 0},  // Leather Gloves
+    {11 * 32 + 5, 2, 0},  // Leather Boots
+    {15 * 32 + 7, 2, 0},  // Scroll of Twister
+    {13 * 32 + 12, 1, 0}, // Pendant of Lighting
+    {13 * 32 + 13, 1, 0}, // Pendant of Fire
+};
+
+// Skeleton Warrior (type 14, Lv19) — best Lorencia drops
+static const std::vector<DropEntry> s_skelDrops = {
+    {14 * 32 + 3, 8, 0},  // Large Healing Potion
+    {14 * 32 + 6, 6, 0},  // Large Mana Potion
+    {0 * 32 + 6, 3, 2},   // Gladius
+    {0 * 32 + 7, 3, 1},   // Falchion
+    {0 * 32 + 8, 2, 0},   // Serpent Sword
+    {1 * 32 + 4, 3, 1},   // Elven Axe
+    {1 * 32 + 5, 3, 0},   // Battle Axe
+    {1 * 32 + 6, 2, 0},   // Nikkea Axe
+    {2 * 32 + 2, 3, 1},   // Flail
+    {2 * 32 + 3, 2, 0},   // Great Hammer
+    {3 * 32 + 7, 3, 1},   // Berdysh
+    {3 * 32 + 3, 2, 0},   // Giant Trident
+    {4 * 32 + 3, 3, 0},   // Battle Bow
+    {4 * 32 + 11, 3, 0},  // Light Crossbow
+    {5 * 32 + 2, 3, 1},   // Serpent Staff
+    {5 * 32 + 3, 2, 0},   // Thunder Staff
+    {6 * 32 + 7, 3, 0},   // Spiked Shield
+    {6 * 32 + 9, 2, 0},   // Plate Shield
+    {7 * 32 + 6, 3, 1},   // Scale Helm
+    {7 * 32 + 8, 2, 0},   // Brass Helm
+    {7 * 32 + 12, 2, 0},  // Wind Helm
+    {7 * 32 + 13, 1, 0},  // Spirit Helm
+    {8 * 32 + 6, 3, 1},   // Scale Armor
+    {8 * 32 + 8, 2, 0},   // Brass Armor
+    {8 * 32 + 12, 2, 0},  // Wind Armor
+    {9 * 32 + 6, 2, 1},   // Scale Pants
+    {9 * 32 + 8, 2, 0},   // Brass Pants
+    {10 * 32 + 6, 2, 1},  // Scale Gloves
+    {11 * 32 + 6, 2, 1},  // Scale Boots
+    {15 * 32 + 7, 2, 0},  // Scroll of Twister
+    {15 * 32 + 8, 1, 0},  // Scroll of Evil Spirit
+    {13 * 32 + 8, 1, 0},  // Ring of Ice
+    {13 * 32 + 9, 1, 0},  // Ring of Poison
+    {13 * 32 + 12, 1, 0}, // Pendant of Lighting
+    {13 * 32 + 13, 1, 0}, // Pendant of Fire
+};
+
+// Map monster type → drop pool
+static const std::vector<DropEntry> &GetDropPool(uint16_t monsterType) {
+  switch (monsterType) {
+  case 3:
+    return s_spiderDrops;
+  case 2:
+    return s_budgeDrops;
+  case 0:
+    return s_bullDrops;
+  case 1:
+    return s_houndDrops;
+  case 4:
+    return s_eliteBullDrops;
+  case 6:
+    return s_lichDrops;
+  case 7:
+    return s_giantDrops;
+  case 14:
+    return s_skelDrops;
+  default:
+    return s_bullDrops; // Fallback
+  }
+}
+
 std::vector<GroundDrop> GameWorld::SpawnDrops(float worldX, float worldZ,
-                                              int monsterLevel, Database &db) {
+                                              int monsterLevel,
+                                              uint16_t monsterType,
+                                              Database &db) {
   std::vector<GroundDrop> spawned;
 
   auto makeDrop = [&](int16_t defIndex, uint8_t qty, uint8_t lvl) {
@@ -779,88 +1050,75 @@ std::vector<GroundDrop> GameWorld::SpawnDrops(float worldX, float worldZ,
     spawned.push_back(drop);
   };
 
-  // 1. Zen Drop (Money)
-  // Chance: ~30% (Standard MU rate is roughly 1/3 for Zen)
-  if (rand() % 100 < 30) {
-    // Formula: MonsterLevel * 10 to MonsterLevel * 20
+  // 1. Zen Drop — 40% chance
+  if (rand() % 100 < 40) {
     uint32_t zenAmount = monsterLevel * 10 + (rand() % (monsterLevel * 10 + 1));
     if (zenAmount < 1)
       zenAmount = 1;
-    // Zen defIndex is -1 (or handled specially by client)
-    // We use defIndex -1 for Zen, quantity = amount
-    // Note: quantity is 8-bit, so for large Zen we might need a different
-    // mechanism but for now let's assume client handles small amounts or we
-    // strictly use Drop packet money field Actually, packet 0x2B uses specific
-    // fields. Internal representation: If defIndex == -1, it's Zen. Wait,
-    // GroundDrop.quantity is uint8_t? Let's check GroundDrop struct. Assuming
-    // for now standard items. Zen drops might need a separate handling or type.
-    // Re-reading PacketHandler code: PMSG_DROP_SPAWN_SEND sends quantity.
-    // If it's Zen, usually a specific ID is used OR the quantity field holds
-    // the value if it fits. Standard MU sends Zen as a separate "Money" drop or
-    // Item with ID for Zen. Let's stick to the previous logic for Zen for now
-    // but use money amount if possible. The previous code used: makeDrop(-1,
-    // zen, 0); Let's keep that but scale it. Limitation: uint8_t quantity max
-    // 255. If Zen > 255, we might need to clamp or finding out how standard MU
-    // sends large Zen drops. Standard MU sends "Money" item. For this strict
-    // implementation, we'll clamp to 255 or just drop "a pile of gold". Let's
-    // drop a reasonable amount for low lvl.
     uint8_t zen = std::min(255, (int)zenAmount);
     makeDrop(-1, zen, 0);
-    return spawned; // Zen drops alone usually
+    return spawned; // Zen alone
   }
 
-  // 2. Item Drop
-  // Chance: ~10% for an item
-  if (rand() % 100 < 10) {
-    // Calculate Level Range
-    // Drop items with level requirement: [MonsterLevel - 20, MonsterLevel + 4]
-    // Minimum level 0.
-    int minLvl = std::max(0, monsterLevel - 20);
-    int maxLvl = monsterLevel; // Cap at monster level mostly
-
-    // Query DB for items in this range
-    auto possibleItems = db.GetItemsByLevelRange(minLvl, maxLvl);
-
-    if (!possibleItems.empty()) {
-      // Pick one random item
-      const auto &picked = possibleItems[rand() % possibleItems.size()];
-
-      // Calculate DefIndex: Group * 32 + Index (Standard MU indexing)
-      // client expects this unique index.
-      // But wait, our `GroundDrop.defIndex` is usually the "Item ID" which
-      // might be the composite one. The previous code used `int8_t idx`
-      // directly. Let's assuming defIndex is the composite ID (0-511 usually).
-      // Category (0-15) * 32 + Index (0-31) = Max 512.
-      // `GroundDrop.defIndex` is `int16_t` in `GameWorld.hpp`?
-      // Checking previous view... it used `int8_t` in lambda but let's check
-      // struct. Previous lambda: `auto makeDrop = [&](int8_t defIdx, ...)`
-      // Let's coerce to int16_t to be safe.
-
-      int16_t itemCode = (picked.category * 32) + picked.itemIndex;
-
-      // Random Option/Level
-      // +0 to +2 for simple mobs
-      uint8_t dropLvl = 0;
-      if (rand() % 3 == 0)
-        dropLvl = 1;
-      if (rand() % 10 == 0)
-        dropLvl = 2;
-
-      makeDrop(itemCode, 1, dropLvl);
-
-      printf("[World] Mon Lv%d dropping %s (Lv%d Item) Code=%d\n", monsterLevel,
-             picked.name.c_str(), picked.level, itemCode);
-
+  // 2. Jewel Drops — Rare (Chaos 0.1%, Bless 0.05%, Soul 0.05%)
+  {
+    int jewelRoll = rand() % 10000;
+    if (jewelRoll < 10) {
+      // Jewel of Chaos (12*32+15 = 399)
+      makeDrop(12 * 32 + 15, 1, 0);
+      printf("[World] RARE: Jewel of Chaos from MonType %d!\n", monsterType);
+      return spawned;
+    } else if (monsterLevel >= 10 && jewelRoll < 15) {
+      // Jewel of Bless (14*32+13 = 461)
+      makeDrop(14 * 32 + 13, 1, 0);
+      printf("[World] RARE: Jewel of Bless from MonType %d!\n", monsterType);
+      return spawned;
+    } else if (monsterLevel >= 10 && jewelRoll < 20) {
+      // Jewel of Soul (14*32+14 = 462)
+      makeDrop(14 * 32 + 14, 1, 0);
+      printf("[World] RARE: Jewel of Soul from MonType %d!\n", monsterType);
       return spawned;
     }
   }
 
-  // 3. Potion Drop (Separate high chance for utility)
-  // Chance: 20%
+  // 3. Item Drop — 8-15% (scales with monster level)
+  int itemChance = 8 + monsterLevel / 3; // 8% at Lv2, ~14% at Lv19
+  if (rand() % 100 < itemChance) {
+    const auto &pool = GetDropPool(monsterType);
+    const auto &picked = PickWeighted(pool);
+
+    // Random enhancement level +0 to max
+    uint8_t dropLvl = 0;
+    if (picked.maxPlus > 0) {
+      dropLvl = rand() % (picked.maxPlus + 1);
+    }
+
+    makeDrop(picked.defIndex, 1, dropLvl);
+    printf("[World] Drop: defIdx=%d +%d from MonType %d (Lv%d)\n",
+           picked.defIndex, dropLvl, monsterType, monsterLevel);
+    return spawned;
+  }
+
+  // 4. Potion Drop — 20% fallback
   if (rand() % 5 == 0) {
-    // Apple (14,0), Small Potion (14,1)
-    int potType = rand() % 2;
-    int16_t potCode = (14 * 32) + potType;
+    // Scale potion type with monster level
+    int16_t potCode;
+    if (monsterLevel <= 5)
+      potCode = 14 * 32 + 1; // Small HP
+    else if (monsterLevel <= 12)
+      potCode = 14 * 32 + 2; // Medium HP
+    else
+      potCode = 14 * 32 + 3; // Large HP
+
+    // 50% chance for mana potion instead
+    if (rand() % 2 == 0) {
+      if (monsterLevel <= 5)
+        potCode = 14 * 32 + 4; // Small Mana
+      else if (monsterLevel <= 12)
+        potCode = 14 * 32 + 5; // Medium Mana
+      else
+        potCode = 14 * 32 + 6; // Large Mana
+    }
     makeDrop(potCode, 1, 0);
   }
 

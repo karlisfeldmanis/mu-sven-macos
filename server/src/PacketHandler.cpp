@@ -523,8 +523,8 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
     server.Broadcast(&deathPkt, sizeof(deathPkt));
 
     // Spawn drops and broadcast them
-    auto drops =
-        world.SpawnDrops(mon->worldX, mon->worldZ, mon->level, server.GetDB());
+    auto drops = world.SpawnDrops(mon->worldX, mon->worldZ, mon->level,
+                                  mon->type, server.GetDB());
     for (auto &drop : drops) {
       PMSG_DROP_SPAWN_SEND dropPkt{};
       dropPkt.h = MakeC1Header(sizeof(dropPkt), 0x2B);

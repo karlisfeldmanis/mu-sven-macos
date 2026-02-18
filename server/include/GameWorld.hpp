@@ -130,7 +130,8 @@ public:
   // Drops
   // Spawns drops based on monster level using DB for item lookups
   std::vector<GroundDrop> SpawnDrops(float worldX, float worldZ,
-                                     int monsterLevel, Database &db);
+                                     int monsterLevel, uint16_t monsterType,
+                                     Database &db);
   GroundDrop *FindDrop(uint16_t dropIndex);
   bool RemoveDrop(uint16_t dropIndex);
   const std::vector<GroundDrop> &GetDrops() const { return m_drops; }
