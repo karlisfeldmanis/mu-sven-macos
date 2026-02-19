@@ -535,7 +535,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
           float dz = mon.worldZ - p.worldZ;
           float dist = std::sqrt(dx * dx + dz * dz);
           // Only stick to aggro target if within reasonable range (2x aggro)
-          if (dist < mon.aggroRange * 2.0f) {
+          if (dist < mon.aggroRange * 3.0f) {
             bestDist = dist;
             bestTarget = &p;
           } else {
@@ -603,10 +603,10 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
         continue;
       }
       // De-aggro check: player ran beyond aggro range * 2 — give up chase
-      if (bestDist > mon.aggroRange * 2.0f) {
+      if (bestDist > mon.aggroRange * 3.0f) {
         printf("[AI] Mon %d (type %d): player out of range (%.0f > %.0f), "
                "returning to spawn\n",
-               mon.index, mon.type, bestDist, mon.aggroRange * 2.0f);
+               mon.index, mon.type, bestDist, mon.aggroRange * 3.0f);
         mon.isChasing = false;
         mon.isReturning = true;
         moveTowardSpawn(mon);

@@ -117,6 +117,9 @@ public:
   const std::vector<MonsterInstance> &GetMonsterInstances() const {
     return m_monsterInstances;
   }
+  std::vector<MonsterInstance> &GetMonsterInstancesMut() {
+    return m_monsterInstances;
+  }
 
   // Find monster by unique index (returns nullptr if not found)
   MonsterInstance *FindMonster(uint16_t index);

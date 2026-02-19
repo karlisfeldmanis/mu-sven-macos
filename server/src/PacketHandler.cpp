@@ -489,6 +489,34 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
     } else {
       mon->aggroTimer = 10.0f; // Refresh timer
     }
+
+    // Pack assist: nearby same-type monsters also aggro the attacker
+    static constexpr float ASSIST_RANGE = 600.0f;
+    for (auto &ally : world.GetMonsterInstancesMut()) {
+      if (ally.index == mon->index)
+        continue; // Skip self
+      if (ally.type != mon->type)
+        continue; // Same type only
+      if (ally.state != MonsterInstance::ALIVE)
+        continue;
+      if (ally.isChasing || ally.isReturning)
+        continue; // Already busy
+      if (ally.aggroTimer < 0.0f)
+        continue; // Respawn immune
+      float dx = ally.worldX - mon->worldX;
+      float dz = ally.worldZ - mon->worldZ;
+      float dist = std::sqrt(dx * dx + dz * dz);
+      if (dist < ASSIST_RANGE) {
+        ally.aggroTargetFd = session.GetFd();
+        ally.aggroTimer = 10.0f;
+        ally.isChasing = true;
+        ally.isReturning = false;
+        ally.isWandering = false;
+        printf("[AI] Mon %d (type %d): PACK ASSIST on attacker fd=%d "
+               "(dist=%.0f from attacked)\n",
+               ally.index, ally.type, session.GetFd(), dist);
+      }
+    }
   }
 
   bool killed = mon->hp <= 0;
