@@ -51,6 +51,7 @@ struct MonsterInstance {
   float atkCooldownTime = 1.8f; // AtkSpeed/1000 (seconds between attacks)
   float wanderRange = 200.0f;   // MvRange * 100 (world units)
   float aggroRange = 500.0f;    // ViewRange * 100 (world units)
+  bool aggressive = false;      // true=red (auto-aggro), false=yellow (passive)
 
   // Server-side wander
   float wanderTimer = 0.0f;   // Countdown to next wander move

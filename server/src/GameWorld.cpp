@@ -180,6 +180,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 1.6f; // AtkSpeed=1600ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 500.0f;    // ViewRange=5
+      mon.aggressive = true;      // Red: attacks on sight
     } else if (mon.type == 1) {   // Hound — AtkSpeed=1600, MvRange=3, View=5
       mon.hp = HOUND_HP;
       mon.maxHp = HOUND_HP;
@@ -192,6 +193,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 1.6f; // AtkSpeed=1600ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 500.0f;    // ViewRange=5
+      mon.aggressive = true;      // Red: attacks on sight
     } else if (mon.type ==
                2) { // Budge Dragon — AtkSpeed=2000, MvRange=3, View=4
       mon.hp = BUDGE_HP;
@@ -205,6 +207,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 2.0f; // AtkSpeed=2000ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 400.0f;    // ViewRange=4
+      mon.aggressive = false;     // Yellow: passive, only fights back
     } else if (mon.type == 3) {   // Spider — AtkSpeed=1800, MvRange=2, View=5
       mon.hp = SPIDER_HP;
       mon.maxHp = SPIDER_HP;
@@ -217,6 +220,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 1.8f; // AtkSpeed=1800ms
       mon.wanderRange = 200.0f;   // MvRange=2
       mon.aggroRange = 500.0f;    // ViewRange=5
+      mon.aggressive = false;     // Yellow: passive, only fights back
     } else if (mon.type ==
                4) { // Elite Bull Fighter — AtkSpeed=1600, MvRange=3, View=4
       mon.hp = ELITE_BULL_HP;
@@ -230,6 +234,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 1.6f; // AtkSpeed=1600ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 400.0f;    // ViewRange=4
+      mon.aggressive = true;      // Red: attacks on sight
     } else if (mon.type ==
                6) { // Lich — AtkSpeed=1800, MvRange=3, View=7 (ranged caster)
       mon.hp = LICH_HP;
@@ -243,6 +248,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 1.8f; // AtkSpeed=1800ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 700.0f;    // ViewRange=7
+      mon.aggressive = true;      // Red: attacks on sight
     } else if (mon.type ==
                7) { // Giant — AtkSpeed=2000, MvRange=3, View=5 (slow, powerful)
       mon.hp = GIANT_HP;
@@ -256,6 +262,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 2.0f; // AtkSpeed=2000ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 500.0f;    // ViewRange=5
+      mon.aggressive = true;      // Red: attacks on sight
     } else if (mon.type ==
                14) { // Skeleton Warrior — AtkSpeed=1600, MvRange=3, View=5
       mon.hp = SKEL_HP;
@@ -269,6 +276,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 1.6f; // AtkSpeed=1600ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 500.0f;    // ViewRange=5
+      mon.aggressive = true;      // Red: attacks on sight
     } else {
       mon.hp = 30;
       mon.maxHp = 30;
@@ -614,9 +622,10 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       }
     } else {
       // Not chasing — initial aggro check
+      // Passive (yellow) monsters never proximity-aggro, only fight back
       // Respawn immunity: aggroTimer < 0 means immune to proximity aggro
-      if (bestDist > mon.aggroRange || distFromSpawn > LEASH_RANGE ||
-          mon.aggroTimer < 0.0f) {
+      if (!mon.aggressive || bestDist > mon.aggroRange ||
+          distFromSpawn > LEASH_RANGE || mon.aggroTimer < 0.0f) {
         continue;
       }
     }

@@ -490,84 +490,86 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       mon->aggroTimer = 10.0f; // Refresh timer
     }
 
-    // Pack assist: nearby same-type monsters also aggro the attacker
-    static constexpr float ASSIST_RANGE = 600.0f;
-    for (auto &ally : world.GetMonsterInstancesMut()) {
-      if (ally.index == mon->index)
-        continue; // Skip self
-      if (ally.type != mon->type)
-        continue; // Same type only
-      if (ally.state != MonsterInstance::ALIVE)
-        continue;
-      if (ally.isChasing || ally.isReturning)
-        continue; // Already busy
-      if (ally.aggroTimer < 0.0f)
-        continue; // Respawn immune
-      float dx = ally.worldX - mon->worldX;
-      float dz = ally.worldZ - mon->worldZ;
-      float dist = std::sqrt(dx * dx + dz * dz);
-      if (dist < ASSIST_RANGE) {
-        ally.aggroTargetFd = session.GetFd();
-        ally.aggroTimer = 10.0f;
-        ally.isChasing = true;
-        ally.isReturning = false;
-        ally.isWandering = false;
-        printf("[AI] Mon %d (type %d): PACK ASSIST on attacker fd=%d "
-               "(dist=%.0f from attacked)\n",
-               ally.index, ally.type, session.GetFd(), dist);
+    // Pack assist: nearby same-type AGGRESSIVE monsters also aggro the attacker
+    if (mon->aggressive) {
+      static constexpr float ASSIST_RANGE = 600.0f;
+      for (auto &ally : world.GetMonsterInstancesMut()) {
+        if (ally.index == mon->index)
+          continue; // Skip self
+        if (ally.type != mon->type)
+          continue; // Same type only
+        if (ally.state != MonsterInstance::ALIVE)
+          continue;
+        if (ally.isChasing || ally.isReturning)
+          continue; // Already busy
+        if (ally.aggroTimer < 0.0f)
+          continue; // Respawn immune
+        float dx = ally.worldX - mon->worldX;
+        float dz = ally.worldZ - mon->worldZ;
+        float dist = std::sqrt(dx * dx + dz * dz);
+        if (dist < ASSIST_RANGE) {
+          ally.aggroTargetFd = session.GetFd();
+          ally.aggroTimer = 10.0f;
+          ally.isChasing = true;
+          ally.isReturning = false;
+          ally.isWandering = false;
+          printf("[AI] Mon %d (type %d): PACK ASSIST on attacker fd=%d "
+                 "(dist=%.0f from attacked)\n",
+                 ally.index, ally.type, session.GetFd(), dist);
+        }
       }
     }
-  }
 
-  bool killed = mon->hp <= 0;
-  if (killed)
-    mon->hp = 0;
+    bool killed = mon->hp <= 0;
+    if (killed)
+      mon->hp = 0;
 
-  // Broadcast damage result to all clients
-  PMSG_DAMAGE_SEND dmgPkt{};
-  dmgPkt.h = MakeC1Header(sizeof(dmgPkt), 0x29);
-  dmgPkt.monsterIndex = mon->index;
-  dmgPkt.damage = static_cast<uint16_t>(damage);
-  dmgPkt.damageType = damageType;
-  dmgPkt.remainingHp = static_cast<uint16_t>(std::max(0, mon->hp));
-  dmgPkt.attackerCharId = static_cast<uint16_t>(session.characterId);
-  server.Broadcast(&dmgPkt, sizeof(dmgPkt));
+    // Broadcast damage result to all clients
+    PMSG_DAMAGE_SEND dmgPkt{};
+    dmgPkt.h = MakeC1Header(sizeof(dmgPkt), 0x29);
+    dmgPkt.monsterIndex = mon->index;
+    dmgPkt.damage = static_cast<uint16_t>(damage);
+    dmgPkt.damageType = damageType;
+    dmgPkt.remainingHp = static_cast<uint16_t>(std::max(0, mon->hp));
+    dmgPkt.attackerCharId = static_cast<uint16_t>(session.characterId);
+    server.Broadcast(&dmgPkt, sizeof(dmgPkt));
 
-  if (killed) {
-    mon->state = MonsterInstance::DYING;
-    mon->stateTimer = 0.0f;
+    if (killed) {
+      mon->state = MonsterInstance::DYING;
+      mon->stateTimer = 0.0f;
 
-    // Calculate XP reward (same formula as client MonsterManager)
-    int xp = mon->level * 10;
-    if (xp < 1)
-      xp = 1;
+      // Calculate XP reward (same formula as client MonsterManager)
+      int xp = mon->level * 10;
+      if (xp < 1)
+        xp = 1;
 
-    // Broadcast death + XP
-    PMSG_MONSTER_DEATH_SEND deathPkt{};
-    deathPkt.h = MakeC1Header(sizeof(deathPkt), 0x2A);
-    deathPkt.monsterIndex = mon->index;
-    deathPkt.killerCharId = static_cast<uint16_t>(session.characterId);
-    deathPkt.xpReward = static_cast<uint32_t>(xp);
-    server.Broadcast(&deathPkt, sizeof(deathPkt));
+      // Broadcast death + XP
+      PMSG_MONSTER_DEATH_SEND deathPkt{};
+      deathPkt.h = MakeC1Header(sizeof(deathPkt), 0x2A);
+      deathPkt.monsterIndex = mon->index;
+      deathPkt.killerCharId = static_cast<uint16_t>(session.characterId);
+      deathPkt.xpReward = static_cast<uint32_t>(xp);
+      server.Broadcast(&deathPkt, sizeof(deathPkt));
 
-    // Spawn drops and broadcast them
-    auto drops = world.SpawnDrops(mon->worldX, mon->worldZ, mon->level,
-                                  mon->type, server.GetDB());
-    for (auto &drop : drops) {
-      PMSG_DROP_SPAWN_SEND dropPkt{};
-      dropPkt.h = MakeC1Header(sizeof(dropPkt), 0x2B);
-      dropPkt.dropIndex = drop.index;
-      dropPkt.defIndex = drop.defIndex;
-      dropPkt.quantity = drop.quantity;
-      dropPkt.itemLevel = drop.itemLevel;
-      dropPkt.worldX = drop.worldX;
-      dropPkt.worldZ = drop.worldZ;
-      server.Broadcast(&dropPkt, sizeof(dropPkt));
+      // Spawn drops and broadcast them
+      auto drops = world.SpawnDrops(mon->worldX, mon->worldZ, mon->level,
+                                    mon->type, server.GetDB());
+      for (auto &drop : drops) {
+        PMSG_DROP_SPAWN_SEND dropPkt{};
+        dropPkt.h = MakeC1Header(sizeof(dropPkt), 0x2B);
+        dropPkt.dropIndex = drop.index;
+        dropPkt.defIndex = drop.defIndex;
+        dropPkt.quantity = drop.quantity;
+        dropPkt.itemLevel = drop.itemLevel;
+        dropPkt.worldX = drop.worldX;
+        dropPkt.worldZ = drop.worldZ;
+        server.Broadcast(&dropPkt, sizeof(dropPkt));
+      }
+
+      printf(
+          "[Handler] Monster %d killed by char %d (dmg=%d, xp=%d, drops=%zu)\n",
+          mon->index, session.characterId, damage, xp, drops.size());
     }
-
-    printf(
-        "[Handler] Monster %d killed by char %d (dmg=%d, xp=%d, drops=%zu)\n",
-        mon->index, session.characterId, damage, xp, drops.size());
   }
 }
 
@@ -753,10 +755,10 @@ void LoadInventory(Session &session, Database &db, int characterId) {
                  item.slot, item.defIndex, def.category, def.itemIndex,
                  def.name.c_str());
         } else {
-          printf(
-              "[Handler] Inv slot %d: defIdx=%d (cat=%d idx=%d) - no DB def\n",
-              item.slot, item.defIndex, session.bag[item.slot].category,
-              session.bag[item.slot].itemIndex);
+          printf("[Handler] Inv slot %d: defIdx=%d (cat=%d idx=%d) - no DB "
+                 "def\n",
+                 item.slot, item.defIndex, session.bag[item.slot].category,
+                 session.bag[item.slot].itemIndex);
         }
       }
     }
