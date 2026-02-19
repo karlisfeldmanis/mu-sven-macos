@@ -106,8 +106,10 @@ public:
 
   // HP and damage
   void TakeDamage(int damage);
+  void ApplyHitReaction();
   void ForceDie();
   int GetHP() const { return m_hp; }
+  void SetHP(int hp) { m_hp = hp; }
   int GetMaxHP() const { return m_maxHp; }
   int GetMana() const { return m_mana; }
   int GetMaxMana() const { return m_maxMana; }
@@ -196,6 +198,7 @@ private:
   glm::vec3 m_pos{12800.0f, 0.0f, 12800.0f};
   glm::vec3 m_target{12800.0f, 0.0f, 12800.0f};
   float m_facing = 0.0f;
+  float m_targetFacing = 0.0f;
   float m_speed = 334.0f;
   bool m_moving = false;
 

@@ -30,28 +30,28 @@ void QuaternionMatrix(const float q[4], float m[3][4]) {
 
 void ConcatTransforms(const float in1[3][4], const float in2[3][4],
                       float out[3][4]) {
-  out[0][0] = in1[0][0] * in2[0][0] + in1[0][1] * in2[1][0] +
-              in1[0][2] * in2[2][0];
-  out[0][1] = in1[0][0] * in2[0][1] + in1[0][1] * in2[1][1] +
-              in1[0][2] * in2[2][1];
-  out[0][2] = in1[0][0] * in2[0][2] + in1[0][1] * in2[1][2] +
-              in1[0][2] * in2[2][2];
+  out[0][0] =
+      in1[0][0] * in2[0][0] + in1[0][1] * in2[1][0] + in1[0][2] * in2[2][0];
+  out[0][1] =
+      in1[0][0] * in2[0][1] + in1[0][1] * in2[1][1] + in1[0][2] * in2[2][1];
+  out[0][2] =
+      in1[0][0] * in2[0][2] + in1[0][1] * in2[1][2] + in1[0][2] * in2[2][2];
   out[0][3] = in1[0][0] * in2[0][3] + in1[0][1] * in2[1][3] +
               in1[0][2] * in2[2][3] + in1[0][3];
-  out[1][0] = in1[1][0] * in2[0][0] + in1[1][1] * in2[1][0] +
-              in1[1][2] * in2[2][0];
-  out[1][1] = in1[1][0] * in2[0][1] + in1[1][1] * in2[1][1] +
-              in1[1][2] * in2[2][1];
-  out[1][2] = in1[1][0] * in2[0][2] + in1[1][1] * in2[1][2] +
-              in1[1][2] * in2[2][2];
+  out[1][0] =
+      in1[1][0] * in2[0][0] + in1[1][1] * in2[1][0] + in1[1][2] * in2[2][0];
+  out[1][1] =
+      in1[1][0] * in2[0][1] + in1[1][1] * in2[1][1] + in1[1][2] * in2[2][1];
+  out[1][2] =
+      in1[1][0] * in2[0][2] + in1[1][1] * in2[1][2] + in1[1][2] * in2[2][2];
   out[1][3] = in1[1][0] * in2[0][3] + in1[1][1] * in2[1][3] +
               in1[1][2] * in2[2][3] + in1[1][3];
-  out[2][0] = in1[2][0] * in2[0][0] + in1[2][1] * in2[1][0] +
-              in1[2][2] * in2[2][0];
-  out[2][1] = in1[2][0] * in2[0][1] + in1[2][1] * in2[1][1] +
-              in1[2][2] * in2[2][1];
-  out[2][2] = in1[2][0] * in2[0][2] + in1[2][1] * in2[1][2] +
-              in1[2][2] * in2[2][2];
+  out[2][0] =
+      in1[2][0] * in2[0][0] + in1[2][1] * in2[1][0] + in1[2][2] * in2[2][0];
+  out[2][1] =
+      in1[2][0] * in2[0][1] + in1[2][1] * in2[1][1] + in1[2][2] * in2[2][1];
+  out[2][2] =
+      in1[2][0] * in2[0][2] + in1[2][1] * in2[1][2] + in1[2][2] * in2[2][2];
   out[2][3] = in1[2][0] * in2[0][3] + in1[2][1] * in2[1][3] +
               in1[2][2] * in2[2][3] + in1[2][3];
 }
@@ -113,8 +113,8 @@ BoneWorldMatrix BuildWeaponOffsetMatrix(const glm::vec3 &rotDeg,
 
 } // namespace MuMath
 
-std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd,
-                                                  int action, int frame) {
+std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd, int action,
+                                                 int frame) {
   int numBones = (int)bmd->Bones.size();
   std::vector<BoneWorldMatrix> world(numBones);
 
@@ -153,7 +153,7 @@ std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd,
     } else if (bone.Parent >= 0 && bone.Parent < numBones) {
       float result[3][4];
       MuMath::ConcatTransforms((const float(*)[4])world[bone.Parent].data(),
-                                local, result);
+                               local, result);
       memcpy(world[i].data(), result, sizeof(float) * 12);
     }
   }
@@ -163,7 +163,7 @@ std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd,
 
 // Quaternion spherical linear interpolation (shortest path)
 static glm::vec4 QuaternionSlerp(const glm::vec4 &q1, const glm::vec4 &q2,
-                                  float t) {
+                                 float t) {
   float dot = q1.x * q2.x + q1.y * q2.y + q1.z * q2.z + q1.w * q2.w;
   glm::vec4 q2adj = q2;
   if (dot < 0.0f) {
@@ -181,6 +181,41 @@ static glm::vec4 QuaternionSlerp(const glm::vec4 &q1, const glm::vec4 &q2,
   return q1 * w1 + q2adj * w2;
 }
 
+bool GetInterpolatedBoneData(const BMDData *bmd, int action, float frame,
+                             int boneIdx, glm::vec3 &outPos,
+                             glm::vec4 &outQuat) {
+  if (action < 0 || action >= (int)bmd->Actions.size())
+    return false;
+  if (boneIdx < 0 || boneIdx >= (int)bmd->Bones.size())
+    return false;
+
+  auto &bone = bmd->Bones[boneIdx];
+  if (action >= (int)bone.BoneMatrixes.size())
+    return false;
+
+  auto &bm = bone.BoneMatrixes[action];
+  if (bm.Position.empty() || bm.Quaternion.empty())
+    return false;
+
+  int numKeys = bmd->Actions[action].NumAnimationKeys;
+  if (numKeys <= 0)
+    return false;
+
+  int frame0 = (int)frame;
+  int frame1 = frame0 + 1;
+  float t = frame - (float)frame0;
+
+  frame0 = frame0 % numKeys;
+  frame1 = frame1 % numKeys;
+
+  int f0 = (frame0 < (int)bm.Position.size()) ? frame0 : 0;
+  int f1 = (frame1 < (int)bm.Position.size()) ? frame1 : 0;
+
+  outQuat = QuaternionSlerp(bm.Quaternion[f0], bm.Quaternion[f1], t);
+  outPos = bm.Position[f0] * (1.0f - t) + bm.Position[f1] * t;
+  return true;
+}
+
 std::vector<BoneWorldMatrix>
 ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame) {
   int numBones = (int)bmd->Bones.size();
@@ -192,56 +227,82 @@ ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame) {
       for (int c = 0; c < 4; ++c)
         world[i][r][c] = (r == c) ? 1.0f : 0.0f;
 
-  if (bmd->Actions.empty() || action >= (int)bmd->Actions.size())
-    return world;
-
-  int numKeys = bmd->Actions[action].NumAnimationKeys;
-  if (numKeys <= 0)
-    return world;
-
-  // Decompose float frame into integer indices + interpolation factor
-  int frame0 = (int)frame;
-  int frame1 = frame0 + 1;
-  float t = frame - (float)frame0;
-
-  frame0 = frame0 % numKeys;
-  frame1 = frame1 % numKeys;
-  if (frame0 < 0)
-    frame0 = 0;
-  if (frame1 < 0)
-    frame1 = 0;
-
   for (int i = 0; i < numBones; ++i) {
-    auto &bone = bmd->Bones[i];
-    if (bone.Dummy)
-      continue;
-    if (action >= (int)bone.BoneMatrixes.size())
-      continue;
-    auto &bm = bone.BoneMatrixes[action];
-    if (bm.Position.empty() || bm.Quaternion.empty())
+    glm::vec3 pos;
+    glm::vec4 q;
+    if (!GetInterpolatedBoneData(bmd, action, frame, i, pos, q))
       continue;
 
-    int f0 = (frame0 < (int)bm.Position.size()) ? frame0 : 0;
-    int f1 = (frame1 < (int)bm.Position.size()) ? frame1 : 0;
-
-    // Slerp pre-computed quaternions
-    glm::vec4 qInterp = QuaternionSlerp(bm.Quaternion[f0], bm.Quaternion[f1], t);
-    float quat[4] = {qInterp.x, qInterp.y, qInterp.z, qInterp.w};
+    float quat[4] = {q.x, q.y, q.z, q.w};
     float local[3][4];
     MuMath::QuaternionMatrix(quat, local);
-
-    // Lerp positions
-    glm::vec3 pos = bm.Position[f0] * (1.0f - t) + bm.Position[f1] * t;
     local[0][3] = pos.x;
     local[1][3] = pos.y;
     local[2][3] = pos.z;
 
+    auto &bone = bmd->Bones[i];
     if (bone.Parent == -1) {
       memcpy(world[i].data(), local, sizeof(float) * 12);
     } else if (bone.Parent >= 0 && bone.Parent < numBones) {
       float result[3][4];
       MuMath::ConcatTransforms((const float(*)[4])world[bone.Parent].data(),
-                                local, result);
+                               local, result);
+      memcpy(world[i].data(), result, sizeof(float) * 12);
+    }
+  }
+
+  return world;
+}
+
+std::vector<BoneWorldMatrix>
+ComputeBoneMatricesBlended(const BMDData *bmd, int action1, float frame1,
+                           int action2, float frame2, float blendAlpha) {
+  int numBones = (int)bmd->Bones.size();
+  std::vector<BoneWorldMatrix> world(numBones);
+
+  // Identity init
+  for (int i = 0; i < numBones; ++i)
+    for (int r = 0; r < 3; ++r)
+      for (int c = 0; c < 4; ++c)
+        world[i][r][c] = (r == c) ? 1.0f : 0.0f;
+
+  for (int i = 0; i < numBones; ++i) {
+    glm::vec3 pos1, pos2;
+    glm::vec4 q1, q2;
+    bool v1 = GetInterpolatedBoneData(bmd, action1, frame1, i, pos1, q1);
+    bool v2 = GetInterpolatedBoneData(bmd, action2, frame2, i, pos2, q2);
+
+    if (!v1 && !v2)
+      continue;
+
+    glm::vec3 posInterp;
+    glm::vec4 qInterp;
+
+    if (v1 && v2) {
+      posInterp = pos1 * (1.0f - blendAlpha) + pos2 * blendAlpha;
+      qInterp = QuaternionSlerp(q1, q2, blendAlpha);
+    } else if (v1) {
+      posInterp = pos1;
+      qInterp = q1;
+    } else {
+      posInterp = pos2;
+      qInterp = q2;
+    }
+
+    float quat[4] = {qInterp.x, qInterp.y, qInterp.z, qInterp.w};
+    float local[3][4];
+    MuMath::QuaternionMatrix(quat, local);
+    local[0][3] = posInterp.x;
+    local[1][3] = posInterp.y;
+    local[2][3] = posInterp.z;
+
+    auto &bone = bmd->Bones[i];
+    if (bone.Parent == -1) {
+      memcpy(world[i].data(), local, sizeof(float) * 12);
+    } else if (bone.Parent >= 0 && bone.Parent < numBones) {
+      float result[3][4];
+      MuMath::ConcatTransforms((const float(*)[4])world[bone.Parent].data(),
+                               local, result);
       memcpy(world[i].data(), result, sizeof(float) * 12);
     }
   }
@@ -250,15 +311,15 @@ ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame) {
 }
 
 AABB ComputeTransformedAABB(const BMDData *bmd,
-                             const std::vector<BoneWorldMatrix> &bones) {
+                            const std::vector<BoneWorldMatrix> &bones) {
   AABB box;
   for (auto &mesh : bmd->Meshes) {
     for (auto &vert : mesh.Vertices) {
       glm::vec3 pos = vert.Position;
       int boneIdx = vert.Node;
       if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
-        pos = MuMath::TransformPoint(
-            (const float(*)[4])bones[boneIdx].data(), vert.Position);
+        pos = MuMath::TransformPoint((const float(*)[4])bones[boneIdx].data(),
+                                     vert.Position);
       }
       box.min = glm::min(box.min, pos);
       box.max = glm::max(box.max, pos);

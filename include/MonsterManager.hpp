@@ -63,8 +63,6 @@ public:
   void Render(const glm::mat4 &view, const glm::mat4 &proj,
               const glm::vec3 &camPos, float deltaTime);
   void RenderShadows(const glm::mat4 &view, const glm::mat4 &proj);
-  void RenderOutline(int monsterIndex, const glm::mat4 &view,
-                     const glm::mat4 &proj);
   void Cleanup();
 
   int GetMonsterCount() const { return (int)m_monsters.size(); }

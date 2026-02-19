@@ -4,8 +4,8 @@
 #include <iostream>
 
 Camera::Camera(glm::vec3 position)
-    : Position(position), WorldUp(0.0f, 1.0f, 0.0f), Yaw(-45.0f),
-      Pitch(-48.5f), Zoom(1000.0f), TargetZoom(1000.0f), MovementSpeed(2000.0f),
+    : Position(position), WorldUp(0.0f, 1.0f, 0.0f), Yaw(-45.0f), Pitch(-48.5f),
+      Zoom(800.0f), TargetZoom(800.0f), MovementSpeed(2000.0f),
       MouseSensitivity(0.25f) {
   updateCameraVectors();
 }
@@ -47,9 +47,8 @@ void Camera::ProcessMouseRotation(float xoffset, float yoffset) {
 }
 
 void Camera::ProcessMouseScroll(float yoffset) {
-  // MU Online zoom levels: 1000-1400 (5 steps of 100)
-  TargetZoom -= yoffset * 100.0f;
-  TargetZoom = std::clamp(TargetZoom, 800.0f, 1400.0f);
+  // Zoom disabled - locked to 800.0 per user request
+  TargetZoom = 800.0f;
 }
 
 void Camera::Update(float deltaTime) {
@@ -65,8 +64,7 @@ glm::mat4 Camera::GetViewMatrix() {
 }
 
 glm::mat4 Camera::GetProjectionMatrix(float width, float height) {
-  return glm::perspective(glm::radians(55.0f), width / height, 1.0f,
-                          100000.0f);
+  return glm::perspective(glm::radians(55.0f), width / height, 1.0f, 100000.0f);
 }
 
 void Camera::updateCameraVectors() {
@@ -103,6 +101,12 @@ void Camera::LoadState(const std::string &filename) {
     inFile >> Position.x >> Position.y >> Position.z;
     inFile >> Yaw >> Pitch;
     inFile >> TargetZoom;
+
+    // Force default MU settings always (per user request: "only default")
+    Yaw = -45.0f;
+    Pitch = -48.5f;
+    TargetZoom = 800.0f;
+
     Zoom = TargetZoom;
     inFile.close();
     updateCameraVectors();

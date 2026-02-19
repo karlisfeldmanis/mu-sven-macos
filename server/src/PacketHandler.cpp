@@ -71,10 +71,9 @@ void SendEquipment(Session &session, Database &db, int characterId) {
 }
 
 void SendCharStats(Session &session, Database &db, int characterId) {
-  CharacterData c =
-      db.GetCharacter("TestDK"); // Hardcoded for single-character remaster
+  CharacterData c = db.GetCharacterById(characterId);
   if (c.id == 0) {
-    printf("[Handler] Character not found for stats send\n");
+    printf("[Handler] Character %d not found for stats send\n", characterId);
     return;
   }
 
@@ -359,12 +358,12 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
       SendInventorySync(session);
 
       // Persist HP and quantity to DB
-      db.UpdateCharacterStats(session.characterId, session.level,
-                              session.strength, session.dexterity,
-                              session.vitality, session.energy,
-                              static_cast<uint16_t>(session.hp),
-                              static_cast<uint16_t>(session.maxHp),
-                              session.levelUpPoints, session.experience);
+      db.UpdateCharacterStats(
+          session.characterId, session.level, session.strength,
+          session.dexterity, session.vitality, session.energy,
+          static_cast<uint16_t>(session.hp),
+          static_cast<uint16_t>(session.maxHp), session.levelUpPoints,
+          session.experience, session.quickSlotDefIndex);
       // Inventory persistence would typically happen on save or move,
       // but for absolute authority, we could update character_inventory here.
     }
@@ -471,11 +470,14 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   info.y = c.posY;
   info.map = c.mapId;
   info.dir = c.direction;
-  std::memset(info.experience, 0, 8);
-  std::memset(info.nextExperience, 0, 8);
-  SetDwordBE(info.experience + 4, static_cast<uint32_t>(c.experience));
-  SetDwordBE(info.nextExperience + 4, 1000); // Next level exp
-  info.levelUpPoint = 0;
+  info.level = c.level;
+  // Send full 8-byte experience
+  SetDwordBE(info.experience, static_cast<uint32_t>(c.experience >> 32));
+  SetDwordBE(info.experience + 4,
+             static_cast<uint32_t>(c.experience & 0xFFFFFFFF));
+  SetDwordBE(info.nextExperience, 0); // TODO: Calc next level exp
+  SetDwordBE(info.nextExperience + 4, 1000);
+  info.levelUpPoint = c.levelUpPoints;
   info.strength = c.strength;
   info.dexterity = c.dexterity;
   info.vitality = c.vitality;
@@ -547,6 +549,9 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
 
   // Send inventory sync
   SendInventorySync(session);
+
+  // Sync complete stats (Level, XP, etc) immediately on login
+  SendCharStats(session, db, session.characterId);
 
   printf("[Handler] Character '%s' entered Lorencia at (%d,%d) STR=%d "
          "weapon=%d-%d def=%d zen=%u\n",
@@ -646,22 +651,12 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
     if (killed)
       mon->hp = 0;
 
-    // Broadcast damage result to all clients
-    PMSG_DAMAGE_SEND dmgPkt{};
-    dmgPkt.h = MakeC1Header(sizeof(dmgPkt), 0x29);
-    dmgPkt.monsterIndex = mon->index;
-    dmgPkt.damage = static_cast<uint16_t>(damage);
-    dmgPkt.damageType = damageType;
-    dmgPkt.remainingHp = static_cast<uint16_t>(std::max(0, mon->hp));
-    dmgPkt.attackerCharId = static_cast<uint16_t>(session.characterId);
-    server.Broadcast(&dmgPkt, sizeof(dmgPkt));
-
     if (killed) {
       mon->state = MonsterInstance::DYING;
       mon->stateTimer = 0.0f;
 
       // Calculate XP reward (same formula as client MonsterManager)
-      int xp = mon->level * 10;
+      int xp = mon->level * 10 * 100; // 100x Boost for testing
       if (xp < 1)
         xp = 1;
 
@@ -700,7 +695,8 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
             session.characterId, session.level, session.strength,
             session.dexterity, session.vitality, session.energy,
             (uint16_t)session.hp, (uint16_t)session.maxHp,
-            session.levelUpPoints, session.experience);
+            session.levelUpPoints, session.experience,
+            session.quickSlotDefIndex);
         // Sync to client
         SendCharStats(session);
       }
@@ -725,6 +721,16 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
           mon->index, session.characterId, damage, xp, drops.size());
     }
   }
+
+  // Broadcast damage result (hit or miss) to all clients
+  PMSG_DAMAGE_SEND dmgPkt{};
+  dmgPkt.h = MakeC1Header(sizeof(dmgPkt), 0x29);
+  dmgPkt.monsterIndex = mon->index;
+  dmgPkt.damage = static_cast<uint16_t>(damage);
+  dmgPkt.damageType = damageType;
+  dmgPkt.remainingHp = static_cast<uint16_t>(std::max(0, mon->hp));
+  dmgPkt.attackerCharId = static_cast<uint16_t>(session.characterId);
+  server.Broadcast(&dmgPkt, sizeof(dmgPkt));
 }
 
 void SendInventorySync(Session &session) {
@@ -816,11 +822,11 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
   SendCharStats(session);
 
   // Persist to DB
-  db.UpdateCharacterStats(session.characterId, session.level, session.strength,
-                          session.dexterity, session.vitality, session.energy,
-                          static_cast<uint16_t>(session.hp),
-                          static_cast<uint16_t>(session.maxHp),
-                          session.levelUpPoints, session.experience);
+  db.UpdateCharacterStats(
+      session.characterId, session.level, session.strength, session.dexterity,
+      session.vitality, session.energy, static_cast<uint16_t>(session.hp),
+      static_cast<uint16_t>(session.maxHp), session.levelUpPoints,
+      session.experience, session.quickSlotDefIndex);
 
   printf("[Handler] Stat alloc: type=%d newVal=%d pts=%d maxHP=%d\n",
          req->statType, resp.newValue, session.levelUpPoints, session.maxHp);

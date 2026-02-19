@@ -341,17 +341,11 @@ void MonsterManager::setAction(MonsterInstance &mon, int action) {
   if (mon.action == action)
     return;
 
-  // Trigger blending on walk -> stop transition
-  if (mon.action == ACTION_WALK &&
-      (action == ACTION_STOP1 || action == ACTION_STOP2)) {
-    mon.priorAction = mon.action;
-    mon.priorAnimFrame = mon.animFrame;
-    mon.isBlending = true;
-    mon.blendAlpha = 0.0f;
-  } else {
-    mon.isBlending = false;
-    mon.blendAlpha = 1.0f;
-  }
+  // Trigger blending for ALL animation changes
+  mon.priorAction = mon.action;
+  mon.priorAnimFrame = mon.animFrame;
+  mon.isBlending = true;
+  mon.blendAlpha = 0.0f;
 
   mon.action = action;
   mon.animFrame = 0.0f;
@@ -1045,87 +1039,6 @@ void MonsterManager::RenderShadows(const glm::mat4 &view,
   glEnable(GL_CULL_FACE);
 }
 
-void MonsterManager::RenderOutline(int monsterIndex, const glm::mat4 &view,
-                                   const glm::mat4 &proj) {
-  if (!m_shader || monsterIndex < 0 || monsterIndex >= (int)m_monsters.size())
-    return;
-
-  auto &mon = m_monsters[monsterIndex];
-  // Don't outline dead/dying monsters
-  if (mon.state == MonsterState::DEAD || mon.state == MonsterState::DYING)
-    return;
-
-  // --- Stencil-based thin outline ---
-  // Pass 1: Fill stencil with monster silhouette (no color write)
-  glEnable(GL_STENCIL_TEST);
-  glClear(GL_STENCIL_BUFFER_BIT);
-  glStencilFunc(GL_ALWAYS, 1, 0xFF);
-  glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-  glDepthMask(GL_FALSE);
-
-  m_shader->use();
-  m_shader->setMat4("projection", proj);
-  m_shader->setMat4("view", view);
-  m_shader->setFloat("luminosity", 1.0f);
-  m_shader->setFloat("objectAlpha", 1.0f);
-  m_shader->setFloat("blendMeshLight", 1.0f);
-  m_shader->setBool("useFog", false);
-  m_shader->setInt("numPointLights", 0);
-  m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
-
-  glm::mat4 model = glm::translate(glm::mat4(1.0f), mon.position);
-  model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-  model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-  model = glm::rotate(model, mon.facing, glm::vec3(0, 0, 1));
-  model = glm::scale(model, glm::vec3(mon.scale));
-  m_shader->setMat4("model", model);
-
-  glDisable(GL_CULL_FACE);
-  for (auto &mb : mon.meshBuffers) {
-    if (mb.indexCount == 0 || mb.hidden)
-      continue;
-    glBindTexture(GL_TEXTURE_2D, mb.texture);
-    glBindVertexArray(mb.vao);
-    glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-  }
-
-  // Pass 2: Draw slightly scaled-up version where stencil != 1 (= edge only)
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
-  glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-  glDisable(GL_DEPTH_TEST);
-
-  float edgeScale = mon.scale * 1.08f; // Slightly thicker for better visibility
-  glm::mat4 edgeModel = glm::translate(glm::mat4(1.0f), mon.position);
-  edgeModel = glm::rotate(edgeModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-  edgeModel = glm::rotate(edgeModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-  edgeModel = glm::rotate(edgeModel, mon.facing, glm::vec3(0, 0, 1));
-  edgeModel = glm::scale(edgeModel, glm::vec3(edgeScale));
-  m_shader->setMat4("model", edgeModel);
-
-  // Bright white outline color via terrainLight override
-  m_shader->setVec3("terrainLight", 8.0f, 8.0f, 8.0f);
-  m_shader->setVec3("lightPos", glm::vec3(0, 10000, 0));
-  m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
-  m_shader->setVec3("viewPos", glm::vec3(0));
-
-  for (auto &mb : mon.meshBuffers) {
-    if (mb.indexCount == 0 || mb.hidden)
-      continue;
-    glBindTexture(GL_TEXTURE_2D, mb.texture);
-    glBindVertexArray(mb.vao);
-    glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-  }
-
-  // Restore state
-  glEnable(GL_DEPTH_TEST);
-  glDepthMask(GL_TRUE);
-  glEnable(GL_CULL_FACE);
-  glDisable(GL_STENCIL_TEST);
-  glBindVertexArray(0);
-}
-
 MonsterInfo MonsterManager::GetMonsterInfo(int index) const {
   MonsterInfo info{};
   if (index < 0 || index >= (int)m_monsters.size())
@@ -1233,7 +1146,6 @@ void MonsterManager::TriggerAttackAnimation(int index) {
   mon.stateTimer =
       (numKeys > 1 && speed > 0.0f) ? (float)numKeys / speed : 1.0f;
   setAction(mon, atk);
-  mon.animFrame = 0.0f;
 
   // Trigger Lich VFX (Monster Type 6)
   if (mon.monsterType == 6 && m_vfxManager) {

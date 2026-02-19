@@ -291,6 +291,47 @@ CharacterData Database::GetCharacter(const std::string &name) {
   return c;
 }
 
+CharacterData Database::GetCharacterById(int id) {
+  CharacterData c;
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql =
+      "SELECT id, account_id, slot, name, class, level, map_id, "
+      "pos_x, pos_y, direction, "
+      "strength, dexterity, vitality, energy, life, max_life, "
+      "mana, max_mana, money, experience, "
+      "level_up_points, quick_slot_def_index FROM characters WHERE id=?";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return c;
+
+  sqlite3_bind_int(stmt, 1, id);
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    c.id = sqlite3_column_int(stmt, 0);
+    c.accountId = sqlite3_column_int(stmt, 1);
+    c.slot = sqlite3_column_int(stmt, 2);
+    c.name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3));
+    c.charClass = static_cast<uint8_t>(sqlite3_column_int(stmt, 4));
+    c.level = static_cast<uint16_t>(sqlite3_column_int(stmt, 5));
+    c.mapId = static_cast<uint8_t>(sqlite3_column_int(stmt, 6));
+    c.posX = static_cast<uint8_t>(sqlite3_column_int(stmt, 7));
+    c.posY = static_cast<uint8_t>(sqlite3_column_int(stmt, 8));
+    c.direction = static_cast<uint8_t>(sqlite3_column_int(stmt, 9));
+    c.strength = static_cast<uint16_t>(sqlite3_column_int(stmt, 10));
+    c.dexterity = static_cast<uint16_t>(sqlite3_column_int(stmt, 11));
+    c.vitality = static_cast<uint16_t>(sqlite3_column_int(stmt, 12));
+    c.energy = static_cast<uint16_t>(sqlite3_column_int(stmt, 13));
+    c.life = static_cast<uint16_t>(sqlite3_column_int(stmt, 14));
+    c.maxLife = static_cast<uint16_t>(sqlite3_column_int(stmt, 15));
+    c.mana = static_cast<uint16_t>(sqlite3_column_int(stmt, 16));
+    c.maxMana = static_cast<uint16_t>(sqlite3_column_int(stmt, 17));
+    c.money = static_cast<uint32_t>(sqlite3_column_int(stmt, 18));
+    c.experience = static_cast<uint64_t>(sqlite3_column_int64(stmt, 19));
+    c.levelUpPoints = static_cast<uint16_t>(sqlite3_column_int(stmt, 20));
+    c.quickSlotDefIndex = static_cast<int16_t>(sqlite3_column_int(stmt, 21));
+  }
+  sqlite3_finalize(stmt);
+  return c;
+}
+
 void Database::UpdateCharacterStats(int charId, uint16_t level,
                                     uint16_t strength, uint16_t dexterity,
                                     uint16_t vitality, uint16_t energy,

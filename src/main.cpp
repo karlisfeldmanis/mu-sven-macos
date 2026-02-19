@@ -1807,10 +1807,6 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
 
         // Spawn slightly above head (assuming height ~80-120)
         SpawnDamageNumber(monPos + glm::vec3(0, 80, 0), p->damage, dmgType);
-
-        std::cout << "[Combat] Hit monster " << p->monsterIndex << " for "
-                  << p->damage << " damage (type=" << (int)p->damageType << ")"
-                  << std::endl;
       }
     }
 
@@ -1850,7 +1846,10 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
       }
 
       g_serverHP = (int)p->remainingHp;
+      g_hero.SetHP(g_serverHP); // Explicit sync
+
       if (p->remainingHp <= 0) {
+        g_serverHP = 0; // Force HUD to 0
         g_hero.ForceDie();
       }
 
@@ -1858,7 +1857,8 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
         // Show MISS instead of 0 damage
         SpawnDamageNumber(g_hero.GetPosition(), 0, 7);
       } else {
-        g_hero.TakeDamage(p->damage);
+        // Trigger hit reaction (anim + state) without applying damage twice
+        g_hero.ApplyHitReaction();
         // Red damage number above hero
         SpawnDamageNumber(g_hero.GetPosition(), p->damage, 8);
       }
@@ -1899,7 +1899,8 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
         // Sync hero state
         g_hero.LoadStats(g_serverLevel, g_serverStr, g_serverDex, g_serverVit,
                          g_serverEne, (uint64_t)g_serverXP,
-                         g_serverLevelUpPoints, g_serverHP, g_serverMP);
+                         g_serverLevelUpPoints, g_serverHP, g_serverMP,
+                         g_hero.GetClass());
       }
     }
 
@@ -2014,6 +2015,7 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
       g_serverDex = stats->dexterity;
       g_serverVit = stats->vitality;
       g_serverEne = stats->energy;
+      int oldHP = g_serverHP;
       g_serverHP = stats->life;
       g_serverMaxHP = stats->maxLife;
       g_serverMP = stats->mana;
@@ -2022,12 +2024,15 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
       g_serverXP = ((int64_t)stats->experienceHi << 32) | stats->experienceLo;
 
       // Sync hero state
-      g_hero.LoadStats(g_serverLevel, g_serverStr, g_serverDex, g_serverVit,
-                       g_serverEne, (uint64_t)g_serverXP, g_serverLevelUpPoints,
-                       g_serverHP, g_serverMP, stats->charClass);
+      g_hero.LoadStats(stats->level, stats->strength, stats->dexterity,
+                       stats->vitality, stats->energy, (uint64_t)g_serverXP,
+                       g_serverLevelUpPoints, g_serverHP, g_serverMP,
+                       stats->charClass);
 
-      std::cout << "[Net] Gameplay Stats Update: HP=" << g_serverHP << "/"
-                << g_serverMaxHP << " XP=" << g_serverXP << std::endl;
+      // Show floating heal text if HP increased (e.g. from potion or regen)
+      if (g_serverHP > oldHP && oldHP > 0) {
+        SpawnDamageNumber(g_hero.GetPosition(), g_serverHP - oldHP, 10);
+      }
     }
   }
 
@@ -2077,8 +2082,6 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
     // Equipment sync (0x24)
     if (headcode == 0x24 && pktSize >= 5) {
       uint8_t count = pkt[4];
-      std::cout << "[HANDLER:Gameplay] Equipment Update: " << (int)count
-                << " slots" << std::endl;
       int entryStart = 5;
       int entrySize = 1 + 1 + 1 + 1 + 32;
       for (int i = 0; i < count; i++) {
@@ -2094,8 +2097,6 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
         char modelBuf[33] = {};
         std::memcpy(modelBuf, &pkt[off + 4], 32);
         weapon.modelFile = modelBuf;
-        std::cout << "  Slot " << (int)slot << ": " << weapon.modelFile
-                  << std::endl;
 
         // Apply to g_hero immediately
         if (slot == 0) {
@@ -2680,9 +2681,8 @@ void processInput(GLFWwindow *window, float deltaTime) {
   if (wasMoving && !g_hero.IsMoving())
     g_clickEffect.Hide();
 
-  // Camera follows hero
-  if (wasMoving)
-    g_camera.SetPosition(g_hero.GetPosition());
+  // Camera follows hero (Continuous)
+  g_camera.SetPosition(g_hero.GetPosition());
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -5136,7 +5136,7 @@ int main(int argc, char **argv) {
       uint8_t heroAttr = 0;
       if (gx >= 0 && gz >= 0 && gx < S && gz < S)
         heroAttr = g_terrainDataPtr->mapping.attributes[gz * S + gx];
-      g_hero.SetInSafeZone((heroAttr & 0x01) != 0);
+      g_hero.SetInSafeZone((heroAttr & 0x01) != 0 || (heroAttr & 0x08) != 0);
     }
 
     // Auto-screenshot/diagnostic camera override
@@ -5202,8 +5202,7 @@ int main(int argc, char **argv) {
     // Render NPC selection outline (green glow on hover)
     if (g_hoveredNpc >= 0)
       g_npcManager.RenderOutline(g_hoveredNpc, view, projection);
-    if (g_hoveredMonster >= 0)
-      g_monsterManager.RenderOutline(g_hoveredMonster, view, projection);
+    // Simplified hover UI: handled by RenderLabels background highlight
 
     // Render monsters with shadows
     g_monsterManager.RenderShadows(view, projection);
@@ -5399,12 +5398,6 @@ int main(int argc, char **argv) {
 
       ImDrawList *dl = ImGui::GetForegroundDrawList();
 
-      // ── Character Info and Inventory panels ──
-      if (g_showCharInfo)
-        RenderCharInfoPanel(dl, g_hudCoords);
-      if (g_showInventory)
-        RenderInventoryPanel(dl, g_hudCoords);
-
       // ── Floating damage numbers (world-space → screen projection) ──
       {
         glm::mat4 vp = projection * view;
@@ -5436,7 +5429,8 @@ int main(int argc, char **argv) {
           const char *text;
           char buf[16];
           if (d.type == 7) {
-            col = IM_COL32(180, 180, 180, (int)(alpha * 255));
+            col = IM_COL32(250, 250, 250,
+                           (int)(alpha * 255)); // Brighter for visibility
             text = "MISS";
           } else if (d.type == 9) {
             // XP gained (purple-gold)
@@ -5509,6 +5503,18 @@ int main(int argc, char **argv) {
               g_fontDefault->CalcTextSizeA(14.0f, FLT_MAX, 0, nameText);
           float tx = sx - textSize.x * 0.5f;
           float ty = sy - textSize.y;
+
+          // Highlight background if hovered (replaces mesh outline)
+          if (i == g_hoveredMonster) {
+            float pad = 4.0f;
+            dl->AddRectFilled(
+                ImVec2(tx - pad, ty - pad),
+                ImVec2(tx + textSize.x + pad, ty + textSize.y + pad),
+                IM_COL32(255, 255, 255, (int)(alpha * 60)), 3.0f);
+            dl->AddRect(ImVec2(tx - pad, ty - pad),
+                        ImVec2(tx + textSize.x + pad, ty + textSize.y + pad),
+                        IM_COL32(255, 255, 255, (int)(alpha * 120)), 3.0f);
+          }
 
           // Name color: white normally, red if attacking hero
           ImU32 nameCol = (mi.state == MonsterState::ATTACKING ||
@@ -5795,6 +5801,13 @@ int main(int argc, char **argv) {
       if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         g_selectedNpc = -1;
     }
+
+    // ── Character Info and Inventory panels ──
+    ImDrawList *panelDl = ImGui::GetForegroundDrawList();
+    if (g_showCharInfo)
+      RenderCharInfoPanel(panelDl, g_hudCoords);
+    if (g_showInventory)
+      RenderInventoryPanel(panelDl, g_hudCoords);
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

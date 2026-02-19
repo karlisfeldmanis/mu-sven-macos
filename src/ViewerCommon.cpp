@@ -76,8 +76,7 @@ void DebugAxes::Init() {
   glBufferData(GL_ARRAY_BUFFER, 6 * 6 * sizeof(float), nullptr,
                GL_DYNAMIC_DRAW);
   // pos
-  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
-                        (void *)0);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)0);
   glEnableVertexAttribArray(0);
   // color
   glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
@@ -149,7 +148,7 @@ void DebugLines::Init() {
 void DebugLines::Clear() { verts.clear(); }
 
 void DebugLines::AddLine(const glm::vec3 &a, const glm::vec3 &b,
-                          const glm::vec3 &color) {
+                         const glm::vec3 &color) {
   verts.insert(verts.end(), {a.x, a.y, a.z, color.r, color.g, color.b});
   verts.insert(verts.end(), {b.x, b.y, b.z, color.r, color.g, color.b});
 }
@@ -218,15 +217,15 @@ void UploadMeshWithBones(const Mesh_t &mesh, const std::string &textureDir,
         const auto &bm = bones[boneIdx];
         vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
                                           srcVert.Position);
-        vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
-                                           srcNorm.Normal);
+        vert.normal =
+            MuMath::RotateVector((const float(*)[4])bm.data(), srcNorm.Normal);
       } else {
         vert.pos = srcVert.Position;
         vert.normal = srcNorm.Normal;
       }
 
       vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                            mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+                           mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
       vertices.push_back(vert);
       indices.push_back(startIdx + v);
 
@@ -253,7 +252,7 @@ void UploadMeshWithBones(const Mesh_t &mesh, const std::string &textureDir,
         }
 
         vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                              mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+                             mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
         vertices.push_back(vert);
         indices.push_back(vertices.size() - 1);
       }
@@ -304,6 +303,16 @@ void UploadMeshWithBones(const Mesh_t &mesh, const std::string &textureDir,
   mb.hidden = scriptFlags.hidden;
   mb.bright = scriptFlags.bright;
 
+  // Force additive for specific textures that lack _R suffix
+  {
+    std::string texLower = mesh.TextureName;
+    std::transform(texLower.begin(), texLower.end(), texLower.begin(),
+                   ::tolower);
+    if (texLower.find("flail00") != std::string::npos) {
+      mb.bright = true;
+    }
+  }
+
   mb.bmdTextureId = mesh.Texture;
 
   out.push_back(mb);
@@ -330,14 +339,14 @@ void RetransformMeshWithBones(const Mesh_t &mesh,
         const auto &bm = bones[boneIdx];
         vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
                                           srcVert.Position);
-        vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
-                                           srcNorm.Normal);
+        vert.normal =
+            MuMath::RotateVector((const float(*)[4])bm.data(), srcNorm.Normal);
       } else {
         vert.pos = srcVert.Position;
         vert.normal = srcNorm.Normal;
       }
       vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                            mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+                           mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
       vertices.push_back(vert);
     }
     if (steps == 4) {
@@ -358,7 +367,7 @@ void RetransformMeshWithBones(const Mesh_t &mesh,
           vert.normal = srcNorm.Normal;
         }
         vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
-                              mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+                             mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
         vertices.push_back(vert);
       }
     }

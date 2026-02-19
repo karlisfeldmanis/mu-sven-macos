@@ -4,6 +4,9 @@ project(MuRemaster LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Maximum Compiler Optimization for Release Builds
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -ffast-math -DNDEBUG")
+
 # macOS specific configuration
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0")

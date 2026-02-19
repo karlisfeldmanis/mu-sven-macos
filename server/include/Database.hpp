@@ -117,6 +117,7 @@ public:
 
   std::vector<CharacterData> GetCharacterList(int accountId);
   CharacterData GetCharacter(const std::string &name);
+  CharacterData GetCharacterById(int id);
 
   void UpdatePosition(int charId, uint8_t x, uint8_t y);
   void UpdateCharacterStats(int charId, uint16_t level, uint16_t strength,

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -29,14 +30,17 @@ bool Server::Start(uint16_t port) {
   // Seed default equipment for the test character (dynamic lookup)
   CharacterData c = m_db.GetCharacter("TestDK");
   if (c.id > 0) {
-    m_db.SeedDefaultEquipment(c.id);
+    // m_db.SeedDefaultEquipment(c.id); // DISABLED: Don't reset on every
+    // restart
   } else {
     printf("[Server] WARNING: Could not seed equipment, 'TestDK' not found.\n");
   }
 
   // Load terrain attributes for walkability checks (monster AI)
-  // Path relative to project root
-  m_world.LoadTerrainAttributes("Data/World1/EncTerrain1.att");
+  // Try both relative to root and relative to server dir
+  if (!m_world.LoadTerrainAttributes("Data/World1/EncTerrain1.att")) {
+    m_world.LoadTerrainAttributes("../Data/World1/EncTerrain1.att");
+  }
 
   // Load NPC and monster data from database
   m_world.LoadNpcsFromDB(m_db, 0); // map 0 = Lorencia
@@ -81,6 +85,8 @@ bool Server::Start(uint16_t port) {
 void Server::Run() {
   signal(SIGINT, sigHandler);
   signal(SIGPIPE, SIG_IGN); // Ignore broken pipe
+
+  srand(static_cast<unsigned int>(time(NULL)));
 
   auto lastTick = std::chrono::steady_clock::now();
 
@@ -141,6 +147,7 @@ void Server::Run() {
         pt.worldZ = s->worldZ;
         pt.defense = s->totalDefense;
         pt.defenseRate = (int)s->dexterity / 4; // simplified defense rate
+        pt.life = s->hp;
         pt.dead = s->dead;
         targets.push_back(pt);
       }
@@ -167,6 +174,17 @@ void Server::Run() {
             if (s->hp <= 0) {
               s->hp = 0;
               s->dead = true;
+              // Player died: reset the monster that killed them (HP + aggro)
+              auto *mon = m_world.FindMonster(atk.monsterIndex);
+              if (mon) {
+                mon->hp = mon->maxHp;
+                mon->aggroTargetFd = -1;
+                mon->isChasing = false;
+                mon->isReturning = true;
+                printf("[Combat] Mon %d killed player fd=%d. Resetting mon HP "
+                       "to %d\n",
+                       mon->index, s->GetFd(), mon->maxHp);
+              }
             }
 
             // Send monster attack packet to client
@@ -209,6 +227,39 @@ void Server::Run() {
     for (size_t i = 0; i < m_sessions.size(); i++) {
       auto &session = m_sessions[i];
       auto &pfd = fds[i + 1];
+
+      // Tick cooldowns
+      if (session->potionCooldown > 0.0f) {
+        session->potionCooldown -= dt;
+        if (session->potionCooldown < 0.0f)
+          session->potionCooldown = 0.0f;
+      }
+
+      // Safe Zone HP Regeneration (~2% per second)
+      if (session->inWorld && !session->dead && session->hp < session->maxHp) {
+        if (m_world.IsSafeZone(session->worldX, session->worldZ)) {
+          session->hpRemainder += 0.02f * (float)session->maxHp * dt;
+          float threshold = std::max(1.0f, 0.02f * (float)session->maxHp);
+          if (session->hpRemainder >= threshold) {
+            int gain = (int)session->hpRemainder;
+            session->hp = std::min(session->hp + gain, (int)session->maxHp);
+            session->hpRemainder -= (float)gain;
+            printf("[Regen] FD=%d Healed +%d HP in SafeZone. New HP: %d/%d\n",
+                   session->GetFd(), gain, session->hp, session->maxHp);
+            // Sync updated HP to client (session-only, don't reload from DB!)
+            PacketHandler::SendCharStats(*session);
+            // Persist new HP to DB
+            m_db.UpdateCharacterStats(
+                session->characterId, session->level, session->strength,
+                session->dexterity, session->vitality, session->energy,
+                static_cast<uint16_t>(session->hp),
+                static_cast<uint16_t>(session->maxHp), session->levelUpPoints,
+                session->experience, session->quickSlotDefIndex);
+          }
+        } else {
+          session->hpRemainder = 0.0f;
+        }
+      }
 
       if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
         session->Kill();
@@ -270,6 +321,11 @@ void Server::AcceptNewClients() {
     // Set non-blocking
     int flags = fcntl(clientFd, F_GETFL, 0);
     fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
+
+    // Disable Nagle's algorithm for low latency
+    int tcpNoDelay = 1;
+    setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &tcpNoDelay,
+               sizeof(tcpNoDelay));
 
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &clientAddr.sin_addr, ip, sizeof(ip));

@@ -83,6 +83,7 @@ public:
     float worldX, worldZ;
     int defense;
     int defenseRate;
+    int life;
     bool dead;
   };
 
@@ -241,6 +242,8 @@ public:
   static constexpr uint8_t TW_NOMOVE = 0x04;
   static constexpr uint8_t TW_SAFEZONE =
       0x01; // Safe zone — no monster aggro (from _define.h)
+  static constexpr uint8_t TW_NOGROUND =
+      0x08; // Bridge area — also safe for regen
 
 private:
   std::vector<NpcSpawn> m_npcs;

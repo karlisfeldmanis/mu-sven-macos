@@ -96,7 +96,8 @@ bool GameWorld::IsSafeZone(float worldX, float worldZ) const {
   int gx = (int)(worldZ / 100.0f);
   if (gx < 0 || gz < 0 || gx >= TERRAIN_SIZE || gz >= TERRAIN_SIZE)
     return false;
-  return (m_terrainAttributes[gz * TERRAIN_SIZE + gx] & TW_SAFEZONE) != 0;
+  uint8_t attr = m_terrainAttributes[gz * TERRAIN_SIZE + gx];
+  return (attr & TW_SAFEZONE) != 0 || (attr & TW_NOGROUND) != 0;
 }
 
 void GameWorld::LoadNpcsFromDB(Database &db, uint8_t mapId) {
@@ -466,6 +467,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       mon.worldZ = mon.spawnZ;
       mon.gridY = static_cast<uint8_t>(mon.worldX / 100.0f);
       mon.gridX = static_cast<uint8_t>(mon.worldZ / 100.0f);
+      mon.hp = mon.maxHp; // Restore HP on successful return
       emitMoveIfChanged(mon, mon.gridX, mon.gridY, false, false, outMoves);
     } else {
       float step = RETURN_SPEED * dt;
@@ -690,7 +692,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
         result.targetFd = bestTarget->fd;
         result.monsterIndex = mon.index;
         result.damage = static_cast<uint16_t>(dmg);
-        result.remainingHp = 0;
+        result.remainingHp = static_cast<uint16_t>(bestTarget->life);
         attacks.push_back(result);
 
         mon.attackCooldown = mon.atkCooldownTime;

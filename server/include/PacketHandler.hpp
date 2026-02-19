@@ -21,6 +21,7 @@ void SendNpcViewport(Session &session, const GameWorld &world);
 void SendMonsterViewport(Session &session, const GameWorld &world);
 void SendEquipment(Session &session, Database &db, int characterId);
 void SendCharStats(Session &session, Database &db, int characterId);
+void SendCharStats(Session &session);
 
 // Handle movement, character save, and equipment changes
 void HandleMove(Session &session, const std::vector<uint8_t> &packet,

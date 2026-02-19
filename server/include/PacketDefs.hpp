@@ -83,6 +83,7 @@ struct PMSG_CHARINFO_SEND {
   uint8_t y;
   uint8_t map;
   uint8_t dir;
+  uint16_t level;
   uint8_t experience[8];
   uint8_t nextExperience[8];
   uint16_t levelUpPoint;
@@ -375,8 +376,6 @@ struct PMSG_ITEM_USE_RECV {
   uint8_t slot; // 0-63
 };
 
-#pragma pack(pop)
-
 // --- Helper functions ---
 
 inline void SetWordBE(uint8_t *dst, uint16_t val) {
@@ -417,4 +416,5 @@ inline void BuxDecode(char *data, int len) {
   }
 }
 
+#pragma pack(pop)
 #endif // MU_PACKET_DEFS_HPP

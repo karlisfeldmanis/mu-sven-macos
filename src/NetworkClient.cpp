@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -17,6 +18,10 @@ bool NetworkClient::Connect(const char *host, uint16_t port) {
     printf("[Net] Failed to create socket\n");
     return false;
   }
+
+  // Disable Nagle's algorithm for low latency
+  int tcpNoDelay = 1;
+  setsockopt(m_fd, IPPROTO_TCP, TCP_NODELAY, &tcpNoDelay, sizeof(tcpNoDelay));
 
   // Connect with a blocking call first, then switch to non-blocking
   struct sockaddr_in addr{};

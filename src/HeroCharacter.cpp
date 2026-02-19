@@ -195,6 +195,27 @@ glm::vec3 HeroCharacter::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
   return left + (right - left) * xd;
 }
 
+// Helper for smooth rotation (MU DK style interpolation)
+static float smoothFacing(float current, float target, float dt) {
+  float diff = target - current;
+  while (diff > (float)M_PI)
+    diff -= 2.0f * (float)M_PI;
+  while (diff < -(float)M_PI)
+    diff += 2.0f * (float)M_PI;
+
+  if (std::abs(diff) >= (float)M_PI / 4.0f) {
+    return target; // Snap for large turns (> 45°) to feel responsive
+  }
+  // Exponential decay: 0.5^(dt*30)
+  float factor = 1.0f - std::pow(0.5f, dt * 30.0f);
+  float result = current + diff * factor;
+  while (result > (float)M_PI)
+    result -= 2.0f * (float)M_PI;
+  while (result < -(float)M_PI)
+    result += 2.0f * (float)M_PI;
+  return result;
+}
+
 void HeroCharacter::Init(const std::string &dataPath) {
   m_dataPath = dataPath;
   std::string playerPath = dataPath + "/Player/";
@@ -811,6 +832,9 @@ void HeroCharacter::ProcessMovement(float deltaTime) {
     StopMoving();
   } else {
     dir = glm::normalize(dir);
+    m_targetFacing = atan2f(dir.z, -dir.x);
+    m_facing = smoothFacing(m_facing, m_targetFacing, deltaTime);
+
     glm::vec3 step = dir * m_speed * deltaTime;
     glm::vec3 newPos = m_pos + step;
 
@@ -846,10 +870,10 @@ void HeroCharacter::MoveTo(const glm::vec3 &target) {
     m_animFrame = 0.0f;
   }
   m_moving = true;
-  // Compute facing angle
+  // Compute target facing angle (smoothFace handles interpolation)
   float dx = target.x - m_pos.x;
   float dz = target.z - m_pos.z;
-  m_facing = atan2f(dz, -dx);
+  m_targetFacing = atan2f(dz, -dx);
 }
 
 void HeroCharacter::StopMoving() {
@@ -1158,7 +1182,7 @@ void HeroCharacter::AttackMonster(int monsterIndex,
     m_moving = false;
 
     // Face the target
-    m_facing = atan2f(dir.z, -dir.x);
+    m_targetFacing = atan2f(dir.z, -dir.x);
 
     // Use fist attack when no weapon, sword swings when armed
     if (m_weaponBmd) {
@@ -1194,7 +1218,7 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       m_attackHitRegistered = false;
 
       // Face the target
-      m_facing = atan2f(dir.z, -dir.x);
+      m_targetFacing = atan2f(dir.z, -dir.x);
 
       if (m_weaponBmd) {
         SetAction((m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
@@ -1251,6 +1275,9 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
   case AttackState::NONE:
     break;
   }
+
+  // Smoothly rotate towards target facing in any attack state
+  m_facing = smoothFacing(m_facing, m_targetFacing, deltaTime);
 }
 
 bool HeroCharacter::CheckAttackHit() {
@@ -1285,6 +1312,20 @@ void HeroCharacter::CancelAttack() {
   }
 }
 
+void HeroCharacter::ApplyHitReaction() {
+  // Only trigger if alive (don't interrupt dying/dead)
+  if (m_heroState != HeroState::ALIVE && m_heroState != HeroState::HIT_STUN)
+    return;
+
+  m_heroState = HeroState::HIT_STUN;
+  m_stateTimer = HIT_STUN_TIME;
+  m_moving = false; // Stop sliding when playing hit reaction
+  // Brief shock animation — don't interrupt attack swing
+  if (m_attackState != AttackState::SWINGING) {
+    SetAction(ACTION_SHOCK);
+  }
+}
+
 void HeroCharacter::TakeDamage(int damage) {
   // Accept damage when ALIVE or HIT_STUN (so rapid hits can kill)
   if (m_heroState != HeroState::ALIVE && m_heroState != HeroState::HIT_STUN)
@@ -1294,12 +1335,7 @@ void HeroCharacter::TakeDamage(int damage) {
   if (m_hp <= 0) {
     ForceDie();
   } else {
-    m_heroState = HeroState::HIT_STUN;
-    m_stateTimer = HIT_STUN_TIME;
-    // Brief shock animation — don't interrupt attack swing
-    if (m_attackState != AttackState::SWINGING) {
-      SetAction(ACTION_SHOCK);
-    }
+    ApplyHitReaction();
   }
 }
 
@@ -1321,10 +1357,14 @@ void HeroCharacter::UpdateState(float deltaTime) {
     // HP Regeneration in Safe Zone (~2% of Max HP per second)
     if (m_inSafeZone && m_hp < m_maxHp) {
       m_hpRemainder += 0.02f * (float)m_maxHp * deltaTime;
-      if (m_hpRemainder >= 1.0f) {
+      float threshold = std::max(1.0f, 0.02f * (float)m_maxHp);
+      if (m_hpRemainder >= threshold) {
         int gain = (int)m_hpRemainder;
         m_hp = std::min(m_hp + gain, m_maxHp);
         m_hpRemainder -= (float)gain;
+        std::cout << "[Regen] Hero healed +" << gain
+                  << " HP in SafeZone (Local). New HP: " << m_hp << "/"
+                  << m_maxHp << std::endl;
       }
     } else {
       m_hpRemainder = 0.0f;
@@ -1369,6 +1409,11 @@ void HeroCharacter::UpdateState(float deltaTime) {
     if (m_stateTimer <= 0.0f)
       m_heroState = HeroState::ALIVE;
     break;
+  }
+
+  // Final step: ensure we are always snapped to the ground heights
+  if (m_heroState != HeroState::DYING && m_heroState != HeroState::DEAD) {
+    SnapToTerrain();
   }
 }
 
