@@ -157,6 +157,12 @@ void Database::CreateTables() {
                "ALTER TABLE item_definitions ADD COLUMN class_flags INTEGER "
                "DEFAULT 4294967295",
                nullptr, nullptr, nullptr);
+
+  // Migration: add quick_slot_def_index to characters (default -1)
+  sqlite3_exec(m_db,
+               "ALTER TABLE characters ADD COLUMN quick_slot_def_index INTEGER "
+               "DEFAULT -1",
+               nullptr, nullptr, nullptr);
 }
 
 void Database::CreateDefaultAccount() {
@@ -247,11 +253,12 @@ std::vector<CharacterData> Database::GetCharacterList(int accountId) {
 CharacterData Database::GetCharacter(const std::string &name) {
   CharacterData c;
   sqlite3_stmt *stmt = nullptr;
-  const char *sql = "SELECT id, account_id, slot, name, class, level, map_id, "
-                    "pos_x, pos_y, direction, "
-                    "strength, dexterity, vitality, energy, life, max_life, "
-                    "mana, max_mana, money, experience, "
-                    "level_up_points FROM characters WHERE name=?";
+  const char *sql =
+      "SELECT id, account_id, slot, name, class, level, map_id, "
+      "pos_x, pos_y, direction, "
+      "strength, dexterity, vitality, energy, life, max_life, "
+      "mana, max_mana, money, experience, "
+      "level_up_points, quick_slot_def_index FROM characters WHERE name=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return c;
 
@@ -278,6 +285,7 @@ CharacterData Database::GetCharacter(const std::string &name) {
     c.money = static_cast<uint32_t>(sqlite3_column_int(stmt, 18));
     c.experience = static_cast<uint64_t>(sqlite3_column_int64(stmt, 19));
     c.levelUpPoints = static_cast<uint16_t>(sqlite3_column_int(stmt, 20));
+    c.quickSlotDefIndex = static_cast<int16_t>(sqlite3_column_int(stmt, 21));
   }
   sqlite3_finalize(stmt);
   return c;
@@ -287,13 +295,14 @@ void Database::UpdateCharacterStats(int charId, uint16_t level,
                                     uint16_t strength, uint16_t dexterity,
                                     uint16_t vitality, uint16_t energy,
                                     uint16_t life, uint16_t maxLife,
-                                    uint16_t levelUpPoints,
-                                    uint64_t experience) {
+                                    uint16_t levelUpPoints, uint64_t experience,
+                                    int16_t quickSlotDefIndex) {
   sqlite3_stmt *stmt = nullptr;
   const char *sql =
       "UPDATE characters SET level=?, strength=?, dexterity=?, vitality=?, "
       "energy=?, "
-      "life=?, max_life=?, level_up_points=?, experience=? WHERE id=?";
+      "life=?, max_life=?, level_up_points=?, experience=?, "
+      "quick_slot_def_index=? WHERE id=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return;
   sqlite3_bind_int(stmt, 1, level);
@@ -305,7 +314,8 @@ void Database::UpdateCharacterStats(int charId, uint16_t level,
   sqlite3_bind_int(stmt, 7, maxLife);
   sqlite3_bind_int(stmt, 8, levelUpPoints);
   sqlite3_bind_int64(stmt, 9, static_cast<int64_t>(experience));
-  sqlite3_bind_int(stmt, 10, charId);
+  sqlite3_bind_int(stmt, 10, quickSlotDefIndex);
+  sqlite3_bind_int(stmt, 11, charId);
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   printf("[DB] Saved character %d: Lv%d STR=%d DEX=%d VIT=%d ENE=%d HP=%d/%d "
@@ -397,8 +407,8 @@ void Database::SeedItemDefinitions() {
         INSERT INTO item_definitions (category, item_index, name, model_file, level_req, damage_min, damage_max, defense, attack_speed, two_handed, width, height, req_str, req_dex, req_vit, req_ene, class_flags) VALUES
 
             -- Category 0: Swords (OpenMU 0.95d Weapons.cs)
-            (0, 0, 'Kris', 'Sword01.bmd', 6, 6, 11, 0, 50, 0, 1, 2, 40, 40, 0, 0, 11),
-            (0, 1, 'Short Sword', 'Sword02.bmd', 3, 3, 7, 0, 20, 0, 1, 3, 60, 0, 0, 0, 7),
+            (0, 0, 'Kris', 'Sword01.bmd', 1, 6, 11, 0, 50, 0, 1, 2, 10, 8, 0, 0, 11),
+            (0, 1, 'Short Sword', 'Sword02.bmd', 1, 3, 7, 0, 20, 0, 1, 3, 20, 0, 0, 0, 7),
             (0, 2, 'Rapier', 'Sword03.bmd', 9, 9, 15, 0, 40, 0, 1, 3, 50, 40, 0, 0, 6),
             (0, 3, 'Katana', 'Sword04.bmd', 16, 16, 26, 0, 35, 0, 1, 3, 80, 40, 0, 0, 2),
             (0, 4, 'Sword of Assassin', 'Sword05.bmd', 12, 12, 18, 0, 30, 0, 1, 3, 60, 40, 0, 0, 2),
@@ -418,7 +428,7 @@ void Database::SeedItemDefinitions() {
             (0, 18, 'Thunder Blade', 'Sword19.bmd', 105, 140, 168, 0, 40, 1, 2, 3, 180, 50, 0, 0, 8),
 
             -- Category 1: Axes (OpenMU 0.95d Weapons.cs)
-            (1, 0, 'Small Axe', 'Axe01.bmd', 1, 1, 6, 0, 20, 0, 1, 3, 50, 0, 0, 0, 7),
+            (1, 0, 'Small Axe', 'Axe01.bmd', 1, 1, 6, 0, 20, 0, 1, 3, 20, 0, 0, 0, 7),
             (1, 1, 'Hand Axe', 'Axe02.bmd', 4, 4, 9, 0, 30, 0, 1, 3, 70, 0, 0, 0, 7),
             (1, 2, 'Double Axe', 'Axe03.bmd', 14, 14, 24, 0, 20, 0, 1, 3, 90, 0, 0, 0, 2),
             (1, 3, 'Tomahawk', 'Axe04.bmd', 18, 18, 28, 0, 30, 0, 1, 3, 100, 0, 0, 0, 2),
@@ -498,86 +508,86 @@ void Database::SeedItemDefinitions() {
 
             -- Category 7-11: Armors (OpenMU v0.75 - Pad, Leather, Bronze, etc.)
             -- Helmets (7)
-            (7, 0, 'Bronze Helm', 'HelmMale01.bmd', 16, 0, 0, 34, 0, 0, 2, 2, 80, 20, 0, 0, 2),
+            (7, 0, 'Bronze Helm', 'HelmMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
             (7, 1, 'Dragon Helm', 'HelmMale02.bmd', 57, 0, 0, 68, 0, 0, 2, 2, 120, 30, 0, 0, 2),
-            (7, 2, 'Pad Helm', 'HelmClass01.bmd', 5, 0, 0, 28, 0, 0, 2, 2, 20, 0, 0, 0, 1),
+            (7, 2, 'Pad Helm', 'HelmClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
             (7, 3, 'Legendary Helm', 'HelmClass02.bmd', 50, 0, 0, 42, 0, 0, 2, 2, 30, 0, 0, 0, 1),
             (7, 4, 'Bone Helm', 'HelmClass03.bmd', 18, 0, 0, 30, 0, 0, 2, 2, 30, 0, 0, 0, 1),
-            (7, 5, 'Leather Helm', 'HelmMale06.bmd', 6, 0, 0, 30, 0, 0, 2, 2, 80, 0, 0, 0, 2),
+            (7, 5, 'Leather Helm', 'HelmMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 2),
             (7, 6, 'Scale Helm', 'HelmMale07.bmd', 26, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
             (7, 7, 'Sphinx Mask', 'HelmClass04.bmd', 32, 0, 0, 36, 0, 0, 2, 2, 30, 0, 0, 0, 1),
             (7, 8, 'Brass Helm', 'HelmMale09.bmd', 36, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
             (7, 9, 'Plate Helm', 'HelmMale10.bmd', 46, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
             (7, 10, 'Vine Helm', 'HelmClass05.bmd', 6, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (7, 11, 'Silk Helm', 'HelmClass06.bmd', 16, 0, 0, 26, 0, 0, 2, 2, 30, 70, 0, 0, 4),
+            (7, 11, 'Silk Helm', 'HelmClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
             (7, 12, 'Wind Helm', 'HelmClass07.bmd', 28, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
             (7, 13, 'Spirit Helm', 'HelmClass08.bmd', 40, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
             (7, 14, 'Guardian Helm', 'HelmClass09.bmd', 53, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
             -- Armors (8)
-            (8, 0, 'Bronze Armor', 'ArmorMale01.bmd', 18, 0, 0, 34, 0, 0, 2, 2, 80, 20, 0, 0, 2),
+            (8, 0, 'Bronze Armor', 'ArmorMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
             (8, 1, 'Dragon Armor', 'ArmorMale02.bmd', 59, 0, 0, 68, 0, 0, 2, 3, 120, 30, 0, 0, 2),
-            (8, 2, 'Pad Armor', 'ArmorClass01.bmd', 10, 0, 0, 28, 0, 0, 2, 2, 30, 0, 0, 0, 1),
+            (8, 2, 'Pad Armor', 'ArmorClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
             (8, 3, 'Legendary Armor', 'ArmorClass02.bmd', 56, 0, 0, 42, 0, 0, 2, 2, 40, 0, 0, 0, 1),
             (8, 4, 'Bone Armor', 'ArmorClass03.bmd', 22, 0, 0, 30, 0, 0, 2, 2, 40, 0, 0, 0, 1),
-            (8, 5, 'Leather Armor', 'ArmorMale06.bmd', 10, 0, 0, 30, 0, 0, 2, 3, 80, 0, 0, 0, 2),
+            (8, 5, 'Leather Armor', 'ArmorMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 3, 20, 0, 0, 0, 2),
             (8, 6, 'Scale Armor', 'ArmorMale07.bmd', 28, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
             (8, 7, 'Sphinx Armor', 'ArmorClass04.bmd', 38, 0, 0, 36, 0, 0, 2, 3, 40, 0, 0, 0, 1),
             (8, 8, 'Brass Armor', 'ArmorMale09.bmd', 38, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
             (8, 9, 'Plate Armor', 'ArmorMale10.bmd', 48, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
             (8, 10, 'Vine Armor', 'ArmorClass05.bmd', 10, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (8, 11, 'Silk Armor', 'ArmorClass06.bmd', 20, 0, 0, 26, 0, 0, 2, 2, 30, 70, 0, 0, 4),
+            (8, 11, 'Silk Armor', 'ArmorClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
             (8, 12, 'Wind Armor', 'ArmorClass07.bmd', 32, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
             (8, 13, 'Spirit Armor', 'ArmorClass08.bmd', 44, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
             (8, 14, 'Guardian Armor', 'ArmorClass09.bmd', 57, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
             -- Pants (9)
-            (9, 0, 'Bronze Pants', 'PantMale01.bmd', 15, 0, 0, 34, 0, 0, 2, 2, 80, 20, 0, 0, 2),
+            (9, 0, 'Bronze Pants', 'PantMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
             (9, 1, 'Dragon Pants', 'PantMale02.bmd', 55, 0, 0, 68, 0, 0, 2, 2, 120, 30, 0, 0, 2),
-            (9, 2, 'Pad Pants', 'PantClass01.bmd', 8, 0, 0, 28, 0, 0, 2, 2, 30, 0, 0, 0, 1),
+            (9, 2, 'Pad Pants', 'PantClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
             (9, 3, 'Legendary Pants', 'PantClass02.bmd', 53, 0, 0, 42, 0, 0, 2, 2, 40, 0, 0, 0, 1),
             (9, 4, 'Bone Pants', 'PantClass03.bmd', 20, 0, 0, 30, 0, 0, 2, 2, 40, 0, 0, 0, 1),
-            (9, 5, 'Leather Pants', 'PantMale06.bmd', 8, 0, 0, 30, 0, 0, 2, 2, 80, 0, 0, 0, 2),
+            (9, 5, 'Leather Pants', 'PantMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 2),
             (9, 6, 'Scale Pants', 'PantMale07.bmd', 25, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
             (9, 7, 'Sphinx Pants', 'PantClass04.bmd', 34, 0, 0, 36, 0, 0, 2, 2, 40, 0, 0, 0, 1),
             (9, 8, 'Brass Pants', 'PantMale09.bmd', 35, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
             (9, 9, 'Plate Pants', 'PantMale10.bmd', 45, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
             (9, 10, 'Vine Pants', 'PantClass05.bmd', 8, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (9, 11, 'Silk Pants', 'PantClass06.bmd', 18, 0, 0, 26, 0, 0, 2, 2, 30, 70, 0, 0, 4),
+            (9, 11, 'Silk Pants', 'PantClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
             (9, 12, 'Wind Pants', 'PantClass07.bmd', 30, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
             (9, 13, 'Spirit Pants', 'PantClass08.bmd', 42, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
             (9, 14, 'Guardian Pants', 'PantClass09.bmd', 54, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
             -- Gloves (10)
-            (10, 0, 'Bronze Gloves', 'GloveMale01.bmd', 13, 0, 0, 34, 0, 0, 2, 2, 80, 20, 0, 0, 2),
+            (10, 0, 'Bronze Gloves', 'GloveMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
             (10, 1, 'Dragon Gloves', 'GloveMale02.bmd', 52, 0, 0, 68, 0, 0, 2, 2, 120, 30, 0, 0, 2),
-            (10, 2, 'Pad Gloves', 'GloveClass01.bmd', 3, 0, 0, 28, 0, 0, 2, 2, 20, 0, 0, 0, 1),
+            (10, 2, 'Pad Gloves', 'GloveClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
             (10, 3, 'Legendary Gloves', 'GloveClass02.bmd', 44, 0, 0, 42, 0, 0, 2, 2, 20, 0, 0, 0, 1),
             (10, 4, 'Bone Gloves', 'GloveClass03.bmd', 14, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 1),
-            (10, 5, 'Leather Gloves', 'GloveMale06.bmd', 4, 0, 0, 30, 0, 0, 2, 2, 80, 0, 0, 0, 2),
+            (10, 5, 'Leather Gloves', 'GloveMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 2),
             (10, 6, 'Scale Gloves', 'GloveMale07.bmd', 22, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
             (10, 7, 'Sphinx Gloves', 'GloveClass04.bmd', 28, 0, 0, 36, 0, 0, 2, 2, 20, 0, 0, 0, 1),
             (10, 8, 'Brass Gloves', 'GloveMale09.bmd', 32, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
             (10, 9, 'Plate Gloves', 'GloveMale10.bmd', 42, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
             (10, 10, 'Vine Gloves', 'GloveClass05.bmd', 4, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (10, 11, 'Silk Gloves', 'GloveClass06.bmd', 14, 0, 0, 26, 0, 0, 2, 2, 30, 70, 0, 0, 4),
+            (10, 11, 'Silk Gloves', 'GloveClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
             (10, 12, 'Wind Gloves', 'GloveClass07.bmd', 26, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
             (10, 13, 'Spirit Gloves', 'GloveClass08.bmd', 38, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
             (10, 14, 'Guardian Gloves', 'GloveClass09.bmd', 50, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
             -- Boots (11)
-            (11, 0, 'Bronze Boots', 'BootMale01.bmd', 12, 0, 0, 34, 0, 0, 2, 2, 80, 20, 0, 0, 2),
+            (11, 0, 'Bronze Boots', 'BootMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
             (11, 1, 'Dragon Boots', 'BootMale02.bmd', 54, 0, 0, 68, 0, 0, 2, 2, 120, 30, 0, 0, 2),
-            (11, 2, 'Pad Boots', 'BootClass01.bmd', 4, 0, 0, 28, 0, 0, 2, 2, 20, 0, 0, 0, 1),
+            (11, 2, 'Pad Boots', 'BootClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
             (11, 3, 'Legendary Boots', 'BootClass02.bmd', 46, 0, 0, 42, 0, 0, 2, 2, 30, 0, 0, 0, 1),
             (11, 4, 'Bone Boots', 'BootClass03.bmd', 16, 0, 0, 30, 0, 0, 2, 2, 30, 0, 0, 0, 1),
-            (11, 5, 'Leather Boots', 'BootMale06.bmd', 5, 0, 0, 30, 0, 0, 2, 2, 80, 0, 0, 0, 2),
+            (11, 5, 'Leather Boots', 'BootMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 2),
             (11, 6, 'Scale Boots', 'BootMale07.bmd', 22, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
             (11, 7, 'Sphinx Boots', 'BootClass04.bmd', 30, 0, 0, 36, 0, 0, 2, 2, 30, 0, 0, 0, 1),
             (11, 8, 'Brass Boots', 'BootMale09.bmd', 32, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
             (11, 9, 'Plate Boots', 'BootMale10.bmd', 42, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
             (11, 10, 'Vine Boots', 'BootClass05.bmd', 5, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (11, 11, 'Silk Boots', 'BootClass06.bmd', 15, 0, 0, 26, 0, 0, 2, 2, 30, 70, 0, 0, 4),
+            (11, 11, 'Silk Boots', 'BootClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
             (11, 12, 'Wind Boots', 'BootClass07.bmd', 27, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
             (11, 13, 'Spirit Boots', 'BootClass08.bmd', 40, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
             (11, 14, 'Guardian Boots', 'BootClass09.bmd', 52, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
@@ -995,8 +1005,17 @@ std::vector<MonsterSpawnData> Database::GetMonsterSpawns(uint8_t mapId) {
 }
 
 void Database::SeedDefaultEquipment(int characterId) {
-  // Reset gear for verification: clear all existing equipment and inventory
-  char sql[128];
+  char sql[256];
+  // Reset character stats to Level 1 defaults
+  snprintf(sql, sizeof(sql),
+           "UPDATE characters SET level=1, strength=28, dexterity=20, "
+           "vitality=25, energy=10, life=110, max_life=110, mana=20, "
+           "max_mana=20, experience=0, level_up_points=0 "
+           "WHERE id=%d",
+           characterId);
+  sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+
+  // Clear equipment and inventory
   snprintf(sql, sizeof(sql),
            "DELETE FROM character_equipment WHERE character_id=%d",
            characterId);
@@ -1007,7 +1026,8 @@ void Database::SeedDefaultEquipment(int characterId) {
            characterId);
   sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
 
-  printf("[DB] Cleared inventory for character %d\n", characterId);
+  printf("[DB] Reset character %d to Level 1 DK defaults (EMPTY)\n",
+         characterId);
 }
 
 void Database::UpdateEquipment(int characterId, uint8_t slot, uint8_t category,
@@ -1098,4 +1118,11 @@ void Database::UpdateCharacterMoney(int characterId, uint32_t money) {
   sqlite3_bind_int(stmt, 2, characterId);
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
+}
+
+uint64_t Database::GetXPForLevel(int level) {
+  // Cubic curve, MaxLevel=400 (matches client logic)
+  static constexpr double kScale =
+      ((double)0xFFFFFFFF * 0.95) / (400.0 * 400.0 * 400.0);
+  return (uint64_t)(kScale * (double)level * (double)level * (double)level);
 }

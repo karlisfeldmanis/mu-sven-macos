@@ -148,6 +148,9 @@ Terrain g_terrain;
 ObjectRenderer g_objectRenderer;
 FireEffect g_fireEffect;
 Sky g_sky;
+
+static const char *GetItemNameByDef(int16_t defIndex);
+static void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy);
 GrassRenderer g_grass;
 VFXManager g_vfxManager;
 
@@ -163,9 +166,10 @@ static MonsterManager g_monsterManager;
 static NetworkClient g_net;
 
 // NPC interaction state
-static int g_hoveredNpc = -1;     // Index of NPC under mouse cursor
-static int g_hoveredMonster = -1; // Index of Monster under mouse cursor
-static int g_selectedNpc = -1;    // Index of NPC that was clicked (dialog open)
+static int g_hoveredNpc = -1;        // Index of NPC under mouse cursor
+static int g_hoveredMonster = -1;    // Index of Monster under mouse cursor
+static int g_hoveredGroundItem = -1; // Index of Ground Item under mouse cursor
+static int g_selectedNpc = -1; // Index of NPC that was clicked (dialog open)
 
 // Client-side inventory (synced from server via 0x36)
 struct ClientItemDefinition {
@@ -570,15 +574,23 @@ static void SpawnDamageNumber(const glm::vec3 &pos, int damage, uint8_t type) {
 
 // Server-received character stats for HUD
 static int g_serverLevel = 1;
-static int g_serverHP = 100, g_serverMaxHP = 100;
-static int g_serverMP = 0, g_serverMaxMP = 0;
-static int g_serverStr = 0, g_serverDex = 0, g_serverVit = 0, g_serverEne = 0;
+static int g_serverHP = 110, g_serverMaxHP = 110;
+static int g_serverMP = 20, g_serverMaxMP = 20;
+static int g_serverStr = 28, g_serverDex = 20, g_serverVit = 25,
+           g_serverEne = 10;
 static int g_serverLevelUpPoints = 0;
 static int64_t g_serverXP = 0;
 
 // Panel toggle state
 static bool g_showCharInfo = false;
 static bool g_showInventory = false;
+
+// Quick slot (Q) item
+// Quick slot assignments
+static int16_t g_quickSlotDefIndex = 850; // Apple by default
+static ImVec2 g_quickSlotPos = {0, 0};    // Screen pos of Q slot for overlays
+static float g_potionCooldown = 0.0f;     // Potion cooldown timer (seconds)
+static constexpr float POTION_COOLDOWN_TIME = 30.0f;
 
 // Client-side inventory (synced from server via 0x36)
 
@@ -638,6 +650,65 @@ static void ClearBagItem(int slot) {
   }
 }
 
+static void ConsumeQuickSlotItem() {
+  if (g_quickSlotDefIndex == -1)
+    return;
+
+  // Cooldown check — prevent potion spam
+  if (g_potionCooldown > 0.0f) {
+    std::cout << "[QuickSlot] Cooldown active (" << g_potionCooldown
+              << "s remaining)" << std::endl;
+    return;
+  }
+
+  // Search for the first instance of this item in inventory
+  int foundSlot = -1;
+  for (int i = 0; i < INVENTORY_SLOTS; i++) {
+    if (g_inventory[i].occupied && g_inventory[i].primary &&
+        g_inventory[i].defIndex == g_quickSlotDefIndex) {
+      foundSlot = i;
+      break;
+    }
+  }
+
+  if (foundSlot != -1) {
+    // Determine healing amount
+    int healAmount = 0;
+    auto it = g_itemDefs.find(g_quickSlotDefIndex);
+    if (it != g_itemDefs.end()) {
+      const auto &def = it->second;
+      if (def.category == 14) {
+        if (def.itemIndex == 0)
+          healAmount = 10; // Apple
+        else if (def.itemIndex == 1)
+          healAmount = 20; // Small HP
+        else if (def.itemIndex == 2)
+          healAmount = 50; // Medium HP
+        else if (def.itemIndex == 3)
+          healAmount = 100; // Large HP
+      }
+    }
+
+    if (healAmount > 0) {
+      // Send use request to server (0x3A)
+      PMSG_ITEM_USE_RECV req{};
+      req.h = MakeC1Header(sizeof(req), 0x3A);
+      req.slot = (uint8_t)foundSlot;
+      g_net.Send(&req, sizeof(req));
+
+      // Start local cooldown for UI feedback
+      g_potionCooldown = POTION_COOLDOWN_TIME;
+
+      std::cout << "[QuickSlot] Requested to use "
+                << GetItemNameByDef(g_quickSlotDefIndex) << " from slot "
+                << foundSlot << std::endl;
+    }
+  } else {
+    std::cout << "[QuickSlot] No " << GetItemNameByDef(g_quickSlotDefIndex)
+              << " found in inventory!" << std::endl;
+  }
+}
+
 static void SetBagItem(int slot, int16_t defIdx, uint8_t qty, uint8_t lvl) {
   auto it = g_itemDefs.find(defIdx);
   if (it == g_itemDefs.end())
@@ -685,6 +756,7 @@ struct ClientEquipSlot {
 };
 static ClientEquipSlot g_equipSlots[12] =
     {}; // 12 equipment slots (0.97d scope)
+static GLuint g_slotBackgrounds[12] = {0};
 static UITexture g_texInventoryBg;
 
 // UI Static Globals
@@ -781,7 +853,8 @@ static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
         modelLower.find("wing") != std::string::npos ||
         texLower.find("fairy2") != std::string::npos ||
         texLower.find("satan2") != std::string::npos ||
-        texLower.find("unicon01") != std::string::npos) {
+        texLower.find("unicon01") != std::string::npos ||
+        texLower.find("flail00") != std::string::npos) {
       mb.bright = true;
     }
   }
@@ -803,7 +876,10 @@ static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
 
   for (int i = 0; i < mesh.NumTriangles; ++i) {
     auto &tri = mesh.Triangles[i];
+    int steps = (tri.Polygon == 3) ? 3 : 4;
     int startIdx = (int)vertices.size();
+
+    // First triangle (0,1,2)
     for (int v = 0; v < 3; ++v) {
       Vertex vert;
       auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
@@ -825,6 +901,33 @@ static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
                            mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
       vertices.push_back(vert);
       indices.push_back(startIdx + v);
+    }
+
+    // Second triangle for quads (0,2,3)
+    if (steps == 4) {
+      int quadIndices[3] = {0, 2, 3};
+      for (int v : quadIndices) {
+        Vertex vert;
+        auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+        auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
+
+        int boneIdx = srcVert.Node;
+        if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
+          const auto &bm = bones[boneIdx];
+          vert.pos = MuMath::TransformPoint((const float(*)[4])bm.data(),
+                                            srcVert.Position);
+          vert.normal = MuMath::RotateVector((const float(*)[4])bm.data(),
+                                             srcNorm.Normal);
+        } else {
+          vert.pos = srcVert.Position;
+          vert.normal = srcNorm.Normal;
+        }
+
+        vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                             mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+        vertices.push_back(vert);
+        indices.push_back((int)vertices.size() - 1);
+      }
     }
   }
 
@@ -1054,7 +1157,7 @@ public:
         glEnable(GL_BLEND);
         glDepthMask(GL_FALSE); // Disable depth writes for transparent layers
         if (mb.bright)
-          glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+          glBlendFunc(GL_ONE, GL_ONE); // Pure additive
         else
           glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       } else {
@@ -1636,13 +1739,14 @@ static void parseInitialPacket(const uint8_t *pkt, int pktSize,
       g_serverMP = stats->mana;
       g_serverMaxMP = stats->maxMana;
       g_serverLevelUpPoints = stats->levelUpPoints;
+      g_quickSlotDefIndex = stats->quickSlotDefIndex;
       g_serverXP = ((int64_t)stats->experienceHi << 32) | stats->experienceLo;
 
       // CRITICAL: Initialize g_hero with server data to prevent re-leveling
       // bugs
       g_hero.LoadStats(g_serverLevel, g_serverStr, g_serverDex, g_serverVit,
                        g_serverEne, (uint64_t)g_serverXP, g_serverLevelUpPoints,
-                       g_serverHP, g_serverMP);
+                       g_serverHP, g_serverMP, stats->charClass);
 
       std::cout << "[Net] Character stats: Lv." << g_serverLevel
                 << " HP=" << g_serverHP << "/" << g_serverMaxHP
@@ -1717,31 +1821,18 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
       if (idx >= 0)
         g_monsterManager.SetMonsterDying(idx);
 
-      // Apply XP reward and sync to server DB
+      // Apply XP reward (Optimistic update, server will sync soon)
       uint32_t xp = p->xpReward;
       if (xp > 0) {
         g_hero.GainExperience(xp);
         g_serverXP = (int64_t)g_hero.GetExperience();
         g_serverLevel = g_hero.GetLevel();
         g_serverLevelUpPoints = g_hero.GetLevelUpPoints();
-        g_serverHP = g_hero.GetHP();
+        // Removed: g_serverHP = g_hero.GetHP(); - HUD must trust server for
+        // life
         g_serverMaxHP = g_hero.GetMaxHP();
-
-        // Persist to DB via save packet
-        PMSG_CHARSAVE_RECV save{};
-        save.h = MakeC1Header(sizeof(save), 0x26);
-        save.characterId = 1;
-        save.level = (uint16_t)g_serverLevel;
-        save.strength = (uint16_t)g_serverStr;
-        save.dexterity = (uint16_t)g_serverDex;
-        save.vitality = (uint16_t)g_serverVit;
-        save.energy = (uint16_t)g_serverEne;
-        save.life = (uint16_t)g_serverHP;
-        save.maxLife = (uint16_t)g_serverMaxHP;
-        save.levelUpPoints = (uint16_t)g_serverLevelUpPoints;
-        save.experienceLo = (uint32_t)((uint64_t)g_serverXP & 0xFFFFFFFF);
-        save.experienceHi = (uint32_t)((uint64_t)g_serverXP >> 32);
-        g_net.Send(&save, sizeof(save));
+        // Floating XP number (type 9 = purple/gold)
+        SpawnDamageNumber(g_hero.GetPosition(), (int)xp, 9);
       }
     }
 
@@ -1758,10 +1849,19 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
         return;
       }
 
-      g_serverHP = p->remainingHp;
-      g_hero.TakeDamage(p->damage);
-      // Red damage number above hero
-      SpawnDamageNumber(g_hero.GetPosition(), p->damage, 8);
+      g_serverHP = (int)p->remainingHp;
+      if (p->remainingHp <= 0) {
+        g_hero.ForceDie();
+      }
+
+      if (p->damage == 0) {
+        // Show MISS instead of 0 damage
+        SpawnDamageNumber(g_hero.GetPosition(), 0, 7);
+      } else {
+        g_hero.TakeDamage(p->damage);
+        // Red damage number above hero
+        SpawnDamageNumber(g_hero.GetPosition(), p->damage, 8);
+      }
     }
 
     // Monster respawn (0x30)
@@ -1796,21 +1896,10 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
                   << " val=" << resp->newValue << " pts=" << resp->levelUpPoints
                   << std::endl;
 
-        // Force a save to ensure persistence
-        PMSG_CHARSAVE_RECV save{};
-        save.h = MakeC1Header(sizeof(save), 0x26);
-        save.characterId = 1;
-        save.level = (uint16_t)g_serverLevel;
-        save.strength = (uint16_t)g_serverStr;
-        save.dexterity = (uint16_t)g_serverDex;
-        save.vitality = (uint16_t)g_serverVit;
-        save.energy = (uint16_t)g_serverEne;
-        save.life = (uint16_t)g_serverHP;
-        save.maxLife = (uint16_t)g_serverMaxHP;
-        save.levelUpPoints = (uint16_t)g_serverLevelUpPoints;
-        save.experienceLo = (uint32_t)((uint64_t)g_serverXP & 0xFFFFFFFF);
-        save.experienceHi = (uint32_t)((uint64_t)g_serverXP >> 32);
-        g_net.Send(&save, sizeof(save));
+        // Sync hero state
+        g_hero.LoadStats(g_serverLevel, g_serverStr, g_serverDex, g_serverVit,
+                         g_serverEne, (uint64_t)g_serverXP,
+                         g_serverLevelUpPoints, g_serverHP, g_serverMP);
       }
     }
 
@@ -1836,7 +1925,7 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
           gi.angle.y += (float)(rand() % 360); // Add random Y rotation
 
           if (gi.defIndex == -1) { // Zen
-            gi.quantity = 1000;    // Visual placeholder for Zen pile size
+            // Zen quantity comes from the drop packet — keep actual value
           }
 
           gi.active = true;
@@ -1915,6 +2004,30 @@ static void handleServerPacket(const uint8_t *pkt, int pktSize) {
           g_equipSlots[slot].equipped = (weapon.category != 0xFF);
         }
       }
+    }
+
+    // Character stats (0x25) - Sync during gameplay for healing/leveling
+    if (headcode == 0x25 && pktSize >= (int)sizeof(PMSG_CHARSTATS_SEND)) {
+      auto *stats = reinterpret_cast<const PMSG_CHARSTATS_SEND *>(pkt);
+      g_serverLevel = stats->level;
+      g_serverStr = stats->strength;
+      g_serverDex = stats->dexterity;
+      g_serverVit = stats->vitality;
+      g_serverEne = stats->energy;
+      g_serverHP = stats->life;
+      g_serverMaxHP = stats->maxLife;
+      g_serverMP = stats->mana;
+      g_serverMaxMP = stats->maxMana;
+      g_serverLevelUpPoints = stats->levelUpPoints;
+      g_serverXP = ((int64_t)stats->experienceHi << 32) | stats->experienceLo;
+
+      // Sync hero state
+      g_hero.LoadStats(g_serverLevel, g_serverStr, g_serverDex, g_serverVit,
+                       g_serverEne, (uint64_t)g_serverXP, g_serverLevelUpPoints,
+                       g_serverHP, g_serverMP, stats->charClass);
+
+      std::cout << "[Net] Gameplay Stats Update: HP=" << g_serverHP << "/"
+                << g_serverMaxHP << " XP=" << g_serverXP << std::endl;
     }
   }
 
@@ -2070,22 +2183,30 @@ static const LightTemplate *GetLightProperties(int type) {
 // Forward declaration for NPC ray picking
 static int rayPickNpc(GLFWwindow *window, double mouseX, double mouseY);
 static int rayPickMonster(GLFWwindow *window, double mouseX, double mouseY);
+static int rayPickGroundItem(GLFWwindow *window, double mouseX, double mouseY);
 
 void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
   ImGui_ImplGlfw_CursorPosCallback(window, xpos, ypos);
   // Camera rotation disabled — fixed isometric angle like original MU
 
-  // Update NPC and Monster hover state on cursor move
+  // Update NPC, Monster, and Ground Item hover state on cursor move
   if (!ImGui::GetIO().WantCaptureMouse) {
     g_hoveredNpc = rayPickNpc(window, xpos, ypos);
     if (g_hoveredNpc < 0) {
       g_hoveredMonster = rayPickMonster(window, xpos, ypos);
+      if (g_hoveredMonster < 0) {
+        g_hoveredGroundItem = rayPickGroundItem(window, xpos, ypos);
+      } else {
+        g_hoveredGroundItem = -1;
+      }
     } else {
       g_hoveredMonster = -1;
+      g_hoveredGroundItem = -1;
     }
   } else {
     g_hoveredNpc = -1;
     g_hoveredMonster = -1;
+    g_hoveredGroundItem = -1;
   }
 }
 
@@ -2353,68 +2474,89 @@ static int16_t g_dragDefIndex = -2;
 static uint8_t g_dragQuantity = 0;
 static uint8_t g_dragItemLevel = 0;
 static bool g_isDragging = false;
+static bool g_dragFromQuickSlot = false;
 
 // Forward declarations for panel interaction (defined later)
 // ═══════════════════════════════════════════════════════════════════════
 // Input Handling
 // ═══════════════════════════════════════════════════════════════════════
 
+static int rayPickGroundItem(GLFWwindow *window, double mouseX, double mouseY) {
+  int winW, winH;
+  glfwGetWindowSize(window, &winW, &winH);
+
+  float ndcX = (float)(2.0 * mouseX / winW - 1.0);
+  float ndcY = (float)(1.0 - 2.0 * mouseY / winH);
+
+  glm::mat4 proj = g_camera.GetProjectionMatrix((float)winW, (float)winH);
+  glm::mat4 view = g_camera.GetViewMatrix();
+  glm::mat4 invVP = glm::inverse(proj * view);
+
+  glm::vec4 nearPt = invVP * glm::vec4(ndcX, ndcY, -1.0f, 1.0f);
+  glm::vec4 farPt = invVP * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+  nearPt /= nearPt.w;
+  farPt /= farPt.w;
+
+  glm::vec3 rayO = glm::vec3(nearPt);
+  glm::vec3 rayD = glm::normalize(glm::vec3(farPt) - rayO);
+
+  int bestIdx = -1;
+  float bestT = 1e9f;
+
+  for (int i = 0; i < MAX_GROUND_ITEMS; ++i) {
+    if (!g_groundItems[i].active)
+      continue;
+
+    float r = 50.0f; // Click radius around item
+    glm::vec3 pos = g_groundItems[i].position;
+
+    // Ray-sphere intersection (approximate for item)
+    glm::vec3 oc = rayO - pos;
+    float b = glm::dot(oc, rayD);
+    float c = glm::dot(oc, oc) - r * r;
+    float h = b * b - c;
+    if (h < 0.0f)
+      continue; // No hit
+
+    float t = -b - sqrtf(h);
+    if (t > 0 && t < bestT) {
+      bestT = t;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
 static void HandlePickupClick(GLFWwindow *window, double mx, double my) {
   if (g_showInventory || g_showCharInfo)
     return; // UI blocks pickup
 
-  int winW, winH;
-  glfwGetWindowSize(window, &winW, &winH);
-  glm::mat4 projection = g_camera.GetProjectionMatrix((float)winW, (float)winH);
-  glm::mat4 view = g_camera.GetViewMatrix();
-
-  glm::mat4 vp = projection * view;
-  float bestZ = 1.0f;
-  int bestIdx = -1;
-
-  for (int i = 0; i < 64; ++i) {
-    if (!g_groundItems[i].active)
-      continue;
-
-    glm::vec3 pos = g_groundItems[i].position;
-    glm::vec4 clip = vp * glm::vec4(pos, 1.0f);
-    if (clip.w <= 0)
-      continue;
-
-    glm::vec3 ndc = glm::vec3(clip) / clip.w;
-    float sx = (ndc.x * 0.5f + 0.5f) * winW;
-    float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * winH;
-
-    float dx = sx - (float)mx;
-    float dy = sy - (float)my;
-    float distSq = dx * dx + dy * dy;
-
-    if (distSq < 1600.0f) {
-      if (ndc.z < bestZ) {
-        bestZ = ndc.z;
-        bestIdx = i;
-      }
-    }
-  }
-
-  if (bestIdx != -1) {
+  if (g_hoveredGroundItem != -1) {
+    int bestIdx = g_hoveredGroundItem;
     float distToHero =
         glm::distance(g_hero.GetPosition(), g_groundItems[bestIdx].position);
-    if (distToHero < 300.0f) {
+
+    if (distToHero < 150.0f) {
+      // Close enough, pick up immediately
       PMSG_PICKUP_RECV pkt{};
       pkt.h = MakeC1Header(sizeof(pkt), 0x2C);
       pkt.dropIndex = g_groundItems[bestIdx].dropIndex;
       g_net.Send(&pkt, sizeof(pkt));
-      std::cout << "[Input] Pickup request for idx=" << pkt.dropIndex
-                << std::endl;
+      std::cout << "[Pickup] Sent direct pickup for index " << pkt.dropIndex
+                << " (Close range)" << std::endl;
+      g_hero.ClearPendingPickup();
     } else {
-      std::cout << "[Input] Item too far (" << distToHero << ")" << std::endl;
+      // Too far, move to it and set pending pickup
+      g_hero.MoveTo(g_groundItems[bestIdx].position);
+      g_hero.SetPendingPickup(bestIdx);
+      std::cout << "[Pickup] Moving to item index "
+                << g_groundItems[bestIdx].dropIndex << std::endl;
     }
   }
 }
 
 static bool HandlePanelClick(float vx, float vy);
-static void HandlePanelMouseUp(float vx, float vy);
+static void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy);
 
 // --- Click-to-move mouse handler ---
 
@@ -2428,32 +2570,31 @@ void mouse_button_callback(GLFWwindow *window, int button, int action,
       double mx, my;
       glfwGetCursorPos(window, &mx, &my);
 
-      // Check if click is on a UI panel first
-      if (g_showCharInfo || g_showInventory) {
-        float vx = g_hudCoords.ToVirtualX((float)mx);
-        float vy = g_hudCoords.ToVirtualY((float)my);
-        if (HandlePanelClick(vx, vy))
-          return;
-      }
+      // Check if click is on a UI panel or HUD first
+      float vx = g_hudCoords.ToVirtualX((float)mx);
+      float vy = g_hudCoords.ToVirtualY((float)my);
+      if (HandlePanelClick(vx, vy))
+        return;
 
-      // Check pickup FIRST (highest priority on ground)
-      HandlePickupClick(window, mx, my);
-
-      // Check NPC click first, then monster, then ground
+      // Highest priority interactions: NPC > Monster > Ground Item > Movement
       int npcHit = rayPickNpc(window, mx, my);
       if (npcHit >= 0) {
         g_selectedNpc = npcHit;
         g_hero.CancelAttack();
+        g_hero.ClearPendingPickup(); // Cancel pickup if interacting with NPC
       } else {
         g_selectedNpc = -1;
-        // Check monster click (use hovered monster)
         if (g_hoveredMonster >= 0) {
           MonsterInfo info = g_monsterManager.GetMonsterInfo(g_hoveredMonster);
           g_hero.AttackMonster(g_hoveredMonster, info.position);
+          g_hero.ClearPendingPickup(); // Cancel pickup if attacking monster
+        } else if (g_hoveredGroundItem >= 0) {
+          HandlePickupClick(window, mx, my);
         } else {
           // Ground click — move to terrain
           if (g_hero.IsAttacking())
             g_hero.CancelAttack();
+          g_hero.ClearPendingPickup(); // Cancel pickup if manually moving
           glm::vec3 target;
           if (screenToTerrain(window, mx, my, target)) {
             if (isWalkable(*g_terrainDataPtr, target.x, target.z)) {
@@ -2473,7 +2614,7 @@ void mouse_button_callback(GLFWwindow *window, int button, int action,
       glfwGetCursorPos(window, &mx, &my);
       float vx = g_hudCoords.ToVirtualX((float)mx);
       float vy = g_hudCoords.ToVirtualY((float)my);
-      HandlePanelMouseUp(vx, vy);
+      HandlePanelMouseUp(window, vx, vy);
     }
   }
 }
@@ -2489,6 +2630,8 @@ void key_callback(GLFWwindow *window, int key, int scancode, int action,
       g_showCharInfo = !g_showCharInfo;
     if (key == GLFW_KEY_I)
       g_showInventory = !g_showInventory;
+    if (key == GLFW_KEY_Q)
+      ConsumeQuickSlotItem();
     if (key == GLFW_KEY_ESCAPE) {
       if (g_showCharInfo)
         g_showCharInfo = false;
@@ -2512,6 +2655,27 @@ void processInput(GLFWwindow *window, float deltaTime) {
   bool wasMoving = g_hero.IsMoving();
   g_hero.ProcessMovement(deltaTime);
 
+  // Auto-pickup logic: check if we reached a pending item
+  int pendingIdx = g_hero.GetPendingPickup();
+  if (pendingIdx != -1) {
+    if (pendingIdx >= 0 && pendingIdx < MAX_GROUND_ITEMS &&
+        g_groundItems[pendingIdx].active) {
+      float dist = glm::distance(g_hero.GetPosition(),
+                                 g_groundItems[pendingIdx].position);
+      if (dist < 150.0f) {
+        PMSG_PICKUP_RECV pkt{};
+        pkt.h = MakeC1Header(sizeof(pkt), 0x2C);
+        pkt.dropIndex = g_groundItems[pendingIdx].dropIndex;
+        g_net.Send(&pkt, sizeof(pkt));
+        std::cout << "[Pickup] REACHED: Auto-picking item index "
+                  << pkt.dropIndex << std::endl;
+        g_hero.ClearPendingPickup();
+      }
+    } else {
+      g_hero.ClearPendingPickup(); // Item no longer active
+    }
+  }
+
   // Hide click effect when hero stops moving
   if (wasMoving && !g_hero.IsMoving())
     g_clickEffect.Hide();
@@ -2519,16 +2683,6 @@ void processInput(GLFWwindow *window, float deltaTime) {
   // Camera follows hero
   if (wasMoving)
     g_camera.SetPosition(g_hero.GetPosition());
-
-  static bool pPressed = false;
-  if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
-    if (!pPressed) {
-      Screenshot::Capture(window);
-      pPressed = true;
-    }
-  } else {
-    pPressed = false;
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -3427,6 +3581,13 @@ static void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
         mp.x >= sMin.x && mp.x < sMax.x && mp.y >= sMin.y && mp.y < sMax.y;
 
     dl->AddRectFilled(sMin, sMax, colSlotBg, 3.0f);
+
+    // Draw Background Placeholder if empty
+    if (!g_equipSlots[ep.slot].equipped && g_slotBackgrounds[ep.slot] != 0) {
+      dl->AddImage((ImTextureID)(intptr_t)g_slotBackgrounds[ep.slot], sMin,
+                   sMax);
+    }
+
     dl->AddRect(sMin, sMax, hoverSlot && g_isDragging ? colDragHi : colSlotBr,
                 3.0f);
 
@@ -3713,10 +3874,13 @@ static bool CanEquipItem(int16_t defIdx) {
     return false;
   }
 
-  // Class check: Bit 0 = DK (TestDK character is class 0)
-  if (!(def.classFlags & (1 << 0))) {
-    std::cout << "[UI] This item cannot be equipped by your class!"
-              << std::endl;
+  // Class check: bit_mask = 1 << (char_class >> 4)
+  // Mapping: 0(DW) -> bit 0, 16(DK) -> bit 1, 32(Elf) -> bit 2
+  int bitIndex = g_hero.GetClass() >> 4;
+  if (!(def.classFlags & (1 << bitIndex))) {
+    std::cout << "[UI] This item cannot be equipped by your class! (Class:"
+              << (int)g_hero.GetClass() << " Bit:" << bitIndex << " Flags:0x"
+              << std::hex << def.classFlags << std::dec << ")" << std::endl;
     return false;
   }
 
@@ -3869,14 +4033,47 @@ static bool HandlePanelClick(float vx, float vy) {
 
     return true; // Consumed by panel area
   }
+
+  // Quick Slot (HUD area) - bottom center
+  int winW, winH;
+  glfwGetWindowSize(glfwGetCurrentContext(), &winW, &winH);
+  if (vy >= g_hudCoords.ToVirtualY((float)winH - 60)) {
+    // Center is 640 in virtual space (1280 wide)
+    if (vx >= 615 && vx <= 665) {
+      if (g_quickSlotDefIndex != -1) {
+        g_isDragging = true;
+        g_dragFromQuickSlot = true;
+        g_dragDefIndex = g_quickSlotDefIndex;
+        g_dragFromSlot = -1;
+        g_dragFromEquipSlot = -1;
+        std::cout << "[QuickSlot] Started dragging from Q" << std::endl;
+        return true;
+      }
+    }
+  }
+
   return false;
 }
 
 // Handle drag release (mouse up)
-static void HandlePanelMouseUp(float vx, float vy) {
+static void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
   if (!g_isDragging)
     return;
+  bool wasDragging = g_isDragging;
   g_isDragging = false;
+
+  int winW, winH;
+  glfwGetWindowSize(window, &winW, &winH);
+  bool droppedOnHUD = (vy >= g_hudCoords.ToVirtualY((float)winH - 60));
+
+  if (g_dragFromQuickSlot) {
+    if (!droppedOnHUD) {
+      g_quickSlotDefIndex = -1;
+      std::cout << "[QuickSlot] Cleared assignment (dragged out)" << std::endl;
+    }
+    g_dragFromQuickSlot = false;
+    return;
+  }
 
   if (g_showInventory) {
     float px = GetInventoryPanelX(), py = PANEL_Y;
@@ -3898,9 +4095,58 @@ static void HandlePanelMouseUp(float vx, float vy) {
           uint8_t cat, idx;
           GetItemCategoryAndIndex(g_dragDefIndex, cat, idx);
 
-          // Enforce Slot Compatibility
-          // Slot 0 (Right Hand): Sword(0), Axe(1), Mace(2), Spear(3)
-          // Slot 1 (Left Hand): Shield(6), Bow(4), Staff(5)
+          // Enforce Strict Slot Category Compatibility (Main 5.2 logic)
+          bool validSlot = false;
+          switch (ep.slot) {
+          case 0: // R.Hand: Sword(0), Axe(1), Mace(2), Spear(3), Staff(5),
+                  // Bow(4)
+            validSlot = (cat <= 5);
+            break;
+          case 1: // L.Hand: Shield(6), Bow(4), Staff(5), Sword(0), Axe(1),
+                  // Mace(2), Spear(3)
+            // (Note: Shields are cat 6. Dual wielding allowed if cat <= 3)
+            validSlot = (cat <= 6);
+            break;
+          case 2:
+            validSlot = (cat == 7);
+            break; // Helm
+          case 3:
+            validSlot = (cat == 8);
+            break; // Armor
+          case 4:
+            validSlot = (cat == 9);
+            break; // Pants
+          case 5:
+            validSlot = (cat == 10);
+            break; // Gloves
+          case 6:
+            validSlot = (cat == 11);
+            break; // Boots
+          case 7:
+            validSlot = (cat == 12 && idx <= 6);
+            break; // Wings
+          case 8:
+            validSlot = (cat == 13 && (idx == 0 || idx == 1 || idx == 2 ||
+                                       idx == 3)); // Guardian/Pet
+            break;
+          case 9:
+            validSlot = (cat == 13 && idx >= 8 && idx <= 13);
+            break; // Pendant
+          case 10:
+          case 11:
+            validSlot = (cat == 13 && idx >= 20 && idx <= 25);
+            break; // Rings
+          }
+
+          if (!validSlot) {
+            std::cout << "[UI] Cannot equip category " << (int)cat
+                      << " in slot " << ep.slot << std::endl;
+            g_isDragging = false;
+            g_dragFromSlot = -1;
+            return;
+          }
+
+          // Enforce Hand Compatibility
           if (ep.slot == 0 && cat == 6) {
             std::cout << "[UI] Cannot equip Shield in Right Hand!" << std::endl;
             g_isDragging = false;
@@ -3981,7 +4227,20 @@ static void HandlePanelMouseUp(float vx, float vy) {
       }
     }
 
-    // 2. Check drop on Inventory Grid
+    // 2. Check drop on Quick Slot area (bottom bar)
+    int winW, winH;
+    glfwGetWindowSize(window, &winW, &winH);
+    if (vy >= g_hudCoords.ToVirtualY((float)winH - 60)) {
+      auto it = g_itemDefs.find(g_dragDefIndex);
+      if (it != g_itemDefs.end() && it->second.category == 14) {
+        g_quickSlotDefIndex = g_dragDefIndex;
+        std::cout << "[QuickSlot] Assigned " << it->second.name << " to Q"
+                  << std::endl;
+        return;
+      }
+    }
+
+    // 3. Check drop on Bag grid
     float gridRX = 15.0f, gridRY = 208.0f;
     float cellW = 20.0f, cellH = 20.0f;
 
@@ -4116,7 +4375,7 @@ int main(int argc, char **argv) {
   glfwWindowHint(GLFW_STENCIL_BITS, 8);
 
   GLFWwindow *window = glfwCreateWindow(
-      1920, 1080, "Mu Online Remaster (Native macOS C++)", nullptr, nullptr);
+      1366, 768, "Mu Online Remaster (Native macOS C++)", nullptr, nullptr);
   if (!window) {
     std::cerr << "Failed to create GLFW window" << std::endl;
     glfwTerminate();
@@ -4342,18 +4601,9 @@ int main(int argc, char **argv) {
   g_hero.Init(data_path);
   g_hero.SetTerrainData(&terrainData);
 
-  // Seed inventory with test items (spread out to avoid overlaps)
-  SetBagItem(0, 0, 1, 0);   // Kris (0,0) - 1x2
-  SetBagItem(2, 1, 1, 3);   // Short Sword +3 (0,2) - 1x3
-  SetBagItem(4, 66, 1, 0);  // Flail (0,4) - 1x3
-  SetBagItem(6, 192, 1, 0); // Small Shield (0,6) - 2x2
-
-  SetBagItem(24, 224, 1, 0); // Bronze Helm (3,0) - 2x2
-  SetBagItem(26, 256, 1, 0); // Bronze Armor (3,2) - 2x3
-  SetBagItem(28, 288, 1, 0); // Bronze Pants (3,4) - 2x2
-
-  SetBagItem(48, 320, 1, 0); // Bronze Gloves (6,0) - 2x2
-  SetBagItem(50, 352, 1, 0); // Bronze Boots (6,2) - 2x2
+  // Starting character initialization: empty inventory for realistic testing
+  // Initial stats for Level 1 DK
+  g_hero.LoadStats(1, 28, 20, 25, 10, 0, 0, 110, 20, 1);
   g_hero.SetTerrainLightmap(terrainData.lightmap);
   g_hero.SetPointLights(g_pointLights);
   g_hero.SnapToTerrain();
@@ -4361,7 +4611,31 @@ int main(int argc, char **argv) {
   g_clickEffect.Init();
   g_texInventoryBg = UITexture::Load("Data/Interface/mu_inventory_bg.png");
 
-  // Simplification: removed Main 5.2 texture loading
+  // Load Equipment Slot Backgrounds from Main 5.2 assets
+  g_slotBackgrounds[0] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_weapon(R).OZT");
+  g_slotBackgrounds[1] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_weapon(L).OZT");
+  g_slotBackgrounds[2] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_cap.OZT");
+  g_slotBackgrounds[3] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_upper.OZT");
+  g_slotBackgrounds[4] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_lower.OZT");
+  g_slotBackgrounds[5] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_gloves.OZT");
+  g_slotBackgrounds[6] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_boots.OZT");
+  g_slotBackgrounds[7] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_wing.OZT");
+  g_slotBackgrounds[8] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_fairy.OZT");
+  g_slotBackgrounds[9] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_necklace.OZT");
+  g_slotBackgrounds[10] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_ring.OZT");
+  g_slotBackgrounds[11] =
+      TextureLoader::Resolve("Data/Interface", "newui_item_ring.OZT");
 
   g_clickEffect.LoadAssets(data_path);
   g_clickEffect.SetTerrainData(&terrainData);
@@ -4604,11 +4878,8 @@ int main(int argc, char **argv) {
     }
   }
   if (autoDiag) {
-    // Top-down zoomed view over Lorencia tavern area for clear tile
-    // diagnostics
-    g_camera.SetPosition(glm::vec3(12800.0f, 3000.0f, 12800.0f));
-    g_camera.SetAngles(0.0f, -89.0f); // Look straight down
-    g_camera.SetZoom(3000.0f);
+    // Diag mode no longer forces top-down view to respect user's "only default"
+    // request
   }
   if ((autoScreenshot || autoGif) && !hasCustomPos) {
     // Lorencia town center at original MU isometric angle (default for
@@ -4635,9 +4906,10 @@ int main(int argc, char **argv) {
         topDown = true;
     }
     if (topDown) {
-      g_camera.SetPosition(glm::vec3(objPos.x, objPos.y + 1500.0f, objPos.z));
-      g_camera.SetAngles(0.0f, -89.0f);
-      g_camera.SetZoom(1500.0f);
+      // Disabled to force "only default" view
+      g_hero.SetPosition(objPos);
+      g_hero.SnapToTerrain();
+      g_camera.SetPosition(g_hero.GetPosition());
     } else {
       // Position camera at the object using the fixed isometric angle
       g_hero.SetPosition(objPos);
@@ -4692,6 +4964,10 @@ int main(int argc, char **argv) {
 
     // Send player position to server periodically (~4Hz)
     {
+      // Tick potion cooldown
+      if (g_potionCooldown > 0.0f)
+        g_potionCooldown = std::max(0.0f, g_potionCooldown - deltaTime);
+
       static float posTimer = 0.0f;
       posTimer += deltaTime;
       if (posTimer >= 0.25f) {
@@ -4798,6 +5074,7 @@ int main(int argc, char **argv) {
         save.levelUpPoints = (uint16_t)g_serverLevelUpPoints;
         save.experienceLo = (uint32_t)((uint64_t)g_serverXP & 0xFFFFFFFF);
         save.experienceHi = (uint32_t)((uint64_t)g_serverXP >> 32);
+        save.quickSlotDefIndex = g_quickSlotDefIndex;
         g_net.Send(&save, sizeof(save));
       }
     }
@@ -4982,21 +5259,63 @@ int main(int argc, char **argv) {
 
       if (ImGui::Begin("SimpleHUD", nullptr, HUD_FLAGS)) {
 
-        // HP
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "HP: %d/%d",
-                           g_serverHP, g_serverMaxHP);
-        ImGui::SameLine(180);
+        // HP bar
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
+                              ImVec4(0.9f, 0.2f, 0.2f, 1.0f));
+        {
+          float hpFrac = g_serverMaxHP > 0
+                             ? (float)g_serverHP / (float)g_serverMaxHP
+                             : 0.0f;
+          hpFrac = std::clamp(hpFrac, 0.0f, 1.0f);
+          char hpLabel[32];
+          snprintf(hpLabel, sizeof(hpLabel), "HP %d/%d", g_serverHP,
+                   g_serverMaxHP);
+          ImGui::ProgressBar(hpFrac, ImVec2(180, 20), hpLabel);
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+
+        // MP bar
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
+                              ImVec4(0.2f, 0.3f, 0.9f, 1.0f));
+        {
+          float mpFrac = g_serverMaxMP > 0
+                             ? (float)g_serverMP / (float)g_serverMaxMP
+                             : 0.0f;
+          mpFrac = std::clamp(mpFrac, 0.0f, 1.0f);
+          char mpLabel[32];
+          snprintf(mpLabel, sizeof(mpLabel), "MP %d/%d", g_serverMP,
+                   g_serverMaxMP);
+          ImGui::ProgressBar(mpFrac, ImVec2(120, 20), mpLabel);
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
 
         // Level
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Level: %d",
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Lv.%d",
                            g_serverLevel);
-        ImGui::SameLine(320);
+        ImGui::SameLine();
 
-        // XP Bar
-        float dummyXP = (float)(g_serverXP % 1000) / 1000.0f;
+        // XP Bar (consistent source of truth from g_hero)
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
                               ImVec4(0.2f, 0.7f, 0.9f, 1.0f));
-        ImGui::ProgressBar(dummyXP, ImVec2(200, 20), "XP");
+        {
+          uint64_t curXp = g_hero.GetExperience();
+          int curLv = g_hero.GetLevel();
+          uint64_t nextXp = g_hero.GetNextExperience();
+          uint64_t prevXp = g_hero.CalcXPForLevel(curLv);
+
+          float xpFrac = 0.0f;
+          if (nextXp > prevXp)
+            xpFrac = (float)(curXp - prevXp) / (float)(nextXp - prevXp);
+          xpFrac = std::clamp(xpFrac, 0.0f, 1.0f);
+
+          char xpLabel[64];
+          snprintf(xpLabel, sizeof(xpLabel), "XP %llu/%llu (%.1f%%)",
+                   (unsigned long long)(curXp - prevXp),
+                   (unsigned long long)(nextXp - prevXp), xpFrac * 100.0f);
+          ImGui::ProgressBar(xpFrac, ImVec2(220, 20), xpLabel);
+        }
         ImGui::PopStyleColor();
 
         ImGui::SameLine(vp->Size.x - 220);
@@ -5009,6 +5328,72 @@ int main(int argc, char **argv) {
         if (ImGui::Button("Inv (I)", ImVec2(100, 30))) {
           g_showInventory = !g_showInventory;
         }
+
+        // Quick Slot (Q)
+        ImGui::SameLine(vp->Size.x * 0.5f - 25);
+        ImGui::BeginGroup();
+        {
+          ImVec2 qPos = ImGui::GetCursorScreenPos();
+          ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(20, 20, 30, 200));
+          ImGui::BeginChild("QuickSlotQ", ImVec2(50, 50), true,
+                            ImGuiWindowFlags_NoScrollbar);
+
+          int itemCount = 0;
+          if (g_quickSlotDefIndex != -1) {
+            for (int i = 0; i < INVENTORY_SLOTS; i++) {
+              if (g_inventory[i].occupied && g_inventory[i].primary &&
+                  g_inventory[i].defIndex == g_quickSlotDefIndex) {
+                itemCount += g_inventory[i].quantity;
+              }
+            }
+
+            // Queue 3D render for quick slot icon
+            auto it = g_itemDefs.find(g_quickSlotDefIndex);
+            if (it != g_itemDefs.end() && itemCount > 0) {
+              g_quickSlotPos = qPos; // Capture for post-3D overlay
+              int qwinH = (int)ImGui::GetIO().DisplaySize.y;
+              g_renderQueue.push_back(
+                  {it->second.modelFile, g_quickSlotDefIndex, (int)qPos.x + 5,
+                   qwinH - (int)qPos.y - 45, 40, 40, false});
+
+              // --- Cooldown Overlay ---
+              if (false && g_potionCooldown > 0.0f) {
+                ImVec2 p0 = qPos;
+                ImVec2 p1 = ImVec2(qPos.x + 50, qPos.y + 50);
+
+                // Dark semi-transparent overlay
+                ImGui::GetForegroundDrawList()->AddRectFilled(
+                    p0, p1, IM_COL32(20, 20, 20, 180));
+
+                // Countdown text (bright white) - Show integer seconds
+                char cdBuf[16];
+                snprintf(cdBuf, sizeof(cdBuf), "%d",
+                         (int)ceil(g_potionCooldown));
+                ImVec2 txtSize = ImGui::CalcTextSize(cdBuf);
+                ImGui::GetForegroundDrawList()->AddText(
+                    ImVec2(p0.x + (50 - txtSize.x) * 0.5f,
+                           p0.y + (50 - txtSize.y) * 0.5f),
+                    IM_COL32(255, 255, 255, 255), cdBuf);
+              }
+            }
+          }
+
+          ImGui::EndChild();
+          ImGui::PopStyleColor();
+
+          // Overlay "Q" and count
+          ImDrawList *foreground = ImGui::GetForegroundDrawList();
+          foreground->AddText(ImVec2(qPos.x + 3, qPos.y + 2),
+                              IM_COL32(255, 255, 255, 200), "Q");
+          if (g_quickSlotDefIndex != -1 && itemCount > 0) {
+            char cbuf[16];
+            snprintf(cbuf, sizeof(cbuf), "%d", itemCount);
+            ImVec2 tsz = ImGui::CalcTextSize(cbuf);
+            foreground->AddText(ImVec2(qPos.x + 47 - tsz.x, qPos.y + 32),
+                                IM_COL32(255, 210, 80, 255), cbuf);
+          }
+        }
+        ImGui::EndGroup();
       }
       ImGui::End();
 
@@ -5053,6 +5438,16 @@ int main(int argc, char **argv) {
           if (d.type == 7) {
             col = IM_COL32(180, 180, 180, (int)(alpha * 255));
             text = "MISS";
+          } else if (d.type == 9) {
+            // XP gained (purple-gold)
+            snprintf(buf, sizeof(buf), "+%d XP", d.damage);
+            text = buf;
+            col = IM_COL32(220, 180, 255, (int)(alpha * 255));
+          } else if (d.type == 10) {
+            // Heal (bright green)
+            snprintf(buf, sizeof(buf), "+%d", d.damage);
+            text = buf;
+            col = IM_COL32(60, 255, 60, (int)(alpha * 255));
           } else {
             snprintf(buf, sizeof(buf), "%d", d.damage);
             text = buf;
@@ -5198,9 +5593,25 @@ int main(int argc, char **argv) {
 
           ImVec2 ts = g_fontDefault->CalcTextSizeA(13.0f, FLT_MAX, 0, label);
           float tx = sx - ts.x * 0.5f, ty = sy - ts.y * 0.5f;
+
+          // Highlight if hovered
+          int giIndex = (int)(&gi - g_groundItems);
+          bool isHovered = (giIndex == g_hoveredGroundItem);
+
           // Yellow for items, gold for Zen
           ImU32 col = gi.defIndex == -1 ? IM_COL32(255, 215, 0, 220)
                                         : IM_COL32(180, 255, 180, 220);
+
+          if (isHovered) {
+            // Bright white highlight for hovered items
+            col = IM_COL32(255, 255, 255, 255);
+            // Thicker shadow/outline
+            dl->AddText(g_fontDefault, 13.0f, ImVec2(tx + 2, ty + 1),
+                        IM_COL32(0, 0, 0, 200), label);
+            dl->AddText(g_fontDefault, 13.0f, ImVec2(tx - 1, ty - 1),
+                        IM_COL32(0, 0, 0, 200), label);
+          }
+
           dl->AddText(g_fontDefault, 13.0f, ImVec2(tx + 1, ty + 1),
                       IM_COL32(0, 0, 0, 160), label);
           dl->AddText(g_fontDefault, 13.0f, ImVec2(tx, ty), col, label);
@@ -5263,7 +5674,7 @@ int main(int argc, char **argv) {
     // Add some debug info
     ImGui::Begin("Terrain Debug");
     ImGui::Text("Camera Pos: %.1f, %.1f, %.1f", camPos.x, camPos.y, camPos.z);
-    ImGui::Text("Zoom: %.1f", g_camera.GetZoom());
+    ImGui::Text("Camera Zoom: %.1f (Default: 800.0)", g_camera.GetZoom());
     ImGui::Text("Objects: %d instances, %d models",
                 g_objectRenderer.GetInstanceCount(),
                 g_objectRenderer.GetModelCount());
@@ -5406,12 +5817,35 @@ int main(int argc, char **argv) {
       }
     }
 
-    // Second ImGui pass: draw deferred tooltip ON TOP of 3D items
-    if (g_pendingTooltip.active) {
+    // Second ImGui pass: draw deferred tooltip and HUD overlays ON TOP of 3D
+    // items
+    if (g_pendingTooltip.active || g_potionCooldown > 0.0f) {
       ImGui_ImplOpenGL3_NewFrame();
       ImGui_ImplGlfw_NewFrame();
       ImGui::NewFrame();
-      FlushPendingTooltip();
+
+      if (g_potionCooldown > 0.0f && g_quickSlotPos.x > 0) {
+        ImVec2 p0 = g_quickSlotPos;
+        ImVec2 p1 = ImVec2(p0.x + 50, p0.y + 50);
+
+        // Dark semi-transparent overlay
+        ImGui::GetForegroundDrawList()->AddRectFilled(
+            p0, p1, IM_COL32(20, 20, 20, 180));
+
+        // Countdown text (bright white)
+        char cdBuf[16];
+        snprintf(cdBuf, sizeof(cdBuf), "%d", (int)ceil(g_potionCooldown));
+        ImVec2 txtSize = ImGui::CalcTextSize(cdBuf);
+        ImGui::GetForegroundDrawList()->AddText(
+            ImVec2(p0.x + (50 - txtSize.x) * 0.5f,
+                   p0.y + (50 - txtSize.y) * 0.5f),
+            IM_COL32(255, 255, 255, 255), cdBuf);
+      }
+
+      if (g_pendingTooltip.active) {
+        FlushPendingTooltip();
+      }
+
       ImGui::Render();
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
@@ -5499,13 +5933,34 @@ int main(int argc, char **argv) {
     glfwSwapBuffers(window);
   }
 
-  // Save hero position via camera state for next launch
-  g_camera.SetPosition(g_hero.GetPosition());
-  g_camera.SaveState("camera_save.txt");
+  // Save hero position via camera state for next launch (unless in diag mode)
+  if (!autoDiag) {
+    g_camera.SetPosition(g_hero.GetPosition());
+    g_camera.SaveState("camera_save.txt");
+  }
+
+  // Save character stats to server before disconnecting
+  {
+    PMSG_CHARSAVE_RECV save{};
+    save.h = MakeC1Header(sizeof(save), 0x26);
+    save.characterId = 1;
+    save.level = (uint16_t)g_serverLevel;
+    save.strength = (uint16_t)g_serverStr;
+    save.dexterity = (uint16_t)g_serverDex;
+    save.vitality = (uint16_t)g_serverVit;
+    save.energy = (uint16_t)g_serverEne;
+    save.life = (uint16_t)g_serverHP;
+    save.maxLife = (uint16_t)g_serverMaxHP;
+    save.levelUpPoints = (uint16_t)g_serverLevelUpPoints;
+    save.experienceLo = (uint32_t)((uint64_t)g_serverXP & 0xFFFFFFFF);
+    save.experienceHi = (uint32_t)((uint64_t)g_serverXP >> 32);
+    save.quickSlotDefIndex = g_quickSlotDefIndex;
+    g_net.Send(&save, sizeof(save));
+    g_net.Flush();
+  }
 
   // Disconnect from server
   g_net.Disconnect();
-
   // Cleanup
   // Cleanup handled by RAII/End
   g_monsterManager.Cleanup();

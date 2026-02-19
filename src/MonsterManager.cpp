@@ -340,6 +340,19 @@ void MonsterManager::AddMonster(uint16_t monsterType, uint8_t gridX,
 void MonsterManager::setAction(MonsterInstance &mon, int action) {
   if (mon.action == action)
     return;
+
+  // Trigger blending on walk -> stop transition
+  if (mon.action == ACTION_WALK &&
+      (action == ACTION_STOP1 || action == ACTION_STOP2)) {
+    mon.priorAction = mon.action;
+    mon.priorAnimFrame = mon.animFrame;
+    mon.isBlending = true;
+    mon.blendAlpha = 0.0f;
+  } else {
+    mon.isBlending = false;
+    mon.blendAlpha = 1.0f;
+  }
+
   mon.action = action;
   mon.animFrame = 0.0f;
 }
@@ -461,6 +474,7 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
 
     if (dist < ARRIVAL_DIST || mon.stateTimer <= 0.0f) {
       mon.state = MonsterState::IDLE;
+      mon.stateTimer = 0.0f; // Reset to pick new idle action immediately
     } else {
       glm::vec3 moveDir = glm::normalize(dir);
       float step = WANDER_SPEED * dt;
@@ -564,7 +578,13 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
       if (mon.serverChasing) {
         mon.state = MonsterState::CHASING;
       } else {
-        mon.state = MonsterState::IDLE;
+        // Resume walking if we have a wander target, else idle
+        float distToWander = glm::length(mon.wanderTarget - mon.position);
+        if (distToWander > ARRIVAL_DIST) {
+          mon.state = MonsterState::WALKING;
+        } else {
+          mon.state = MonsterState::IDLE;
+        }
       }
     }
     break;
@@ -744,12 +764,15 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       // Scale walk animation speed to match actual movement speed.
       // Original MU MoveSpeed=400 for all Lorencia monsters — animation was
       // tuned for that.
-      static constexpr float ORIGINAL_MOVE_SPEED = 400.0f;
+      // For spiders (type 3), use a lower reference speed (200) to keep legs
+      // moving at a natural pace that matches stop animation.
+      float refMoveSpeed = (mon.monsterType == 3) ? 200.0f : 400.0f;
+
       if (mon.action == ACTION_WALK) {
         if (mon.state == MonsterState::WALKING)
-          animSpeed *= WANDER_SPEED / ORIGINAL_MOVE_SPEED;
+          animSpeed *= WANDER_SPEED / refMoveSpeed;
         else if (mon.state == MonsterState::CHASING)
-          animSpeed *= CHASE_SPEED / ORIGINAL_MOVE_SPEED;
+          animSpeed *= CHASE_SPEED / refMoveSpeed;
       }
 
       mon.animFrame += animSpeed * deltaTime;
@@ -768,19 +791,76 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
     }
 
-    // Compute bone matrices with slerp
-    auto bones =
-        ComputeBoneMatricesInterpolated(mdl.bmd, mon.action, mon.animFrame);
+    // Advance blending Alpha
+    if (mon.isBlending) {
+      mon.blendAlpha += deltaTime / mon.BLEND_DURATION;
+      if (mon.blendAlpha >= 1.0f) {
+        mon.blendAlpha = 1.0f;
+        mon.isBlending = false;
+      }
+    }
+
+    // Compute bone matrices with blending support
+    std::vector<BoneWorldMatrix> bones;
+    if (mon.isBlending && mon.priorAction != -1) {
+      bones = ComputeBoneMatricesBlended(mdl.bmd, mon.priorAction,
+                                         mon.priorAnimFrame, mon.action,
+                                         mon.animFrame, mon.blendAlpha);
+    } else {
+      bones =
+          ComputeBoneMatricesInterpolated(mdl.bmd, mon.action, mon.animFrame);
+    }
 
     // LockPositions: cancel root bone X/Y displacement to prevent animation
-    // from physically moving the model (same fix as HeroCharacter.cpp:315-327)
-    if (mon.action >= 0 && mon.action < (int)mdl.bmd->Actions.size() &&
-        mdl.bmd->Actions[mon.action].LockPositions && mdl.rootBone >= 0) {
+    // from physically moving the model. In blending mode, we interpolate the
+    // offset.
+    if (mdl.rootBone >= 0) {
       int rb = mdl.rootBone;
-      auto &bm = mdl.bmd->Bones[rb].BoneMatrixes[mon.action];
-      if (!bm.Position.empty()) {
-        float dx = bones[rb][0][3] - bm.Position[0].x;
-        float dy = bones[rb][1][3] - bm.Position[0].y;
+      float dx = 0.0f, dy = 0.0f;
+
+      if (mon.isBlending && mon.priorAction != -1) {
+        bool lock1 = mon.priorAction < (int)mdl.bmd->Actions.size() &&
+                     mdl.bmd->Actions[mon.priorAction].LockPositions;
+        bool lock2 = mon.action < (int)mdl.bmd->Actions.size() &&
+                     mdl.bmd->Actions[mon.action].LockPositions;
+
+        float dx1 = 0.0f, dy1 = 0.0f, dx2 = 0.0f, dy2 = 0.0f;
+        if (lock1) {
+          auto &bm1 = mdl.bmd->Bones[rb].BoneMatrixes[mon.priorAction];
+          if (!bm1.Position.empty()) {
+            glm::vec3 p;
+            glm::vec4 q;
+            if (GetInterpolatedBoneData(mdl.bmd, mon.priorAction,
+                                        mon.priorAnimFrame, rb, p, q)) {
+              dx1 = p.x - bm1.Position[0].x;
+              dy1 = p.y - bm1.Position[0].y;
+            }
+          }
+        }
+        if (lock2) {
+          auto &bm2 = mdl.bmd->Bones[rb].BoneMatrixes[mon.action];
+          if (!bm2.Position.empty()) {
+            glm::vec3 p;
+            glm::vec4 q;
+            if (GetInterpolatedBoneData(mdl.bmd, mon.action, mon.animFrame, rb,
+                                        p, q)) {
+              dx2 = p.x - bm2.Position[0].x;
+              dy2 = p.y - bm2.Position[0].y;
+            }
+          }
+        }
+        dx = dx1 * (1.0f - mon.blendAlpha) + dx2 * mon.blendAlpha;
+        dy = dy1 * (1.0f - mon.blendAlpha) + dy2 * mon.blendAlpha;
+      } else if (mon.action >= 0 && mon.action < (int)mdl.bmd->Actions.size() &&
+                 mdl.bmd->Actions[mon.action].LockPositions) {
+        auto &bm = mdl.bmd->Bones[rb].BoneMatrixes[mon.action];
+        if (!bm.Position.empty()) {
+          dx = bones[rb][0][3] - bm.Position[0].x;
+          dy = bones[rb][1][3] - bm.Position[0].y;
+        }
+      }
+
+      if (dx != 0.0f || dy != 0.0f) {
         for (int b = 0; b < (int)bones.size(); ++b) {
           bones[b][0][3] -= dx;
           bones[b][1][3] -= dy;
@@ -975,37 +1055,33 @@ void MonsterManager::RenderOutline(int monsterIndex, const glm::mat4 &view,
   if (mon.state == MonsterState::DEAD || mon.state == MonsterState::DYING)
     return;
 
+  // --- Stencil-based thin outline ---
+  // Pass 1: Fill stencil with monster silhouette (no color write)
+  glEnable(GL_STENCIL_TEST);
+  glClear(GL_STENCIL_BUFFER_BIT);
+  glStencilFunc(GL_ALWAYS, 1, 0xFF);
+  glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+  glDepthMask(GL_FALSE);
+
   m_shader->use();
   m_shader->setMat4("projection", proj);
   m_shader->setMat4("view", view);
-  m_shader->setVec3("lightPos", glm::vec3(0, 10000, 0));
-  m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f); // Enabled for outline
-  m_shader->setVec3("viewPos", glm::vec3(0));
-  m_shader->setBool("useFog", false);
-  m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
-  m_shader->setInt("numPointLights", 0);
   m_shader->setFloat("luminosity", 1.0f);
   m_shader->setFloat("objectAlpha", 1.0f);
-
-  // Additive blend, no depth write/test
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_ONE, GL_ONE);
-  glDepthMask(GL_FALSE);
-  glDisable(GL_DEPTH_TEST);
-  glDisable(GL_CULL_FACE);
-
-  // Build model matrix (Pass 1: tight outline)
-  float edgeScale1 = mon.scale * 1.08f;
-  glm::mat4 model1 = glm::translate(glm::mat4(1.0f), mon.position);
-  model1 = glm::rotate(model1, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-  model1 = glm::rotate(model1, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-  model1 = glm::rotate(model1, mon.facing, glm::vec3(0, 0, 1));
-  model1 = glm::scale(model1, glm::vec3(edgeScale1));
-  m_shader->setMat4("model", model1);
-
-  // Pass 1: Bright white core glow
   m_shader->setFloat("blendMeshLight", 1.0f);
-  m_shader->setVec3("terrainLight", 0.8f, 0.8f, 0.8f);
+  m_shader->setBool("useFog", false);
+  m_shader->setInt("numPointLights", 0);
+  m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
+
+  glm::mat4 model = glm::translate(glm::mat4(1.0f), mon.position);
+  model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+  model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+  model = glm::rotate(model, mon.facing, glm::vec3(0, 0, 1));
+  model = glm::scale(model, glm::vec3(mon.scale));
+  m_shader->setMat4("model", model);
+
+  glDisable(GL_CULL_FACE);
   for (auto &mb : mon.meshBuffers) {
     if (mb.indexCount == 0 || mb.hidden)
       continue;
@@ -1014,16 +1090,26 @@ void MonsterManager::RenderOutline(int monsterIndex, const glm::mat4 &view,
     glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
   }
 
-  // Pass 2: Softer outer halo
-  float edgeScale2 = mon.scale * 1.15f;
-  glm::mat4 model2 = glm::translate(glm::mat4(1.0f), mon.position);
-  model2 = glm::rotate(model2, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-  model2 = glm::rotate(model2, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-  model2 = glm::rotate(model2, mon.facing, glm::vec3(0, 0, 1));
-  model2 = glm::scale(model2, glm::vec3(edgeScale2));
-  m_shader->setMat4("model", model2);
+  // Pass 2: Draw slightly scaled-up version where stencil != 1 (= edge only)
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
+  glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+  glDisable(GL_DEPTH_TEST);
 
-  m_shader->setVec3("terrainLight", 0.4f, 0.4f, 0.4f);
+  float edgeScale = mon.scale * 1.08f; // Slightly thicker for better visibility
+  glm::mat4 edgeModel = glm::translate(glm::mat4(1.0f), mon.position);
+  edgeModel = glm::rotate(edgeModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+  edgeModel = glm::rotate(edgeModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+  edgeModel = glm::rotate(edgeModel, mon.facing, glm::vec3(0, 0, 1));
+  edgeModel = glm::scale(edgeModel, glm::vec3(edgeScale));
+  m_shader->setMat4("model", edgeModel);
+
+  // Bright white outline color via terrainLight override
+  m_shader->setVec3("terrainLight", 8.0f, 8.0f, 8.0f);
+  m_shader->setVec3("lightPos", glm::vec3(0, 10000, 0));
+  m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
+  m_shader->setVec3("viewPos", glm::vec3(0));
+
   for (auto &mb : mon.meshBuffers) {
     if (mb.indexCount == 0 || mb.hidden)
       continue;
@@ -1036,7 +1122,7 @@ void MonsterManager::RenderOutline(int monsterIndex, const glm::mat4 &view,
   glEnable(GL_DEPTH_TEST);
   glDepthMask(GL_TRUE);
   glEnable(GL_CULL_FACE);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glDisable(GL_STENCIL_TEST);
   glBindVertexArray(0);
 }
 
@@ -1201,8 +1287,9 @@ void MonsterManager::SetMonsterServerPosition(int index, float worldX,
             << std::endl;
 
   auto &mdl = m_models[mon.modelIdx];
-  float terrainY = snapToTerrain(worldX, worldZ) + mdl.bodyOffset;
-  mon.serverTargetPos = glm::vec3(worldX, terrainY, worldZ);
+  float terrainY =
+      snapToTerrain(worldX + 50.0f, worldZ + 50.0f) + mdl.bodyOffset;
+  mon.serverTargetPos = glm::vec3(worldX + 50.0f, terrainY, worldZ + 50.0f);
   mon.serverChasing = chasing;
   mon.serverPosAge = 0.0f;
 

@@ -204,8 +204,10 @@ struct PMSG_CHARSTATS_SEND {
   uint16_t mana;
   uint16_t maxMana;
   uint16_t levelUpPoints;
-  uint32_t experienceLo; // Low 32 bits of uint64_t experience
-  uint32_t experienceHi; // High 32 bits
+  uint32_t experienceLo;
+  uint32_t experienceHi;
+  uint8_t charClass;
+  int16_t quickSlotDefIndex;
 };
 
 // --- Client → Server: Equipment Change (0x27) ---
@@ -234,6 +236,7 @@ struct PMSG_CHARSAVE_RECV {
   uint16_t levelUpPoints;
   uint32_t experienceLo;
   uint32_t experienceHi;
+  int16_t quickSlotDefIndex;
 };
 
 // --- Server → Client: Monster Viewport V2 (0x34) ---
@@ -364,6 +367,12 @@ struct PMSG_INVENTORY_MOVE_RECV {
   PBMSG_HEAD h; // C1:0x39
   uint8_t fromSlot;
   uint8_t toSlot;
+};
+
+// --- Client → Server: Item Use Request (0x3A) ---
+struct PMSG_ITEM_USE_RECV {
+  PBMSG_HEAD h; // C1:0x3A
+  uint8_t slot; // 0-63
 };
 
 #pragma pack(pop)

@@ -9,11 +9,14 @@
 // ─── DK Stat Formulas (MuEmu-0.97k ObjectManager.cpp) ──────────────────
 
 uint64_t HeroCharacter::CalcXPForLevel(int level) {
+  if (level <= 1)
+    return 0;
   // gObjSetExperienceTable: cubic curve, MaxLevel=400
   // scaleFactor = (UINT32_MAX * 0.95) / 400^3 ≈ 63.7
   static constexpr double kScale =
       ((double)0xFFFFFFFF * 0.95) / (400.0 * 400.0 * 400.0);
-  return (uint64_t)(kScale * (double)level * (double)level * (double)level);
+  double lv = (double)level - 1.0;
+  return (uint64_t)(kScale * lv * lv * lv);
 }
 
 void HeroCharacter::RecalcStats() {
@@ -43,7 +46,7 @@ void HeroCharacter::RecalcStats() {
   m_defenseSuccessRate = (int)m_dexterity / 3;
 
   // XP threshold for next level
-  m_nextExperience = CalcXPForLevel(m_level);
+  m_nextExperience = CalcXPForLevel(m_level + 1);
 }
 
 void HeroCharacter::GainExperience(uint64_t xp) {
@@ -92,9 +95,10 @@ bool HeroCharacter::AddStatPoint(int stat) {
 
 void HeroCharacter::LoadStats(int level, uint16_t str, uint16_t dex,
                               uint16_t vit, uint16_t ene, uint64_t experience,
-                              int levelUpPoints, int currentHp,
-                              int currentMana) {
+                              int levelUpPoints, int currentHp, int currentMana,
+                              uint8_t charClass) {
   m_level = level;
+  m_class = charClass;
   m_strength = str;
   m_dexterity = dex;
   m_vitality = vit;
@@ -212,6 +216,33 @@ void HeroCharacter::Init(const std::string &dataPath) {
   auto bones = ComputeBoneMatrices(m_skeleton.get());
   AABB totalAABB{};
 
+  static auto createShadowMeshes = [](const BMDData *bmd) {
+    std::vector<HeroCharacter::ShadowMesh> meshes;
+    if (!bmd)
+      return meshes;
+    for (auto &mesh : bmd->Meshes) {
+      HeroCharacter::ShadowMesh sm;
+      sm.vertexCount = mesh.NumTriangles * 3; // triangulated
+      sm.indexCount = sm.vertexCount;
+      if (sm.vertexCount == 0) {
+        meshes.push_back(sm);
+        continue;
+      }
+      glGenVertexArrays(1, &sm.vao);
+      glGenBuffers(1, &sm.vbo);
+      glBindVertexArray(sm.vao);
+      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+      glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3), nullptr,
+                   GL_DYNAMIC_DRAW);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                            (void *)0);
+      glEnableVertexAttribArray(0);
+      glBindVertexArray(0);
+      meshes.push_back(sm);
+    }
+    return meshes;
+  };
+
   for (int p = 0; p < PART_COUNT; ++p) {
     std::string fullPath = playerPath + partFiles[p];
     auto bmd = BMDParser::Parse(fullPath);
@@ -224,6 +255,7 @@ void HeroCharacter::Init(const std::string &dataPath) {
       UploadMeshWithBones(mesh, playerPath, bones, m_parts[p].meshBuffers,
                           totalAABB, true);
     }
+    m_parts[p].shadowMeshes = createShadowMeshes(bmd.get());
     m_parts[p].bmd = std::move(bmd);
     std::cout << "[Hero] Loaded " << partFiles[p] << std::endl;
   }
@@ -263,32 +295,6 @@ void HeroCharacter::Init(const std::string &dataPath) {
       shaderTest.good() ? "shaders/shadow.vert" : "../shaders/shadow.vert",
       shaderTest.good() ? "shaders/shadow.frag" : "../shaders/shadow.frag");
 
-  // Create shadow mesh buffers (position-only VBO for each body part mesh)
-  for (int p = 0; p < PART_COUNT; ++p) {
-    if (!m_parts[p].bmd)
-      continue;
-    for (auto &mb : m_parts[p].meshBuffers) {
-      ShadowMesh sm;
-      sm.vertexCount = mb.vertexCount;
-      sm.indexCount = mb.vertexCount; // sequential indices = vertex count
-      if (sm.vertexCount == 0) {
-        m_shadowMeshes.push_back(sm);
-        continue;
-      }
-      glGenVertexArrays(1, &sm.vao);
-      glGenBuffers(1, &sm.vbo);
-      glBindVertexArray(sm.vao);
-      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
-      glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3), nullptr,
-                   GL_DYNAMIC_DRAW);
-      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
-                            (void *)0);
-      glEnableVertexAttribArray(0);
-      glBindVertexArray(0);
-      m_shadowMeshes.push_back(sm);
-    }
-  }
-
   // Compute initial stats from DK formulas
   RecalcStats();
   m_hp = m_maxHp;
@@ -326,17 +332,80 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     }
   }
 
+  // Handle cross-fade blending animation
+  if (m_isBlending) {
+    m_blendAlpha += deltaTime / BLEND_DURATION;
+    if (m_blendAlpha >= 1.0f) {
+      m_blendAlpha = 1.0f;
+      m_isBlending = false;
+    }
+  }
+
   // Compute bones for current animation frame
-  auto bones =
-      ComputeBoneMatricesInterpolated(m_skeleton.get(), m_action, m_animFrame);
+  std::vector<BoneWorldMatrix> bones;
+  if (m_isBlending && m_priorAction != -1) {
+    bones = ComputeBoneMatricesBlended(m_skeleton.get(), m_priorAction,
+                                       m_priorAnimFrame, m_action, m_animFrame,
+                                       m_blendAlpha);
+  } else {
+    bones = ComputeBoneMatricesInterpolated(m_skeleton.get(), m_action,
+                                            m_animFrame);
+  }
 
   // LockPositions: root bone X/Y locked to frame 0
-  if (lockPos && m_rootBone >= 0) {
+  if (m_rootBone >= 0) {
     int i = m_rootBone;
-    auto &bm = m_skeleton->Bones[i].BoneMatrixes[m_action];
-    if (!bm.Position.empty()) {
-      float dx = bones[i][0][3] - bm.Position[0].x;
-      float dy = bones[i][1][3] - bm.Position[0].y;
+
+    float dx = 0.0f, dy = 0.0f;
+
+    if (m_isBlending && m_priorAction != -1) {
+      // Blend root offsets from both actions if they have lockPos
+      bool lock1 = false, lock2 = false;
+      if (m_priorAction < (int)m_skeleton->Actions.size())
+        lock1 = m_skeleton->Actions[m_priorAction].LockPositions;
+      if (m_action < (int)m_skeleton->Actions.size())
+        lock2 = m_skeleton->Actions[m_action].LockPositions;
+
+      float dx1 = 0.0f, dy1 = 0.0f, dx2 = 0.0f, dy2 = 0.0f;
+
+      if (lock1) {
+        glm::vec3 p1;
+        glm::vec4 q1;
+        if (GetInterpolatedBoneData(m_skeleton.get(), m_priorAction,
+                                    m_priorAnimFrame, i, p1, q1)) {
+          auto &bm1 = m_skeleton->Bones[i].BoneMatrixes[m_priorAction];
+          if (!bm1.Position.empty()) {
+            dx1 = p1.x - bm1.Position[0].x;
+            dy1 = p1.y - bm1.Position[0].y;
+          }
+        }
+      }
+      if (lock2) {
+        glm::vec3 p2;
+        glm::vec4 q2;
+        if (GetInterpolatedBoneData(m_skeleton.get(), m_action, m_animFrame, i,
+                                    p2, q2)) {
+          auto &bm2 = m_skeleton->Bones[i].BoneMatrixes[m_action];
+          if (!bm2.Position.empty()) {
+            dx2 = p2.x - bm2.Position[0].x;
+            dy2 = p2.y - bm2.Position[0].y;
+          }
+        }
+      }
+
+      // Final blended offset
+      dx = dx1 * (1.0f - m_blendAlpha) + dx2 * m_blendAlpha;
+      dy = dy1 * (1.0f - m_blendAlpha) + dy2 * m_blendAlpha;
+    } else if (lockPos) {
+      // Standard single-action lock
+      auto &bm = m_skeleton->Bones[i].BoneMatrixes[m_action];
+      if (!bm.Position.empty()) {
+        dx = bones[i][0][3] - bm.Position[0].x;
+        dy = bones[i][1][3] - bm.Position[0].y;
+      }
+    }
+
+    if (dx != 0.0f || dy != 0.0f) {
       for (int b = 0; b < (int)bones.size(); ++b) {
         bones[b][0][3] -= dx;
         bones[b][1][3] -= dy;
@@ -575,8 +644,7 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
 }
 
 void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
-  if (!m_skeleton || !m_shadowShader || m_cachedBones.empty() ||
-      m_shadowMeshes.empty())
+  if (!m_skeleton || !m_shadowShader || m_cachedBones.empty())
     return;
 
   // Shadow model matrix: NO facing rotation (facing is baked into vertices
@@ -612,20 +680,25 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
   float cosF = cosf(m_facing);
   float sinF = sinf(m_facing);
 
-  int smIdx = 0;
-  for (int p = 0; p < PART_COUNT; ++p) {
-    if (!m_parts[p].bmd)
-      continue;
-    for (int mi = 0; mi < (int)m_parts[p].bmd->Meshes.size() &&
-                     smIdx < (int)m_shadowMeshes.size();
-         ++mi, ++smIdx) {
-      auto &sm = m_shadowMeshes[smIdx];
+  auto renderShadowBatch = [&](const BMDData *bmd,
+                               std::vector<ShadowMesh> &shadowMeshes,
+                               int attachBone = -1) {
+    if (!bmd)
+      return;
+    for (int mi = 0;
+         mi < (int)bmd->Meshes.size() && mi < (int)shadowMeshes.size(); ++mi) {
+      auto &sm = shadowMeshes[mi];
       if (sm.vertexCount == 0 || sm.vao == 0)
         continue;
 
-      auto &mesh = m_parts[p].bmd->Meshes[mi];
+      auto &mesh = bmd->Meshes[mi];
       std::vector<glm::vec3> shadowVerts;
       shadowVerts.reserve(sm.vertexCount);
+
+      const float(*boneMatrix)[4] = nullptr;
+      if (attachBone >= 0 && attachBone < (int)m_cachedBones.size()) {
+        boneMatrix = (const float(*)[4])m_cachedBones[attachBone].data();
+      }
 
       for (int i = 0; i < mesh.NumTriangles; ++i) {
         auto &tri = mesh.Triangles[i];
@@ -633,17 +706,26 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
         for (int v = 0; v < 3; ++v) {
           auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
           glm::vec3 pos = srcVert.Position;
-          int boneIdx = srcVert.Node;
-          if (boneIdx >= 0 && boneIdx < (int)m_cachedBones.size()) {
-            pos = MuMath::TransformPoint(
-                (const float(*)[4])m_cachedBones[boneIdx].data(), pos);
+
+          if (boneMatrix) {
+            // Weapon/Shield: transform by attach bone
+            pos = MuMath::TransformPoint(boneMatrix, pos);
+          } else {
+            // Body parts: transform by per-vertex bone
+            int boneIdx = srcVert.Node;
+            if (boneIdx >= 0 && boneIdx < (int)m_cachedBones.size()) {
+              pos = MuMath::TransformPoint(
+                  (const float(*)[4])m_cachedBones[boneIdx].data(), pos);
+            }
           }
-          // Apply facing rotation in MU space (around Z/height axis)
+
+          // Apply facing rotation in MU space
           float rx = pos.x * cosF - pos.y * sinF;
           float ry = pos.x * sinF + pos.y * cosF;
           pos.x = rx;
           pos.y = ry;
-          // Shadow projection in MU-local space
+
+          // Shadow projection
           if (pos.z < sy) {
             float factor = 1.0f / (pos.z - sy);
             pos.x += pos.z * (pos.x + sx) * factor;
@@ -657,15 +739,22 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
           for (int v : quadIndices) {
             auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
             glm::vec3 pos = srcVert.Position;
-            int boneIdx = srcVert.Node;
-            if (boneIdx >= 0 && boneIdx < (int)m_cachedBones.size()) {
-              pos = MuMath::TransformPoint(
-                  (const float(*)[4])m_cachedBones[boneIdx].data(), pos);
+
+            if (boneMatrix) {
+              pos = MuMath::TransformPoint(boneMatrix, pos);
+            } else {
+              int boneIdx = srcVert.Node;
+              if (boneIdx >= 0 && boneIdx < (int)m_cachedBones.size()) {
+                pos = MuMath::TransformPoint(
+                    (const float(*)[4])m_cachedBones[boneIdx].data(), pos);
+              }
             }
+
             float rx = pos.x * cosF - pos.y * sinF;
             float ry = pos.x * sinF + pos.y * cosF;
             pos.x = rx;
             pos.y = ry;
+
             if (pos.z < sy) {
               float factor = 1.0f / (pos.z - sy);
               pos.x += pos.z * (pos.x + sx) * factor;
@@ -684,6 +773,23 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
       glBindVertexArray(sm.vao);
       glDrawArrays(GL_TRIANGLES, 0, (GLsizei)shadowVerts.size());
     }
+  };
+
+  // Render all active parts
+  for (int p = 0; p < PART_COUNT; ++p) {
+    if (m_parts[p].bmd) {
+      renderShadowBatch(m_parts[p].bmd.get(), m_parts[p].shadowMeshes, -1);
+    }
+  }
+
+  // Weapons and shields
+  if (m_weaponBmd) {
+    int bone = GetWeaponCategoryRender(m_weaponInfo.category).attachBone;
+    renderShadowBatch(m_weaponBmd.get(), m_weaponShadowMeshes, bone);
+  }
+  if (m_shieldBmd) {
+    int bone = GetWeaponCategoryRender(m_shieldInfo.category).attachBone;
+    renderShadowBatch(m_shieldBmd.get(), m_shieldShadowMeshes, bone);
   }
 
   glBindVertexArray(0);
@@ -736,7 +842,7 @@ void HeroCharacter::MoveTo(const glm::vec3 &target) {
           ? GetWeaponCategoryRender(m_weaponInfo.category).actionWalk
           : ACTION_WALK_MALE;
   if (!m_moving || m_action != walkAction) {
-    m_action = walkAction;
+    SetAction(walkAction);
     m_animFrame = 0.0f;
   }
   m_moving = true;
@@ -750,9 +856,9 @@ void HeroCharacter::StopMoving() {
   m_moving = false;
   // Use weapon-specific idle action when outside SafeZone with weapon
   if (!m_inSafeZone && m_weaponBmd) {
-    m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+    SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
   } else {
-    m_action = ACTION_STOP_MALE;
+    SetAction(ACTION_STOP_MALE);
   }
   m_animFrame = 0.0f;
 }
@@ -766,44 +872,82 @@ void HeroCharacter::SetInSafeZone(bool safe) {
 
   // Switch animation to match new state
   if (m_moving) {
-    m_action = (!safe && m_weaponBmd)
-                   ? GetWeaponCategoryRender(m_weaponInfo.category).actionWalk
-                   : ACTION_WALK_MALE;
+    SetAction((!safe && m_weaponBmd)
+                  ? GetWeaponCategoryRender(m_weaponInfo.category).actionWalk
+                  : ACTION_WALK_MALE);
   } else {
-    m_action = (!safe && m_weaponBmd)
-                   ? GetWeaponCategoryRender(m_weaponInfo.category).actionIdle
-                   : ACTION_STOP_MALE;
+    SetAction((!safe && m_weaponBmd)
+                  ? GetWeaponCategoryRender(m_weaponInfo.category).actionIdle
+                  : ACTION_STOP_MALE);
   }
-  m_animFrame = 0.0f;
 
   std::cout << "[Hero] " << (safe ? "Entered SafeZone" : "Left SafeZone")
             << ", action=" << m_action << std::endl;
 }
 
 void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
-  if (weapon.category == 0xFF || weapon.modelFile.empty()) {
-    std::cout << "[Hero] Unequipping weapon" << std::endl;
-    // Clear existing weapon
-    CleanupMeshBuffers(m_weaponMeshBuffers);
+  // Cleanup old weapon
+  CleanupMeshBuffers(m_weaponMeshBuffers);
+  for (auto &sm : m_weaponShadowMeshes) {
+    if (sm.vao)
+      glDeleteVertexArrays(1, &sm.vao);
+    if (sm.vbo)
+      glDeleteBuffers(1, &sm.vbo);
+  }
+  m_weaponShadowMeshes.clear();
+
+  if (weapon.category == 0xFF) {
     m_weaponBmd.reset();
     m_weaponInfo = weapon;
-    // Reset to unarmed animation if needed
-    if (!m_inSafeZone) {
-      m_action = m_moving ? ACTION_WALK_MALE : ACTION_STOP_MALE;
-      m_animFrame = 0.0f;
-    }
+    m_inSafeZone = true;
+    SetAction(ACTION_STOP_MALE);
     return;
   }
 
   m_weaponInfo = weapon;
-
-  // Load weapon BMD from Data/Item/ directory
-  std::string weaponPath = m_dataPath + "/Item/" + weapon.modelFile;
-  m_weaponBmd = BMDParser::Parse(weaponPath);
-  if (!m_weaponBmd) {
-    std::cerr << "[Hero] Failed to load weapon: " << weaponPath << std::endl;
+  std::string fullPath = m_dataPath + "/Item/" + weapon.modelFile;
+  auto bmd = BMDParser::Parse(fullPath);
+  if (!bmd) {
+    std::cerr << "[Hero] Failed to load weapon: " << fullPath << std::endl;
     return;
   }
+
+  AABB weaponAABB{};
+  for (auto &mesh : bmd->Meshes) {
+    UploadMeshWithBones(mesh, m_dataPath + "/Item/", {}, m_weaponMeshBuffers,
+                        weaponAABB, false);
+  }
+
+  // Shadow meshes for weapon
+  static auto createShadowMeshes = [](const BMDData *bmd) {
+    std::vector<HeroCharacter::ShadowMesh> meshes;
+    if (!bmd)
+      return meshes;
+    for (auto &mesh : bmd->Meshes) {
+      HeroCharacter::ShadowMesh sm;
+      sm.vertexCount = mesh.NumTriangles * 3;
+      sm.indexCount = sm.vertexCount;
+      if (sm.vertexCount == 0) {
+        meshes.push_back(sm);
+        continue;
+      }
+      glGenVertexArrays(1, &sm.vao);
+      glGenBuffers(1, &sm.vbo);
+      glBindVertexArray(sm.vao);
+      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+      glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3), nullptr,
+                   GL_DYNAMIC_DRAW);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                            (void *)0);
+      glEnableVertexAttribArray(0);
+      glBindVertexArray(0);
+      meshes.push_back(sm);
+    }
+    return meshes;
+  };
+  m_weaponShadowMeshes = createShadowMeshes(bmd.get());
+
+  m_weaponBmd = std::move(bmd);
 
   auto &catRender = GetWeaponCategoryRender(weapon.category);
   std::cout << "[Hero] Loaded weapon " << weapon.modelFile << ": "
@@ -813,30 +957,9 @@ void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
             << " idle=" << (int)catRender.actionIdle
             << " walk=" << (int)catRender.actionWalk << ")" << std::endl;
 
-  // Upload weapon meshes with its own bone matrices (static reference pose)
-  std::string texPath = m_dataPath + "/Item/";
-  AABB weaponAABB{};
-
-  std::vector<BoneWorldMatrix> weaponBones;
-  if (!m_weaponBmd->Bones.empty()) {
-    weaponBones = ComputeBoneMatrices(m_weaponBmd.get());
-  } else {
-    BoneWorldMatrix identity{};
-    identity[0] = {1, 0, 0, 0};
-    identity[1] = {0, 1, 0, 0};
-    identity[2] = {0, 0, 1, 0};
-    weaponBones.push_back(identity);
-  }
-
-  CleanupMeshBuffers(m_weaponMeshBuffers);
-  for (auto &mesh : m_weaponBmd->Meshes) {
-    UploadMeshWithBones(mesh, texPath, weaponBones, m_weaponMeshBuffers,
-                        weaponAABB, true);
-  }
-
   // Update animation to combat stance if outside SafeZone
   if (!m_inSafeZone) {
-    m_action = m_moving ? catRender.actionWalk : catRender.actionIdle;
+    SetAction(m_moving ? catRender.actionWalk : catRender.actionIdle);
     m_animFrame = 0.0f;
   }
 
@@ -845,29 +968,71 @@ void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
 }
 
 void HeroCharacter::EquipShield(const WeaponEquipInfo &shield) {
-  if (shield.category == 0xFF || shield.modelFile.empty()) {
-    std::cout << "[Hero] Unequipping shield" << std::endl;
-    CleanupMeshBuffers(m_shieldMeshBuffers);
+  // Cleanup old shield
+  CleanupMeshBuffers(m_shieldMeshBuffers);
+  for (auto &sm : m_shieldShadowMeshes) {
+    if (sm.vao)
+      glDeleteVertexArrays(1, &sm.vao);
+    if (sm.vbo)
+      glDeleteBuffers(1, &sm.vbo);
+  }
+  m_shieldShadowMeshes.clear();
+
+  if (shield.category == 0xFF) {
     m_shieldBmd.reset();
     m_shieldInfo = shield;
     return;
   }
 
   m_shieldInfo = shield;
-
-  std::string shieldPath = m_dataPath + "/Item/" + shield.modelFile;
-  m_shieldBmd = BMDParser::Parse(shieldPath);
-  if (!m_shieldBmd) {
-    std::cerr << "[Hero] Failed to load shield: " << shieldPath << std::endl;
+  std::string fullPath = m_dataPath + "/Item/" + shield.modelFile;
+  auto bmd = BMDParser::Parse(fullPath);
+  if (!bmd) {
+    std::cerr << "[Hero] Failed to load shield: " << fullPath << std::endl;
     return;
   }
+
+  AABB shieldAABB{};
+  std::string texPath = m_dataPath + "/Item/";
+  for (auto &mesh : bmd->Meshes) {
+    UploadMeshWithBones(mesh, texPath, {}, m_shieldMeshBuffers, shieldAABB,
+                        false);
+  }
+
+  // Shadow meshes for shield
+  static auto createShadowMeshes = [](const BMDData *bmd) {
+    std::vector<HeroCharacter::ShadowMesh> meshes;
+    if (!bmd)
+      return meshes;
+    for (auto &mesh : bmd->Meshes) {
+      HeroCharacter::ShadowMesh sm;
+      sm.vertexCount = mesh.NumTriangles * 3;
+      sm.indexCount = sm.vertexCount;
+      if (sm.vertexCount == 0) {
+        meshes.push_back(sm);
+        continue;
+      }
+      glGenVertexArrays(1, &sm.vao);
+      glGenBuffers(1, &sm.vbo);
+      glBindVertexArray(sm.vao);
+      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+      glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3), nullptr,
+                   GL_DYNAMIC_DRAW);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                            (void *)0);
+      glEnableVertexAttribArray(0);
+      glBindVertexArray(0);
+      meshes.push_back(sm);
+    }
+    return meshes;
+  };
+  m_shieldShadowMeshes = createShadowMeshes(bmd.get());
+
+  m_shieldBmd = std::move(bmd);
 
   std::cout << "[Hero] Loaded shield " << shield.modelFile << ": "
             << m_shieldBmd->Meshes.size() << " meshes, "
             << m_shieldBmd->Bones.size() << " bones" << std::endl;
-
-  std::string texPath = m_dataPath + "/Item/";
-  AABB shieldAABB{};
 
   std::vector<BoneWorldMatrix> shieldBones;
   if (!m_shieldBmd->Bones.empty()) {
@@ -911,6 +1076,13 @@ void HeroCharacter::EquipBodyPart(int partIndex, const std::string &modelFile) {
 
   // Cleanup old meshes
   CleanupMeshBuffers(m_parts[partIndex].meshBuffers);
+  for (auto &sm : m_parts[partIndex].shadowMeshes) {
+    if (sm.vao)
+      glDeleteVertexArrays(1, &sm.vao);
+    if (sm.vbo)
+      glDeleteBuffers(1, &sm.vbo);
+  }
+  m_parts[partIndex].shadowMeshes.clear();
 
   // Recompute bones from skeleton bind pose
   auto bones = ComputeBoneMatrices(m_skeleton.get());
@@ -920,6 +1092,36 @@ void HeroCharacter::EquipBodyPart(int partIndex, const std::string &modelFile) {
     UploadMeshWithBones(mesh, m_dataPath + "/Player/", bones,
                         m_parts[partIndex].meshBuffers, partAABB, true);
   }
+
+  // Shadow meshes for body part
+  static auto createShadowMeshes = [](const BMDData *bmd) {
+    std::vector<HeroCharacter::ShadowMesh> meshes;
+    if (!bmd)
+      return meshes;
+    for (auto &mesh : bmd->Meshes) {
+      HeroCharacter::ShadowMesh sm;
+      sm.vertexCount = mesh.NumTriangles * 3;
+      sm.indexCount = sm.vertexCount;
+      if (sm.vertexCount == 0) {
+        meshes.push_back(sm);
+        continue;
+      }
+      glGenVertexArrays(1, &sm.vao);
+      glGenBuffers(1, &sm.vbo);
+      glBindVertexArray(sm.vao);
+      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+      glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3), nullptr,
+                   GL_DYNAMIC_DRAW);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                            (void *)0);
+      glEnableVertexAttribArray(0);
+      glBindVertexArray(0);
+      meshes.push_back(sm);
+    }
+    return meshes;
+  };
+  m_parts[partIndex].shadowMeshes = createShadowMeshes(bmd.get());
+
   m_parts[partIndex].bmd = std::move(bmd);
 
   std::cout << "[Hero] Equipped body part[" << partIndex << "]: " << fileToLoad
@@ -960,12 +1162,11 @@ void HeroCharacter::AttackMonster(int monsterIndex,
 
     // Use fist attack when no weapon, sword swings when armed
     if (m_weaponBmd) {
-      m_action = (m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
-                                              : ACTION_ATTACK_SWORD_R2;
+      SetAction((m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
+                                             : ACTION_ATTACK_SWORD_R2);
     } else {
-      m_action = ACTION_ATTACK_FIST;
+      SetAction(ACTION_ATTACK_FIST);
     }
-    m_animFrame = 0.0f;
     m_swordSwingCount++;
   } else {
     // Out of range — walk toward target
@@ -996,12 +1197,11 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       m_facing = atan2f(dir.z, -dir.x);
 
       if (m_weaponBmd) {
-        m_action = (m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
-                                                : ACTION_ATTACK_SWORD_R2;
+        SetAction((m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
+                                               : ACTION_ATTACK_SWORD_R2);
       } else {
-        m_action = ACTION_ATTACK_FIST;
+        SetAction(ACTION_ATTACK_FIST);
       }
-      m_animFrame = 0.0f;
       m_swordSwingCount++;
     } else if (!m_moving) {
       // Stopped moving but not in range (blocked) — cancel
@@ -1026,11 +1226,10 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
 
       // Return to combat idle (weapon stance or unarmed)
       if (m_weaponBmd) {
-        m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+        SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
       } else {
-        m_action = ACTION_STOP_MALE;
+        SetAction(ACTION_STOP_MALE);
       }
-      m_animFrame = 0.0f;
     }
     break;
   }
@@ -1080,11 +1279,10 @@ void HeroCharacter::CancelAttack() {
 
   // Return to appropriate idle
   if (!m_inSafeZone && m_weaponBmd) {
-    m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+    SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
   } else {
-    m_action = ACTION_STOP_MALE;
+    SetAction(ACTION_STOP_MALE);
   }
-  m_animFrame = 0.0f;
 }
 
 void HeroCharacter::TakeDamage(int damage) {
@@ -1094,30 +1292,43 @@ void HeroCharacter::TakeDamage(int damage) {
 
   m_hp -= damage;
   if (m_hp <= 0) {
-    m_hp = 0;
-    m_heroState = HeroState::DYING;
-    m_stateTimer = 0.0f;
-    CancelAttack();
-    m_moving = false;
-    m_action = ACTION_DIE1;
-    m_animFrame = 0.0f;
-    std::cout << "[Hero] Dying — action=" << ACTION_DIE1 << " numActions="
-              << (m_skeleton ? (int)m_skeleton->Actions.size() : 0)
-              << std::endl;
+    ForceDie();
   } else {
     m_heroState = HeroState::HIT_STUN;
     m_stateTimer = HIT_STUN_TIME;
     // Brief shock animation — don't interrupt attack swing
     if (m_attackState != AttackState::SWINGING) {
-      m_action = ACTION_SHOCK;
-      m_animFrame = 0.0f;
+      SetAction(ACTION_SHOCK);
     }
   }
+}
+
+void HeroCharacter::ForceDie() {
+  m_hp = 0;
+  m_heroState = HeroState::DYING;
+  m_stateTimer = 0.0f;
+  CancelAttack();
+  m_moving = false;
+  SetAction(ACTION_DIE1);
+  std::cout << "[Hero] Dying (Forced) — action=" << ACTION_DIE1
+            << " numActions="
+            << (m_skeleton ? (int)m_skeleton->Actions.size() : 0) << std::endl;
 }
 
 void HeroCharacter::UpdateState(float deltaTime) {
   switch (m_heroState) {
   case HeroState::ALIVE:
+    // HP Regeneration in Safe Zone (~2% of Max HP per second)
+    if (m_inSafeZone && m_hp < m_maxHp) {
+      m_hpRemainder += 0.02f * (float)m_maxHp * deltaTime;
+      if (m_hpRemainder >= 1.0f) {
+        int gain = (int)m_hpRemainder;
+        m_hp = std::min(m_hp + gain, m_maxHp);
+        m_hpRemainder -= (float)gain;
+      }
+    } else {
+      m_hpRemainder = 0.0f;
+    }
     break; // Normal operation
   case HeroState::HIT_STUN:
     m_stateTimer -= deltaTime;
@@ -1126,11 +1337,10 @@ void HeroCharacter::UpdateState(float deltaTime) {
       // Return to appropriate idle if not attacking/moving
       if (m_attackState == AttackState::NONE && !m_moving) {
         if (!m_inSafeZone && m_weaponBmd) {
-          m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+          SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
         } else {
-          m_action = ACTION_STOP_MALE;
+          SetAction(ACTION_STOP_MALE);
         }
-        m_animFrame = 0.0f;
       }
     }
     break;
@@ -1173,11 +1383,10 @@ void HeroCharacter::Respawn(const glm::vec3 &spawnPos) {
   m_attackTargetMonster = -1;
   // Return to idle
   if (!m_inSafeZone && m_weaponBmd) {
-    m_action = GetWeaponCategoryRender(m_weaponInfo.category).actionIdle;
+    SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
   } else {
-    m_action = ACTION_STOP_MALE;
+    SetAction(ACTION_STOP_MALE);
   }
-  m_animFrame = 0.0f;
 }
 
 void HeroCharacter::SnapToTerrain() {
@@ -1198,22 +1407,62 @@ void HeroCharacter::SnapToTerrain() {
             h01 * (1 - xd) * zd + h11 * xd * zd;
 }
 
-void HeroCharacter::Cleanup() {
-  for (int p = 0; p < PART_COUNT; ++p)
-    CleanupMeshBuffers(m_parts[p].meshBuffers);
-  CleanupMeshBuffers(m_weaponMeshBuffers);
-  m_weaponBmd.reset();
-  CleanupMeshBuffers(m_shieldMeshBuffers);
-  m_shieldBmd.reset();
-  for (auto &sm : m_shadowMeshes) {
-    if (sm.vao)
-      glDeleteVertexArrays(1, &sm.vao);
-    if (sm.vbo)
-      glDeleteBuffers(1, &sm.vbo);
-    if (sm.ebo)
-      glDeleteBuffers(1, &sm.ebo);
+void HeroCharacter::SetAction(int newAction) {
+  if (m_action == newAction)
+    return;
+
+  // Seed cross-fade blending ONLY for fist fighting transitions
+  // OR when stopping (walking -> idle) as requested by user.
+  bool involvesFists =
+      (m_action == ACTION_ATTACK_FIST || newAction == ACTION_ATTACK_FIST);
+
+  // Detect walk actions (15, 17, 19, 20, 22) and stop actions (0, 1, 2, 4, 6,
+  // 8, 10)
+  bool isWalkingAction = (m_action == 15 || m_action == 17 || m_action == 19 ||
+                          m_action == 20 || m_action == 22);
+  bool isStopAction =
+      (newAction == 0 || newAction == 1 || newAction == 2 || newAction == 4 ||
+       newAction == 6 || newAction == 8 || newAction == 10);
+  bool isStopping = (isWalkingAction && isStopAction);
+
+  if (involvesFists || isStopping) {
+    m_priorAction = m_action;
+    m_priorAnimFrame = m_animFrame;
+    m_isBlending = true;
+    m_blendAlpha = 0.0f;
+  } else {
+    m_isBlending = false;
+    m_blendAlpha = 1.0f;
   }
-  m_shadowMeshes.clear();
+
+  m_action = newAction;
+  m_animFrame = 0.0f;
+}
+
+void HeroCharacter::Cleanup() {
+  auto cleanupShadows = [](std::vector<ShadowMesh> &shadowMeshes) {
+    for (auto &sm : shadowMeshes) {
+      if (sm.vao)
+        glDeleteVertexArrays(1, &sm.vao);
+      if (sm.vbo)
+        glDeleteBuffers(1, &sm.vbo);
+    }
+    shadowMeshes.clear();
+  };
+
+  for (int p = 0; p < PART_COUNT; ++p) {
+    CleanupMeshBuffers(m_parts[p].meshBuffers);
+    cleanupShadows(m_parts[p].shadowMeshes);
+  }
+
+  CleanupMeshBuffers(m_weaponMeshBuffers);
+  cleanupShadows(m_weaponShadowMeshes);
+  m_weaponBmd.reset();
+
+  CleanupMeshBuffers(m_shieldMeshBuffers);
+  cleanupShadows(m_shieldShadowMeshes);
+  m_shieldBmd.reset();
+
   m_shader.reset();
   m_shadowShader.reset();
   m_skeleton.reset();

@@ -39,9 +39,10 @@ struct MonsterInstance {
   // Server-side chase movement
   bool isChasing = false;
   bool isReturning = false; // Returning to spawn after leash — don't re-aggro
-  uint8_t lastBroadcastTargetX = 0;  // Last broadcasted target grid X
-  uint8_t lastBroadcastTargetY = 0;  // Last broadcasted target grid Y
-  bool lastBroadcastChasing = false; // Last broadcasted chasing state
+  uint8_t lastBroadcastTargetX = 0;   // Last broadcasted target grid X
+  uint8_t lastBroadcastTargetY = 0;   // Last broadcasted target grid Y
+  bool lastBroadcastChasing = false;  // Last broadcasted chasing state
+  bool lastBroadcastIsMoving = false; // Last broadcasted moving state
 
   // Aggro memory
   int aggroTargetFd = -1;  // FD of player who attacked us
@@ -167,7 +168,7 @@ public:
   static constexpr int BUDGE_DEFENSE_RATE = 3;
   static constexpr int BUDGE_ATTACK_MIN = 10;
   static constexpr int BUDGE_ATTACK_MAX = 13;
-  static constexpr int BUDGE_ATTACK_RATE = 18;
+  static constexpr int BUDGE_ATTACK_RATE = 22;
   static constexpr int BUDGE_LEVEL = 4;
 
   // Spider (type 3) — Level 2, MvRange 2, View 5 (Monster.txt Main 5.2)
@@ -176,7 +177,7 @@ public:
   static constexpr int SPIDER_DEFENSE_RATE = 1;
   static constexpr int SPIDER_ATTACK_MIN = 4;
   static constexpr int SPIDER_ATTACK_MAX = 7;
-  static constexpr int SPIDER_ATTACK_RATE = 8;
+  static constexpr int SPIDER_ATTACK_RATE = 15;
   static constexpr int SPIDER_LEVEL = 2;
 
   // Elite Bull Fighter (type 4) — Level 12, MvRange 3, View 4, AtkSpeed 1600
@@ -223,9 +224,11 @@ public:
   static constexpr float ATTACK_RANGE = 200.0f; // Melee range (2 grid cells)
   static constexpr float CHASE_SPEED =
       200.0f; // Chase/return speed (player=334, so player can outrun)
-  static constexpr float WANDER_SPEED = 80.0f; // Slow patrol wander
+  static constexpr float WANDER_SPEED = 150.0f; // More dynamic patrol wander
+  static constexpr float RETURN_SPEED =
+      450.0f; // Rush back to spawn (player=334)
   static constexpr float LEASH_RANGE =
-      900.0f; // Max distance from spawn before returning
+      1200.0f; // Max distance from spawn before returning
   // Per-type constants (atkCooldownTime, wanderRange, aggroRange) are on
   // MonsterInstance
 

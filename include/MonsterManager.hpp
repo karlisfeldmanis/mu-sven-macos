@@ -148,6 +148,13 @@ private:
     float corpseAlpha = 1.0f;
     int swordCount = 0; // Attack alternation counter (ATTACK1/ATTACK2)
 
+    // Blending state (cross-fade on stop)
+    int priorAction = -1;
+    float priorAnimFrame = 0.0f;
+    float blendAlpha = 1.0f;
+    bool isBlending = false;
+    static constexpr float BLEND_DURATION = 0.12f;
+
     // Server-driven position target (from 0x35 packet)
     glm::vec3 serverTargetPos{0.0f};
     bool serverChasing = false;
@@ -218,7 +225,8 @@ private:
   static constexpr float CORPSE_FADE_TIME = 3.0f;
   static constexpr float CHASE_SPEED =
       200.0f; // Chase speed (player=334, can outrun)
-  static constexpr float WANDER_SPEED = 80.0f; // Slow wander/walk speed
+  static constexpr float WANDER_SPEED =
+      150.0f; // More dynamic wander/walk speed
 
   // Player position for cosmetic facing (not used for AI — that's server-side)
   glm::vec3 m_playerPos{0.0f};

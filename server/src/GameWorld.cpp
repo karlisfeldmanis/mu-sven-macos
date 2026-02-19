@@ -303,18 +303,20 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
          m_monsterInstances.empty() ? 0 : m_monsterInstances.back().index);
 }
 
-// Helper: broadcast a move update only when target grid cell or chasing state
-// changes
+// Helper: broadcast a move update only when target grid cell, chasing state,
+// or moving state changes
 static void
 emitMoveIfChanged(MonsterInstance &mon, uint8_t targetX, uint8_t targetY,
-                  bool chasing,
+                  bool chasing, bool moving,
                   std::vector<GameWorld::MonsterMoveUpdate> &outMoves) {
   if (targetX != mon.lastBroadcastTargetX ||
       targetY != mon.lastBroadcastTargetY ||
-      chasing != mon.lastBroadcastChasing) {
+      chasing != mon.lastBroadcastChasing ||
+      moving != mon.lastBroadcastIsMoving) {
     mon.lastBroadcastTargetX = targetX;
     mon.lastBroadcastTargetY = targetY;
     mon.lastBroadcastChasing = chasing;
+    mon.lastBroadcastIsMoving = moving;
     outMoves.push_back(
         {mon.index, targetX, targetY, static_cast<uint8_t>(chasing ? 1 : 0)});
   }
@@ -381,13 +383,11 @@ void GameWorld::Update(float dt,
           }
           if (found) {
             mon.isWandering = true;
-            printf("[AI] Mon %d (type %d): wander to (%.0f,%.0f) range=%.0f\n",
-                   mon.index, mon.type, mon.wanderTargetX, mon.wanderTargetZ,
-                   mon.wanderRange);
             if (outWanderMoves) {
               uint8_t tgtGX = static_cast<uint8_t>(mon.wanderTargetZ / 100.0f);
               uint8_t tgtGY = static_cast<uint8_t>(mon.wanderTargetX / 100.0f);
-              emitMoveIfChanged(mon, tgtGX, tgtGY, false, *outWanderMoves);
+              emitMoveIfChanged(mon, tgtGX, tgtGY, false, true,
+                                *outWanderMoves);
             }
           } else {
             // All targets unwalkable — just idle longer
@@ -428,8 +428,6 @@ void GameWorld::Update(float dt,
         mon.aggroTimer = -3.0f;    // 3s respawn immunity (negative = immune)
         mon.attackCooldown = 1.5f; // Prevent instant attack on respawn
         mon.justRespawned = true;
-        printf("[World] Monster %d (type %d) respawned at grid (%d,%d)\n",
-               mon.index, mon.type, mon.gridX, mon.gridY);
       }
       break;
     }
@@ -460,11 +458,6 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     float distToSpawn = std::sqrt(dx * dx + dz * dz);
     if (distToSpawn < 10.0f) {
       // Arrived at spawn — fully reset
-      if (mon.isReturning) {
-        printf(
-            "[AI] Mon %d (type %d): arrived at spawn, resuming idle/wander\n",
-            mon.index, mon.type);
-      }
       mon.isChasing = false;
       mon.isReturning = false;
       mon.isWandering = false;
@@ -473,11 +466,20 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       mon.worldZ = mon.spawnZ;
       mon.gridY = static_cast<uint8_t>(mon.worldX / 100.0f);
       mon.gridX = static_cast<uint8_t>(mon.worldZ / 100.0f);
-      emitMoveIfChanged(mon, mon.gridX, mon.gridY, false, outMoves);
+      emitMoveIfChanged(mon, mon.gridX, mon.gridY, false, false, outMoves);
     } else {
-      float step = CHASE_SPEED * dt;
+      float step = RETURN_SPEED * dt;
       if (step > distToSpawn)
         step = distToSpawn;
+
+      // Update direction to face spawn point
+      float angle = std::atan2(dz, dx);
+      float deg = angle * 180.0f / 3.14159f;
+      if (deg < 0)
+        deg += 360.0f;
+      // Convert degree to 0-7 orientation (0=E, 1=SE, 2=S, etc.)
+      mon.dir = static_cast<uint8_t>(((int)(deg + 22.5f) % 360) / 45);
+
       float nextX = mon.worldX + (dx / distToSpawn) * step;
       float nextZ = mon.worldZ + (dz / distToSpawn) * step;
       if (IsWalkable(nextX, nextZ)) {
@@ -488,7 +490,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       mon.gridX = static_cast<uint8_t>(mon.worldZ / 100.0f);
       uint8_t spawnGX = static_cast<uint8_t>(mon.spawnZ / 100.0f);
       uint8_t spawnGY = static_cast<uint8_t>(mon.spawnX / 100.0f);
-      emitMoveIfChanged(mon, spawnGX, spawnGY, false, outMoves);
+      emitMoveIfChanged(mon, spawnGX, spawnGY, false, true, outMoves);
     }
   };
 
@@ -527,7 +529,6 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       if (mon.aggroTimer <= 0.0f) {
         mon.aggroTargetFd = -1; // Aggro expired
         mon.aggroTimer = 0.0f;
-        printf("[AI] Mon %d (type %d): aggro expired\n", mon.index, mon.type);
       }
     }
 
@@ -574,8 +575,6 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     }
     if (!bestTarget) {
       if (mon.isChasing) {
-        printf("[AI] Mon %d (type %d): no alive target, returning to spawn\n",
-               mon.index, mon.type);
         mon.isReturning = true;
         moveTowardSpawn(mon);
       }
@@ -584,14 +583,11 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
 
     // Safe zone check: don't aggro if player is in safe zone
     if (IsSafeZone(bestTarget->worldX, bestTarget->worldZ)) {
-      if (mon.isChasing) {
-        printf("[AI] Mon %d (type %d): target in SAFE ZONE, returning\n",
-               mon.index, mon.type);
-        mon.isChasing = false;
-        mon.isReturning = true;
-        mon.aggroTargetFd = -1;
-        moveTowardSpawn(mon);
-      }
+      mon.isChasing = false;
+      mon.isReturning = true;
+      mon.aggroTargetFd = -1; // Drop aggro immediately
+      mon.aggroTimer = 0.0f;
+      moveTowardSpawn(mon);
       continue;
     }
 
@@ -603,18 +599,12 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     if (mon.isChasing) {
       // Already chasing — leash check (distance from spawn)
       if (distFromSpawn > LEASH_RANGE) {
-        printf("[AI] Mon %d (type %d): LEASH exceeded (%.0f > %.0f), returning "
-               "to spawn\n",
-               mon.index, mon.type, distFromSpawn, LEASH_RANGE);
         mon.isReturning = true;
         moveTowardSpawn(mon);
         continue;
       }
       // De-aggro check: player ran beyond aggro range * 2 — give up chase
       if (bestDist > mon.aggroRange * 3.0f) {
-        printf("[AI] Mon %d (type %d): player out of range (%.0f > %.0f), "
-               "returning to spawn\n",
-               mon.index, mon.type, bestDist, mon.aggroRange * 3.0f);
         mon.isChasing = false;
         mon.isReturning = true;
         moveTowardSpawn(mon);
@@ -623,19 +613,14 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     } else {
       // Not chasing — initial aggro check
       // Passive (yellow) monsters never proximity-aggro, only fight back
-      // Respawn immunity: aggroTimer < 0 means immune to proximity aggro
-      if (!mon.aggressive || bestDist > mon.aggroRange ||
-          distFromSpawn > LEASH_RANGE || mon.aggroTimer < 0.0f) {
+      // Allow fight-back if monster has active aggro target (was hit by player)
+      if ((!mon.aggressive && mon.aggroTargetFd == -1) ||
+          bestDist > mon.aggroRange || distFromSpawn > LEASH_RANGE ||
+          mon.aggroTimer < 0.0f) {
         continue;
       }
     }
 
-    // Chase or attack
-    if (!mon.isChasing) {
-      printf(
-          "[AI] Mon %d (type %d): AGGRO on player at dist=%.0f (range=%.0f)\n",
-          mon.index, mon.type, bestDist, mon.aggroRange);
-    }
     mon.isChasing = true;
     mon.isWandering = false;
 
@@ -653,11 +638,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       float nextX = mon.worldX + (dx / bestDist) * step;
       float nextZ = mon.worldZ + (dz / bestDist) * step;
 
-      // Don't move into safe zones
       if (IsSafeZone(nextX, nextZ)) {
-        printf("[AI] Mon %d (type %d): refusing to enter SAFE ZONE, "
-               "returning\n",
-               mon.index, mon.type);
         mon.isChasing = false;
         mon.isReturning = true;
         mon.aggroTargetFd = -1;
@@ -674,12 +655,12 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
 
       // Broadcast player's grid cell as target (event-driven: only when cell
       // changes)
-      emitMoveIfChanged(mon, playerGridX, playerGridY, true, outMoves);
+      emitMoveIfChanged(mon, playerGridX, playerGridY, true, true, outMoves);
     } else {
       // In attack range — update server grid pos, broadcast standing position
       mon.gridY = static_cast<uint8_t>(mon.worldX / 100.0f);
       mon.gridX = static_cast<uint8_t>(mon.worldZ / 100.0f);
-      emitMoveIfChanged(mon, mon.gridX, mon.gridY, true, outMoves);
+      emitMoveIfChanged(mon, mon.gridX, mon.gridY, true, false, outMoves);
 
       if (mon.attackCooldown <= 0.0f) {
         int dmg =

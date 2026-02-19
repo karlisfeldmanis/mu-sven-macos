@@ -93,15 +93,22 @@ void SendCharStats(Session &session, Database &db, int characterId) {
   pkt.levelUpPoints = c.levelUpPoints;
   pkt.experienceLo = static_cast<uint32_t>(c.experience & 0xFFFFFFFF);
   pkt.experienceHi = static_cast<uint32_t>(c.experience >> 32);
+  pkt.charClass = c.charClass;
+  pkt.quickSlotDefIndex = c.quickSlotDefIndex;
 
   // Sync session state from DB data
   session.characterId = c.id;
+  session.charClass = c.charClass;
   session.levelUpPoints = c.levelUpPoints;
   session.level = c.level;
   session.strength = c.strength;
   session.dexterity = c.dexterity;
+  session.vitality = c.vitality;
+  session.energy = c.energy;
   session.hp = c.life;
   session.maxHp = c.maxLife;
+  session.experience = c.experience;
+  session.quickSlotDefIndex = c.quickSlotDefIndex;
 
   session.Send(&pkt, sizeof(pkt));
   printf("[Handler] Sent char stats to fd=%d: Lv%d STR=%d DEX=%d VIT=%d ENE=%d "
@@ -109,6 +116,29 @@ void SendCharStats(Session &session, Database &db, int characterId) {
          session.GetFd(), c.level, c.strength, c.dexterity, c.vitality,
          c.energy, c.life, c.maxLife, (unsigned long long)c.experience,
          c.levelUpPoints);
+}
+
+// Helper to sync stats from current session state
+void SendCharStats(Session &session) {
+  PMSG_CHARSTATS_SEND pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), 0x25);
+  pkt.characterId = static_cast<uint16_t>(session.characterId);
+  pkt.level = session.level;
+  pkt.strength = session.strength;
+  pkt.dexterity = session.dexterity;
+  pkt.vitality = session.vitality;
+  pkt.energy = session.energy;
+  pkt.life = static_cast<uint16_t>(session.hp);
+  pkt.maxLife = static_cast<uint16_t>(session.maxHp);
+  pkt.mana = 20;    // static for now
+  pkt.maxMana = 20; // static for now
+  pkt.levelUpPoints = session.levelUpPoints;
+  pkt.experienceLo = static_cast<uint32_t>(session.experience & 0xFFFFFFFF);
+  pkt.experienceHi = static_cast<uint32_t>(session.experience >> 32);
+  pkt.charClass = session.charClass;
+  pkt.quickSlotDefIndex = session.quickSlotDefIndex;
+
+  session.Send(&pkt, sizeof(pkt));
 }
 
 void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
@@ -122,21 +152,18 @@ void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
   if (charId <= 0)
     charId = 1; // Fallback to TestDK
 
-  uint64_t experience = static_cast<uint64_t>(save->experienceLo) |
-                        (static_cast<uint64_t>(save->experienceHi) << 32);
+  // Authoritative leveling: use session values for Level, XP, and Points
+  session.quickSlotDefIndex = save->quickSlotDefIndex;
 
-  db.UpdateCharacterStats(charId, save->level, save->strength, save->dexterity,
-                          save->vitality, save->energy, save->life,
-                          save->maxLife, save->levelUpPoints, experience);
+  db.UpdateCharacterStats(charId, session.level, session.strength,
+                          session.dexterity, session.vitality, session.energy,
+                          save->life, save->maxLife, session.levelUpPoints,
+                          session.experience, session.quickSlotDefIndex);
 
   // Sync session combat state from save data (handles respawn: client sends
   // full HP after respawning, which resets the dead flag server-side)
   session.hp = save->life;
   session.maxHp = save->maxLife;
-  session.strength = save->strength;
-  session.dexterity = save->dexterity;
-  session.levelUpPoints = save->levelUpPoints;
-  session.level = save->level;
   if (session.dead && save->life > 0) {
     session.dead = false;
     printf("[Handler] Player fd=%d respawned (HP=%d)\n", session.GetFd(),
@@ -164,14 +191,23 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
       if (session.level < itemDef.level ||
           session.strength < itemDef.reqStrength ||
           session.dexterity < itemDef.reqDexterity) {
-        printf("[Handler] Rejecting equip: requirements not met\n");
+        printf("[Handler] Rejecting equip char=%d cat=%d idx=%d: reqs not met "
+               "(Lv:%d/%d Str:%d/%d Dex:%d/%d)\n",
+               charId, eq->category, eq->itemIndex, (int)session.level,
+               itemDef.level, (int)session.strength, itemDef.reqStrength,
+               (int)session.dexterity, itemDef.reqDexterity);
         // Force equipment sync back to client
         SendEquipment(session, db, charId);
         return;
       }
-      // Class check (Bit 0 = DK)
-      if (!(itemDef.classFlags & (1 << 0))) {
-        printf("[Handler] Rejecting equip: class mismatch\n");
+      // Class check: bitmask index = charClass >> 4
+      int bitIndex = session.charClass >> 4;
+      if (!(itemDef.classFlags & (1 << bitIndex))) {
+        printf(
+            "[Handler] Rejecting equip char=%d cat=%d idx=%d: class mismatch "
+            "(Class:%d Bit:%d Flags:0x%X)\n",
+            charId, eq->category, eq->itemIndex, (int)session.charClass,
+            bitIndex, itemDef.classFlags);
         SendEquipment(session, db, charId);
         return;
       }
@@ -222,7 +258,9 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
          eq->itemLevel, session.weaponDamageMin, session.weaponDamageMax,
          session.totalDefense);
 
-  SendCharStats(session, db, charId);
+  // Sync back to client (Confirmation)
+  SendEquipment(session, db, charId);
+  SendCharStats(session);
 }
 
 void HandleMove(Session &session, const std::vector<uint8_t> &packet,
@@ -248,6 +286,89 @@ void HandlePrecisePosition(Session &session,
       reinterpret_cast<const PMSG_PRECISE_POS_RECV *>(packet.data());
   session.worldX = pos->worldX;
   session.worldZ = pos->worldZ;
+}
+
+void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
+                   Database &db) {
+  if (packet.size() < sizeof(PMSG_ITEM_USE_RECV))
+    return;
+  const auto *req = reinterpret_cast<const PMSG_ITEM_USE_RECV *>(packet.data());
+
+  if (req->slot >= 64)
+    return;
+
+  // Cooldown check
+  if (session.potionCooldown > 0.0f) {
+    printf("[Handler] Rejecting item use fd=%d: Cooldown active (%.1fs)\n",
+           session.GetFd(), session.potionCooldown);
+    return;
+  }
+
+  auto &item = session.bag[req->slot];
+  if (!item.occupied || !item.primary) {
+    printf("[Handler] Rejecting item use fd=%d: Slot %d empty or secondary\n",
+           session.GetFd(), req->slot);
+    return;
+  }
+
+  // Healing logic based on category 14 (Potions)
+  if (item.category == 14) {
+    int healAmount = 0;
+    if (item.itemIndex == 0)
+      healAmount = 10; // Apple
+    else if (item.itemIndex == 1)
+      healAmount = 20; // Small HP
+    else if (item.itemIndex == 2)
+      healAmount = 50; // Medium HP
+    else if (item.itemIndex == 3)
+      healAmount = 100; // Large HP
+
+    if (healAmount > 0) {
+      session.hp += healAmount;
+      if (session.hp > session.maxHp)
+        session.hp = session.maxHp;
+
+      // Start cooldown
+      session.potionCooldown = 30.0f;
+
+      // Consume item
+      if (item.quantity > 1) {
+        item.quantity--;
+      } else {
+        // Multi-slot cleanup (though potions are 1x1, let's keep it robust)
+        ItemDefinition def = db.GetItemDefinition(item.defIndex);
+        int w = def.width > 0 ? def.width : 1;
+        int h = def.height > 0 ? def.height : 1;
+        int r = req->slot / 8;
+        int c = req->slot % 8;
+        for (int hh = 0; hh < h; hh++) {
+          for (int ww = 0; ww < w; ww++) {
+            int s = (r + hh) * 8 + (c + ww);
+            if (s < 64)
+              session.bag[s] = {};
+          }
+        }
+      }
+
+      printf("[Handler] Item used fd=%d: Healed %d HP. New HP: %d/%d. Cooldown "
+             "started.\n",
+             session.GetFd(), healAmount, session.hp, session.maxHp);
+
+      // Sync updated stats and bag
+      SendCharStats(session);
+      SendInventorySync(session);
+
+      // Persist HP and quantity to DB
+      db.UpdateCharacterStats(session.characterId, session.level,
+                              session.strength, session.dexterity,
+                              session.vitality, session.energy,
+                              static_cast<uint16_t>(session.hp),
+                              static_cast<uint16_t>(session.maxHp),
+                              session.levelUpPoints, session.experience);
+      // Inventory persistence would typically happen on save or move,
+      // but for absolute authority, we could update character_inventory here.
+    }
+  }
 }
 
 void HandleLogin(Session &session, const std::vector<uint8_t> &packet,
@@ -341,6 +462,7 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
 
   session.characterId = c.id;
   session.characterName = c.name;
+  session.charClass = c.charClass;
 
   // Send character info
   PMSG_CHARINFO_SEND info{};
@@ -480,7 +602,7 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
     // Aggro logic: target the attacker
     if (mon->aggroTargetFd != session.GetFd()) {
       mon->aggroTargetFd = session.GetFd();
-      mon->aggroTimer = 10.0f; // Keep aggro for 10s
+      mon->aggroTimer = 15.0f; // Keep aggro for 15s
       mon->isChasing = true;
       mon->isReturning = false;
       mon->isWandering = false;
@@ -550,6 +672,38 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       deathPkt.killerCharId = static_cast<uint16_t>(session.characterId);
       deathPkt.xpReward = static_cast<uint32_t>(xp);
       server.Broadcast(&deathPkt, sizeof(deathPkt));
+
+      // Authoritative leveling
+      session.experience += xp;
+      bool leveledUp = false;
+      while (true) {
+        uint64_t nextXP = Database::GetXPForLevel(session.level);
+        if (session.experience >= nextXP && session.level < 400) {
+          session.level++;
+          session.levelUpPoints += 5; // DK points
+          // HP formula: 110 + 2.0*(Level-1) + (VIT-25)*3.0
+          session.maxHp = (int)(110 + 2.0f * (session.level - 1) +
+                                (session.vitality - 25) * 3.0f);
+          session.hp = session.maxHp; // Full heal
+          leveledUp = true;
+          printf("[Handler] Char %d leveled up to %d! Total XP: %llu\n",
+                 session.characterId, (int)session.level,
+                 (unsigned long long)session.experience);
+        } else {
+          break;
+        }
+      }
+
+      if (leveledUp || xp > 0) {
+        // Persist to DB
+        server.GetDB().UpdateCharacterStats(
+            session.characterId, session.level, session.strength,
+            session.dexterity, session.vitality, session.energy,
+            (uint16_t)session.hp, (uint16_t)session.maxHp,
+            session.levelUpPoints, session.experience);
+        // Sync to client
+        SendCharStats(session);
+      }
 
       // Spawn drops and broadcast them
       auto drops = world.SpawnDrops(mon->worldX, mon->worldZ, mon->level,
@@ -658,6 +812,9 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
   resp.maxLife = static_cast<uint16_t>(session.maxHp);
   session.Send(&resp, sizeof(resp));
 
+  // Sync complete stats
+  SendCharStats(session);
+
   // Persist to DB
   db.UpdateCharacterStats(session.characterId, session.level, session.strength,
                           session.dexterity, session.vitality, session.energy,
@@ -671,51 +828,6 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
 
 void LoadInventory(Session &session, Database &db, int characterId) {
   auto invItems = db.GetCharacterInventory(characterId);
-  if (invItems.empty()) {
-    printf("[Handler] Seeding test items for character %d\n", characterId);
-    struct SeedItem {
-      uint8_t slot;
-      int16_t defIndex;
-      uint8_t level;
-    };
-    std::vector<SeedItem> seeds = {
-        {0, 0, 0},   // Kris (0,0) - 1x2
-        {2, 1, 3},   // Short Sword +3 (0,2) - 1x3
-        {4, 66, 0},  // Flail (0,4) - 1x3
-        {6, 192, 0}, // Small Shield (0,6) - 2x2
-
-        {24, 224, 0}, // Bronze Helm (3,0) - 2x2
-        {26, 256, 0}, // Bronze Armor (3,2) - 2x3
-        {28, 288, 0}, // Bronze Pants (3,4) - 2x2
-
-        {48, 320, 0}, // Bronze Gloves (6,0) - 2x2
-        {50, 352, 0}  // Bronze Boots (6,2) - 2x2
-    };
-    for (auto &s : seeds) {
-      ItemDefinition itemDef = db.GetItemDefinition(s.defIndex);
-      int w = itemDef.width > 0 ? itemDef.width : 1;
-      int h = itemDef.height > 0 ? itemDef.height : 1;
-      int r = s.slot / 8;
-      int c = s.slot % 8;
-
-      for (int hh = 0; hh < h; hh++) {
-        for (int ww = 0; ww < w; ww++) {
-          int slot = (r + hh) * 8 + (c + ww);
-          if (slot < 64) {
-            session.bag[slot].defIndex = s.defIndex;
-            session.bag[slot].category = s.defIndex / 32;
-            session.bag[slot].itemIndex = s.defIndex % 32;
-            session.bag[slot].quantity = 1;
-            session.bag[slot].itemLevel = s.level;
-            session.bag[slot].occupied = true;
-            session.bag[slot].primary = (hh == 0 && ww == 0);
-          }
-        }
-      }
-      db.SaveCharacterInventory(characterId, s.defIndex, 1, s.level, s.slot);
-    }
-    return;
-  }
   printf("[Handler] Loading %zu inventory items from DB for char %d\n",
          invItems.size(), characterId);
   for (auto &item : invItems) {
@@ -1029,6 +1141,9 @@ void Handle(Session &session, const std::vector<uint8_t> &packet, Database &db,
     break;
   case 0x39:
     HandleInventoryMove(session, packet, db);
+    break;
+  case 0x3A:
+    HandleItemUse(session, packet, db);
     break;
   case 0xD7:
     HandlePrecisePosition(session, packet);

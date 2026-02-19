@@ -106,6 +106,7 @@ public:
 
   // HP and damage
   void TakeDamage(int damage);
+  void ForceDie();
   int GetHP() const { return m_hp; }
   int GetMaxHP() const { return m_maxHp; }
   int GetMana() const { return m_mana; }
@@ -117,6 +118,8 @@ public:
     return m_heroState == HeroState::DEAD && m_stateTimer <= 0.0f;
   }
   HeroState GetHeroState() const { return m_heroState; }
+  // Animation and state control
+  void SetAction(int newAction);
   void UpdateState(float deltaTime);
   void Respawn(const glm::vec3 &spawnPos);
 
@@ -126,9 +129,10 @@ public:
   // Load stats from server (overrides defaults, calls RecalcStats)
   void LoadStats(int level, uint16_t str, uint16_t dex, uint16_t vit,
                  uint16_t ene, uint64_t experience, int levelUpPoints,
-                 int currentHp, int currentMana);
+                 int currentHp, int currentMana, uint8_t charClass = 0);
   bool AddStatPoint(int stat); // 0=STR, 1=DEX, 2=VIT, 3=ENE
   int GetLevel() const { return m_level; }
+  uint8_t GetClass() const { return m_class; }
   uint64_t GetExperience() const { return m_experience; }
   uint64_t GetNextExperience() const { return m_nextExperience; }
   int GetLevelUpPoints() const { return m_levelUpPoints; }
@@ -152,6 +156,11 @@ public:
   bool IsInSafeZone() const { return m_inSafeZone; }
   void Heal(int amount);
   bool HasWeapon() const { return m_weaponBmd != nullptr; }
+
+  // Ground item pickup logic
+  void SetPendingPickup(int dropIndex) { m_pendingPickupIndex = dropIndex; }
+  int GetPendingPickup() const { return m_pendingPickupIndex; }
+  void ClearPendingPickup() { m_pendingPickupIndex = -1; }
 
   // Equipment stat bonuses (weapon adds damage, armor/shield adds defense)
   void SetWeaponBonus(int dmin, int dmax);
@@ -196,6 +205,13 @@ private:
   static constexpr float ANIM_SPEED = 8.25f;
   int m_rootBone = -1;
 
+  // Blending state
+  int m_priorAction = -1;
+  float m_priorAnimFrame = 0.0f;
+  float m_blendAlpha = 1.0f;
+  bool m_isBlending = false;
+  static constexpr float BLEND_DURATION = 0.12f; // seconds
+
   // Default player actions (no weapon / SafeZone)
   static constexpr int ACTION_STOP_MALE = 1;  // PLAYER_STOP_MALE
   static constexpr int ACTION_WALK_MALE = 15; // PLAYER_WALK_MALE
@@ -211,6 +227,7 @@ private:
   static constexpr int ACTION_DIE1 = 231;
 
   // ─── DK Stats (MuEmu-0.97k DefaultClassInfo.txt, Class=1) ───
+  uint8_t m_class = 0;
   int m_level = 1;
   uint64_t m_experience = 0;
   uint64_t m_nextExperience = 0;
@@ -251,6 +268,7 @@ private:
   float m_stateTimer = 0.0f;
   static constexpr float HIT_STUN_TIME = 0.4f;
   static constexpr float DEAD_WAIT_TIME = 3.0f;
+  float m_hpRemainder = 0.0f; // Track fractional HP for smooth regeneration
 
   // Combat state
   bool m_inSafeZone = true;
@@ -271,9 +289,18 @@ private:
   // Skeleton + body parts
   std::unique_ptr<BMDData> m_skeleton;
   static const int PART_COUNT = 5;
+
+  // Shadow rendering
+  struct ShadowMesh {
+    GLuint vao = 0, vbo = 0, ebo = 0;
+    int indexCount = 0;
+    int vertexCount = 0;
+  };
+
   struct BodyPart {
     std::unique_ptr<BMDData> bmd;
     std::vector<MeshBuffers> meshBuffers;
+    std::vector<ShadowMesh> shadowMeshes;
   };
   BodyPart m_parts[PART_COUNT];
   std::unique_ptr<Shader> m_shader;
@@ -281,24 +308,21 @@ private:
   // Weapon (attached item model — right hand)
   std::unique_ptr<BMDData> m_weaponBmd;
   std::vector<MeshBuffers> m_weaponMeshBuffers;
+  std::vector<ShadowMesh> m_weaponShadowMeshes;
   std::string m_dataPath; // Cached for late weapon loading
 
   // Shield (attached item model — left hand)
   WeaponEquipInfo m_shieldInfo;
   std::unique_ptr<BMDData> m_shieldBmd;
   std::vector<MeshBuffers> m_shieldMeshBuffers;
+  std::vector<ShadowMesh> m_shieldShadowMeshes;
 
   // Shadow rendering
   std::unique_ptr<Shader> m_shadowShader;
-  struct ShadowMesh {
-    GLuint vao = 0, vbo = 0, ebo = 0;
-    int indexCount = 0;
-    int vertexCount = 0;
-  };
-  std::vector<ShadowMesh> m_shadowMeshes;     // one per body part mesh
   std::vector<BoneWorldMatrix> m_cachedBones; // cached from last Render()
 
   // External data (non-owning)
+  int m_pendingPickupIndex = -1;
   const TerrainData *m_terrainData = nullptr;
   std::vector<glm::vec3> m_terrainLightmap;
   std::vector<PointLight> m_pointLights;

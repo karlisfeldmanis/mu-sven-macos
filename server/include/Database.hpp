@@ -47,6 +47,7 @@ struct CharacterData {
   uint32_t money = 0;
   uint64_t experience = 0;
   uint16_t levelUpPoints = 0;
+  int16_t quickSlotDefIndex = -1;
 };
 
 // Equipment slot constants (matching original MU inventory layout)
@@ -121,7 +122,8 @@ public:
   void UpdateCharacterStats(int charId, uint16_t level, uint16_t strength,
                             uint16_t dexterity, uint16_t vitality,
                             uint16_t energy, uint16_t life, uint16_t maxLife,
-                            uint16_t levelUpPoints, uint64_t experience);
+                            uint16_t levelUpPoints, uint64_t experience,
+                            int16_t quickSlotDefIndex);
   void CreateDefaultAccount();
 
   // NPC spawns
@@ -158,6 +160,9 @@ public:
 
   // Money / Zen
   void UpdateCharacterMoney(int characterId, uint32_t money);
+
+  // Experience
+  static uint64_t GetXPForLevel(int level);
 
 private:
   void CreateTables();

@@ -32,6 +32,7 @@ public:
   int accountId = 0;
   int characterId = 0;
   std::string characterName;
+  uint8_t charClass = 0;
   bool inWorld = false;
 
   // Cached combat stats (populated on char select / equip change)
@@ -69,6 +70,11 @@ public:
   // World position (updated from move packets, used for server AI aggro)
   float worldX = 0.0f;
   float worldZ = 0.0f;
+
+  // Potion cooldown timer (seconds)
+  float potionCooldown = 0.0f;
+  float hpRemainder = 0.0f; // Fractional HP for safe zone regeneration
+  int16_t quickSlotDefIndex = -1;
 
 private:
   int m_fd;
