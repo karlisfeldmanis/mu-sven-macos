@@ -1,15 +1,16 @@
-#include "../server/include/PacketDefs.hpp"
 #include "BMDParser.hpp"
 #include "BMDUtils.hpp"
 #include "Camera.hpp"
 #include "ClickEffect.hpp"
+#include "ClientPacketHandler.hpp"
+#include "ClientTypes.hpp"
 #include "FireEffect.hpp"
 #include "GrassRenderer.hpp"
 #include "HeroCharacter.hpp"
 #include "MockData.hpp"
 #include "MonsterManager.hpp"
-#include "NetworkClient.hpp"
 #include "NpcManager.hpp"
+#include "ServerConnection.hpp"
 #include "ObjectRenderer.hpp"
 #include "Screenshot.hpp"
 #include "Shader.hpp"
@@ -163,7 +164,7 @@ static HeroCharacter g_hero;
 static ClickEffect g_clickEffect;
 static NpcManager g_npcManager;
 static MonsterManager g_monsterManager;
-static NetworkClient g_net;
+static ServerConnection g_server;
 
 // NPC interaction state
 static int g_hoveredNpc = -1;        // Index of NPC under mouse cursor
@@ -171,24 +172,7 @@ static int g_hoveredMonster = -1;    // Index of Monster under mouse cursor
 static int g_hoveredGroundItem = -1; // Index of Ground Item under mouse cursor
 static int g_selectedNpc = -1; // Index of NPC that was clicked (dialog open)
 
-// Client-side inventory (synced from server via 0x36)
-struct ClientItemDefinition {
-  uint8_t category = 0;
-  uint8_t itemIndex = 0;
-  std::string name;
-  std::string modelFile;
-  uint16_t reqStr = 0;
-  uint16_t reqDex = 0;
-  uint16_t reqVit = 0;
-  uint16_t reqEne = 0;
-  uint16_t levelReq = 0;
-  uint8_t width = 1;
-  uint8_t height = 1;
-  uint32_t classFlags = 0xFFFFFFFF;
-  uint16_t dmgMin = 0;
-  uint16_t dmgMax = 0;
-  uint16_t defense = 0;
-};
+// Client-side item definitions (types in ClientTypes.hpp)
 static std::map<int16_t, ClientItemDefinition> g_itemDefs;
 
 // ── Floating damage numbers ──
@@ -204,23 +188,7 @@ struct FloatingDamage {
 static constexpr int MAX_FLOATING_DAMAGE = 32;
 static FloatingDamage g_floatingDmg[MAX_FLOATING_DAMAGE] = {};
 
-// ── Ground item drops ──
-struct GroundItem {
-  uint16_t dropIndex;
-  int16_t defIndex; // -1=Zen
-  int quantity;
-  uint8_t itemLevel;
-  glm::vec3 position;
-  float timer; // Time alive (for bob animation)
-  bool active;
-
-  // Physics state
-  glm::vec3 angle;
-  float gravity;
-  float scale;
-  bool isResting;
-};
-static constexpr int MAX_GROUND_ITEMS = 64;
+// Ground item drops (type in ClientTypes.hpp)
 static GroundItem g_groundItems[MAX_GROUND_ITEMS] = {};
 static const std::string g_dataPath = "Data";
 
@@ -580,6 +548,7 @@ static int g_serverStr = 28, g_serverDex = 20, g_serverVit = 25,
            g_serverEne = 10;
 static int g_serverLevelUpPoints = 0;
 static int64_t g_serverXP = 0;
+static int g_serverDefense = 0, g_serverAttackSpeed = 0, g_serverMagicSpeed = 0;
 
 // Panel toggle state
 static bool g_showCharInfo = false;
@@ -603,14 +572,7 @@ static int16_t GetDefIndexFromCategory(uint8_t category, uint8_t index) {
   return -1;
 }
 
-struct ClientInventoryItem {
-  int16_t defIndex = -2; // matches server item_definitions.id
-  uint8_t quantity = 0;
-  uint8_t itemLevel = 0;
-  bool occupied = false;
-  bool primary = false;
-};
-static constexpr int INVENTORY_SLOTS = 64;
+// ClientInventoryItem defined in ClientTypes.hpp
 static ClientInventoryItem g_inventory[INVENTORY_SLOTS] = {};
 static uint32_t g_zen = 0;
 static bool g_syncDone =
@@ -690,11 +652,8 @@ static void ConsumeQuickSlotItem() {
     }
 
     if (healAmount > 0) {
-      // Send use request to server (0x3A)
-      PMSG_ITEM_USE_RECV req{};
-      req.h = MakeC1Header(sizeof(req), 0x3A);
-      req.slot = (uint8_t)foundSlot;
-      g_net.Send(&req, sizeof(req));
+      // Send use request to server
+      g_server.SendItemUse((uint8_t)foundSlot);
 
       // Start local cooldown for UI feedback
       g_potionCooldown = POTION_COOLDOWN_TIME;
@@ -746,16 +705,8 @@ static void SetBagItem(int slot, int16_t defIdx, uint8_t qty, uint8_t lvl) {
   }
 }
 
-// Equipment display (populated from 0x24 packet)
-struct ClientEquipSlot {
-  uint8_t category = 0xFF;
-  uint8_t itemIndex = 0;
-  uint8_t itemLevel = 0;
-  std::string modelFile;
-  bool equipped = false;
-};
-static ClientEquipSlot g_equipSlots[12] =
-    {}; // 12 equipment slots (0.97d scope)
+// Equipment display (type in ClientTypes.hpp)
+static ClientEquipSlot g_equipSlots[12] = {};
 static GLuint g_slotBackgrounds[12] = {0};
 static UITexture g_texInventoryBg;
 
@@ -1312,10 +1263,21 @@ static void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
   const char *catDesc = (def->category < 16) ? kCatNames[def->category] : "";
   if (catDesc[0])
     th += lineH;
+
+  // Hands specification (usually under category)
+  if (def->category <= 5 ||
+      def->category == 12) // Weapons or Wings maybe not wings, weapons only
+    th += lineH;
+
   if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0))
     th += lineH;
+  // Attack Speed
+  if (def->category <= 5 && def->attackSpeed > 0)
+    th += lineH;
+
   if (def->category >= 7 && def->category <= 11 && def->defense > 0)
     th += lineH;
+
   th += 8; // separator
   if (def->levelReq > 0)
     th += lineH;
@@ -1327,6 +1289,11 @@ static void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
     th += lineH;
   if (def->reqEne > 0)
     th += lineH;
+
+  // Class requirements (e.g. "Dark Wizard  Dark Knight")
+  if (def->classFlags > 0 && def->classFlags != 0xFFFFFFFF)
+    th += lineH;
+
   th += 10; // bottom padding
 
   BeginPendingTooltip(185.0f, th);
@@ -1348,14 +1315,28 @@ static void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
   if (catDesc[0])
     AddPendingTooltipLine(IM_COL32(160, 160, 160, 200), catDesc);
 
+  if (def->category <= 5) {
+    if (def->twoHanded)
+      AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), "Two-Handed Weapon");
+    else if (def->category != 4 || def->name == "Arrows" || def->name == "Bolt")
+      AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), "One-Handed Weapon");
+  }
+
   if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0)) {
     char buf[32];
-    snprintf(buf, sizeof(buf), "Dmg: %d~%d", def->dmgMin, def->dmgMax);
+    snprintf(buf, sizeof(buf), "Damage: %d~%d", def->dmgMin, def->dmgMax);
     AddPendingTooltipLine(IM_COL32(255, 140, 140, 255), buf);
   }
+
+  if (def->category <= 5 && def->attackSpeed > 0) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Attack Speed: %d", def->attackSpeed);
+    AddPendingTooltipLine(IM_COL32(200, 255, 200, 255), buf);
+  }
+
   if (def->category >= 7 && def->category <= 11 && def->defense > 0) {
     char buf[32];
-    snprintf(buf, sizeof(buf), "Def: %d", def->defense);
+    snprintf(buf, sizeof(buf), "Defense: %d", def->defense);
     AddPendingTooltipLine(IM_COL32(140, 200, 255, 255), buf);
   }
 
@@ -1379,6 +1360,24 @@ static void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
     addReq("VIT", g_serverVit, def->reqVit);
   if (def->reqEne > 0)
     addReq("ENE", g_serverEne, def->reqEne);
+
+  if (def->classFlags > 0 && def->classFlags != 0xFFFFFFFF) {
+    std::string classes = "";
+    if (def->classFlags & 1)
+      classes += "DW ";
+    if (def->classFlags & 2)
+      classes += "DK ";
+    if (def->classFlags & 4)
+      classes += "FE ";
+    if (def->classFlags & 8)
+      classes += "MG";
+    if (!classes.empty()) {
+      uint32_t myFlag = (1 << (g_hero.GetClass() / 16));
+      ImU32 col = (def->classFlags & myFlag) ? IM_COL32(160, 160, 255, 255)
+                                             : IM_COL32(255, 80, 80, 255);
+      AddPendingTooltipLine(col, classes);
+    }
+  }
 }
 
 // Draw the pending tooltip using a raw draw list (called after 3D render)
@@ -1417,11 +1416,7 @@ static void FlushPendingTooltip() {
 // Forward declarations for panel rendering
 static UICoords g_hudCoords; // File-scope for mouse callback access
 
-// Data received from server initial burst
-struct ServerEquipSlot {
-  uint8_t slot = 0;
-  WeaponEquipInfo info;
-};
+// ServerEquipSlot defined in ClientTypes.hpp
 
 // ── Drop Physics & Rotation Logic ──
 
@@ -1541,590 +1536,13 @@ static void RenderZenPile(int quantity, glm::vec3 pos, glm::vec3 angle,
   }
 }
 
-struct ServerData {
-  std::vector<ServerNpcSpawn> npcs;
-  std::vector<ServerMonsterSpawn> monsters;
-  std::vector<ServerEquipSlot> equipment;
-  bool connected = false;
-};
+// ServerData defined in ClientTypes.hpp
 
-// Parse a single MU packet from the initial server data burst
-static void parseInitialPacket(const uint8_t *pkt, int pktSize,
-                               ServerData &result) {
-  if (pktSize < 3)
-    return;
-  uint8_t type = pkt[0];
+// Delegated to ClientPacketHandler::HandleInitialPacket
+// (see src/ClientPacketHandler.cpp)
 
-  // C2 packets (4-byte header)
-  if (type == 0xC2 && pktSize >= 5) {
-    uint8_t headcode = pkt[3];
-    std::cout << "[Net] Debug: C2 Packet. Headcode=0x" << std::hex
-              << (int)headcode << std::dec << " Size=" << pktSize << std::endl;
-
-    // NPC viewport (0x13)
-    if (headcode == 0x13) {
-      uint8_t count = pkt[4];
-      std::cout << "[Net] NPC viewport: " << (int)count << " NPCs" << std::endl;
-      int entryStart = 5;
-      for (int i = 0; i < count; i++) {
-        int off = entryStart + i * 9;
-        if (off + 9 > pktSize)
-          break;
-        ServerNpcSpawn npc;
-        npc.type = (uint16_t)((pkt[off + 2] << 8) | pkt[off + 3]);
-        npc.gridX = pkt[off + 4];
-        npc.gridY = pkt[off + 5];
-        npc.dir = pkt[off + 8] >> 4;
-        result.npcs.push_back(npc);
-        std::cout << "[Net]   NPC type=" << npc.type << " grid=("
-                  << (int)npc.gridX << "," << (int)npc.gridY
-                  << ") dir=" << (int)npc.dir << std::endl;
-      }
-    }
-
-    // Monster viewport V2 (0x34) — includes index, HP, state
-    if (headcode == 0x34) {
-      uint8_t count = pkt[4];
-      std::cout << "[Net] Monster viewport V2: " << (int)count << " monsters"
-                << std::endl;
-      int entryStart = 5;
-      int entrySize = 12; // sizeof(PMSG_MONSTER_VIEWPORT_ENTRY_V2)
-      for (int i = 0; i < count; i++) {
-        int off = entryStart + i * entrySize;
-        if (off + entrySize > pktSize)
-          break;
-        ServerMonsterSpawn mon;
-        mon.serverIndex = (uint16_t)((pkt[off + 0] << 8) | pkt[off + 1]);
-        mon.monsterType = (uint16_t)((pkt[off + 2] << 8) | pkt[off + 3]);
-        mon.gridX = pkt[off + 4];
-        mon.gridY = pkt[off + 5];
-        mon.dir = pkt[off + 6];
-        result.monsters.push_back(mon);
-        std::cout << "[Net]   Monster idx=" << mon.serverIndex
-                  << " type=" << mon.monsterType << " grid=(" << (int)mon.gridX
-                  << "," << (int)mon.gridY << ") dir=" << (int)mon.dir
-                  << std::endl;
-      }
-    }
-
-    // Inventory sync (0x36) — C2: header(4) + zen(4) + count(1) + N*item(4)
-    if (headcode == 0x36 && pktSize >= 9) {
-      uint32_t zen;
-      std::memcpy(&zen, pkt + 4, 4);
-      g_zen = zen;
-      uint8_t count = pkt[8];
-      for (auto &item : g_inventory)
-        item = {};
-      for (int i = 0; i < count; i++) {
-        int off = 9 + i * sizeof(PMSG_INVENTORY_ITEM);
-        if (off + (int)sizeof(PMSG_INVENTORY_ITEM) > pktSize)
-          break;
-        const auto *item =
-            reinterpret_cast<const PMSG_INVENTORY_ITEM *>(pkt + off);
-        uint8_t slot = item->slot;
-        if (slot < INVENTORY_SLOTS) {
-          // Server sends category + itemIndex separately; compute defIndex
-          int16_t defIdx =
-              (int16_t)((int)item->category * 32 + (int)item->itemIndex);
-          uint8_t qty = item->quantity;
-          uint8_t lvl = item->itemLevel;
-
-          g_inventory[slot].defIndex = defIdx;
-          g_inventory[slot].quantity = qty;
-          g_inventory[slot].itemLevel = lvl;
-          g_inventory[slot].occupied = true;
-          g_inventory[slot].primary = true;
-
-          // Mark secondary slots based on item dimensions
-          auto it = g_itemDefs.find(defIdx);
-          if (it != g_itemDefs.end()) {
-            int w = it->second.width;
-            int h = it->second.height;
-            int row = slot / 8;
-            int col = slot % 8;
-            for (int hh = 0; hh < h; hh++) {
-              for (int ww = 0; ww < w; ww++) {
-                if (hh == 0 && ww == 0)
-                  continue;
-                int s = (row + hh) * 8 + (col + ww);
-                if (s < INVENTORY_SLOTS && (col + ww) < 8) {
-                  g_inventory[s].occupied = true;
-                  g_inventory[s].primary = false;
-                  g_inventory[s].defIndex = defIdx;
-                }
-              }
-            }
-          }
-        }
-      }
-      std::cout << "[Net] Inventory sync: " << (int)count
-                << " items, zen=" << g_zen << std::endl;
-    }
-
-    // Equipment (0x24) - Upgraded to C2 to support >255 bytes (7 slots * 36 =
-    // 252 + 5 = 257)
-    if (headcode == 0x24 && pktSize >= 5) {
-      uint8_t count = pkt[4];
-      std::cout << "[Net] Equipment (C2): " << (int)count << " slots"
-                << std::endl;
-      int entryStart = 5;
-      int entrySize = 4 + 32;
-      for (int i = 0; i < count; i++) {
-        int off = entryStart + i * entrySize;
-        if (off + entrySize > pktSize)
-          break;
-        WeaponEquipInfo weapon;
-        uint8_t slot = pkt[off + 0];
-        weapon.category = pkt[off + 1];
-        weapon.itemIndex = pkt[off + 2];
-        weapon.itemLevel = pkt[off + 3];
-        char modelFile[33] = {};
-        std::memcpy(modelFile, &pkt[off + 4], 32);
-        weapon.modelFile = modelFile;
-        std::cout << "[HANDLER:Initial] Slot " << (int)slot << ": "
-                  << weapon.modelFile << " cat=" << (int)weapon.category
-                  << " idx=" << (int)weapon.itemIndex << " +"
-                  << (int)weapon.itemLevel << std::endl;
-
-        // Collect ALL equipment slots (weapon, shield, armor etc.)
-        result.equipment.push_back({slot, weapon});
-        // Populate all equipment display slots
-        if (slot < 12) {
-          g_equipSlots[slot].category = weapon.category;
-          g_equipSlots[slot].itemIndex = weapon.itemIndex;
-          g_equipSlots[slot].itemLevel = weapon.itemLevel;
-          g_equipSlots[slot].modelFile = weapon.modelFile;
-          g_equipSlots[slot].equipped = (weapon.category != 0xFF);
-        }
-      }
-    }
-  }
-
-  // C1 packets (2-byte header)
-  if (type == 0xC1 && pktSize >= 3) {
-    uint8_t headcode = pkt[2];
-    std::cout << "[Net] Debug: C1 Packet. Headcode=0x" << std::hex
-              << (int)headcode << std::dec << " Size=" << pktSize << std::endl;
-
-    // Monster viewport V1 (0x1F) — all Lorencia monster spawns
-    if (headcode == 0x1F && pktSize >= 4) {
-      uint8_t count = pkt[3];
-      std::cout << "[Net] Monster viewport V1: " << (int)count << " monsters"
-                << std::endl;
-      int entryStart = 4;
-      int entrySize = 5; // sizeof(PMSG_MONSTER_VIEWPORT_ENTRY)
-      for (int i = 0; i < count; i++) {
-        int off = entryStart + i * entrySize;
-        if (off + entrySize > pktSize)
-          break;
-        ServerMonsterSpawn mon;
-        mon.monsterType = (uint16_t)((pkt[off] << 8) | pkt[off + 1]);
-        mon.gridX = pkt[off + 2];
-        mon.gridY = pkt[off + 3];
-        mon.dir = pkt[off + 4];
-        result.monsters.push_back(mon);
-      }
-    }
-
-    // Character stats (0x25)
-    if (headcode == 0x25 && pktSize >= (int)sizeof(PMSG_CHARSTATS_SEND)) {
-      auto *stats = reinterpret_cast<const PMSG_CHARSTATS_SEND *>(pkt);
-      g_serverLevel = stats->level;
-      g_serverStr = stats->strength;
-      g_serverDex = stats->dexterity;
-      g_serverVit = stats->vitality;
-      g_serverEne = stats->energy;
-      g_serverHP = stats->life;
-      g_serverMaxHP = stats->maxLife;
-      g_serverMP = stats->mana;
-      g_serverMaxMP = stats->maxMana;
-      g_serverLevelUpPoints = stats->levelUpPoints;
-      g_quickSlotDefIndex = stats->quickSlotDefIndex;
-      g_serverXP = ((int64_t)stats->experienceHi << 32) | stats->experienceLo;
-
-      // CRITICAL: Initialize g_hero with server data to prevent re-leveling
-      // bugs
-      g_hero.LoadStats(g_serverLevel, g_serverStr, g_serverDex, g_serverVit,
-                       g_serverEne, (uint64_t)g_serverXP, g_serverLevelUpPoints,
-                       g_serverHP, g_serverMP, stats->charClass);
-
-      std::cout << "[Net] Character stats: Lv." << g_serverLevel
-                << " HP=" << g_serverHP << "/" << g_serverMaxHP
-                << " STR=" << g_serverStr << " XP=" << g_serverXP
-                << " Pts=" << g_serverLevelUpPoints << std::endl;
-    }
-  }
-}
-
-// Handle ongoing server packets (monster AI, combat, drops)
-static void handleServerPacket(const uint8_t *pkt, int pktSize) {
-  if (pktSize < 3)
-    return;
-  uint8_t type = pkt[0];
-
-  if (type == 0xC1) {
-    uint8_t headcode = pkt[2];
-
-    // Monster move/chase (0x35)
-    if (headcode == 0x35 && pktSize >= (int)sizeof(PMSG_MONSTER_MOVE_SEND)) {
-      auto *p = reinterpret_cast<const PMSG_MONSTER_MOVE_SEND *>(pkt);
-      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
-      if (idx >= 0) {
-        float worldX = (float)p->targetY * 100.0f;
-        float worldZ = (float)p->targetX * 100.0f;
-        g_monsterManager.SetMonsterServerPosition(idx, worldX, worldZ,
-                                                  p->chasing != 0);
-      }
-    }
-
-    // Damage result (0x29) — player hits monster
-    if (headcode == 0x29 && pktSize >= (int)sizeof(PMSG_DAMAGE_SEND)) {
-      auto *p = reinterpret_cast<const PMSG_DAMAGE_SEND *>(pkt);
-      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
-      if (idx >= 0) {
-        MonsterInfo mi = g_monsterManager.GetMonsterInfo(idx);
-        g_monsterManager.SetMonsterHP(idx, p->remainingHp, mi.maxHp);
-        g_monsterManager.TriggerHitAnimation(idx);
-
-        // Spawn blood and hit sparks (P1)
-        glm::vec3 monPos = g_monsterManager.GetMonsterInfo(idx).position;
-        g_vfxManager.SpawnBurst(ParticleType::BLOOD,
-                                monPos + glm::vec3(0, 50, 0), 12);
-        // g_vfxManager.SpawnBurst(ParticleType::HIT_SPARK,
-        //                         monPos + glm::vec3(0, 50, 0), 6);
-
-        // Floating damage number above monster
-        // Map server damage types to our client display types:
-        // Server: 0=miss, 1=normal, 2=critical, 3=excellent
-        // Client: 7=miss, 0=normal, 2=critical, 3=excellent
-        uint8_t dmgType = 0;
-        if (p->damageType == 0)
-          dmgType = 7; // Miss
-        else if (p->damageType == 2)
-          dmgType = 2; // Critical
-        else if (p->damageType == 3)
-          dmgType = 3; // Excellent
-
-        // Spawn slightly above head (assuming height ~80-120)
-        SpawnDamageNumber(monPos + glm::vec3(0, 80, 0), p->damage, dmgType);
-      }
-    }
-
-    // Monster death (0x2A)
-    if (headcode == 0x2A && pktSize >= (int)sizeof(PMSG_MONSTER_DEATH_SEND)) {
-      auto *p = reinterpret_cast<const PMSG_MONSTER_DEATH_SEND *>(pkt);
-      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
-      if (idx >= 0)
-        g_monsterManager.SetMonsterDying(idx);
-
-      // Apply XP reward (Optimistic update, server will sync soon)
-      uint32_t xp = p->xpReward;
-      if (xp > 0) {
-        g_hero.GainExperience(xp);
-        g_serverXP = (int64_t)g_hero.GetExperience();
-        g_serverLevel = g_hero.GetLevel();
-        g_serverLevelUpPoints = g_hero.GetLevelUpPoints();
-        // Removed: g_serverHP = g_hero.GetHP(); - HUD must trust server for
-        // life
-        g_serverMaxHP = g_hero.GetMaxHP();
-        // Floating XP number (type 9 = purple/gold)
-        SpawnDamageNumber(g_hero.GetPosition(), (int)xp, 9);
-      }
-    }
-
-    // Monster attack player (0x2F) — monster hits hero
-    if (headcode == 0x2F && pktSize >= (int)sizeof(PMSG_MONSTER_ATTACK_SEND)) {
-      auto *p = reinterpret_cast<const PMSG_MONSTER_ATTACK_SEND *>(pkt);
-      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
-      if (idx >= 0)
-        g_monsterManager.TriggerAttackAnimation(idx);
-
-      // --- SafeZone Enforcement ---
-      if (g_hero.IsInSafeZone()) {
-        // Ignore damage if hero is in SafeZone (city/town)
-        return;
-      }
-
-      g_serverHP = (int)p->remainingHp;
-      g_hero.SetHP(g_serverHP); // Explicit sync
-
-      if (p->remainingHp <= 0) {
-        g_serverHP = 0; // Force HUD to 0
-        g_hero.ForceDie();
-      }
-
-      if (p->damage == 0) {
-        // Show MISS instead of 0 damage
-        SpawnDamageNumber(g_hero.GetPosition(), 0, 7);
-      } else {
-        // Trigger hit reaction (anim + state) without applying damage twice
-        g_hero.ApplyHitReaction();
-        // Red damage number above hero
-        SpawnDamageNumber(g_hero.GetPosition(), p->damage, 8);
-      }
-    }
-
-    // Monster respawn (0x30)
-    if (headcode == 0x30 && pktSize >= (int)sizeof(PMSG_MONSTER_RESPAWN_SEND)) {
-      auto *p = reinterpret_cast<const PMSG_MONSTER_RESPAWN_SEND *>(pkt);
-      int idx = g_monsterManager.FindByServerIndex(p->monsterIndex);
-      if (idx >= 0)
-        g_monsterManager.RespawnMonster(idx, p->x, p->y, p->hp);
-    }
-
-    // Stat allocation response (0x38)
-    if (headcode == 0x38 && pktSize >= (int)sizeof(PMSG_STAT_ALLOC_SEND)) {
-      auto *resp = reinterpret_cast<const PMSG_STAT_ALLOC_SEND *>(pkt);
-      if (resp->result) {
-        switch (resp->statType) {
-        case 0:
-          g_serverStr = resp->newValue;
-          break;
-        case 1:
-          g_serverDex = resp->newValue;
-          break;
-        case 2:
-          g_serverVit = resp->newValue;
-          break;
-        case 3:
-          g_serverEne = resp->newValue;
-          break;
-        }
-        g_serverLevelUpPoints = resp->levelUpPoints;
-        g_serverMaxHP = resp->maxLife;
-        std::cout << "[Net] Stat alloc OK: type=" << (int)resp->statType
-                  << " val=" << resp->newValue << " pts=" << resp->levelUpPoints
-                  << std::endl;
-
-        // Sync hero state
-        g_hero.LoadStats(g_serverLevel, g_serverStr, g_serverDex, g_serverVit,
-                         g_serverEne, (uint64_t)g_serverXP,
-                         g_serverLevelUpPoints, g_serverHP, g_serverMP,
-                         g_hero.GetClass());
-      }
-    }
-
-    // Ground drop spawned (0x2B)
-    if (headcode == 0x2B && pktSize >= (int)sizeof(PMSG_DROP_SPAWN_SEND)) {
-      auto *p = reinterpret_cast<const PMSG_DROP_SPAWN_SEND *>(pkt);
-      for (auto &gi : g_groundItems) {
-        if (!gi.active) {
-          gi.dropIndex = p->dropIndex;
-          gi.defIndex = p->defIndex;
-          gi.quantity = p->quantity;
-          gi.itemLevel = p->itemLevel;
-
-          float h = g_terrain.GetHeight(p->worldX, p->worldZ);
-          gi.position =
-              glm::vec3(p->worldX, h + 100.0f, p->worldZ); // Start high
-          gi.timer = 0.0f;
-          gi.gravity = 15.0f; // Initial Drop Velocity
-          gi.scale = 1.0f;
-          gi.isResting = false;
-
-          GetItemRestingAngle(gi.defIndex, gi.angle, gi.scale);
-          gi.angle.y += (float)(rand() % 360); // Add random Y rotation
-
-          if (gi.defIndex == -1) { // Zen
-            // Zen quantity comes from the drop packet — keep actual value
-          }
-
-          gi.active = true;
-          break;
-        }
-      }
-    }
-
-    // Pickup result (0x2D) — gold or item acquired
-    if (headcode == 0x2D && pktSize >= (int)sizeof(PMSG_PICKUP_RESULT_SEND)) {
-      auto *p = reinterpret_cast<const PMSG_PICKUP_RESULT_SEND *>(pkt);
-      if (p->success) {
-        // Remove from ground
-        for (auto &gi : g_groundItems) {
-          if (gi.active && gi.dropIndex == p->dropIndex) {
-            gi.active = false;
-            break;
-          }
-        }
-      }
-    }
-
-    // Drop removed (0x2E)
-    if (headcode == 0x2E && pktSize >= (int)sizeof(PMSG_DROP_REMOVE_SEND)) {
-      auto *p = reinterpret_cast<const PMSG_DROP_REMOVE_SEND *>(pkt);
-      for (auto &gi : g_groundItems) {
-        if (gi.active && gi.dropIndex == p->dropIndex) {
-          gi.active = false;
-          break;
-        }
-      }
-    }
-
-    // Equipment (0x24) - Sync during gameplay
-    if (headcode == 0x24 && pktSize >= 4) {
-      uint8_t count = pkt[3];
-      int entryStart = 4;
-      int entrySize = 4 + 32;
-      for (int i = 0; i < count; i++) {
-        int off = entryStart + i * entrySize;
-        if (off + entrySize > pktSize)
-          break;
-
-        uint8_t slot = pkt[off + 0];
-        WeaponEquipInfo weapon;
-        weapon.category = pkt[off + 1];
-        weapon.itemIndex = pkt[off + 2];
-        weapon.itemLevel = pkt[off + 3];
-        char modelBuf[33] = {};
-        std::memcpy(modelBuf, &pkt[off + 4], 32);
-        weapon.modelFile = modelBuf;
-        std::cout << "  Slot " << (int)slot << ": " << weapon.modelFile
-                  << std::endl;
-
-        // Apply to g_hero immediately
-        if (slot == 0) {
-          g_hero.EquipWeapon(weapon);
-        } else if (slot == 1) {
-          g_hero.EquipShield(weapon);
-        } else {
-          int bodyPart = GetBodyPartIndex(weapon.category);
-          if (bodyPart >= 0) {
-            std::string partModel =
-                GetBodyPartModelFile(weapon.category, weapon.itemIndex);
-            if (!partModel.empty())
-              g_hero.EquipBodyPart(bodyPart, partModel);
-          }
-        }
-
-        // Apply to UI slots
-        if (slot < 12) {
-          g_equipSlots[slot].category = weapon.category;
-          g_equipSlots[slot].itemIndex = weapon.itemIndex;
-          g_equipSlots[slot].itemLevel = weapon.itemLevel;
-          g_equipSlots[slot].modelFile = weapon.modelFile;
-          g_equipSlots[slot].equipped = (weapon.category != 0xFF);
-        }
-      }
-    }
-
-    // Character stats (0x25) - Sync during gameplay for healing/leveling
-    if (headcode == 0x25 && pktSize >= (int)sizeof(PMSG_CHARSTATS_SEND)) {
-      auto *stats = reinterpret_cast<const PMSG_CHARSTATS_SEND *>(pkt);
-      g_serverLevel = stats->level;
-      g_serverStr = stats->strength;
-      g_serverDex = stats->dexterity;
-      g_serverVit = stats->vitality;
-      g_serverEne = stats->energy;
-      int oldHP = g_serverHP;
-      g_serverHP = stats->life;
-      g_serverMaxHP = stats->maxLife;
-      g_serverMP = stats->mana;
-      g_serverMaxMP = stats->maxMana;
-      g_serverLevelUpPoints = stats->levelUpPoints;
-      g_serverXP = ((int64_t)stats->experienceHi << 32) | stats->experienceLo;
-
-      // Sync hero state
-      g_hero.LoadStats(stats->level, stats->strength, stats->dexterity,
-                       stats->vitality, stats->energy, (uint64_t)g_serverXP,
-                       g_serverLevelUpPoints, g_serverHP, g_serverMP,
-                       stats->charClass);
-
-      // Show floating heal text if HP increased (e.g. from potion or regen)
-      if (g_serverHP > oldHP && oldHP > 0) {
-        SpawnDamageNumber(g_hero.GetPosition(), g_serverHP - oldHP, 10);
-      }
-    }
-  }
-
-  // C2 packets (ongoing)
-  if (type == 0xC2 && pktSize >= 5) {
-    uint8_t headcode = pkt[3];
-
-    // Inventory sync (0x36)
-    if (headcode == 0x36 && pktSize >= 9) {
-      uint32_t zen;
-      std::memcpy(&zen, pkt + 4, 4);
-      g_zen = zen;
-      uint8_t count = pkt[8];
-      // Clear client grid
-      for (auto &item : g_inventory)
-        item = {};
-
-      const int itemSize = 5; // slot(1) + cat(1) + idx(1) + qty(1) + lvl(1)
-      for (int i = 0; i < count; i++) {
-        int off = 9 + i * itemSize;
-        if (off + itemSize > pktSize)
-          break;
-
-        uint8_t slot = pkt[off];
-        uint8_t cat = pkt[off + 1];
-        uint8_t idx = pkt[off + 2];
-        uint8_t qty = pkt[off + 3];
-        uint8_t lvl = pkt[off + 4];
-
-        if (slot < INVENTORY_SLOTS) {
-          int16_t defIdx = GetDefIndexFromCategory(cat, idx);
-          if (defIdx != -1) {
-            SetBagItem(slot, defIdx, qty, lvl);
-          } else {
-            // Fallback for unknown items: at least mark slot as occupied so
-            // it's not empty
-            g_inventory[slot].occupied = true;
-            g_inventory[slot].primary = true;
-            g_inventory[slot].quantity = qty;
-            g_inventory[slot].itemLevel = lvl;
-          }
-        }
-      }
-      g_syncDone = true;
-    }
-
-    // Equipment sync (0x24)
-    if (headcode == 0x24 && pktSize >= 5) {
-      uint8_t count = pkt[4];
-      int entryStart = 5;
-      int entrySize = 1 + 1 + 1 + 1 + 32;
-      for (int i = 0; i < count; i++) {
-        int off = entryStart + i * entrySize;
-        if (off + entrySize > pktSize)
-          break;
-
-        uint8_t slot = pkt[off + 0];
-        WeaponEquipInfo weapon;
-        weapon.category = pkt[off + 1];
-        weapon.itemIndex = pkt[off + 2];
-        weapon.itemLevel = pkt[off + 3];
-        char modelBuf[33] = {};
-        std::memcpy(modelBuf, &pkt[off + 4], 32);
-        weapon.modelFile = modelBuf;
-
-        // Apply to g_hero immediately
-        if (slot == 0) {
-          g_hero.EquipWeapon(weapon);
-        } else if (slot == 1) {
-          g_hero.EquipShield(weapon);
-        } else {
-          int bodyPart = GetBodyPartIndex(weapon.category);
-          if (bodyPart >= 0) {
-            std::string partModel =
-                GetBodyPartModelFile(weapon.category, weapon.itemIndex);
-            if (!partModel.empty())
-              g_hero.EquipBodyPart(bodyPart, partModel);
-          }
-        }
-
-        // Apply to UI slots
-        if (slot < 12) {
-          g_equipSlots[slot].category = weapon.category;
-          g_equipSlots[slot].itemIndex = weapon.itemIndex;
-          g_equipSlots[slot].itemLevel = weapon.itemLevel;
-          g_equipSlots[slot].modelFile = weapon.modelFile;
-          g_equipSlots[slot].equipped = (weapon.category != 0xFF);
-        }
-      }
-    }
-  }
-}
+// Delegated to ClientPacketHandler::HandleGamePacket
+// (see src/ClientPacketHandler.cpp)
 
 static const TerrainData *g_terrainDataPtr = nullptr;
 
@@ -2539,12 +1957,10 @@ static void HandlePickupClick(GLFWwindow *window, double mx, double my) {
 
     if (distToHero < 150.0f) {
       // Close enough, pick up immediately
-      PMSG_PICKUP_RECV pkt{};
-      pkt.h = MakeC1Header(sizeof(pkt), 0x2C);
-      pkt.dropIndex = g_groundItems[bestIdx].dropIndex;
-      g_net.Send(&pkt, sizeof(pkt));
-      std::cout << "[Pickup] Sent direct pickup for index " << pkt.dropIndex
-                << " (Close range)" << std::endl;
+      g_server.SendPickup(g_groundItems[bestIdx].dropIndex);
+      std::cout << "[Pickup] Sent direct pickup for index "
+                << g_groundItems[bestIdx].dropIndex << " (Close range)"
+                << std::endl;
       g_hero.ClearPendingPickup();
     } else {
       // Too far, move to it and set pending pickup
@@ -2664,12 +2080,9 @@ void processInput(GLFWwindow *window, float deltaTime) {
       float dist = glm::distance(g_hero.GetPosition(),
                                  g_groundItems[pendingIdx].position);
       if (dist < 150.0f) {
-        PMSG_PICKUP_RECV pkt{};
-        pkt.h = MakeC1Header(sizeof(pkt), 0x2C);
-        pkt.dropIndex = g_groundItems[pendingIdx].dropIndex;
-        g_net.Send(&pkt, sizeof(pkt));
+        g_server.SendPickup(g_groundItems[pendingIdx].dropIndex);
         std::cout << "[Pickup] REACHED: Auto-picking item index "
-                  << pkt.dropIndex << std::endl;
+                  << g_groundItems[pendingIdx].dropIndex << std::endl;
         g_hero.ClearPendingPickup();
       }
     } else {
@@ -2704,7 +2117,8 @@ static void InitItemDefinitions() {
                    const char *mod, uint8_t w, uint8_t h, uint16_t s,
                    uint16_t d, uint16_t v, uint16_t e, uint16_t l, uint32_t cf,
                    uint16_t dmgMin = 0, uint16_t dmgMax = 0,
-                   uint16_t defense = 0) {
+                   uint16_t defense = 0, uint8_t attackSpeed = 0,
+                   bool twoHanded = false) {
     ClientItemDefinition cd;
     cd.category = cat;
     cd.itemIndex = idx;
@@ -2721,6 +2135,8 @@ static void InitItemDefinitions() {
     cd.dmgMin = dmgMin;
     cd.dmgMax = dmgMax;
     cd.defense = defense;
+    cd.attackSpeed = attackSpeed;
+    cd.twoHanded = twoHanded;
 
     // Use Standard ID (Cat*32 + Idx) as key
     // This matches what the server sends for drops and ensures consistency
@@ -2733,242 +2149,345 @@ static void InitItemDefinitions() {
   // possible, but since we sync by (Cat, Idx), the actual ID value here is
   // arbitrary as long as it's unique.
 
+  // Auto-generated from Database.cpp
   // Category 0: Swords
   //                id  cat idx  name              model         w  h  str dex
-  addDef(0, 0, 0, "Kris", "Sword01.bmd", 1, 2, 80, 40, 0, 0, 0, 15);
-  addDef(1, 0, 1, "Short Sword", "Sword02.bmd", 1, 3, 100, 0, 0, 0, 0, 15);
-  addDef(2, 0, 2, "Rapier", "Sword03.bmd", 1, 3, 50, 40, 0, 0, 0, 15);
-  addDef(3, 0, 3, "Katana", "Sword04.bmd", 1, 3, 80, 40, 0, 0, 0, 2);
-  addDef(4, 0, 4, "Sword of Assassin", "Sword05.bmd", 1, 3, 60, 40, 0, 0, 0, 2);
-  addDef(5, 0, 5, "Blade", "Sword06.bmd", 1, 3, 80, 50, 0, 0, 0, 15);
-  addDef(6, 0, 6, "Gladius", "Sword07.bmd", 1, 3, 110, 0, 0, 0, 0, 15);
-  addDef(7, 0, 7, "Falchion", "Sword08.bmd", 1, 3, 120, 0, 0, 0, 0, 2);
-  addDef(8, 0, 8, "Serpent Sword", "Sword09.bmd", 1, 3, 130, 0, 0, 0, 0, 2);
-  addDef(9, 0, 9, "Sword of Salamander", "Sword10.bmd", 2, 3, 103, 0, 0, 0, 0,
-         2);
-  addDef(10, 0, 10, "Light Saber", "Sword11.bmd", 2, 4, 80, 60, 0, 0, 0, 15);
-  addDef(11, 0, 11, "Legendary Sword", "Sword12.bmd", 2, 3, 120, 0, 0, 0, 0, 2);
-  addDef(12, 0, 12, "Heliacal Sword", "Sword13.bmd", 2, 3, 140, 0, 0, 0, 0, 2);
-  addDef(13, 0, 13, "Double Blade", "Sword14.bmd", 1, 3, 70, 70, 0, 0, 0, 15);
-  addDef(14, 0, 14, "Lightning Sword", "Sword15.bmd", 1, 3, 90, 50, 0, 0, 0,
-         15);
-  addDef(15, 0, 15, "Giant Sword", "Sword16.bmd", 2, 3, 140, 0, 0, 0, 0, 2);
-
-  // Category 1: Axes
-  addDef(20, 1, 0, "Small Axe", "Axe01.bmd", 1, 3, 50, 0, 0, 0, 0, 15);
-  addDef(21, 1, 1, "Hand Axe", "Axe02.bmd", 1, 3, 70, 0, 0, 0, 0, 15);
-  addDef(22, 1, 2, "Double Axe", "Axe03.bmd", 1, 3, 90, 0, 0, 0, 0, 2);
-  addDef(23, 1, 3, "Tomahawk", "Axe04.bmd", 1, 3, 100, 0, 0, 0, 0, 2);
-  addDef(24, 1, 4, "Elven Axe", "Axe05.bmd", 1, 3, 50, 70, 0, 0, 0, 5);
-  addDef(25, 1, 5, "Battle Axe", "Axe06.bmd", 2, 3, 120, 0, 0, 0, 0, 15);
-  addDef(26, 1, 6, "Nikkea Axe", "Axe07.bmd", 2, 3, 130, 0, 0, 0, 0, 15);
-  addDef(27, 1, 7, "Larkan Axe", "Axe08.bmd", 2, 3, 140, 0, 0, 0, 0, 2);
-  addDef(28, 1, 8, "Crescent Axe", "Axe09.bmd", 2, 3, 100, 40, 0, 0, 0, 11);
-
-  // Category 2: Maces
-  addDef(30, 2, 0, "Mace", "Mace01.bmd", 1, 3, 100, 0, 0, 0, 0, 2);
-  addDef(31, 2, 1, "Morning Star", "Mace02.bmd", 1, 3, 100, 0, 0, 0, 0, 2);
-  addDef(32, 2, 2, "Flail", "Mace03.bmd", 1, 3, 80, 50, 0, 0, 0, 2);
-  addDef(33, 2, 3, "Great Hammer", "Mace04.bmd", 2, 3, 150, 0, 0, 0, 0, 2);
-  addDef(34, 2, 4, "Crystal Morning Star", "Mace05.bmd", 2, 3, 130, 0, 0, 0, 0,
-         15);
-  addDef(35, 2, 5, "Crystal Sword", "Mace06.bmd", 2, 4, 130, 70, 0, 0, 0, 15);
-  addDef(36, 2, 6, "Chaos Dragon Axe", "Mace07.bmd", 2, 4, 140, 50, 0, 0, 0, 2);
-
-  // Category 3: Spears
-  addDef(40, 3, 0, "Light Spear", "Spear01.bmd", 2, 4, 60, 70, 0, 0, 0, 15);
-  addDef(41, 3, 1, "Spear", "Spear02.bmd", 2, 4, 70, 50, 0, 0, 0, 15);
-  addDef(42, 3, 2, "Dragon Lance", "Spear03.bmd", 2, 4, 70, 50, 0, 0, 0, 15);
-  addDef(43, 3, 3, "Giant Trident", "Spear04.bmd", 2, 4, 90, 30, 0, 0, 0, 15);
-  addDef(44, 3, 4, "Serpent Spear", "Spear05.bmd", 2, 4, 90, 30, 0, 0, 0, 15);
-  addDef(45, 3, 5, "Double Poleaxe", "Spear06.bmd", 2, 4, 70, 50, 0, 0, 0, 15);
-  addDef(46, 3, 6, "Halberd", "Spear07.bmd", 2, 4, 70, 50, 0, 0, 0, 15);
-  addDef(47, 3, 7, "Berdysh", "Spear08.bmd", 2, 4, 80, 50, 0, 0, 0, 15);
-  addDef(48, 3, 8, "Great Scythe", "Spear09.bmd", 2, 4, 90, 50, 0, 0, 0, 15);
-  addDef(49, 3, 9, "Bill of Balrog", "Spear10.bmd", 2, 4, 80, 50, 0, 0, 0, 15);
-
-  // Category 4: Bows & Crossbows
-  addDef(50, 4, 0, "Short Bow", "Bow01.bmd", 2, 3, 20, 80, 0, 0, 0, 4);
-  addDef(51, 4, 1, "Bow", "Bow02.bmd", 2, 3, 30, 90, 0, 0, 0, 4);
-  addDef(52, 4, 2, "Elven Bow", "Bow03.bmd", 2, 3, 30, 90, 0, 0, 0, 4);
-  addDef(53, 4, 3, "Battle Bow", "Bow04.bmd", 2, 3, 30, 90, 0, 0, 0, 4);
-  addDef(54, 4, 4, "Tiger Bow", "Bow05.bmd", 2, 4, 30, 100, 0, 0, 0, 4);
-  addDef(55, 4, 5, "Silver Bow", "Bow06.bmd", 2, 4, 30, 100, 0, 0, 0, 4);
-  addDef(56, 4, 6, "Chaos Nature Bow", "Bow07.bmd", 2, 4, 40, 150, 0, 0, 0, 4);
-  addDef(57, 4, 8, "Crossbow", "CrossBow01.bmd", 2, 2, 20, 90, 0, 0, 0, 4);
-  addDef(58, 4, 9, "Golden Crossbow", "CrossBow02.bmd", 2, 2, 30, 90, 0, 0, 0,
-         4);
-  addDef(59, 4, 10, "Arquebus", "CrossBow03.bmd", 2, 2, 30, 90, 0, 0, 0, 4);
-  addDef(60, 4, 11, "Light Crossbow", "CrossBow04.bmd", 2, 3, 30, 90, 0, 0, 0,
-         4);
-  addDef(61, 4, 12, "Serpent Crossbow", "CrossBow05.bmd", 2, 3, 30, 100, 0, 0,
-         0, 4);
-  addDef(62, 4, 13, "Bluewing Crossbow", "CrossBow06.bmd", 2, 3, 40, 110, 0, 0,
-         0, 4);
-  addDef(63, 4, 14, "Aquagold Crossbow", "CrossBow07.bmd", 2, 3, 50, 130, 0, 0,
-         0, 4);
-
-  // Category 5: Staffs
-  addDef(70, 5, 0, "Skull Staff", "Staff01.bmd", 1, 3, 40, 0, 0, 0, 0, 1);
-  addDef(71, 5, 1, "Angelic Staff", "Staff02.bmd", 2, 3, 50, 0, 0, 0, 0, 1);
-  addDef(72, 5, 2, "Serpent Staff", "Staff03.bmd", 2, 3, 50, 0, 0, 0, 0, 1);
-  addDef(73, 5, 3, "Thunder Staff", "Staff04.bmd", 2, 4, 40, 10, 0, 0, 0, 1);
-  addDef(74, 5, 4, "Gorgon Staff", "Staff05.bmd", 2, 4, 50, 0, 0, 0, 0, 1);
-  addDef(75, 5, 5, "Legendary Staff", "Staff06.bmd", 1, 4, 50, 0, 0, 0, 0, 1);
-  addDef(76, 5, 6, "Staff of Resurrection", "Staff07.bmd", 1, 4, 60, 10, 0, 0,
-         0, 1);
-  addDef(77, 5, 7, "Chaos Lightning Staff", "Staff08.bmd", 2, 4, 60, 10, 0, 0,
-         0, 1);
-
-  // Category 6: Shields
-  addDef(100, 6, 0, "Small Shield", "Shield01.bmd", 2, 2, 70, 0, 0, 0, 0, 15);
-  addDef(101, 6, 1, "Horn Shield", "Shield02.bmd", 2, 2, 100, 0, 0, 0, 0, 2);
-  addDef(102, 6, 2, "Kite Shield", "Shield03.bmd", 2, 2, 110, 0, 0, 0, 0, 2);
-  addDef(103, 6, 3, "Elven Shield", "Shield04.bmd", 2, 2, 30, 100, 0, 0, 0, 4);
-  addDef(104, 6, 4, "Buckler", "Shield05.bmd", 2, 2, 80, 0, 0, 0, 0, 15);
-  addDef(105, 6, 5, "Dragon Slayer Shield", "Shield06.bmd", 2, 2, 100, 40, 0, 0,
-         0, 2);
-  addDef(106, 6, 6, "Skull Shield", "Shield07.bmd", 2, 2, 110, 0, 0, 0, 0, 15);
-  addDef(107, 6, 7, "Spiked Shield", "Shield08.bmd", 2, 2, 130, 0, 0, 0, 0, 2);
-  addDef(108, 6, 8, "Tower Shield", "Shield09.bmd", 2, 2, 130, 0, 0, 0, 0, 11);
-  addDef(109, 6, 9, "Plate Shield", "Shield10.bmd", 2, 2, 120, 0, 0, 0, 0, 2);
-  addDef(110, 6, 10, "Big Round Shield", "Shield11.bmd", 2, 2, 120, 0, 0, 0, 0,
-         2);
-  addDef(111, 6, 11, "Serpent Shield", "Shield12.bmd", 2, 2, 130, 0, 0, 0, 0,
-         2);
-  addDef(112, 6, 12, "Bronze Shield", "Shield13.bmd", 2, 2, 140, 0, 0, 0, 0, 2);
-  addDef(113, 6, 13, "Dragon Shield", "Shield14.bmd", 2, 2, 120, 40, 0, 0, 0,
-         2);
-  addDef(114, 6, 14, "Legendary Shield", "Shield15.bmd", 2, 3, 90, 25, 0, 0, 0,
-         5);
-
-  // Category 7: Helmets
-  addDef(200, 7, 0, "Bronze Helm", "HelmMale01.bmd", 2, 2, 60, 0, 0, 0, 0, 2);
-  addDef(201, 7, 1, "Dragon Helm", "HelmMale02.bmd", 2, 2, 120, 30, 0, 0, 0, 2);
-  addDef(202, 7, 2, "Pad Helm", "HelmClass01.bmd", 2, 2, 20, 0, 0, 0, 0, 1);
-  addDef(203, 7, 3, "Legendary Helm", "HelmClass02.bmd", 2, 2, 30, 0, 0, 0, 0,
-         1);
-  addDef(204, 7, 4, "Bone Helm", "HelmClass03.bmd", 2, 2, 30, 0, 0, 0, 0, 1);
-  addDef(205, 7, 5, "Leather Helm", "HelmMale06.bmd", 2, 2, 80, 0, 0, 0, 0, 2);
-  addDef(206, 7, 6, "Scale Helm", "HelmMale07.bmd", 2, 2, 110, 0, 0, 0, 0, 2);
-  addDef(207, 7, 7, "Sphinx Mask", "HelmClass04.bmd", 2, 2, 30, 0, 0, 0, 0, 1);
-  addDef(208, 7, 8, "Brass Helm", "HelmMale09.bmd", 2, 2, 100, 30, 0, 0, 0, 2);
-  addDef(209, 7, 9, "Plate Helm", "HelmMale10.bmd", 2, 2, 130, 0, 0, 0, 0, 2);
-  addDef(210, 7, 10, "Vine Helm", "HelmClass05.bmd", 2, 2, 30, 60, 0, 0, 0, 4);
-  addDef(211, 7, 11, "Silk Helm", "HelmClass06.bmd", 2, 2, 30, 70, 0, 0, 0, 4);
-  addDef(212, 7, 12, "Wind Helm", "HelmClass07.bmd", 2, 2, 30, 80, 0, 0, 0, 4);
-  addDef(213, 7, 13, "Spirit Helm", "HelmClass08.bmd", 2, 2, 40, 80, 0, 0, 0,
-         4);
-  addDef(214, 7, 14, "Guardian Helm", "HelmClass09.bmd", 2, 2, 40, 80, 0, 0, 0,
-         4);
-
-  // Category 8: Armors
-  addDef(300, 8, 0, "Bronze Armor", "ArmorMale01.bmd", 2, 3, 80, 20, 0, 0, 0,
-         2);
-  addDef(301, 8, 1, "Dragon Armor", "ArmorMale02.bmd", 2, 3, 120, 30, 0, 0, 0,
-         2);
-  addDef(302, 8, 2, "Pad Armor", "ArmorClass01.bmd", 2, 2, 30, 0, 0, 0, 0, 1);
-  addDef(303, 8, 3, "Legendary Armor", "ArmorClass02.bmd", 2, 2, 40, 0, 0, 0, 0,
-         1);
-  addDef(304, 8, 4, "Bone Armor", "ArmorClass03.bmd", 2, 2, 40, 0, 0, 0, 0, 1);
-  addDef(305, 8, 5, "Leather Armor", "ArmorMale06.bmd", 2, 3, 80, 0, 0, 0, 0,
-         2);
-  addDef(306, 8, 6, "Scale Armor", "ArmorMale07.bmd", 2, 2, 110, 0, 0, 0, 0, 2);
-  addDef(307, 8, 7, "Sphinx Armor", "ArmorClass04.bmd", 2, 3, 40, 0, 0, 0, 0,
-         1);
-  addDef(308, 8, 8, "Brass Armor", "ArmorMale09.bmd", 2, 2, 100, 30, 0, 0, 0,
-         2);
-  addDef(309, 8, 9, "Plate Armor", "ArmorMale10.bmd", 2, 2, 130, 0, 0, 0, 0, 2);
-  addDef(310, 8, 10, "Vine Armor", "ArmorClass05.bmd", 2, 2, 30, 60, 0, 0, 0,
-         4);
-  addDef(311, 8, 11, "Silk Armor", "ArmorClass06.bmd", 2, 2, 30, 70, 0, 0, 0,
-         4);
-  addDef(312, 8, 12, "Wind Armor", "ArmorClass07.bmd", 2, 2, 30, 80, 0, 0, 0,
-         4);
-  addDef(313, 8, 13, "Spirit Armor", "ArmorClass08.bmd", 2, 2, 40, 80, 0, 0, 0,
-         4);
-  addDef(314, 8, 14, "Guardian Armor", "ArmorClass09.bmd", 2, 2, 40, 80, 0, 0,
-         0, 4);
-
-  // Category 9: Pants
-  addDef(400, 9, 0, "Bronze Pants", "PantMale01.bmd", 2, 2, 80, 20, 0, 0, 0, 2);
-  addDef(401, 9, 1, "Dragon Pants", "PantMale02.bmd", 2, 2, 120, 30, 0, 0, 0,
-         2);
-  addDef(402, 9, 2, "Pad Pants", "PantClass01.bmd", 2, 2, 30, 0, 0, 0, 0, 1);
-  addDef(403, 9, 3, "Legendary Pants", "PantClass02.bmd", 2, 2, 40, 0, 0, 0, 0,
-         1);
-  addDef(404, 9, 4, "Bone Pants", "PantClass03.bmd", 2, 2, 40, 0, 0, 0, 0, 1);
-  addDef(405, 9, 5, "Leather Pants", "PantMale06.bmd", 2, 2, 80, 0, 0, 0, 0, 2);
-  addDef(406, 9, 6, "Scale Pants", "PantMale07.bmd", 2, 2, 110, 0, 0, 0, 0, 2);
-  addDef(407, 9, 7, "Sphinx Pants", "PantClass04.bmd", 2, 2, 40, 0, 0, 0, 0, 1);
-  addDef(408, 9, 8, "Brass Pants", "PantMale09.bmd", 2, 2, 100, 30, 0, 0, 0, 2);
-  addDef(409, 9, 9, "Plate Pants", "PantMale10.bmd", 2, 2, 130, 0, 0, 0, 0, 2);
-  addDef(410, 9, 10, "Vine Pants", "PantClass05.bmd", 2, 2, 30, 60, 0, 0, 0, 4);
-  addDef(411, 9, 11, "Silk Pants", "PantClass06.bmd", 2, 2, 30, 70, 0, 0, 0, 4);
-  addDef(412, 9, 12, "Wind Pants", "PantClass07.bmd", 2, 2, 30, 80, 0, 0, 0, 4);
-  addDef(413, 9, 13, "Spirit Pants", "PantClass08.bmd", 2, 2, 40, 80, 0, 0, 0,
-         4);
-  addDef(414, 9, 14, "Guardian Pants", "PantClass09.bmd", 2, 2, 40, 80, 0, 0, 0,
-         4);
-
-  // Category 10: Gloves
-  addDef(500, 10, 0, "Bronze Gloves", "GloveMale01.bmd", 2, 2, 80, 20, 0, 0, 0,
-         2);
-  addDef(501, 10, 1, "Dragon Gloves", "GloveMale02.bmd", 2, 2, 120, 30, 0, 0, 0,
-         2);
-  addDef(502, 10, 2, "Pad Gloves", "GloveClass01.bmd", 2, 2, 20, 0, 0, 0, 0, 1);
-  addDef(503, 10, 3, "Legendary Gloves", "GloveClass02.bmd", 2, 2, 20, 0, 0, 0,
-         0, 1);
-  addDef(504, 10, 4, "Bone Gloves", "GloveClass03.bmd", 2, 2, 20, 0, 0, 0, 0,
-         1);
-  addDef(505, 10, 5, "Leather Gloves", "GloveMale06.bmd", 2, 2, 80, 0, 0, 0, 0,
-         2);
-  addDef(506, 10, 6, "Scale Gloves", "GloveMale07.bmd", 2, 2, 110, 0, 0, 0, 0,
-         2);
-  addDef(507, 10, 7, "Sphinx Gloves", "GloveClass04.bmd", 2, 2, 20, 0, 0, 0, 0,
-         1);
-  addDef(508, 10, 8, "Brass Gloves", "GloveMale09.bmd", 2, 2, 100, 30, 0, 0, 0,
-         2);
-  addDef(509, 10, 9, "Plate Gloves", "GloveMale10.bmd", 2, 2, 130, 0, 0, 0, 0,
-         2);
-  addDef(510, 10, 10, "Vine Gloves", "GloveClass05.bmd", 2, 2, 30, 60, 0, 0, 0,
-         4);
-  addDef(511, 10, 11, "Silk Gloves", "GloveClass06.bmd", 2, 2, 30, 70, 0, 0, 0,
-         4);
-  addDef(512, 10, 12, "Wind Gloves", "GloveClass07.bmd", 2, 2, 30, 80, 0, 0, 0,
-         4);
-  addDef(513, 10, 13, "Spirit Gloves", "GloveClass08.bmd", 2, 2, 40, 80, 0, 0,
-         0, 4);
-  addDef(514, 10, 14, "Guardian Gloves", "GloveClass09.bmd", 2, 2, 40, 80, 0, 0,
-         0, 4);
-
-  // Category 11: Boots
-  addDef(600, 11, 0, "Bronze Boots", "BootMale01.bmd", 2, 2, 80, 20, 0, 0, 0,
-         2);
-  addDef(601, 11, 1, "Dragon Boots", "BootMale02.bmd", 2, 2, 120, 30, 0, 0, 0,
-         2);
-  addDef(602, 11, 2, "Pad Boots", "BootClass01.bmd", 2, 2, 20, 0, 0, 0, 0, 1);
-  addDef(603, 11, 3, "Legendary Boots", "BootClass02.bmd", 2, 2, 30, 0, 0, 0, 0,
-         1);
-  addDef(604, 11, 4, "Bone Boots", "BootClass03.bmd", 2, 2, 30, 0, 0, 0, 0, 1);
-  addDef(605, 11, 5, "Leather Boots", "BootMale06.bmd", 2, 2, 80, 0, 0, 0, 0,
-         2);
-  addDef(606, 11, 6, "Scale Boots", "BootMale07.bmd", 2, 2, 110, 0, 0, 0, 0, 2);
-  addDef(607, 11, 7, "Sphinx Boots", "BootClass04.bmd", 2, 2, 30, 0, 0, 0, 0,
-         1);
-  addDef(608, 11, 8, "Brass Boots", "BootMale09.bmd", 2, 2, 100, 30, 0, 0, 0,
-         2);
-  addDef(609, 11, 9, "Plate Boots", "BootMale10.bmd", 2, 2, 130, 0, 0, 0, 0, 2);
-  addDef(610, 11, 10, "Vine Boots", "BootClass05.bmd", 2, 2, 30, 60, 0, 0, 0,
-         4);
-  addDef(611, 11, 11, "Silk Boots", "BootClass06.bmd", 2, 2, 30, 70, 0, 0, 0,
-         4);
-  addDef(612, 11, 12, "Wind Boots", "BootClass07.bmd", 2, 2, 30, 80, 0, 0, 0,
-         4);
-  addDef(613, 11, 13, "Spirit Boots", "BootClass08.bmd", 2, 2, 40, 80, 0, 0, 0,
-         4);
-  addDef(614, 11, 14, "Guardian Boots", "BootClass09.bmd", 2, 2, 40, 80, 0, 0,
-         0, 4);
+  //                vit ene lvl cf  dmgMin dmgMax def atkSpd 2H
+  // Category 0: Swords (OpenMU 0.95d Weapons.cs)
+  addDef(0, 0, 0, "Kris", "Sword01.bmd", 1, 2, 10, 8, 0, 0, 1, 11, 6, 11, 0, 50,
+         false);
+  addDef(1, 0, 1, "Short Sword", "Sword02.bmd", 1, 3, 20, 0, 0, 0, 1, 7, 3, 7,
+         0, 20, false);
+  addDef(2, 0, 2, "Rapier", "Sword03.bmd", 1, 3, 50, 40, 0, 0, 9, 6, 9, 15, 0,
+         40, false);
+  addDef(3, 0, 3, "Katana", "Sword04.bmd", 1, 3, 80, 40, 0, 0, 16, 2, 16, 26, 0,
+         35, false);
+  addDef(4, 0, 4, "Sword of Assassin", "Sword05.bmd", 1, 3, 60, 40, 0, 0, 12, 2,
+         12, 18, 0, 30, false);
+  addDef(5, 0, 5, "Blade", "Sword06.bmd", 1, 3, 80, 50, 0, 0, 36, 7, 36, 47, 0,
+         30, false);
+  addDef(6, 0, 6, "Gladius", "Sword07.bmd", 1, 3, 110, 0, 0, 0, 20, 6, 20, 30,
+         0, 20, false);
+  addDef(7, 0, 7, "Falchion", "Sword08.bmd", 1, 3, 120, 0, 0, 0, 24, 2, 24, 34,
+         0, 25, false);
+  addDef(8, 0, 8, "Serpent Sword", "Sword09.bmd", 1, 3, 130, 0, 0, 0, 30, 2, 30,
+         40, 0, 20, false);
+  addDef(9, 0, 9, "Sword of Salamander", "Sword10.bmd", 2, 3, 103, 0, 0, 0, 32,
+         2, 32, 46, 0, 30, true);
+  addDef(10, 0, 10, "Light Saber", "Sword11.bmd", 2, 4, 80, 60, 0, 0, 40, 6, 47,
+         61, 0, 25, true);
+  addDef(11, 0, 11, "Legendary Sword", "Sword12.bmd", 2, 3, 120, 0, 0, 0, 44, 2,
+         56, 72, 0, 20, true);
+  addDef(12, 0, 12, "Heliacal Sword", "Sword13.bmd", 2, 3, 140, 0, 0, 0, 56, 2,
+         73, 98, 0, 25, true);
+  addDef(13, 0, 13, "Double Blade", "Sword14.bmd", 1, 3, 70, 70, 0, 0, 48, 6,
+         48, 56, 0, 30, false);
+  addDef(14, 0, 14, "Lightning Sword", "Sword15.bmd", 1, 3, 90, 50, 0, 0, 59, 6,
+         59, 67, 0, 30, false);
+  addDef(15, 0, 15, "Giant Sword", "Sword16.bmd", 2, 3, 140, 0, 0, 0, 52, 2, 60,
+         85, 0, 20, true);
+  addDef(16, 0, 16, "Sword of Destruction", "Sword17.bmd", 1, 4, 160, 60, 0, 0,
+         82, 10, 82, 90, 0, 35, false);
+  addDef(17, 0, 17, "Dark Breaker", "Sword18.bmd", 2, 4, 180, 50, 0, 0, 104, 2,
+         128, 153, 0, 40, true);
+  addDef(18, 0, 18, "Thunder Blade", "Sword19.bmd", 2, 3, 180, 50, 0, 0, 105, 8,
+         140, 168, 0, 40, true);
+  // Category 1: Axes (OpenMU 0.95d Weapons.cs)
+  addDef(32, 1, 0, "Small Axe", "Axe01.bmd", 1, 3, 20, 0, 0, 0, 1, 7, 1, 6, 0,
+         20, false);
+  addDef(33, 1, 1, "Hand Axe", "Axe02.bmd", 1, 3, 70, 0, 0, 0, 4, 7, 4, 9, 0,
+         30, false);
+  addDef(34, 1, 2, "Double Axe", "Axe03.bmd", 1, 3, 90, 0, 0, 0, 14, 2, 14, 24,
+         0, 20, false);
+  addDef(35, 1, 3, "Tomahawk", "Axe04.bmd", 1, 3, 100, 0, 0, 0, 18, 2, 18, 28,
+         0, 30, false);
+  addDef(36, 1, 4, "Elven Axe", "Axe05.bmd", 1, 3, 50, 70, 0, 0, 26, 5, 26, 38,
+         0, 40, false);
+  addDef(37, 1, 5, "Battle Axe", "Axe06.bmd", 2, 3, 120, 0, 0, 0, 30, 6, 36, 44,
+         0, 20, true);
+  addDef(38, 1, 6, "Nikkea Axe", "Axe07.bmd", 2, 3, 130, 0, 0, 0, 34, 6, 38, 50,
+         0, 30, true);
+  addDef(39, 1, 7, "Larkan Axe", "Axe08.bmd", 2, 3, 140, 0, 0, 0, 46, 2, 54, 67,
+         0, 25, true);
+  addDef(40, 1, 8, "Crescent Axe", "Axe09.bmd", 2, 3, 100, 40, 0, 0, 54, 3, 69,
+         89, 0, 30, true);
+  // Category 2: Maces (OpenMU 0.95d Weapons.cs)
+  addDef(64, 2, 0, "Mace", "Mace01.bmd", 1, 3, 100, 0, 0, 0, 7, 2, 7, 13, 0, 15,
+         false);
+  addDef(65, 2, 1, "Morning Star", "Mace02.bmd", 1, 3, 100, 0, 0, 0, 13, 2, 13,
+         22, 0, 15, false);
+  addDef(66, 2, 2, "Flail", "Mace03.bmd", 1, 3, 80, 50, 0, 0, 22, 2, 22, 32, 0,
+         15, false);
+  addDef(67, 2, 3, "Great Hammer", "Mace04.bmd", 2, 3, 150, 0, 0, 0, 38, 2, 45,
+         56, 0, 15, true);
+  addDef(68, 2, 4, "Crystal Morning Star", "Mace05.bmd", 2, 3, 130, 0, 0, 0, 66,
+         7, 78, 107, 0, 30, true);
+  addDef(69, 2, 5, "Crystal Sword", "Mace06.bmd", 2, 4, 130, 70, 0, 0, 72, 7,
+         89, 120, 0, 40, true);
+  addDef(70, 2, 6, "Chaos Dragon Axe", "Mace07.bmd", 2, 4, 140, 50, 0, 0, 75, 2,
+         102, 130, 0, 35, true);
+  // Category 3: Spears (OpenMU 0.95d Weapons.cs)
+  addDef(96, 3, 0, "Light Spear", "Spear01.bmd", 2, 4, 60, 70, 0, 0, 42, 6, 50,
+         63, 0, 25, true);
+  addDef(97, 3, 1, "Spear", "Spear02.bmd", 2, 4, 70, 50, 0, 0, 23, 6, 30, 41, 0,
+         30, true);
+  addDef(98, 3, 2, "Dragon Lance", "Spear03.bmd", 2, 4, 70, 50, 0, 0, 15, 6, 21,
+         33, 0, 30, true);
+  addDef(99, 3, 3, "Giant Trident", "Spear04.bmd", 2, 4, 90, 30, 0, 0, 29, 6,
+         35, 43, 0, 25, true);
+  addDef(100, 3, 4, "Serpent Spear", "Spear05.bmd", 2, 4, 90, 30, 0, 0, 46, 6,
+         58, 80, 0, 20, true);
+  addDef(101, 3, 5, "Double Poleaxe", "Spear06.bmd", 2, 4, 70, 50, 0, 0, 13, 6,
+         19, 31, 0, 30, true);
+  addDef(102, 3, 6, "Halberd", "Spear07.bmd", 2, 4, 70, 50, 0, 0, 19, 6, 25, 35,
+         0, 30, true);
+  addDef(103, 3, 7, "Berdysh", "Spear08.bmd", 2, 4, 80, 50, 0, 0, 37, 6, 42, 54,
+         0, 30, true);
+  addDef(104, 3, 8, "Great Scythe", "Spear09.bmd", 2, 4, 90, 50, 0, 0, 54, 6,
+         71, 92, 0, 25, true);
+  addDef(105, 3, 9, "Bill of Balrog", "Spear10.bmd", 2, 4, 80, 50, 0, 0, 63, 6,
+         76, 102, 0, 25, true);
+  // Category 4: Bows & Crossbows (OpenMU 0.95d Weapons.cs)
+  addDef(128, 4, 0, "Short Bow", "Bow01.bmd", 2, 3, 20, 80, 0, 0, 2, 4, 3, 5, 0,
+         30, true);
+  addDef(129, 4, 1, "Bow", "Bow02.bmd", 2, 3, 30, 90, 0, 0, 8, 4, 9, 13, 0, 30,
+         true);
+  addDef(130, 4, 2, "Elven Bow", "Bow03.bmd", 2, 3, 30, 90, 0, 0, 16, 4, 17, 24,
+         0, 30, true);
+  addDef(131, 4, 3, "Battle Bow", "Bow04.bmd", 2, 3, 30, 90, 0, 0, 26, 4, 28,
+         37, 0, 30, true);
+  addDef(132, 4, 4, "Tiger Bow", "Bow05.bmd", 2, 4, 30, 100, 0, 0, 40, 4, 42,
+         52, 0, 30, true);
+  addDef(133, 4, 5, "Silver Bow", "Bow06.bmd", 2, 4, 30, 100, 0, 0, 56, 4, 59,
+         71, 0, 40, true);
+  addDef(134, 4, 6, "Chaos Nature Bow", "Bow07.bmd", 2, 4, 40, 150, 0, 0, 75, 4,
+         88, 106, 0, 35, true);
+  addDef(135, 4, 7, "Bolt", "Bolt01.bmd", 1, 1, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+         false);
+  addDef(136, 4, 8, "Crossbow", "CrossBow01.bmd", 2, 2, 20, 90, 0, 0, 4, 4, 5,
+         8, 0, 40, false);
+  addDef(137, 4, 9, "Golden Crossbow", "CrossBow02.bmd", 2, 2, 30, 90, 0, 0, 12,
+         4, 13, 19, 0, 40, false);
+  addDef(138, 4, 10, "Arquebus", "CrossBow03.bmd", 2, 2, 30, 90, 0, 0, 20, 4,
+         22, 30, 0, 40, false);
+  addDef(139, 4, 11, "Light Crossbow", "CrossBow04.bmd", 2, 3, 30, 90, 0, 0, 32,
+         4, 35, 44, 0, 40, false);
+  addDef(140, 4, 12, "Serpent Crossbow", "CrossBow05.bmd", 2, 3, 30, 100, 0, 0,
+         48, 4, 50, 61, 0, 40, false);
+  addDef(141, 4, 13, "Bluewing Crossbow", "CrossBow06.bmd", 2, 3, 40, 110, 0, 0,
+         68, 4, 68, 82, 0, 40, false);
+  addDef(142, 4, 14, "Aquagold Crossbow", "CrossBow07.bmd", 2, 3, 50, 130, 0, 0,
+         72, 4, 78, 92, 0, 30, false);
+  addDef(143, 4, 15, "Arrows", "Arrow01.bmd", 1, 1, 0, 0, 0, 0, 0, 4, 0, 0, 0,
+         0, false);
+  addDef(144, 4, 16, "Saint Crossbow", "CrossBow08.bmd", 2, 3, 50, 130, 0, 0,
+         83, 4, 90, 108, 0, 35, false);
+  // Category 5: Staves (OpenMU 0.95d Weapons.cs)
+  addDef(160, 5, 0, "Skull Staff", "Staff01.bmd", 1, 3, 40, 0, 0, 0, 6, 1, 3, 4,
+         0, 20, false);
+  addDef(161, 5, 1, "Angelic Staff", "Staff02.bmd", 2, 3, 50, 0, 0, 0, 18, 1,
+         10, 12, 0, 25, false);
+  addDef(162, 5, 2, "Serpent Staff", "Staff03.bmd", 2, 3, 50, 0, 0, 0, 30, 1,
+         17, 18, 0, 25, false);
+  addDef(163, 5, 3, "Thunder Staff", "Staff04.bmd", 2, 4, 40, 10, 0, 0, 42, 1,
+         23, 25, 0, 25, false);
+  addDef(164, 5, 4, "Gorgon Staff", "Staff05.bmd", 2, 4, 60, 0, 0, 0, 52, 1, 29,
+         32, 0, 25, false);
+  addDef(165, 5, 5, "Legendary Staff", "Staff06.bmd", 1, 4, 50, 0, 0, 0, 59, 1,
+         29, 31, 0, 25, false);
+  addDef(166, 5, 6, "Staff of Resurrection", "Staff07.bmd", 1, 4, 60, 10, 0, 0,
+         70, 1, 35, 39, 0, 25, false);
+  addDef(167, 5, 7, "Chaos Lightning Staff", "Staff08.bmd", 2, 4, 60, 10, 0, 0,
+         75, 1, 47, 48, 0, 30, false);
+  addDef(168, 5, 8, "Staff of Destruction", "Staff09.bmd", 2, 4, 60, 10, 0, 0,
+         90, 9, 55, 60, 0, 35, false);
+  // Category 6: Shields (OpenMU v0.75)
+  addDef(192, 6, 0, "Small Shield", "Shield01.bmd", 2, 2, 70, 0, 0, 0, 3, 15, 0,
+         0, 3, 0, false);
+  addDef(193, 6, 1, "Horn Shield", "Shield02.bmd", 2, 2, 100, 0, 0, 0, 9, 2, 0,
+         0, 9, 0, false);
+  addDef(194, 6, 2, "Kite Shield", "Shield03.bmd", 2, 2, 110, 0, 0, 0, 12, 2, 0,
+         0, 12, 0, false);
+  addDef(195, 6, 3, "Elven Shield", "Shield04.bmd", 2, 2, 30, 100, 0, 0, 21, 4,
+         0, 0, 21, 0, false);
+  addDef(196, 6, 4, "Buckler", "Shield05.bmd", 2, 2, 80, 0, 0, 0, 6, 15, 0, 0,
+         6, 0, false);
+  addDef(197, 6, 5, "Dragon Slayer Shield", "Shield06.bmd", 2, 2, 100, 40, 0, 0,
+         35, 2, 0, 0, 36, 0, false);
+  addDef(198, 6, 6, "Skull Shield", "Shield07.bmd", 2, 2, 110, 0, 0, 0, 15, 15,
+         0, 0, 15, 0, false);
+  addDef(199, 6, 7, "Spiked Shield", "Shield08.bmd", 2, 2, 130, 0, 0, 0, 30, 2,
+         0, 0, 30, 0, false);
+  addDef(200, 6, 8, "Tower Shield", "Shield09.bmd", 2, 2, 130, 0, 0, 0, 40, 11,
+         0, 0, 40, 0, false);
+  addDef(201, 6, 9, "Plate Shield", "Shield10.bmd", 2, 2, 120, 0, 0, 0, 25, 2,
+         0, 0, 25, 0, false);
+  addDef(202, 6, 10, "Big Round Shield", "Shield11.bmd", 2, 2, 120, 0, 0, 0, 18,
+         2, 0, 0, 18, 0, false);
+  addDef(203, 6, 11, "Serpent Shield", "Shield12.bmd", 2, 2, 130, 0, 0, 0, 45,
+         11, 0, 0, 45, 0, false);
+  addDef(204, 6, 12, "Bronze Shield", "Shield13.bmd", 2, 2, 140, 0, 0, 0, 54, 2,
+         0, 0, 54, 0, false);
+  addDef(205, 6, 13, "Dragon Shield", "Shield14.bmd", 2, 2, 120, 40, 0, 0, 60,
+         2, 0, 0, 60, 0, false);
+  addDef(206, 6, 14, "Legendary Shield", "Shield15.bmd", 2, 3, 90, 25, 0, 0, 48,
+         5, 0, 0, 48, 0, false);
+  // Category 7-11: Armors (OpenMU v0.75 - Pad, Leather, Bronze, etc.)
+  // Helmets (7)
+  addDef(224, 7, 0, "Bronze Helm", "HelmMale01.bmd", 2, 2, 25, 20, 0, 0, 1, 2,
+         0, 0, 34, 0, false);
+  addDef(225, 7, 1, "Dragon Helm", "HelmMale02.bmd", 2, 2, 120, 30, 0, 0, 57, 2,
+         0, 0, 68, 0, false);
+  addDef(226, 7, 2, "Pad Helm", "HelmClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
+         0, 28, 0, false);
+  addDef(227, 7, 3, "Legendary Helm", "HelmClass02.bmd", 2, 2, 30, 0, 0, 0, 50,
+         1, 0, 0, 42, 0, false);
+  addDef(228, 7, 4, "Bone Helm", "HelmClass03.bmd", 2, 2, 30, 0, 0, 0, 18, 1, 0,
+         0, 30, 0, false);
+  addDef(229, 7, 5, "Leather Helm", "HelmMale06.bmd", 2, 2, 20, 0, 0, 0, 1, 2,
+         0, 0, 30, 0, false);
+  addDef(230, 7, 6, "Scale Helm", "HelmMale07.bmd", 2, 2, 110, 0, 0, 0, 26, 2,
+         0, 0, 40, 0, false);
+  addDef(231, 7, 7, "Sphinx Mask", "HelmClass04.bmd", 2, 2, 30, 0, 0, 0, 32, 1,
+         0, 0, 36, 0, false);
+  addDef(232, 7, 8, "Brass Helm", "HelmMale09.bmd", 2, 2, 100, 30, 0, 0, 36, 2,
+         0, 0, 44, 0, false);
+  addDef(233, 7, 9, "Plate Helm", "HelmMale10.bmd", 2, 2, 130, 0, 0, 0, 46, 2,
+         0, 0, 50, 0, false);
+  addDef(234, 7, 10, "Vine Helm", "HelmClass05.bmd", 2, 2, 30, 60, 0, 0, 6, 4,
+         0, 0, 22, 0, false);
+  addDef(235, 7, 11, "Silk Helm", "HelmClass06.bmd", 2, 2, 0, 0, 0, 20, 1, 4, 0,
+         0, 26, 0, false);
+  addDef(236, 7, 12, "Wind Helm", "HelmClass07.bmd", 2, 2, 30, 80, 0, 0, 28, 4,
+         0, 0, 32, 0, false);
+  addDef(237, 7, 13, "Spirit Helm", "HelmClass08.bmd", 2, 2, 40, 80, 0, 0, 40,
+         4, 0, 0, 38, 0, false);
+  addDef(238, 7, 14, "Guardian Helm", "HelmClass09.bmd", 2, 2, 40, 80, 0, 0, 53,
+         4, 0, 0, 45, 0, false);
+  // Armors (8)
+  addDef(256, 8, 0, "Bronze Armor", "ArmorMale01.bmd", 2, 2, 25, 20, 0, 0, 1, 2,
+         0, 0, 34, 0, false);
+  addDef(257, 8, 1, "Dragon Armor", "ArmorMale02.bmd", 2, 3, 120, 30, 0, 0, 59,
+         2, 0, 0, 68, 0, false);
+  addDef(258, 8, 2, "Pad Armor", "ArmorClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
+         0, 28, 0, false);
+  addDef(259, 8, 3, "Legendary Armor", "ArmorClass02.bmd", 2, 2, 40, 0, 0, 0,
+         56, 1, 0, 0, 42, 0, false);
+  addDef(260, 8, 4, "Bone Armor", "ArmorClass03.bmd", 2, 2, 40, 0, 0, 0, 22, 1,
+         0, 0, 30, 0, false);
+  addDef(261, 8, 5, "Leather Armor", "ArmorMale06.bmd", 2, 3, 20, 0, 0, 0, 1, 2,
+         0, 0, 30, 0, false);
+  addDef(262, 8, 6, "Scale Armor", "ArmorMale07.bmd", 2, 2, 110, 0, 0, 0, 28, 2,
+         0, 0, 40, 0, false);
+  addDef(263, 8, 7, "Sphinx Armor", "ArmorClass04.bmd", 2, 3, 40, 0, 0, 0, 38,
+         1, 0, 0, 36, 0, false);
+  addDef(264, 8, 8, "Brass Armor", "ArmorMale09.bmd", 2, 2, 100, 30, 0, 0, 38,
+         2, 0, 0, 44, 0, false);
+  addDef(265, 8, 9, "Plate Armor", "ArmorMale10.bmd", 2, 2, 130, 0, 0, 0, 48, 2,
+         0, 0, 50, 0, false);
+  addDef(266, 8, 10, "Vine Armor", "ArmorClass05.bmd", 2, 2, 30, 60, 0, 0, 10,
+         4, 0, 0, 22, 0, false);
+  addDef(267, 8, 11, "Silk Armor", "ArmorClass06.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
+         0, 0, 26, 0, false);
+  addDef(268, 8, 12, "Wind Armor", "ArmorClass07.bmd", 2, 2, 30, 80, 0, 0, 32,
+         4, 0, 0, 32, 0, false);
+  addDef(269, 8, 13, "Spirit Armor", "ArmorClass08.bmd", 2, 2, 40, 80, 0, 0, 44,
+         4, 0, 0, 38, 0, false);
+  addDef(270, 8, 14, "Guardian Armor", "ArmorClass09.bmd", 2, 2, 40, 80, 0, 0,
+         57, 4, 0, 0, 45, 0, false);
+  // Pants (9)
+  addDef(288, 9, 0, "Bronze Pants", "PantMale01.bmd", 2, 2, 25, 20, 0, 0, 1, 2,
+         0, 0, 34, 0, false);
+  addDef(289, 9, 1, "Dragon Pants", "PantMale02.bmd", 2, 2, 120, 30, 0, 0, 55,
+         2, 0, 0, 68, 0, false);
+  addDef(290, 9, 2, "Pad Pants", "PantClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
+         0, 28, 0, false);
+  addDef(291, 9, 3, "Legendary Pants", "PantClass02.bmd", 2, 2, 40, 0, 0, 0, 53,
+         1, 0, 0, 42, 0, false);
+  addDef(292, 9, 4, "Bone Pants", "PantClass03.bmd", 2, 2, 40, 0, 0, 0, 20, 1,
+         0, 0, 30, 0, false);
+  addDef(293, 9, 5, "Leather Pants", "PantMale06.bmd", 2, 2, 20, 0, 0, 0, 1, 2,
+         0, 0, 30, 0, false);
+  addDef(294, 9, 6, "Scale Pants", "PantMale07.bmd", 2, 2, 110, 0, 0, 0, 25, 2,
+         0, 0, 40, 0, false);
+  addDef(295, 9, 7, "Sphinx Pants", "PantClass04.bmd", 2, 2, 40, 0, 0, 0, 34, 1,
+         0, 0, 36, 0, false);
+  addDef(296, 9, 8, "Brass Pants", "PantMale09.bmd", 2, 2, 100, 30, 0, 0, 35, 2,
+         0, 0, 44, 0, false);
+  addDef(297, 9, 9, "Plate Pants", "PantMale10.bmd", 2, 2, 130, 0, 0, 0, 45, 2,
+         0, 0, 50, 0, false);
+  addDef(298, 9, 10, "Vine Pants", "PantClass05.bmd", 2, 2, 30, 60, 0, 0, 8, 4,
+         0, 0, 22, 0, false);
+  addDef(299, 9, 11, "Silk Pants", "PantClass06.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
+         0, 0, 26, 0, false);
+  addDef(300, 9, 12, "Wind Pants", "PantClass07.bmd", 2, 2, 30, 80, 0, 0, 30, 4,
+         0, 0, 32, 0, false);
+  addDef(301, 9, 13, "Spirit Pants", "PantClass08.bmd", 2, 2, 40, 80, 0, 0, 42,
+         4, 0, 0, 38, 0, false);
+  addDef(302, 9, 14, "Guardian Pants", "PantClass09.bmd", 2, 2, 40, 80, 0, 0,
+         54, 4, 0, 0, 45, 0, false);
+  // Gloves (10)
+  addDef(320, 10, 0, "Bronze Gloves", "GloveMale01.bmd", 2, 2, 25, 20, 0, 0, 1,
+         2, 0, 0, 34, 0, false);
+  addDef(321, 10, 1, "Dragon Gloves", "GloveMale02.bmd", 2, 2, 120, 30, 0, 0,
+         52, 2, 0, 0, 68, 0, false);
+  addDef(322, 10, 2, "Pad Gloves", "GloveClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1,
+         0, 0, 28, 0, false);
+  addDef(323, 10, 3, "Legendary Gloves", "GloveClass02.bmd", 2, 2, 20, 0, 0, 0,
+         44, 1, 0, 0, 42, 0, false);
+  addDef(324, 10, 4, "Bone Gloves", "GloveClass03.bmd", 2, 2, 20, 0, 0, 0, 14,
+         1, 0, 0, 30, 0, false);
+  addDef(325, 10, 5, "Leather Gloves", "GloveMale06.bmd", 2, 2, 20, 0, 0, 0, 1,
+         2, 0, 0, 30, 0, false);
+  addDef(326, 10, 6, "Scale Gloves", "GloveMale07.bmd", 2, 2, 110, 0, 0, 0, 22,
+         2, 0, 0, 40, 0, false);
+  addDef(327, 10, 7, "Sphinx Gloves", "GloveClass04.bmd", 2, 2, 20, 0, 0, 0, 28,
+         1, 0, 0, 36, 0, false);
+  addDef(328, 10, 8, "Brass Gloves", "GloveMale09.bmd", 2, 2, 100, 30, 0, 0, 32,
+         2, 0, 0, 44, 0, false);
+  addDef(329, 10, 9, "Plate Gloves", "GloveMale10.bmd", 2, 2, 130, 0, 0, 0, 42,
+         2, 0, 0, 50, 0, false);
+  addDef(330, 10, 10, "Vine Gloves", "GloveClass05.bmd", 2, 2, 30, 60, 0, 0, 4,
+         4, 0, 0, 22, 0, false);
+  addDef(331, 10, 11, "Silk Gloves", "GloveClass06.bmd", 2, 2, 0, 0, 0, 20, 1,
+         4, 0, 0, 26, 0, false);
+  addDef(332, 10, 12, "Wind Gloves", "GloveClass07.bmd", 2, 2, 30, 80, 0, 0, 26,
+         4, 0, 0, 32, 0, false);
+  addDef(333, 10, 13, "Spirit Gloves", "GloveClass08.bmd", 2, 2, 40, 80, 0, 0,
+         38, 4, 0, 0, 38, 0, false);
+  addDef(334, 10, 14, "Guardian Gloves", "GloveClass09.bmd", 2, 2, 40, 80, 0, 0,
+         50, 4, 0, 0, 45, 0, false);
+  // Boots (11)
+  addDef(352, 11, 0, "Bronze Boots", "BootMale01.bmd", 2, 2, 25, 20, 0, 0, 1, 2,
+         0, 0, 34, 0, false);
+  addDef(353, 11, 1, "Dragon Boots", "BootMale02.bmd", 2, 2, 120, 30, 0, 0, 54,
+         2, 0, 0, 68, 0, false);
+  addDef(354, 11, 2, "Pad Boots", "BootClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
+         0, 28, 0, false);
+  addDef(355, 11, 3, "Legendary Boots", "BootClass02.bmd", 2, 2, 30, 0, 0, 0,
+         46, 1, 0, 0, 42, 0, false);
+  addDef(356, 11, 4, "Bone Boots", "BootClass03.bmd", 2, 2, 30, 0, 0, 0, 16, 1,
+         0, 0, 30, 0, false);
+  addDef(357, 11, 5, "Leather Boots", "BootMale06.bmd", 2, 2, 20, 0, 0, 0, 1, 2,
+         0, 0, 30, 0, false);
+  addDef(358, 11, 6, "Scale Boots", "BootMale07.bmd", 2, 2, 110, 0, 0, 0, 22, 2,
+         0, 0, 40, 0, false);
+  addDef(359, 11, 7, "Sphinx Boots", "BootClass04.bmd", 2, 2, 30, 0, 0, 0, 30,
+         1, 0, 0, 36, 0, false);
+  addDef(360, 11, 8, "Brass Boots", "BootMale09.bmd", 2, 2, 100, 30, 0, 0, 32,
+         2, 0, 0, 44, 0, false);
+  addDef(361, 11, 9, "Plate Boots", "BootMale10.bmd", 2, 2, 130, 0, 0, 0, 42, 2,
+         0, 0, 50, 0, false);
+  addDef(362, 11, 10, "Vine Boots", "BootClass05.bmd", 2, 2, 30, 60, 0, 0, 5, 4,
+         0, 0, 22, 0, false);
+  addDef(363, 11, 11, "Silk Boots", "BootClass06.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
+         0, 0, 26, 0, false);
+  addDef(364, 11, 12, "Wind Boots", "BootClass07.bmd", 2, 2, 30, 80, 0, 0, 27,
+         4, 0, 0, 32, 0, false);
+  addDef(365, 11, 13, "Spirit Boots", "BootClass08.bmd", 2, 2, 40, 80, 0, 0, 40,
+         4, 0, 0, 38, 0, false);
+  addDef(366, 11, 14, "Guardian Boots", "BootClass09.bmd", 2, 2, 40, 80, 0, 0,
+         52, 4, 0, 0, 45, 0, false);
 
   // Category 12: Wings (IDs 700+)
   addDef(700, 12, 0, "Wings of Elf", "Wing01.bmd", 3, 2, 0, 0, 0, 0, 100, 4);
@@ -3351,7 +2870,9 @@ static void DrawPanelTextCentered(ImDrawList *dl, const UICoords &c, float px,
 
 static void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   float px = GetCharInfoPanelX(), py = PANEL_Y;
-  float pw = PANEL_W, ph = PANEL_H;
+  float pw = PANEL_W,
+        ph = PANEL_H +
+             25.0f * g_uiPanelScale; // Extend by 25 pixels to fit combat stats
 
   // Colors
   const ImU32 colBg = IM_COL32(15, 15, 25, 240);
@@ -3461,12 +2982,42 @@ static void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   // Combat Info
   int dMin = g_serverStr / 8 + g_hero.GetWeaponBonusMin();
   int dMax = g_serverStr / 4 + g_hero.GetWeaponBonusMax();
-  int def = g_serverDex / 3 + g_hero.GetDefenseBonus();
 
+  // Draw Damage
   snprintf(buf, sizeof(buf), "Damage: %d - %d", dMin, dMax);
   DrawPanelText(dl, c, px, py, 15, 300, buf, colValue);
-  snprintf(buf, sizeof(buf), "Defense: %d", def);
-  DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
+
+  // Draw Defense is handled below to include additional defense
+
+  // Draw Attack Speed
+  snprintf(buf, sizeof(buf), "Atk Speed: %d", g_serverAttackSpeed);
+  DrawPanelText(dl, c, px, py, 15, 330, buf, colValue);
+
+  // Draw Magic Speed (if class uses magic)
+  snprintf(buf, sizeof(buf), "Mag Speed: %d", g_serverMagicSpeed);
+  DrawPanelText(dl, c, px, py, 15, 345, buf, colValue);
+
+  // Draw Additional Combat Stats
+  int critRate = std::min((int)g_serverDex / 5, 20); // capped 20%
+  int excRate = std::min((int)g_serverDex / 10, 10); // capped 10%
+
+  snprintf(buf, sizeof(buf), "Crit: %d%%", critRate);
+  DrawPanelText(dl, c, px, py, 15, 360, buf,
+                IM_COL32(100, 200, 255, 255)); // Blue
+
+  snprintf(buf, sizeof(buf), "Exc: %d%%", excRate);
+  DrawPanelText(dl, c, px, py, 100, 360, buf,
+                IM_COL32(100, 255, 100, 255)); // Green
+
+  int baseDef = g_serverDefense - g_hero.GetDefenseBonus();
+  int addDef = g_hero.GetDefenseBonus();
+  if (addDef > 0) {
+    snprintf(buf, sizeof(buf), "Defense: %d + %d", baseDef, addDef);
+    DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
+  } else {
+    snprintf(buf, sizeof(buf), "Defense: %d", g_serverDefense);
+    DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
+  }
 
   // HP / MP Bars (Authoritative from g_hero)
   int curHP = g_hero.GetHP();
@@ -3474,50 +3025,44 @@ static void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   int curMP = g_hero.GetMana();
   int maxMP = g_hero.GetMaxMana();
 
-  float hF = maxHP > 0 ? (float)curHP / maxHP : 0.0f;
-  float mF = maxMP > 0 ? (float)curMP / maxMP : 0.0f;
-  hF = std::clamp(hF, 0.0f, 1.0f);
-  mF = std::clamp(mF, 0.0f, 1.0f);
+  float hpFrac = (maxHP > 0) ? (float)curHP / maxHP : 0.0f;
+  float mpFrac = (maxMP > 0) ? (float)curMP / maxMP : 0.0f;
 
-  DrawPanelText(dl, c, px, py, 15, 372, "HP", colLabel);
-  ImVec2 hpBarMin(c.ToScreenX(px + 45 * g_uiPanelScale),
-                  c.ToScreenY(py + 374 * g_uiPanelScale));
-  ImVec2 hpBarMax(c.ToScreenX(px + 165 * g_uiPanelScale),
-                  c.ToScreenY(py + 384 * g_uiPanelScale));
-  dl->AddRectFilled(hpBarMin, hpBarMax, IM_COL32(20, 20, 30, 255));
-  dl->AddRectFilled(ImVec2(hpBarMin.x + 1, hpBarMin.y + 1),
-                    ImVec2(hpBarMin.x + 1 + (hpBarMax.x - hpBarMin.x - 2) * hF,
-                           hpBarMax.y - 1),
-                    IM_COL32(200, 40, 40, 255));
-
-  // HP Text Label
+  float hbarX = 50, hbarY = 385, hbarW = 100, hbarH = 8;
+  DrawPanelText(dl, c, px, py, 15, hbarY - 2, "HP", colLabel);
+  dl->AddRectFilled(ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
+                           c.ToScreenY(py + hbarY * g_uiPanelScale)),
+                    ImVec2(c.ToScreenX(px + (hbarX + hbarW) * g_uiPanelScale),
+                           c.ToScreenY(py + (hbarY + hbarH) * g_uiPanelScale)),
+                    IM_COL32(50, 20, 20, 255));
+  if (hpFrac > 0.0f) {
+    dl->AddRectFilled(
+        ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
+               c.ToScreenY(py + hbarY * g_uiPanelScale)),
+        ImVec2(c.ToScreenX(px + (hbarX + hbarW * hpFrac) * g_uiPanelScale),
+               c.ToScreenY(py + (hbarY + hbarH) * g_uiPanelScale)),
+        IM_COL32(200, 30, 30, 255));
+  }
   snprintf(buf, sizeof(buf), "%d / %d", curHP, maxHP);
-  ImVec2 hpTxtSize = ImGui::CalcTextSize(buf);
-  dl->AddText(
-      ImVec2(hpBarMin.x + (hpBarMax.x - hpBarMin.x) * 0.5f - hpTxtSize.x * 0.5f,
-             hpBarMin.y + (hpBarMax.y - hpBarMin.y) * 0.5f -
-                 hpTxtSize.y * 0.5f),
-      colValue, buf);
+  DrawPanelTextRight(dl, c, px, py, hbarX, hbarY - 3, hbarW, buf, colValue);
 
-  DrawPanelText(dl, c, px, py, 15, 392, "MP", colLabel);
-  ImVec2 mpBarMin(c.ToScreenX(px + 45 * g_uiPanelScale),
-                  c.ToScreenY(py + 394 * g_uiPanelScale));
-  ImVec2 mpBarMax(c.ToScreenX(px + 165 * g_uiPanelScale),
-                  c.ToScreenY(py + 404 * g_uiPanelScale));
-  dl->AddRectFilled(mpBarMin, mpBarMax, IM_COL32(20, 20, 30, 255));
-  dl->AddRectFilled(ImVec2(mpBarMin.x + 1, mpBarMin.y + 1),
-                    ImVec2(mpBarMin.x + 1 + (mpBarMax.x - mpBarMin.x - 2) * mF,
-                           mpBarMax.y - 1),
-                    IM_COL32(40, 60, 200, 255));
-
-  // MP Text Label
+  float mbarY = 405;
+  DrawPanelText(dl, c, px, py, 15, mbarY - 2, "MP", colLabel);
+  dl->AddRectFilled(ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
+                           c.ToScreenY(py + mbarY * g_uiPanelScale)),
+                    ImVec2(c.ToScreenX(px + (hbarX + hbarW) * g_uiPanelScale),
+                           c.ToScreenY(py + (mbarY + hbarH) * g_uiPanelScale)),
+                    IM_COL32(20, 20, 80, 255));
+  if (mpFrac > 0.0f) {
+    dl->AddRectFilled(
+        ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
+               c.ToScreenY(py + mbarY * g_uiPanelScale)),
+        ImVec2(c.ToScreenX(px + (hbarX + hbarW * mpFrac) * g_uiPanelScale),
+               c.ToScreenY(py + (mbarY + hbarH) * g_uiPanelScale)),
+        IM_COL32(40, 40, 220, 255));
+  }
   snprintf(buf, sizeof(buf), "%d / %d", curMP, maxMP);
-  ImVec2 mpTxtSize = ImGui::CalcTextSize(buf);
-  dl->AddText(
-      ImVec2(mpBarMin.x + (mpBarMax.x - mpBarMin.x) * 0.5f - mpTxtSize.x * 0.5f,
-             mpBarMin.y + (mpBarMax.y - mpBarMin.y) * 0.5f -
-                 mpTxtSize.y * 0.5f),
-      colValue, buf);
+  DrawPanelTextRight(dl, c, px, py, hbarX, mbarY - 3, hbarW, buf, colValue);
 }
 
 static void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
@@ -3935,10 +3480,7 @@ static bool HandlePanelClick(float vx, float vy) {
         float btnX = 155, btnY = statRowYOffsets[i] + 2;
         if (relX >= btnX && relX < btnX + 18 && relY >= btnY &&
             relY < btnY + 18) {
-          PMSG_STAT_ALLOC_RECV pkt{};
-          pkt.h = MakeC1Header(sizeof(pkt), 0x37);
-          pkt.statType = static_cast<uint8_t>(i);
-          g_net.Send(&pkt, sizeof(pkt));
+          g_server.SendStatAlloc(static_cast<uint8_t>(i));
           return true;
         }
       }
@@ -4204,15 +3746,9 @@ static void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
           }
 
           // Send Equip packet
-          PMSG_EQUIP_RECV eq{};
-          eq.h = MakeC1Header(sizeof(eq), 0x27);
-          eq.characterId = 1;
-          eq.slot = static_cast<uint8_t>(ep.slot);
-          eq.category = cat;
-          eq.itemIndex = idx;
-          eq.itemLevel = g_dragItemLevel;
           if (g_syncDone) {
-            g_net.Send(&eq, sizeof(eq));
+            g_server.SendEquip(1, static_cast<uint8_t>(ep.slot), cat, idx,
+                               g_dragItemLevel);
           }
 
           // Handle source slot (Clear)
@@ -4275,13 +3811,8 @@ static void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
             }
 
             // Send Unequip packet
-            PMSG_EQUIP_RECV eq{};
-            eq.h = MakeC1Header(sizeof(eq), 0x27);
-            eq.characterId = 1;
-            eq.slot = static_cast<uint8_t>(g_dragFromEquipSlot);
-            eq.category = 0xFF;
             if (g_syncDone)
-              g_net.Send(&eq, sizeof(eq));
+              g_server.SendUnequip(1, static_cast<uint8_t>(g_dragFromEquipSlot));
 
             std::cout << "[UI] Unequipped item to Inv " << targetSlot
                       << std::endl;
@@ -4302,12 +3833,9 @@ static void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
           if (CheckBagFit(di, targetSlot)) {
             SetBagItem(targetSlot, di, dq, dl);
             // Send move packet to server
-            PMSG_INVENTORY_MOVE_RECV mv{};
-            mv.h = MakeC1Header(sizeof(mv), 0x39);
-            mv.fromSlot = static_cast<uint8_t>(g_dragFromSlot);
-            mv.toSlot = static_cast<uint8_t>(targetSlot);
             if (g_syncDone)
-              g_net.Send(&mv, sizeof(mv));
+              g_server.SendInventoryMove(static_cast<uint8_t>(g_dragFromSlot),
+                                         static_cast<uint8_t>(targetSlot));
 
             std::cout << "[UI] Moved item from " << g_dragFromSlot << " to "
                       << targetSlot << std::endl;
@@ -4603,7 +4131,7 @@ int main(int argc, char **argv) {
 
   // Starting character initialization: empty inventory for realistic testing
   // Initial stats for Level 1 DK
-  g_hero.LoadStats(1, 28, 20, 25, 10, 0, 0, 110, 20, 1);
+  g_hero.LoadStats(1, 28, 20, 25, 10, 0, 0, 110, 110, 20, 20, 1);
   g_hero.SetTerrainLightmap(terrainData.lightmap);
   g_hero.SetPointLights(g_pointLights);
   g_hero.SnapToTerrain();
@@ -4641,17 +4169,55 @@ int main(int argc, char **argv) {
   g_clickEffect.SetTerrainData(&terrainData);
   checkGLError("hero init");
 
-  // Connect to server via persistent NetworkClient
+  // Connect to server via persistent ServerConnection
   g_npcManager.SetTerrainData(&terrainData);
   ServerData serverData;
 
+  // Initialize ClientPacketHandler with game state context
+  {
+    static ClientGameState gameState;
+    gameState.hero = &g_hero;
+    gameState.monsterManager = &g_monsterManager;
+    gameState.vfxManager = &g_vfxManager;
+    gameState.terrain = &g_terrain;
+    gameState.inventory = g_inventory;
+    gameState.equipSlots = g_equipSlots;
+    gameState.groundItems = g_groundItems;
+    gameState.itemDefs = &g_itemDefs;
+    gameState.zen = &g_zen;
+    gameState.syncDone = &g_syncDone;
+    gameState.serverLevel = &g_serverLevel;
+    gameState.serverHP = &g_serverHP;
+    gameState.serverMaxHP = &g_serverMaxHP;
+    gameState.serverMP = &g_serverMP;
+    gameState.serverMaxMP = &g_serverMaxMP;
+    gameState.serverStr = &g_serverStr;
+    gameState.serverDex = &g_serverDex;
+    gameState.serverVit = &g_serverVit;
+    gameState.serverEne = &g_serverEne;
+    gameState.serverLevelUpPoints = &g_serverLevelUpPoints;
+    gameState.serverXP = &g_serverXP;
+    gameState.serverDefense = &g_serverDefense;
+    gameState.serverAttackSpeed = &g_serverAttackSpeed;
+    gameState.serverMagicSpeed = &g_serverMagicSpeed;
+    gameState.quickSlotDefIndex = &g_quickSlotDefIndex;
+    gameState.spawnDamageNumber = SpawnDamageNumber;
+    gameState.getBodyPartIndex = GetBodyPartIndex;
+    gameState.getBodyPartModelFile = GetBodyPartModelFile;
+    gameState.getItemRestingAngle = [](int16_t defIdx, glm::vec3 &angle,
+                                       float &scale) {
+      GetItemRestingAngle(defIdx, angle, scale);
+    };
+    ClientPacketHandler::Init(&gameState);
+  }
+
   // Set up packet handler BEFORE connecting so no packets are lost
-  g_net.onPacket = [&serverData](const uint8_t *pkt, int size) {
+  g_server.onPacket = [&serverData](const uint8_t *pkt, int size) {
     if (size >= 3) {
       std::cout << "[Net:Initial] Received packet type=0x" << std::hex
                 << (int)pkt[0] << std::dec << " size=" << size << std::endl;
     }
-    parseInitialPacket(pkt, size, serverData);
+    ClientPacketHandler::HandleInitialPacket(pkt, size, serverData);
   };
 
   // Auto-diagnostic mode: --diag flag captures all debug views and exits
@@ -4699,7 +4265,7 @@ int main(int argc, char **argv) {
 
   bool connected = false;
   for (int i = 0; i < 5; ++i) {
-    if (g_net.Connect("127.0.0.1", 44405)) {
+    if (g_server.Connect("127.0.0.1", 44405)) {
       connected = true;
       break;
     }
@@ -4721,7 +4287,7 @@ int main(int argc, char **argv) {
   std::cout << "[Net] Connected. Syncing initial state..." << std::endl;
   int packetsReceived = 0;
   for (int attempt = 0; attempt < 100; attempt++) {
-    g_net.Poll();
+    g_server.Poll();
     usleep(20000); // 20ms
   }
 
@@ -4735,8 +4301,8 @@ int main(int argc, char **argv) {
   }
 
   // Switch to ongoing packet handler for game loop
-  g_net.onPacket = [](const uint8_t *pkt, int size) {
-    handleServerPacket(pkt, size);
+  g_server.onPacket = [](const uint8_t *pkt, int size) {
+    ClientPacketHandler::HandleGamePacket(pkt, size);
   };
 
   if (serverData.connected && !serverData.npcs.empty()) {
@@ -4959,8 +4525,8 @@ int main(int argc, char **argv) {
     g_camera.Update(deltaTime);
 
     // Poll persistent network connection for server packets
-    g_net.Poll();
-    g_net.Flush();
+    g_server.Poll();
+    g_server.Flush();
 
     // Send player position to server periodically (~4Hz)
     {
@@ -4969,15 +4535,21 @@ int main(int argc, char **argv) {
         g_potionCooldown = std::max(0.0f, g_potionCooldown - deltaTime);
 
       static float posTimer = 0.0f;
+      static int lastGridX = -1, lastGridY = -1;
       posTimer += deltaTime;
       if (posTimer >= 0.25f) {
         posTimer = 0.0f;
         glm::vec3 hp = g_hero.GetPosition();
-        PMSG_PRECISE_POS_RECV posPkt{};
-        posPkt.h = MakeC1Header(sizeof(posPkt), 0xD7);
-        posPkt.worldX = hp.x;
-        posPkt.worldZ = hp.z;
-        g_net.Send(&posPkt, sizeof(posPkt));
+        g_server.SendPrecisePosition(hp.x, hp.z);
+
+        // Also send grid move when grid cell changes (for DB persistence)
+        int gx = (int)(hp.z / 100.0f);
+        int gy = (int)(hp.x / 100.0f);
+        if (gx != lastGridX || gy != lastGridY) {
+          g_server.SendGridMove((uint8_t)gx, (uint8_t)gy);
+          lastGridX = gx;
+          lastGridY = gy;
+        }
       }
     }
 
@@ -5006,10 +4578,7 @@ int main(int argc, char **argv) {
           if (targetIdx >= 0 &&
               targetIdx < g_monsterManager.GetMonsterCount()) {
             uint16_t serverIdx = g_monsterManager.GetServerIndex(targetIdx);
-            PMSG_ATTACK_RECV atkPkt{};
-            atkPkt.h = MakeC1Header(sizeof(atkPkt), 0x28);
-            atkPkt.monsterIndex = serverIdx;
-            g_net.Send(&atkPkt, sizeof(atkPkt));
+            g_server.SendAttack(serverIdx);
           }
         }
         // Auto-attack: re-engage after cooldown if target still alive
@@ -5060,23 +4629,12 @@ int main(int argc, char **argv) {
       g_serverHP = g_serverMaxHP; // Reset HUD HP
 
       // Notify server that player is alive (clears session.dead)
-      {
-        PMSG_CHARSAVE_RECV save{};
-        save.h = MakeC1Header(sizeof(save), 0x26);
-        save.characterId = 1;
-        save.level = (uint16_t)g_serverLevel;
-        save.strength = (uint16_t)g_serverStr;
-        save.dexterity = (uint16_t)g_serverDex;
-        save.vitality = (uint16_t)g_serverVit;
-        save.energy = (uint16_t)g_serverEne;
-        save.life = (uint16_t)g_serverMaxHP;
-        save.maxLife = (uint16_t)g_serverMaxHP;
-        save.levelUpPoints = (uint16_t)g_serverLevelUpPoints;
-        save.experienceLo = (uint32_t)((uint64_t)g_serverXP & 0xFFFFFFFF);
-        save.experienceHi = (uint32_t)((uint64_t)g_serverXP >> 32);
-        save.quickSlotDefIndex = g_quickSlotDefIndex;
-        g_net.Send(&save, sizeof(save));
-      }
+      g_server.SendCharSave(1, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
+                            (uint16_t)g_serverDex, (uint16_t)g_serverVit,
+                            (uint16_t)g_serverEne, (uint16_t)g_serverMaxHP,
+                            (uint16_t)g_serverMaxHP,
+                            (uint16_t)g_serverLevelUpPoints,
+                            (uint64_t)g_serverXP, g_quickSlotDefIndex);
     }
 
     // Auto-pickup: walk near a ground item to pick it up
@@ -5100,10 +4658,7 @@ int main(int argc, char **argv) {
             glm::vec3(heroPos.x - gi.position.x, 0, heroPos.z - gi.position.z));
         // Auto-pickup Zen only (items require explicit click)
         if (gi.defIndex == -1 && dist < 120.0f && !g_hero.IsDead()) {
-          PMSG_PICKUP_RECV pkt{};
-          pkt.h = MakeC1Header(sizeof(pkt), 0x2C);
-          pkt.dropIndex = gi.dropIndex;
-          g_net.Send(&pkt, sizeof(pkt));
+          g_server.SendPickup(gi.dropIndex);
           gi.active = false; // Optimistic remove
         }
         // Despawn after 60s
@@ -5200,8 +4755,8 @@ int main(int argc, char **argv) {
     g_npcManager.Render(view, projection, camPos, deltaTime);
 
     // Render NPC selection outline (green glow on hover)
-    if (g_hoveredNpc >= 0)
-      g_npcManager.RenderOutline(g_hoveredNpc, view, projection);
+    // if (g_hoveredNpc >= 0)
+    //   g_npcManager.RenderOutline(g_hoveredNpc, view, projection);
     // Simplified hover UI: handled by RenderLabels background highlight
 
     // Render monsters with shadows
@@ -5262,13 +4817,12 @@ int main(int argc, char **argv) {
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
                               ImVec4(0.9f, 0.2f, 0.2f, 1.0f));
         {
-          float hpFrac = g_serverMaxHP > 0
-                             ? (float)g_serverHP / (float)g_serverMaxHP
-                             : 0.0f;
+          int curHP = g_hero.GetHP();
+          int maxHP = g_hero.GetMaxHP();
+          float hpFrac = maxHP > 0 ? (float)curHP / (float)maxHP : 0.0f;
           hpFrac = std::clamp(hpFrac, 0.0f, 1.0f);
           char hpLabel[32];
-          snprintf(hpLabel, sizeof(hpLabel), "HP %d/%d", g_serverHP,
-                   g_serverMaxHP);
+          snprintf(hpLabel, sizeof(hpLabel), "HP %d/%d", curHP, maxHP);
           ImGui::ProgressBar(hpFrac, ImVec2(180, 20), hpLabel);
         }
         ImGui::PopStyleColor();
@@ -5278,13 +4832,12 @@ int main(int argc, char **argv) {
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
                               ImVec4(0.2f, 0.3f, 0.9f, 1.0f));
         {
-          float mpFrac = g_serverMaxMP > 0
-                             ? (float)g_serverMP / (float)g_serverMaxMP
-                             : 0.0f;
+          int curMP = g_hero.GetMana();
+          int maxMP = g_hero.GetMaxMana();
+          float mpFrac = maxMP > 0 ? (float)curMP / (float)maxMP : 0.0f;
           mpFrac = std::clamp(mpFrac, 0.0f, 1.0f);
           char mpLabel[32];
-          snprintf(mpLabel, sizeof(mpLabel), "MP %d/%d", g_serverMP,
-                   g_serverMaxMP);
+          snprintf(mpLabel, sizeof(mpLabel), "MP %d/%d", curMP, maxMP);
           ImGui::ProgressBar(mpFrac, ImVec2(120, 20), mpLabel);
         }
         ImGui::PopStyleColor();
@@ -5767,11 +5320,23 @@ int main(int argc, char **argv) {
 
         bool hovered = (i == g_hoveredNpc);
         ImU32 bgCol =
-            hovered ? IM_COL32(10, 50, 20, 180) : IM_COL32(10, 30, 50, 150);
-        ImU32 textCol = hovered ? IM_COL32(100, 255, 100, 255)
-                                : IM_COL32(150, 255, 240, 255);
+            hovered ? IM_COL32(20, 40, 20, 200) : IM_COL32(10, 10, 10, 150);
+        ImU32 borderCol =
+            hovered ? IM_COL32(100, 255, 100, 200) : IM_COL32(80, 80, 80, 150);
+        ImU32 textCol = hovered ? IM_COL32(150, 255, 150, 255)
+                                : IM_COL32(200, 200, 200, 255);
 
-        drawList->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), bgCol);
+        // Fill
+        drawList->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), bgCol, 2.0f);
+        // Border
+        drawList->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), borderCol, 2.0f, 0,
+                          1.0f);
+
+        // Shadow
+        drawList->AddText(
+            ImVec2(sx - textSize.x / 2 + 1, sy - textSize.y / 2 + 1),
+            IM_COL32(0, 0, 0, 180), info.name.c_str());
+        // Text
         drawList->AddText(ImVec2(sx - textSize.x / 2, sy - textSize.y / 2),
                           textCol, info.name.c_str());
       }
@@ -5953,27 +5518,16 @@ int main(int argc, char **argv) {
   }
 
   // Save character stats to server before disconnecting
-  {
-    PMSG_CHARSAVE_RECV save{};
-    save.h = MakeC1Header(sizeof(save), 0x26);
-    save.characterId = 1;
-    save.level = (uint16_t)g_serverLevel;
-    save.strength = (uint16_t)g_serverStr;
-    save.dexterity = (uint16_t)g_serverDex;
-    save.vitality = (uint16_t)g_serverVit;
-    save.energy = (uint16_t)g_serverEne;
-    save.life = (uint16_t)g_serverHP;
-    save.maxLife = (uint16_t)g_serverMaxHP;
-    save.levelUpPoints = (uint16_t)g_serverLevelUpPoints;
-    save.experienceLo = (uint32_t)((uint64_t)g_serverXP & 0xFFFFFFFF);
-    save.experienceHi = (uint32_t)((uint64_t)g_serverXP >> 32);
-    save.quickSlotDefIndex = g_quickSlotDefIndex;
-    g_net.Send(&save, sizeof(save));
-    g_net.Flush();
-  }
+  g_server.SendCharSave(1, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
+                        (uint16_t)g_serverDex, (uint16_t)g_serverVit,
+                        (uint16_t)g_serverEne, (uint16_t)g_serverHP,
+                        (uint16_t)g_serverMaxHP,
+                        (uint16_t)g_serverLevelUpPoints, (uint64_t)g_serverXP,
+                        g_quickSlotDefIndex);
+  g_server.Flush();
 
   // Disconnect from server
-  g_net.Disconnect();
+  g_server.Disconnect();
   // Cleanup
   // Cleanup handled by RAII/End
   g_monsterManager.Cleanup();

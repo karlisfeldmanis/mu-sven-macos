@@ -18,6 +18,7 @@ endif()
 find_package(glfw3 REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(OpenGL REQUIRED)
+find_package(SQLite3 REQUIRED)
 
 # libjpeg-turbo
 find_path(JPEG_INCLUDE_DIR NAMES turbojpeg.h PATHS /opt/homebrew/include)
@@ -62,8 +63,26 @@ set(COMMON_SRC
     src/VFXManager.cpp
 )
 
+# Server Executable
+add_executable(
+  MuServer
+  server/src/main.cpp
+  server/src/Server.cpp
+  server/src/PacketHandler.cpp
+  server/src/Database.cpp
+  server/src/GameWorld.cpp
+  server/src/StatCalculator.cpp
+  server/src/Session.cpp
+  server/src/handlers/CharacterHandler.cpp
+  server/src/handlers/CombatHandler.cpp
+  server/src/handlers/InventoryHandler.cpp
+  server/src/handlers/WorldHandler.cpp
+)
+target_include_directories(MuServer PRIVATE server/include)
+target_link_libraries(MuServer PRIVATE SQLite::SQLite3)
+
 # Main Game Executable
-add_executable(MuRemaster src/main.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/NetworkClient.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+add_executable(MuRemaster src/main.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/NetworkClient.cpp src/ServerConnection.cpp src/ClientPacketHandler.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
 target_link_libraries(MuRemaster PRIVATE
     glfw
     GLEW::GLEW

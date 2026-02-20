@@ -95,8 +95,8 @@ bool HeroCharacter::AddStatPoint(int stat) {
 
 void HeroCharacter::LoadStats(int level, uint16_t str, uint16_t dex,
                               uint16_t vit, uint16_t ene, uint64_t experience,
-                              int levelUpPoints, int currentHp, int currentMana,
-                              uint8_t charClass) {
+                              int levelUpPoints, int currentHp, int maxHp,
+                              int currentMana, int maxMana, uint8_t charClass) {
   m_level = level;
   m_class = charClass;
   m_strength = str;
@@ -106,6 +106,11 @@ void HeroCharacter::LoadStats(int level, uint16_t str, uint16_t dex,
   m_experience = experience;
   m_levelUpPoints = levelUpPoints;
   RecalcStats();
+
+  // Override with server authoritative maximums
+  m_maxHp = maxHp > 0 ? maxHp : m_maxHp;
+  m_maxMana = maxMana > 0 ? maxMana : m_maxMana;
+
   // Restore current HP/Mana from server (clamped to new max values)
   m_hp = std::min(currentHp, m_maxHp);
   if (m_hp <= 0 && currentHp > 0)

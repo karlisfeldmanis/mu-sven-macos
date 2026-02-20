@@ -1,0 +1,92 @@
+#ifndef MU_CLIENT_TYPES_HPP
+#define MU_CLIENT_TYPES_HPP
+
+#include "HeroCharacter.hpp"
+#include "MonsterManager.hpp"
+#include "NpcManager.hpp"
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
+// ── Client-side item definition (synced from server item_definitions table) ──
+
+struct ClientItemDefinition {
+  uint8_t category = 0;
+  uint8_t itemIndex = 0;
+  std::string name;
+  std::string modelFile;
+  uint16_t reqStr = 0;
+  uint16_t reqDex = 0;
+  uint16_t reqVit = 0;
+  uint16_t reqEne = 0;
+  uint16_t levelReq = 0;
+  uint8_t width = 1;
+  uint8_t height = 1;
+  uint32_t classFlags = 0xFFFFFFFF;
+  uint16_t dmgMin = 0;
+  uint16_t dmgMax = 0;
+  uint16_t defense = 0;
+  uint8_t attackSpeed = 0;
+  bool twoHanded = false;
+};
+
+// ── Client-side inventory slot ──
+
+static constexpr int INVENTORY_SLOTS = 64;
+
+struct ClientInventoryItem {
+  int16_t defIndex = -2;
+  uint8_t quantity = 0;
+  uint8_t itemLevel = 0;
+  bool occupied = false;
+  bool primary = false;
+};
+
+// ── Equipment display slot ──
+
+struct ClientEquipSlot {
+  uint8_t category = 0xFF;
+  uint8_t itemIndex = 0;
+  uint8_t itemLevel = 0;
+  std::string modelFile;
+  bool equipped = false;
+};
+
+// ── Ground item drops ──
+
+struct GroundItem {
+  uint16_t dropIndex;
+  int16_t defIndex; // -1=Zen
+  int quantity;
+  uint8_t itemLevel;
+  glm::vec3 position;
+  float timer;
+  bool active;
+
+  // Physics state
+  glm::vec3 angle;
+  float gravity;
+  float scale;
+  bool isResting;
+};
+
+static constexpr int MAX_GROUND_ITEMS = 64;
+
+// ── Server equipment slot (for initial sync) ──
+
+struct ServerEquipSlot {
+  uint8_t slot = 0;
+  WeaponEquipInfo info;
+};
+
+// ── Initial server data (populated during connection burst) ──
+
+struct ServerData {
+  std::vector<ServerNpcSpawn> npcs;
+  std::vector<ServerMonsterSpawn> monsters;
+  std::vector<ServerEquipSlot> equipment;
+  bool connected = false;
+};
+
+#endif // MU_CLIENT_TYPES_HPP

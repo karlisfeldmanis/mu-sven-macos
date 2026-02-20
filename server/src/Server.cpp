@@ -1,6 +1,10 @@
 #include "Server.hpp"
 #include "PacketDefs.hpp"
 #include "PacketHandler.hpp"
+#include "StatCalculator.hpp"
+#include "handlers/CharacterHandler.hpp"
+#include "handlers/InventoryHandler.hpp"
+#include "handlers/WorldHandler.hpp"
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
@@ -103,7 +107,7 @@ void Server::Run() {
         [this](uint16_t dropIndex) {
           // Drop expired — broadcast removal to all clients
           PMSG_DROP_REMOVE_SEND pkt{};
-          pkt.h = MakeC1Header(sizeof(pkt), 0x2E);
+          pkt.h = MakeC1Header(sizeof(pkt), Opcode::DROP_REMOVE);
           pkt.dropIndex = dropIndex;
           Broadcast(&pkt, sizeof(pkt));
         },
@@ -112,7 +116,7 @@ void Server::Run() {
     // Broadcast wander moves to all clients
     for (auto &mv : wanderMoves) {
       PMSG_MONSTER_MOVE_SEND movePkt{};
-      movePkt.h = MakeC1Header(sizeof(movePkt), 0x35);
+      movePkt.h = MakeC1Header(sizeof(movePkt), Opcode::MON_MOVE);
       movePkt.monsterIndex = mv.monsterIndex;
       movePkt.targetX = mv.targetX;
       movePkt.targetY = mv.targetY;
@@ -126,7 +130,7 @@ void Server::Run() {
       if (mon.justRespawned) {
         mon.justRespawned = false;
         PMSG_MONSTER_RESPAWN_SEND pkt{};
-        pkt.h = MakeC1Header(sizeof(pkt), 0x30);
+        pkt.h = MakeC1Header(sizeof(pkt), Opcode::MON_RESPAWN);
         pkt.monsterIndex = mon.index;
         pkt.x = mon.gridX;
         pkt.y = mon.gridY;
@@ -157,7 +161,7 @@ void Server::Run() {
       // Broadcast monster target updates to all clients (event-driven)
       for (auto &mv : moves) {
         PMSG_MONSTER_MOVE_SEND movePkt{};
-        movePkt.h = MakeC1Header(sizeof(movePkt), 0x35);
+        movePkt.h = MakeC1Header(sizeof(movePkt), Opcode::MON_MOVE);
         movePkt.monsterIndex = mv.monsterIndex;
         movePkt.targetX = mv.targetX;
         movePkt.targetY = mv.targetY;
@@ -189,10 +193,10 @@ void Server::Run() {
 
             // Send monster attack packet to client
             PMSG_MONSTER_ATTACK_SEND pkt{};
-            pkt.h = MakeC1Header(sizeof(pkt), 0x2F);
+            pkt.h = MakeC1Header(sizeof(pkt), Opcode::MON_ATTACK);
             pkt.monsterIndex = atk.monsterIndex;
             pkt.damage = atk.damage;
-            pkt.remainingHp = static_cast<uint16_t>(s->hp);
+            pkt.remainingHp = static_cast<float>(s->hp);
             s->Send(&pkt, sizeof(pkt));
             break;
           }
@@ -247,7 +251,7 @@ void Server::Run() {
             printf("[Regen] FD=%d Healed +%d HP in SafeZone. New HP: %d/%d\n",
                    session->GetFd(), gain, session->hp, session->maxHp);
             // Sync updated HP to client (session-only, don't reload from DB!)
-            PacketHandler::SendCharStats(*session);
+            CharacterHandler::SendCharStats(*session);
             // Persist new HP to DB
             m_db.UpdateCharacterStats(
                 session->characterId, session->level, session->strength,
@@ -340,10 +344,10 @@ void Server::AcceptNewClients() {
 
 void Server::OnClientConnected(Session &session) {
   // Send welcome immediately
-  PacketHandler::SendWelcome(session);
+  WorldHandler::SendWelcome(session);
 
   // For our remaster client: send NPCs + monsters right away (no login needed)
-  PacketHandler::SendNpcViewport(session, m_world);
+  WorldHandler::SendNpcViewport(session, m_world);
 
   // Send v2 monster viewport with HP/state/index (C2 header supports >255
   // bytes)
@@ -356,13 +360,13 @@ void Server::OnClientConnected(Session &session) {
   if (c.id > 0) {
     session.characterId = c.id;
     // Send character equipment from database
-    PacketHandler::SendEquipment(session, m_db, c.id);
+    CharacterHandler::SendEquipment(session, m_db, c.id);
     // Send character stats (level, STR/DEX/VIT/ENE, XP, stat points)
-    PacketHandler::SendCharStats(session, m_db, c.id);
+    CharacterHandler::SendCharStats(session, m_db, c.id);
 
     // Initial inventory sync - Load from DB first
-    PacketHandler::LoadInventory(session, m_db, c.id);
-    PacketHandler::SendInventorySync(session);
+    InventoryHandler::LoadInventory(session, m_db, c.id);
+    InventoryHandler::SendInventorySync(session);
 
     printf("[Server] FD=%d initialized with character '%s' (ID:%d)\n",
            session.GetFd(), c.name.c_str(), c.id);
@@ -375,35 +379,23 @@ void Server::OnClientConnected(Session &session) {
   // The character 'c' is already fetched above.
   if (c.id > 0) { // Check if character was found
     session.inWorld = true;
+    session.level = c.level;
+    session.charClass = c.charClass;
+    session.vitality = c.vitality;
+    session.energy = c.energy;
     session.strength = c.strength;
     session.dexterity = c.dexterity;
     session.worldX = c.posY * 100.0f;
     session.worldZ = c.posX * 100.0f;
-    session.hp = c.life;
-    session.maxHp = c.maxLife;
+    session.maxHp = StatCalculator::CalculateMaxHP(
+        static_cast<CharacterClass>(c.charClass), c.level, c.vitality);
+    session.maxMana = StatCalculator::CalculateMaxMP(
+        static_cast<CharacterClass>(c.charClass), c.level, c.energy);
+    session.hp = std::min(static_cast<int>(c.life), session.maxHp);
+    session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
     session.dead = false;
   }
-  auto equip = m_db.GetCharacterEquipment(1);
-  session.weaponDamageMin = 0;
-  session.weaponDamageMax = 0;
-  session.totalDefense = 0;
-  for (auto &slot : equip) {
-    auto itemDef = m_db.GetItemDefinition(slot.category, slot.itemIndex);
-    if (itemDef.id > 0) {
-      if (slot.slot == 0 || slot.slot == 1) { // R.Hand or L.Hand
-        if (slot.category <= 5) {
-          session.weaponDamageMin += itemDef.damageMin + slot.itemLevel * 3;
-          session.weaponDamageMax += itemDef.damageMax + slot.itemLevel * 3;
-        }
-      }
-      session.totalDefense += itemDef.defense + slot.itemLevel * 2;
-
-      if (slot.slot == 7) { // Wings
-        session.weaponDamageMin += 15;
-        session.weaponDamageMax += 25;
-      }
-    }
-  }
+  CharacterHandler::RefreshCombatStats(session, m_db, c.id);
   printf("[Server] Default char combat stats: STR=%d weapon=%d-%d def=%d\n",
          session.strength, session.weaponDamageMin, session.weaponDamageMax,
          session.totalDefense);
@@ -411,7 +403,7 @@ void Server::OnClientConnected(Session &session) {
   // Send existing ground drops so late-joining clients see them
   for (auto &drop : m_world.GetDrops()) {
     PMSG_DROP_SPAWN_SEND dpkt{};
-    dpkt.h = MakeC1Header(sizeof(dpkt), 0x2B);
+    dpkt.h = MakeC1Header(sizeof(dpkt), Opcode::DROP_SPAWN);
     dpkt.dropIndex = drop.index;
     dpkt.defIndex = drop.defIndex;
     dpkt.quantity = drop.quantity;

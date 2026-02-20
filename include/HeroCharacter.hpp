@@ -131,7 +131,8 @@ public:
   // Load stats from server (overrides defaults, calls RecalcStats)
   void LoadStats(int level, uint16_t str, uint16_t dex, uint16_t vit,
                  uint16_t ene, uint64_t experience, int levelUpPoints,
-                 int currentHp, int currentMana, uint8_t charClass = 0);
+                 int currentHp, int maxHp, int currentMana, int maxMana,
+                 uint8_t charClass = 0);
   bool AddStatPoint(int stat); // 0=STR, 1=DEX, 2=VIT, 3=ENE
   int GetLevel() const { return m_level; }
   uint8_t GetClass() const { return m_class; }

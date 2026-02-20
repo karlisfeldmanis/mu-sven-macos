@@ -21,6 +21,11 @@ add_executable(MuServer
     src/PacketHandler.cpp
     src/GameWorld.cpp
     src/Database.cpp
+    src/StatCalculator.cpp
+    src/handlers/CharacterHandler.cpp
+    src/handlers/CombatHandler.cpp
+    src/handlers/InventoryHandler.cpp
+    src/handlers/WorldHandler.cpp
 )
 
 target_link_libraries(MuServer PRIVATE SQLite::SQLite3)

@@ -1,0 +1,112 @@
+#include "ServerConnection.hpp"
+#include "../server/include/PacketDefs.hpp"
+
+bool ServerConnection::Connect(const char *host, uint16_t port) {
+  bool ok = m_client.Connect(host, port);
+  if (ok) {
+    m_client.onPacket = [this](const uint8_t *pkt, int size) {
+      if (onPacket)
+        onPacket(pkt, size);
+    };
+  }
+  return ok;
+}
+
+void ServerConnection::Poll() { m_client.Poll(); }
+
+void ServerConnection::Flush() { m_client.Flush(); }
+
+void ServerConnection::Disconnect() { m_client.Disconnect(); }
+
+bool ServerConnection::IsConnected() const { return m_client.IsConnected(); }
+
+void ServerConnection::SendPrecisePosition(float worldX, float worldZ) {
+  PMSG_PRECISE_POS_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::PRECISE_POS);
+  pkt.worldX = worldX;
+  pkt.worldZ = worldZ;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendAttack(uint16_t monsterIndex) {
+  PMSG_ATTACK_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::ATTACK);
+  pkt.monsterIndex = monsterIndex;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendPickup(uint16_t dropIndex) {
+  PMSG_PICKUP_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::PICKUP);
+  pkt.dropIndex = dropIndex;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendCharSave(uint16_t charId, uint16_t level,
+                                    uint16_t str, uint16_t dex, uint16_t vit,
+                                    uint16_t ene, uint16_t life,
+                                    uint16_t maxLife, uint16_t levelUpPoints,
+                                    uint64_t experience,
+                                    int16_t quickSlotDefIndex) {
+  PMSG_CHARSAVE_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::CHARSAVE);
+  pkt.characterId = charId;
+  pkt.level = level;
+  pkt.strength = str;
+  pkt.dexterity = dex;
+  pkt.vitality = vit;
+  pkt.energy = ene;
+  pkt.life = life;
+  pkt.maxLife = maxLife;
+  pkt.levelUpPoints = levelUpPoints;
+  pkt.experienceLo = static_cast<uint32_t>(experience & 0xFFFFFFFF);
+  pkt.experienceHi = static_cast<uint32_t>(experience >> 32);
+  pkt.quickSlotDefIndex = quickSlotDefIndex;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendEquip(uint16_t charId, uint8_t slot, uint8_t cat,
+                                 uint8_t idx, uint8_t lvl) {
+  PMSG_EQUIP_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::EQUIP);
+  pkt.characterId = charId;
+  pkt.slot = slot;
+  pkt.category = cat;
+  pkt.itemIndex = idx;
+  pkt.itemLevel = lvl;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendUnequip(uint16_t charId, uint8_t slot) {
+  SendEquip(charId, slot, 0xFF, 0, 0);
+}
+
+void ServerConnection::SendStatAlloc(uint8_t statType) {
+  PMSG_STAT_ALLOC_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::STAT_ALLOC);
+  pkt.statType = statType;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendInventoryMove(uint8_t from, uint8_t to) {
+  PMSG_INVENTORY_MOVE_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::INV_MOVE);
+  pkt.fromSlot = from;
+  pkt.toSlot = to;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendItemUse(uint8_t slot) {
+  PMSG_ITEM_USE_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::ITEM_USE);
+  pkt.slot = slot;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendGridMove(uint8_t gridX, uint8_t gridY) {
+  PMSG_MOVE_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::MOVE);
+  pkt.x = gridX;
+  pkt.y = gridY;
+  m_client.Send(&pkt, sizeof(pkt));
+}
