@@ -91,6 +91,7 @@ struct ItemDefinition {
   uint16_t reqVitality = 0;
   uint16_t reqEnergy = 0;
   uint32_t classFlags = 0xFFFFFFFF;
+  uint32_t buyPrice = 0;
 };
 
 struct EquipmentSlot {

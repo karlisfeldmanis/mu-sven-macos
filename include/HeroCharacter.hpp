@@ -26,7 +26,8 @@ struct WeaponEquipInfo {
   uint8_t category = 0xFF; // ItemCategory (0xFF = none equipped)
   uint8_t itemIndex = 0;
   uint8_t itemLevel = 0;
-  std::string modelFile; // e.g. "Sword01.bmd"
+  bool twoHanded = false; // From ItemDatabase — determines animation set
+  std::string modelFile;  // e.g. "Sword01.bmd"
 };
 
 // Client-side rendering config per weapon category
@@ -43,13 +44,17 @@ struct WeaponCategoryRender {
 // orientation
 inline const WeaponCategoryRender &GetWeaponCategoryRender(uint8_t category) {
   // Indexed by ItemCategory enum (0=Sword..6=Shield)
+  // NOTE: actionIdle/actionWalk here are base values for 1H weapons.
+  // HeroCharacter uses weaponIdleAction()/weaponWalkAction() which handle
+  // 2H/scythe/dual-wield overrides. attachBone is the primary use of this
+  // table.
   static const WeaponCategoryRender table[] = {
       {4, 17, 33},  // SWORD:  PLAYER_STOP_SWORD / PLAYER_WALK_SWORD, R Hand
       {4, 17, 33},  // AXE:    same as sword
       {4, 17, 33},  // MACE:   same as sword
       {6, 19, 33},  // SPEAR:  PLAYER_STOP_SPEAR / PLAYER_WALK_SPEAR, R Hand
-      {8, 20, 42},  // BOW:    PLAYER_STOP_BOW / PLAYER_WALK_BOW, L Hand
-      {10, 22, 42}, // STAFF:  PLAYER_STOP_WAND / PLAYER_WALK_WAND, L Hand
+      {8, 21, 42},  // BOW:    PLAYER_STOP_BOW / PLAYER_WALK_BOW, L Hand
+      {10, 23, 42}, // STAFF:  PLAYER_STOP_WAND / PLAYER_WALK_WAND, L Hand
       {4, 17, 42},  // SHIELD: PLAYER_STOP_SWORD / PLAYER_WALK_SWORD, L Hand
   };
   if (category < sizeof(table) / sizeof(table[0]))
@@ -220,11 +225,38 @@ private:
   static constexpr int ACTION_STOP_MALE = 1;  // PLAYER_STOP_MALE
   static constexpr int ACTION_WALK_MALE = 15; // PLAYER_WALK_MALE
 
-  // Attack actions
-  static constexpr int ACTION_ATTACK_FIST =
-      38; // PLAYER_ATTACK_FIST (no weapon)
+  // ── Weapon-specific idle/walk actions (_enum.h) ──
+  static constexpr int ACTION_STOP_SWORD = 4;
+  static constexpr int ACTION_STOP_TWO_HAND_SWORD = 5;
+  static constexpr int ACTION_STOP_SPEAR = 6;
+  static constexpr int ACTION_STOP_SCYTHE = 7;
+  static constexpr int ACTION_STOP_BOW = 8;
+  static constexpr int ACTION_STOP_CROSSBOW = 9;
+  static constexpr int ACTION_STOP_WAND = 10;
+
+  static constexpr int ACTION_WALK_SWORD = 17;
+  static constexpr int ACTION_WALK_TWO_HAND_SWORD = 18;
+  static constexpr int ACTION_WALK_SPEAR = 19;
+  static constexpr int ACTION_WALK_SCYTHE = 20;
+  static constexpr int ACTION_WALK_BOW = 21;
+  static constexpr int ACTION_WALK_CROSSBOW = 22;
+  static constexpr int ACTION_WALK_WAND = 23;
+
+  // Attack actions (_enum.h)
+  static constexpr int ACTION_ATTACK_FIST = 38;
   static constexpr int ACTION_ATTACK_SWORD_R1 = 39;
   static constexpr int ACTION_ATTACK_SWORD_R2 = 40;
+  static constexpr int ACTION_ATTACK_SWORD_L1 = 41; // Dual-wield left hand
+  static constexpr int ACTION_ATTACK_SWORD_L2 = 42; // Dual-wield left hand
+  static constexpr int ACTION_ATTACK_TWO_HAND_SWORD1 = 43;
+  static constexpr int ACTION_ATTACK_TWO_HAND_SWORD2 = 44;
+  static constexpr int ACTION_ATTACK_TWO_HAND_SWORD3 = 45;
+  static constexpr int ACTION_ATTACK_SPEAR1 = 46;
+  static constexpr int ACTION_ATTACK_SCYTHE1 = 47;
+  static constexpr int ACTION_ATTACK_SCYTHE2 = 48;
+  static constexpr int ACTION_ATTACK_SCYTHE3 = 49;
+  static constexpr int ACTION_ATTACK_BOW = 50;
+  static constexpr int ACTION_ATTACK_CROSSBOW = 51;
 
   // Hit/death actions (CharViewer: Shock=230, Die1=231, Die2=232)
   static constexpr int ACTION_SHOCK = 230;
@@ -286,9 +318,21 @@ private:
   bool m_attackHitRegistered = false;
   int m_swordSwingCount = 0;
   float m_attackCooldown = 0.0f;
-  static constexpr float ATTACK_RANGE = 150.0f;
+  static constexpr float MELEE_ATTACK_RANGE = 150.0f;
+  static constexpr float BOW_ATTACK_RANGE = 500.0f;
+  float getAttackRange() const {
+    return (m_weaponInfo.category == 4) ? BOW_ATTACK_RANGE : MELEE_ATTACK_RANGE;
+  }
   static constexpr float ATTACK_COOLDOWN_TIME = 0.6f;
   static constexpr float ATTACK_HIT_FRACTION = 0.4f;
+
+  // ── Weapon animation selection (Main 5.2 ZzzCharacter.cpp) ──
+  // These resolve the correct action based on weapon category, twoHanded flag,
+  // and dual-wield state. Used instead of GetWeaponCategoryRender for anim.
+  int weaponIdleAction() const;
+  int weaponWalkAction() const;
+  int nextAttackAction(); // Returns next attack action, advances swing counter
+  bool isDualWielding() const;
 
   // Skeleton + body parts
   std::unique_ptr<BMDData> m_skeleton;

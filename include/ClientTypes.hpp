@@ -29,6 +29,7 @@ struct ClientItemDefinition {
   uint16_t defense = 0;
   uint8_t attackSpeed = 0;
   bool twoHanded = false;
+  uint32_t buyPrice = 0;
 };
 
 // ── Client-side inventory slot ──
@@ -72,6 +73,14 @@ struct GroundItem {
 };
 
 static constexpr int MAX_GROUND_ITEMS = 64;
+
+// ── Shop item (received from server) ──
+
+struct ShopItem {
+  int16_t defIndex = 0;
+  uint8_t itemLevel = 0;
+  uint32_t buyPrice = 0;
+};
 
 // ── Server equipment slot (for initial sync) ──
 

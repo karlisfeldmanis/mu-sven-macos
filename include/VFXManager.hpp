@@ -9,9 +9,12 @@
 #include <vector>
 
 enum class ParticleType {
-  BLOOD,     // Red spray
-  HIT_SPARK, // Yellow/white flash
-  MAGIC_HIT  // Blue/purple swirl (for Lich)
+  BLOOD,     // Red spray (Main 5.2: CreateBlood)
+  HIT_SPARK, // White sparks with gravity (Main 5.2: BITMAP_SPARK)
+  SMOKE,     // Gray ambient smoke (monsters)
+  FIRE,      // Orange fire particle (Budge Dragon breath)
+  ENERGY,    // Blue/white energy flash (Lich hand)
+  FLARE,     // Bright additive impact flash (Main 5.2: BITMAP_FLASH)
 };
 
 class VFXManager {
@@ -24,15 +27,10 @@ public:
   // Spawns a burst of particles at a given world position
   void SpawnBurst(ParticleType type, const glm::vec3 &position, int count = 10);
 
-  // Spawns a lightning strike from start to end
-  void SpawnLightning(const glm::vec3 &start, const glm::vec3 &end,
-                      float duration = 0.3f);
-
-  // Trigger screen flash for player damage
-  void TriggerDamageFlash();
-
-  // Render HUD effects (vignette)
-  void RenderHUD(int width, int height, float playerHPRatio);
+  // Spawns a textured ribbon from start heading toward target
+  // Main 5.2: two passes per Lich bolt — scale=50 (thick) + scale=10 (thin)
+  void SpawnRibbon(const glm::vec3 &start, const glm::vec3 &target,
+                   float scale, const glm::vec3 &color, float duration = 0.5f);
 
 private:
   struct Particle {
@@ -47,12 +45,27 @@ private:
     float alpha;
   };
 
-  struct Lightning {
-    glm::vec3 start;
-    glm::vec3 end;
+  // Ribbon segment: one cross-section of the trail (Main 5.2 JOINT Tails)
+  struct RibbonSegment {
+    glm::vec3 center;
+    glm::vec3 right; // Half-width offset in local X (horizontal face)
+    glm::vec3 up;    // Half-width offset in local Z (vertical face)
+  };
+
+  // Textured ribbon effect (Main 5.2 JOINT with BITMAP_JOINT_THUNDER)
+  struct Ribbon {
+    glm::vec3 headPos;        // Current head position
+    glm::vec3 targetPos;      // Where the ribbon is heading
+    float headYaw = 0.0f;     // Current heading yaw (radians)
+    float headPitch = 0.0f;   // Current heading pitch (radians)
+    float scale;              // Half-width (50.0 or 10.0)
+    glm::vec3 color;          // RGB tint
     float lifetime;
     float maxLifetime;
-    std::vector<glm::vec3> points; // Internal segments
+    float velocity = 1500.0f; // World units/second
+    float uvScroll = 0.0f;    // UV scroll offset (animated)
+    std::vector<RibbonSegment> segments; // Tail trail (newest at [0])
+    static constexpr int MAX_SEGMENTS = 50;
   };
 
   struct InstanceData {
@@ -64,23 +77,41 @@ private:
     float alpha;
   };
 
-  std::vector<Particle> m_particles;
-  std::vector<Lightning> m_lightnings;
+  // Ribbon vertex: position + UV for textured quad strip
+  struct RibbonVertex {
+    glm::vec3 pos;
+    glm::vec2 uv;
+  };
 
+  std::vector<Particle> m_particles;
+  std::vector<Ribbon> m_ribbons;
+
+  // Textures
   GLuint m_bloodTexture = 0;
-  GLuint m_hitTexture = 0;
-  GLuint m_lightningTexture = 0;
+  GLuint m_hitTexture = 0;      // Legacy (Interface/hit.OZT)
+  GLuint m_sparkTexture = 0;    // Main 5.2: BITMAP_SPARK (Effect/Spark01.OZJ)
+  GLuint m_flareTexture = 0;    // Main 5.2: BITMAP_FLASH (Effect/flare01.OZJ)
+  GLuint m_smokeTexture = 0;
+  GLuint m_fireTexture = 0;
+  GLuint m_energyTexture = 0;
+  GLuint m_lightningTexture = 0; // JointThunder01.OZJ for ribbons
+
   std::unique_ptr<Shader> m_shader;
   std::unique_ptr<Shader> m_lineShader;
 
+  // Billboard particle buffers
   GLuint m_quadVAO = 0, m_quadVBO = 0, m_quadEBO = 0;
   GLuint m_instanceVBO = 0;
-  GLuint m_lineVAO = 0, m_lineVBO = 0;
+
+  // Ribbon buffers (pos + uv per vertex)
+  GLuint m_ribbonVAO = 0, m_ribbonVBO = 0;
+  static constexpr int MAX_RIBBON_VERTS = 1600; // 4 ribbons x 50 seg x 2 faces x 4 verts
 
   static constexpr int MAX_PARTICLES = 8192;
 
   void initBuffers();
-  void generateLightningPoints(Lightning &ln);
+  void updateRibbon(Ribbon &r, float dt);
+  void renderRibbons(const glm::mat4 &view, const glm::mat4 &projection);
 };
 
 #endif // VFX_MANAGER_HPP

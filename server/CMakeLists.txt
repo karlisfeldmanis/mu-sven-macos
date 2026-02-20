@@ -26,6 +26,7 @@ add_executable(MuServer
     src/handlers/CombatHandler.cpp
     src/handlers/InventoryHandler.cpp
     src/handlers/WorldHandler.cpp
+    src/handlers/ShopHandler.cpp
 )
 
 target_link_libraries(MuServer PRIVATE SQLite::SQLite3)

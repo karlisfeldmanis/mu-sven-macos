@@ -1,0 +1,329 @@
+#include "GroundItemRenderer.hpp"
+#include "ItemDatabase.hpp"
+#include "ItemModelManager.hpp"
+#include "imgui.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+
+namespace FloatingDamageRenderer {
+
+void Spawn(const glm::vec3 &pos, int damage, uint8_t type,
+           FloatingDamage *pool, int poolSize) {
+  for (int i = 0; i < poolSize; ++i) {
+    auto &d = pool[i];
+    if (!d.active) {
+      d.worldPos = pos + glm::vec3(((rand() % 40) - 20), 80.0f + (rand() % 30),
+                                   ((rand() % 40) - 20));
+      d.damage = damage;
+      d.type = type;
+      d.timer = 0.0f;
+      d.maxTime = 1.5f;
+      d.active = true;
+      return;
+    }
+  }
+}
+
+void UpdateAndRender(FloatingDamage *pool, int poolSize, float deltaTime,
+                     ImDrawList *dl, ImFont *font,
+                     const glm::mat4 &view, const glm::mat4 &proj,
+                     int winW, int winH) {
+  glm::mat4 vp = proj * view;
+  for (int i = 0; i < poolSize; ++i) {
+    auto &d = pool[i];
+    if (!d.active)
+      continue;
+    d.timer += deltaTime;
+    if (d.timer >= d.maxTime) {
+      d.active = false;
+      continue;
+    }
+
+    // Float upward
+    glm::vec3 pos = d.worldPos + glm::vec3(0, d.timer * 60.0f, 0);
+
+    // Project to screen
+    glm::vec4 clip = vp * glm::vec4(pos, 1.0f);
+    if (clip.w <= 0.0f)
+      continue;
+    float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * winW;
+    float sy = ((1.0f - (clip.y / clip.w)) * 0.5f) * winH;
+
+    // Fade out in last 0.5s
+    float alpha = d.timer > 1.0f ? 1.0f - (d.timer - 1.0f) / 0.5f : 1.0f;
+    alpha = std::max(0.0f, std::min(1.0f, alpha));
+
+    // Color by type
+    ImU32 col;
+    const char *text;
+    char buf[16];
+    if (d.type == 7) {
+      col = IM_COL32(250, 250, 250, (int)(alpha * 255));
+      text = "MISS";
+    } else if (d.type == 9) {
+      snprintf(buf, sizeof(buf), "+%d XP", d.damage);
+      text = buf;
+      col = IM_COL32(220, 180, 255, (int)(alpha * 255));
+    } else if (d.type == 10) {
+      snprintf(buf, sizeof(buf), "+%d", d.damage);
+      text = buf;
+      col = IM_COL32(60, 255, 60, (int)(alpha * 255));
+    } else {
+      snprintf(buf, sizeof(buf), "%d", d.damage);
+      text = buf;
+      if (d.type == 8)
+        col = IM_COL32(255, 60, 60, (int)(alpha * 255));
+      else if (d.type == 2)
+        col = IM_COL32(80, 180, 255, (int)(alpha * 255));
+      else if (d.type == 3)
+        col = IM_COL32(80, 255, 120, (int)(alpha * 255));
+      else
+        col = IM_COL32(255, 200, 60, (int)(alpha * 255));
+    }
+
+    // Draw with shadow
+    float scale = 1.5f - d.timer * 0.3f;
+    float fontSize = 18.0f * scale;
+    ImVec2 tpos(sx, sy);
+    dl->AddText(font, fontSize, ImVec2(tpos.x + 1, tpos.y + 1),
+                IM_COL32(0, 0, 0, (int)(alpha * 200)), text);
+    dl->AddText(font, fontSize, tpos, col, text);
+  }
+}
+
+} // namespace FloatingDamageRenderer
+
+namespace GroundItemRenderer {
+
+void GetItemRestingAngle(int defIndex, glm::vec3 &angle, float &scale) {
+  angle = glm::vec3(90.0f, 0.0f, 0.0f); // Default: lay flat on ground
+  scale = 1.0f;
+
+  if (defIndex == -1) { // Zen
+    angle = glm::vec3(0, 0, 0);
+    return;
+  }
+
+  int category = 0;
+  int index = 0;
+
+  auto &itemDefs = ItemDatabase::GetItemDefs();
+  auto it = itemDefs.find(defIndex);
+  if (it != itemDefs.end()) {
+    category = it->second.category;
+    index = it->second.itemIndex;
+  } else {
+    category = defIndex / 32;
+    index = defIndex % 32;
+  }
+
+  // All weapons lay flat (90 X tilt) -- vary Y for visual interest
+  if (category == 0) { // Swords -- diagonal
+    angle = glm::vec3(90.0f, 45.0f, 0.0f);
+    scale = 1.0f;
+    if (index == 19)
+      scale = 0.7f;           // Divine Sword
+  } else if (category == 1) { // Axes
+    angle = glm::vec3(90.0f, 30.0f, 0.0f);
+  } else if (category == 2) { // Maces
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+  } else if (category == 3) { // Spears -- longer, lay along Y
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+    scale = 0.9f;
+  } else if (category == 4) { // Bows/Crossbows
+    angle = glm::vec3(90.0f, 90.0f, 0.0f);
+    scale = 0.9f;
+  } else if (category == 5) { // Staffs
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+  } else if (category == 6) { // Shields -- lay face-up
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+    scale = 0.9f;
+  } else if (category == 7 || category == 8) { // Helms / Armor
+    angle = glm::vec3(90.0f, 0.0f, 0.0f);
+  } else if (category == 14) { // Potions -- stand upright
+    angle = glm::vec3(0.0f, 0.0f, 0.0f);
+    scale = 0.6f;
+  }
+}
+
+void UpdatePhysics(GroundItem &gi, float terrainHeight) {
+  if (gi.isResting) {
+    gi.position.y = terrainHeight + 0.5f; // Snap to ground
+    return;
+  }
+
+  // Apply gravity
+  gi.position.y += gi.gravity * 0.5f; // Integrate velocity (using Y as UP)
+  gi.gravity -= 1.0f;                 // Gravity accel
+
+  // Floor check (bounce)
+  if (gi.position.y <= terrainHeight + 0.5f) {
+    gi.position.y = terrainHeight + 0.5f;
+
+    // Bounce
+    if (abs(gi.gravity) > 2.0f) {
+      gi.gravity = -gi.gravity * 0.4f; // Bounce with damping
+    } else {
+      gi.gravity = 0;
+      gi.isResting = true;
+    }
+  }
+}
+
+void RenderZenPile(int quantity, glm::vec3 pos, glm::vec3 angle, float scale,
+                   const glm::mat4 &view, const glm::mat4 &proj) {
+  // Procedural pile based on quantity
+  int coinCount = (int)sqrtf((float)quantity) / 2;
+  if (coinCount < 3)
+    coinCount = 3;
+  if (coinCount > 20)
+    coinCount = 20;
+
+  // Seed rand with quantity to keep pile consistent per frame
+  srand(quantity + (int)pos.x);
+
+  for (int i = 0; i < coinCount; ++i) {
+    glm::vec3 offset;
+    offset.x = (rand() % 40) - 20.0f;
+    offset.z = (rand() % 40) - 20.0f;
+    offset.y = 0;
+
+    float rotY = (float)(rand() % 360);
+
+    // Simple stacking effect check
+    if (i > 5)
+      offset.y += 2.0f;
+    if (i > 10)
+      offset.y += 4.0f;
+
+    ItemModelManager::RenderItemWorld("Gold01.bmd", pos + offset, view, proj,
+                                      scale);
+  }
+}
+
+void RenderModels(GroundItem *items, int maxItems, float deltaTime,
+                  const glm::mat4 &view, const glm::mat4 &proj,
+                  float (*getTerrainHeight)(float, float)) {
+  for (int i = 0; i < maxItems; ++i) {
+    auto &gi = items[i];
+    if (!gi.active)
+      continue;
+
+    float terrainH = getTerrainHeight(gi.position.x, gi.position.z);
+    UpdatePhysics(gi, terrainH);
+
+    const char *modelFile = ItemDatabase::GetDropModelName(gi.defIndex);
+    if (modelFile) {
+      ItemModelManager::RenderItemWorld(modelFile, gi.position, view,
+                                        proj, gi.scale, gi.angle);
+    } else if (gi.defIndex == -1) {
+      RenderZenPile(gi.quantity, gi.position, gi.angle, gi.scale, view, proj);
+    }
+  }
+}
+
+void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
+                  const glm::mat4 &view, const glm::mat4 &proj,
+                  int winW, int winH, const glm::vec3 &camPos,
+                  int hoveredGroundItem,
+                  const std::map<int16_t, ClientItemDefinition> &itemDefs) {
+  glm::mat4 vp = proj * view;
+  for (int i = 0; i < maxItems; ++i) {
+    auto &gi = items[i];
+    if (!gi.active)
+      continue;
+
+    glm::vec3 labelPos = gi.position + glm::vec3(0, 15.0f, 0);
+    glm::vec4 clip = vp * glm::vec4(labelPos, 1.0f);
+    if (clip.w <= 0.0f)
+      continue;
+    float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * winW;
+    float sy = ((1.0f - (clip.y / clip.w)) * 0.5f) * winH;
+
+    float dist = glm::length(gi.position - camPos);
+    if (dist > 1500.0f)
+      continue;
+
+    const char *name = ItemDatabase::GetDropName(gi.defIndex);
+    char label[64];
+    if (gi.defIndex == -1)
+      snprintf(label, sizeof(label), "%d Zen", gi.quantity);
+    else if (gi.itemLevel > 0)
+      snprintf(label, sizeof(label), "%s +%d", name, gi.itemLevel);
+    else
+      snprintf(label, sizeof(label), "%s", name);
+
+    ImVec2 ts = font->CalcTextSizeA(13.0f, FLT_MAX, 0, label);
+    float tx = sx - ts.x * 0.5f, ty = sy - ts.y * 0.5f;
+
+    bool isHovered = (i == hoveredGroundItem);
+
+    ImU32 col = gi.defIndex == -1 ? IM_COL32(255, 215, 0, 220)
+                                  : IM_COL32(180, 255, 180, 220);
+
+    if (isHovered) {
+      col = IM_COL32(255, 255, 255, 255);
+      dl->AddText(font, 13.0f, ImVec2(tx + 2, ty + 1),
+                  IM_COL32(0, 0, 0, 200), label);
+      dl->AddText(font, 13.0f, ImVec2(tx - 1, ty - 1),
+                  IM_COL32(0, 0, 0, 200), label);
+    }
+
+    dl->AddText(font, 13.0f, ImVec2(tx + 1, ty + 1),
+                IM_COL32(0, 0, 0, 160), label);
+    dl->AddText(font, 13.0f, ImVec2(tx, ty), col, label);
+
+    // Hover tooltip
+    ImVec2 mousePos = ImGui::GetIO().MousePos;
+    float hoverRadius = std::max(ts.x * 0.5f + 10.0f, 20.0f);
+    if (std::abs(mousePos.x - sx) < hoverRadius &&
+        std::abs(mousePos.y - sy) < 20.0f) {
+      ImVec2 tPos(mousePos.x + 15, mousePos.y + 10);
+      if (tPos.x + 180 > winW)
+        tPos.x = winW - 185;
+      if (tPos.y + 80 > winH)
+        tPos.y = winH - 85;
+      dl->AddRectFilled(tPos, ImVec2(tPos.x + 180, tPos.y + 80),
+                        IM_COL32(0, 0, 0, 240), 4.0f);
+      dl->AddRect(tPos, ImVec2(tPos.x + 180, tPos.y + 80),
+                  IM_COL32(150, 150, 255, 200), 4.0f);
+      float curY = tPos.y + 8;
+      dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(255, 215, 80, 255),
+                  label);
+      curY += 18;
+      if (gi.defIndex != -1) {
+        auto dit = itemDefs.find(gi.defIndex);
+        if (dit != itemDefs.end()) {
+          const auto &dd = dit->second;
+          if (dd.reqStr > 0) {
+            char rb[32];
+            snprintf(rb, sizeof(rb), "STR: %d", dd.reqStr);
+            dl->AddText(ImVec2(tPos.x + 8, curY),
+                        IM_COL32(200, 200, 200, 255), rb);
+            curY += 14;
+          }
+          if (dd.reqDex > 0) {
+            char rb[32];
+            snprintf(rb, sizeof(rb), "DEX: %d", dd.reqDex);
+            dl->AddText(ImVec2(tPos.x + 8, curY),
+                        IM_COL32(200, 200, 200, 255), rb);
+            curY += 14;
+          }
+          if (dd.levelReq > 0) {
+            char rb[32];
+            snprintf(rb, sizeof(rb), "Lv: %d", dd.levelReq);
+            dl->AddText(ImVec2(tPos.x + 8, curY),
+                        IM_COL32(200, 200, 200, 255), rb);
+            curY += 14;
+          }
+        }
+      } else {
+        dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(255, 215, 0, 200),
+                    "Click to pick up");
+      }
+    }
+  }
+}
+
+} // namespace GroundItemRenderer

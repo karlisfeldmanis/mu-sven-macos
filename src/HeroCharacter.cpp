@@ -221,6 +221,108 @@ static float smoothFacing(float current, float target, float dt) {
   return result;
 }
 
+// ─── Weapon animation helpers (Main 5.2 _enum.h + ZzzCharacter.cpp) ────────
+
+bool HeroCharacter::isDualWielding() const {
+  // DK with weapon in right hand AND weapon (not shield) in left hand
+  if (m_weaponInfo.category == 0xFF || m_shieldInfo.category == 0xFF)
+    return false;
+  return m_shieldInfo.category != 6; // Left hand has a weapon, not a shield
+}
+
+int HeroCharacter::weaponIdleAction() const {
+  if (!m_weaponBmd)
+    return ACTION_STOP_MALE;
+
+  uint8_t cat = m_weaponInfo.category;
+  bool twoH = m_weaponInfo.twoHanded;
+
+  switch (cat) {
+  case 0:
+  case 1:
+  case 2: // Sword / Axe / Mace
+    return twoH ? ACTION_STOP_TWO_HAND_SWORD : ACTION_STOP_SWORD;
+  case 3: // Spear / Scythe (index >= 7 = scythe-class: Berdysh+)
+    return (m_weaponInfo.itemIndex >= 7) ? ACTION_STOP_SCYTHE
+                                         : ACTION_STOP_SPEAR;
+  case 4: // Bow / Crossbow (index >= 8 = crossbow)
+    return (m_weaponInfo.itemIndex >= 8) ? ACTION_STOP_CROSSBOW
+                                         : ACTION_STOP_BOW;
+  case 5: // Staff
+    return ACTION_STOP_WAND;
+  default:
+    return ACTION_STOP_SWORD;
+  }
+}
+
+int HeroCharacter::weaponWalkAction() const {
+  if (!m_weaponBmd)
+    return ACTION_WALK_MALE;
+
+  uint8_t cat = m_weaponInfo.category;
+  bool twoH = m_weaponInfo.twoHanded;
+
+  switch (cat) {
+  case 0:
+  case 1:
+  case 2: // Sword / Axe / Mace
+    return twoH ? ACTION_WALK_TWO_HAND_SWORD : ACTION_WALK_SWORD;
+  case 3: // Spear / Scythe
+    return (m_weaponInfo.itemIndex >= 7) ? ACTION_WALK_SCYTHE
+                                         : ACTION_WALK_SPEAR;
+  case 4: // Bow / Crossbow
+    return (m_weaponInfo.itemIndex >= 8) ? ACTION_WALK_CROSSBOW
+                                         : ACTION_WALK_BOW;
+  case 5: // Staff
+    return ACTION_WALK_WAND;
+  default:
+    return ACTION_WALK_SWORD;
+  }
+}
+
+int HeroCharacter::nextAttackAction() {
+  if (!m_weaponBmd) {
+    return ACTION_ATTACK_FIST;
+  }
+
+  uint8_t cat = m_weaponInfo.category;
+  bool twoH = m_weaponInfo.twoHanded;
+  int sc = m_swordSwingCount++;
+
+  // Dual-wield: R1→L1→R2→L2 cycle (Main 5.2 SwordCount%4)
+  if (isDualWielding()) {
+    static constexpr int cycle[4] = {
+        ACTION_ATTACK_SWORD_R1, ACTION_ATTACK_SWORD_L1,
+        ACTION_ATTACK_SWORD_R2, ACTION_ATTACK_SWORD_L2};
+    return cycle[sc % 4];
+  }
+
+  switch (cat) {
+  case 0:
+  case 1:
+  case 2: // Sword / Axe / Mace
+    if (twoH) {
+      // Two-hand: 3 attack variants (SwordCount%3)
+      return ACTION_ATTACK_TWO_HAND_SWORD1 + (sc % 3);
+    }
+    // One-hand: 2 attack variants (SwordCount%2)
+    return (sc % 2 == 0) ? ACTION_ATTACK_SWORD_R1 : ACTION_ATTACK_SWORD_R2;
+  case 3: // Spear / Scythe
+    if (m_weaponInfo.itemIndex >= 7) {
+      // Scythe: 3 attack variants (SwordCount%3)
+      return ACTION_ATTACK_SCYTHE1 + (sc % 3);
+    }
+    return ACTION_ATTACK_SPEAR1; // Spear: single attack
+  case 4:                        // Bow / Crossbow
+    return (m_weaponInfo.itemIndex >= 8) ? ACTION_ATTACK_CROSSBOW
+                                         : ACTION_ATTACK_BOW;
+  case 5: // Staff — use fist attack for melee (magic is separate)
+    return ACTION_ATTACK_FIST;
+  default:
+    return ACTION_ATTACK_SWORD_R1;
+  }
+}
+
 void HeroCharacter::Init(const std::string &dataPath) {
   m_dataPath = dataPath;
   std::string playerPath = dataPath + "/Player/";
@@ -514,17 +616,25 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     }
   }
 
-  // Draw weapon attached to hand bone (if equipped)
-  // Original engine chain: CharBone[LinkBone] * WeaponBone[node] * vertex
-  // Rotation/offset are identity — weapon BMD's own bone handles orientation
+  // Draw weapon (if equipped)
+  // SafeZone: weapon renders on bone 47 (back) with rotation/offset
+  // Combat: weapon renders on hand bone (33 or 42) with identity offset
+  // Reference: ZzzCharacter.cpp RenderCharacterBackItem (line 14634)
+  static constexpr int BONE_BACK = 47;
   auto &wCat = GetWeaponCategoryRender(m_weaponInfo.category);
-  int attachBone = wCat.attachBone;
+  int attachBone = (m_inSafeZone && BONE_BACK < (int)bones.size())
+                       ? BONE_BACK
+                       : wCat.attachBone;
   if (m_weaponBmd && !m_weaponMeshBuffers.empty() &&
       attachBone < (int)bones.size()) {
 
-    // Identity offset (no rotation, no translation)
+    // SafeZone: back rotation (70,0,90) + offset (-20,5,55)
+    // Combat: identity (weapon BMD's own bone handles orientation)
     BoneWorldMatrix weaponOffsetMat =
-        MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0), glm::vec3(0, 0, 0));
+        m_inSafeZone ? MuMath::BuildWeaponOffsetMatrix(
+                           glm::vec3(70.f, 0.f, 90.f), glm::vec3(-20.f, 5.f, 55.f))
+                     : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
+                                                       glm::vec3(0, 0, 0));
 
     // parentMat = CharBone[attachBone] * OffsetMatrix
     BoneWorldMatrix parentMat;
@@ -595,14 +705,23 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     }
   }
 
-  // --- Render shield on left hand (bone 42) ---
+  // --- Render shield / left-hand item ---
+  // SafeZone: renders on bone 47 (back) offset to not overlap weapon
+  // Combat: renders on bone 42 (left hand) with identity offset
   auto &sCat = GetWeaponCategoryRender(6); // category 6 = shield
-  int shieldBone = sCat.attachBone;        // bone 42 = left hand
+  int shieldBone = (m_inSafeZone && BONE_BACK < (int)bones.size())
+                       ? BONE_BACK
+                       : sCat.attachBone;
   if (m_shieldBmd && !m_shieldMeshBuffers.empty() &&
       shieldBone < (int)bones.size()) {
 
+    // SafeZone: back rotation for shield — slightly different offset
+    // Original: shield gets (-10, 0, 0) offset on back
     BoneWorldMatrix shieldOffsetMat =
-        MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0), glm::vec3(0, 0, 0));
+        m_inSafeZone ? MuMath::BuildWeaponOffsetMatrix(
+                           glm::vec3(70.f, 0.f, 90.f), glm::vec3(-10.f, 0.f, 0.f))
+                     : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
+                                                       glm::vec3(0, 0, 0));
 
     BoneWorldMatrix shieldParentMat;
     MuMath::ConcatTransforms((const float(*)[4])bones[shieldBone].data(),
@@ -808,13 +927,17 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
     }
   }
 
-  // Weapons and shields
+  // Weapons and shields (bone 47 = back in SafeZone)
   if (m_weaponBmd) {
-    int bone = GetWeaponCategoryRender(m_weaponInfo.category).attachBone;
+    int bone = (m_inSafeZone && 47 < (int)m_cachedBones.size())
+                   ? 47
+                   : GetWeaponCategoryRender(m_weaponInfo.category).attachBone;
     renderShadowBatch(m_weaponBmd.get(), m_weaponShadowMeshes, bone);
   }
   if (m_shieldBmd) {
-    int bone = GetWeaponCategoryRender(m_shieldInfo.category).attachBone;
+    int bone = (m_inSafeZone && 47 < (int)m_cachedBones.size())
+                   ? 47
+                   : GetWeaponCategoryRender(m_shieldInfo.category).attachBone;
     renderShadowBatch(m_shieldBmd.get(), m_shieldShadowMeshes, bone);
   }
 
@@ -866,10 +989,8 @@ void HeroCharacter::MoveTo(const glm::vec3 &target) {
     return;
   m_target = target;
   // Only reset walk animation if not already walking
-  int walkAction =
-      (!m_inSafeZone && m_weaponBmd)
-          ? GetWeaponCategoryRender(m_weaponInfo.category).actionWalk
-          : ACTION_WALK_MALE;
+  int walkAction = (!m_inSafeZone && m_weaponBmd) ? weaponWalkAction()
+                                                  : ACTION_WALK_MALE;
   if (!m_moving || m_action != walkAction) {
     SetAction(walkAction);
     m_animFrame = 0.0f;
@@ -885,7 +1006,7 @@ void HeroCharacter::StopMoving() {
   m_moving = false;
   // Use weapon-specific idle action when outside SafeZone with weapon
   if (!m_inSafeZone && m_weaponBmd) {
-    SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
+    SetAction(weaponIdleAction());
   } else {
     SetAction(ACTION_STOP_MALE);
   }
@@ -901,13 +1022,9 @@ void HeroCharacter::SetInSafeZone(bool safe) {
 
   // Switch animation to match new state
   if (m_moving) {
-    SetAction((!safe && m_weaponBmd)
-                  ? GetWeaponCategoryRender(m_weaponInfo.category).actionWalk
-                  : ACTION_WALK_MALE);
+    SetAction((!safe && m_weaponBmd) ? weaponWalkAction() : ACTION_WALK_MALE);
   } else {
-    SetAction((!safe && m_weaponBmd)
-                  ? GetWeaponCategoryRender(m_weaponInfo.category).actionIdle
-                  : ACTION_STOP_MALE);
+    SetAction((!safe && m_weaponBmd) ? weaponIdleAction() : ACTION_STOP_MALE);
   }
 
   std::cout << "[Hero] " << (safe ? "Entered SafeZone" : "Left SafeZone")
@@ -983,12 +1100,13 @@ void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
             << m_weaponBmd->Meshes.size() << " meshes, "
             << m_weaponBmd->Bones.size() << " bones"
             << " (bone=" << (int)catRender.attachBone
-            << " idle=" << (int)catRender.actionIdle
-            << " walk=" << (int)catRender.actionWalk << ")" << std::endl;
+            << " idle=" << weaponIdleAction()
+            << " walk=" << weaponWalkAction()
+            << " 2H=" << weapon.twoHanded << ")" << std::endl;
 
   // Update animation to combat stance if outside SafeZone
   if (!m_inSafeZone) {
-    SetAction(m_moving ? catRender.actionWalk : catRender.actionIdle);
+    SetAction(m_moving ? weaponWalkAction() : weaponIdleAction());
     m_animFrame = 0.0f;
   }
 
@@ -1179,7 +1297,7 @@ void HeroCharacter::AttackMonster(int monsterIndex,
   dir.y = 0.0f;
   float dist = glm::length(dir);
 
-  if (dist <= ATTACK_RANGE) {
+  if (dist <= getAttackRange()) {
     // In range — start swinging
     m_attackState = AttackState::SWINGING;
     m_attackAnimTimer = 0.0f;
@@ -1189,14 +1307,8 @@ void HeroCharacter::AttackMonster(int monsterIndex,
     // Face the target
     m_targetFacing = atan2f(dir.z, -dir.x);
 
-    // Use fist attack when no weapon, sword swings when armed
-    if (m_weaponBmd) {
-      SetAction((m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
-                                             : ACTION_ATTACK_SWORD_R2);
-    } else {
-      SetAction(ACTION_ATTACK_FIST);
-    }
-    m_swordSwingCount++;
+    // Weapon-type-specific attack animation (Main 5.2 SwordCount cycle)
+    SetAction(nextAttackAction());
   } else {
     // Out of range — walk toward target
     m_attackState = AttackState::APPROACHING;
@@ -1215,7 +1327,7 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
     dir.y = 0.0f;
     float dist = glm::length(dir);
 
-    if (dist <= ATTACK_RANGE) {
+    if (dist <= getAttackRange()) {
       // Arrived — start swing
       m_moving = false;
       m_attackState = AttackState::SWINGING;
@@ -1225,13 +1337,8 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       // Face the target
       m_targetFacing = atan2f(dir.z, -dir.x);
 
-      if (m_weaponBmd) {
-        SetAction((m_swordSwingCount % 2 == 0) ? ACTION_ATTACK_SWORD_R1
-                                               : ACTION_ATTACK_SWORD_R2);
-      } else {
-        SetAction(ACTION_ATTACK_FIST);
-      }
-      m_swordSwingCount++;
+      // Weapon-type-specific attack animation (Main 5.2 SwordCount cycle)
+      SetAction(nextAttackAction());
     } else if (!m_moving) {
       // Stopped moving but not in range (blocked) — cancel
       CancelAttack();
@@ -1254,11 +1361,7 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       m_attackCooldown = ATTACK_COOLDOWN_TIME;
 
       // Return to combat idle (weapon stance or unarmed)
-      if (m_weaponBmd) {
-        SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
-      } else {
-        SetAction(ACTION_STOP_MALE);
-      }
+      SetAction(m_weaponBmd ? weaponIdleAction() : ACTION_STOP_MALE);
     }
     break;
   }
@@ -1311,7 +1414,7 @@ void HeroCharacter::CancelAttack() {
 
   // Return to appropriate idle
   if (!m_inSafeZone && m_weaponBmd) {
-    SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
+    SetAction(weaponIdleAction());
   } else {
     SetAction(ACTION_STOP_MALE);
   }
@@ -1382,7 +1485,7 @@ void HeroCharacter::UpdateState(float deltaTime) {
       // Return to appropriate idle if not attacking/moving
       if (m_attackState == AttackState::NONE && !m_moving) {
         if (!m_inSafeZone && m_weaponBmd) {
-          SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
+          SetAction(weaponIdleAction());
         } else {
           SetAction(ACTION_STOP_MALE);
         }
@@ -1433,7 +1536,7 @@ void HeroCharacter::Respawn(const glm::vec3 &spawnPos) {
   m_attackTargetMonster = -1;
   // Return to idle
   if (!m_inSafeZone && m_weaponBmd) {
-    SetAction(GetWeaponCategoryRender(m_weaponInfo.category).actionIdle);
+    SetAction(weaponIdleAction());
   } else {
     SetAction(ACTION_STOP_MALE);
   }
@@ -1466,13 +1569,9 @@ void HeroCharacter::SetAction(int newAction) {
   bool involvesFists =
       (m_action == ACTION_ATTACK_FIST || newAction == ACTION_ATTACK_FIST);
 
-  // Detect walk actions (15, 17, 19, 20, 22) and stop actions (0, 1, 2, 4, 6,
-  // 8, 10)
-  bool isWalkingAction = (m_action == 15 || m_action == 17 || m_action == 19 ||
-                          m_action == 20 || m_action == 22);
-  bool isStopAction =
-      (newAction == 0 || newAction == 1 || newAction == 2 || newAction == 4 ||
-       newAction == 6 || newAction == 8 || newAction == 10);
+  // Detect walk actions (15-23) and stop/idle actions (0-10)
+  bool isWalkingAction = (m_action >= 15 && m_action <= 23);
+  bool isStopAction = (newAction >= 0 && newAction <= 10);
   bool isStopping = (isWalkingAction && isStopAction);
 
   if (involvesFists || isStopping) {

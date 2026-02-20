@@ -15,6 +15,9 @@
 #include <unordered_map>
 #include <vector>
 
+struct ImDrawList;
+struct ImFont;
+
 // Client-side monster visual state — driven entirely by server packets.
 // The client NEVER decides state transitions on its own (except cosmetic
 // animation completion like ATTACKING->previous state).
@@ -63,7 +66,11 @@ public:
   void Render(const glm::mat4 &view, const glm::mat4 &proj,
               const glm::vec3 &camPos, float deltaTime);
   void RenderShadows(const glm::mat4 &view, const glm::mat4 &proj);
+  void RenderNameplates(ImDrawList *dl, ImFont *font, const glm::mat4 &view,
+                        const glm::mat4 &proj, int winW, int winH,
+                        const glm::vec3 &camPos, int hoveredMonster);
   void Cleanup();
+  void ClearMonsters();
 
   int GetMonsterCount() const { return (int)m_monsters.size(); }
   MonsterInfo GetMonsterInfo(int index) const;
@@ -90,6 +97,10 @@ public:
   void SetMonsterServerPosition(int index, float worldX, float worldZ,
                                 bool chasing);
 
+  // Arrow projectile VFX (Main 5.2: CreateArrow)
+  void SpawnArrow(const glm::vec3 &from, const glm::vec3 &to,
+                  float speed = 1500.0f);
+
   // Player position for cosmetic facing during CHASING/ATTACKING states
   void SetPlayerPosition(const glm::vec3 &pos) { m_playerPos = pos; }
   void SetPlayerDead(bool dead) { m_playerDead = dead; }
@@ -107,9 +118,19 @@ public:
   void SetVFXManager(VFXManager *vfx) { m_vfxManager = vfx; }
 
 private:
+  // Weapon attached to a monster bone (Main 5.2: c->Weapon[n])
+  struct WeaponDef {
+    BMDData *bmd = nullptr;   // Weapon BMD (owned by m_ownedBmds)
+    std::string texDir;       // Texture directory for weapon meshes
+    int attachBone = 33;      // Player.bmd bone index (33=R Hand, 42=L Hand)
+  };
+
   struct MonsterModel {
     std::string name;
-    BMDData *bmd;
+    std::string texDir; // Texture directory for this model's meshes
+    BMDData *bmd;       // Mesh source (& animation for normal monsters)
+    BMDData *animBmd =
+        nullptr; // Animation/bone source (skeleton monsters: Player.bmd)
     float scale = 1.0f;
     float collisionRadius = 60.0f;
     float collisionHeight = 80.0f;
@@ -121,6 +142,14 @@ private:
     int defense = 0;
     int defenseRate = 0;
     int attackRate = 0;
+    // Action mapping: monster actions (0-6) → BMD action indices
+    // Default: identity for normal monsters; overridden for skeleton types
+    int actionMap[7] = {0, 1, 2, 3, 4, 5, 6};
+    // Weapons (skeleton types: sword, shield, bow attached to Player.bmd bones)
+    std::vector<WeaponDef> weaponDefs;
+
+    // Helper: get the BMD to use for bone/animation computation
+    BMDData *getAnimBmd() const { return animBmd ? animBmd : bmd; }
   };
 
   struct MonsterInstance {
@@ -144,7 +173,12 @@ private:
     int maxHp = 30;
     float corpseTimer = 0.0f;
     float corpseAlpha = 1.0f;
-    int swordCount = 0; // Attack alternation counter (ATTACK1/ATTACK2)
+    float spawnAlpha = 1.0f; // Fade-in on spawn (0→1)
+    int swordCount = 0;      // Attack alternation counter (ATTACK1/ATTACK2)
+    float instanceScale =
+        0.0f; // Per-instance scale override (0=use model default)
+    bool deathSmokeDone = false;  // Giant death smoke burst (one-shot)
+    float ambientVfxTimer = 0.0f; // Throttle for ambient VFX (smoke, etc.)
 
     // Blending state (cross-fade on stop)
     int priorAction = -1;
@@ -165,6 +199,11 @@ private:
     float stutterLogTimer = 0.0f; // Throttle stutter warnings
 
     std::vector<MeshBuffers> meshBuffers;
+    // Per-weapon mesh buffers (parallel to model.weaponDefs)
+    struct WeaponMeshSet {
+      std::vector<MeshBuffers> meshBuffers;
+    };
+    std::vector<WeaponMeshSet> weaponMeshes;
     struct ShadowMesh {
       GLuint vao = 0, vbo = 0;
       int vertexCount = 0;
@@ -183,16 +222,32 @@ private:
     float lifetime;
   };
 
+  // Arrow projectile (Main 5.2: CreateArrow → MODEL_ARROW)
+  struct ArrowProjectile {
+    glm::vec3 position;
+    glm::vec3 direction; // Normalized XZ direction
+    float speed;         // World units/sec (~1500)
+    float pitch;         // Pitch angle in radians (increases with gravity)
+    float yaw;           // Heading yaw in radians
+    float scale;
+    float lifetime;      // Seconds remaining (30 ticks / 25fps = 1.2s)
+  };
+
   std::vector<std::unique_ptr<BMDData>> m_ownedBmds;
   std::vector<MonsterModel> m_models;
   std::vector<MonsterInstance> m_monsters;
   std::vector<DebrisInstance> m_debris;
+  std::vector<ArrowProjectile> m_arrows;
 
   std::unique_ptr<Shader> m_shader;
   std::unique_ptr<Shader> m_shadowShader;
   VFXManager *m_vfxManager = nullptr;
 
   std::string m_monsterTexPath;
+  std::string m_dataPath; // Root data path for loading Player.bmd etc.
+
+  // Player.bmd for skeleton monster animations (types 14, 15, 16)
+  std::unique_ptr<BMDData> m_playerBmd;
   const TerrainData *m_terrainData = nullptr;
   std::vector<glm::vec3> m_terrainLightmap;
   std::vector<PointLight> m_pointLights;
@@ -232,10 +287,12 @@ private:
 
   int m_boneModelIdx = -1;
   int m_stoneModelIdx = -1;
+  int m_arrowModelIdx = -1;
 
   int loadMonsterModel(const std::string &bmdFile, const std::string &name,
                        float scale, float radius, float height,
-                       float bodyOffset = 0.0f);
+                       float bodyOffset = 0.0f,
+                       const std::string &texDirOverride = "");
   float snapToTerrain(float worldX, float worldZ);
   glm::vec3 sampleTerrainLightAt(const glm::vec3 &worldPos) const;
   void updateStateMachine(MonsterInstance &mon, float dt);
@@ -243,6 +300,9 @@ private:
   void spawnDebris(int modelIdx, const glm::vec3 &pos, int count);
   void updateDebris(float dt);
   void renderDebris(const glm::mat4 &view, const glm::mat4 &projection,
+                    const glm::vec3 &camPos);
+  void updateArrows(float dt);
+  void renderArrows(const glm::mat4 &view, const glm::mat4 &projection,
                     const glm::vec3 &camPos);
   void setAction(MonsterInstance &mon, int action);
 };

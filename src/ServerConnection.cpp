@@ -1,5 +1,6 @@
 #include "ServerConnection.hpp"
 #include "../server/include/PacketDefs.hpp"
+#include <iostream>
 
 bool ServerConnection::Connect(const char *host, uint16_t port) {
   bool ok = m_client.Connect(host, port);
@@ -106,7 +107,32 @@ void ServerConnection::SendItemUse(uint8_t slot) {
 void ServerConnection::SendGridMove(uint8_t gridX, uint8_t gridY) {
   PMSG_MOVE_RECV pkt{};
   pkt.h = MakeC1Header(sizeof(pkt), Opcode::MOVE);
-  pkt.x = gridX;
   pkt.y = gridY;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendShopOpen(uint16_t npcType) {
+  std::cout << "[Client] Sending SHOP_OPEN for npcType: " << npcType
+            << std::endl;
+  PMSG_SHOP_OPEN_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::SHOP_OPEN);
+  pkt.npcType = npcType;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendShopBuy(int16_t defIndex, uint8_t itemLevel,
+                                   uint8_t quantity) {
+  PMSG_SHOP_BUY_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::SHOP_BUY);
+  pkt.defIndex = defIndex;
+  pkt.itemLevel = itemLevel;
+  pkt.quantity = quantity;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendShopSell(uint8_t bagSlot) {
+  PMSG_SHOP_SELL_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::SHOP_SELL);
+  pkt.bagSlot = bagSlot;
   m_client.Send(&pkt, sizeof(pkt));
 }

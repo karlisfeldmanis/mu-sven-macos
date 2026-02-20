@@ -1,5 +1,6 @@
 #include "PacketHandler.hpp"
 #include "PacketDefs.hpp"
+#include "handlers/ShopHandler.hpp"
 #include <cstdio>
 
 namespace PacketHandler {
@@ -24,6 +25,10 @@ void Handle(Session &session, const std::vector<uint8_t> &packet, Database &db,
   } else {
     return;
   }
+
+  printf(
+      "[PacketHandler] Received packet type: %02X, headcode: %02X, size: %zu\n",
+      type, headcode, packet.size());
 
   switch (headcode) {
   // Auth / World entry
@@ -71,6 +76,17 @@ void Handle(Session &session, const std::vector<uint8_t> &packet, Database &db,
     break;
   case Opcode::ITEM_USE:
     InventoryHandler::HandleItemUse(session, packet, db);
+    break;
+
+  // Shop
+  case Opcode::SHOP_OPEN:
+    ShopHandler::HandleShopOpen(session, packet, db);
+    break;
+  case Opcode::SHOP_BUY:
+    ShopHandler::HandleShopBuy(session, packet, db);
+    break;
+  case Opcode::SHOP_SELL:
+    ShopHandler::HandleShopSell(session, packet, db);
     break;
 
   default:

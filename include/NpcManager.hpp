@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <vector>
 
+struct ImDrawList;
+
 // PointLight defined in HeroCharacter.hpp
 #include "HeroCharacter.hpp"
 
@@ -48,6 +50,11 @@ public:
               const glm::vec3 &camPos, float deltaTime);
   void RenderShadows(const glm::mat4 &view, const glm::mat4 &proj);
   void RenderOutline(int npcIndex, const glm::mat4 &view, const glm::mat4 &proj);
+  void RenderLabels(ImDrawList *dl, const glm::mat4 &view, const glm::mat4 &proj,
+                    int winW, int winH, const glm::vec3 &camPos, int hoveredNpc);
+  int PickLabel(float screenX, float screenY, const glm::mat4 &view,
+                const glm::mat4 &proj, int winW, int winH,
+                const glm::vec3 &camPos) const;
   void Cleanup();
 
   // Terrain linkage

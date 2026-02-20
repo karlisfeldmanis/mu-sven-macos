@@ -20,10 +20,10 @@ public:
   void SendPrecisePosition(float worldX, float worldZ);
   void SendAttack(uint16_t monsterIndex);
   void SendPickup(uint16_t dropIndex);
-  void SendCharSave(uint16_t charId, uint16_t level, uint16_t str,
-                    uint16_t dex, uint16_t vit, uint16_t ene, uint16_t life,
-                    uint16_t maxLife, uint16_t levelUpPoints,
-                    uint64_t experience, int16_t quickSlotDefIndex);
+  void SendCharSave(uint16_t charId, uint16_t level, uint16_t str, uint16_t dex,
+                    uint16_t vit, uint16_t ene, uint16_t life, uint16_t maxLife,
+                    uint16_t levelUpPoints, uint64_t experience,
+                    int16_t quickSlotDefIndex);
   void SendEquip(uint16_t charId, uint8_t slot, uint8_t cat, uint8_t idx,
                  uint8_t lvl);
   void SendUnequip(uint16_t charId, uint8_t slot);
@@ -31,6 +31,11 @@ public:
   void SendInventoryMove(uint8_t from, uint8_t to);
   void SendItemUse(uint8_t slot);
   void SendGridMove(uint8_t gridX, uint8_t gridY);
+
+  // Shop
+  void SendShopOpen(uint16_t npcType);
+  void SendShopBuy(int16_t defIndex, uint8_t itemLevel, uint8_t quantity);
+  void SendShopSell(uint8_t bagSlot);
 
   // Packet receive callback (set by caller)
   std::function<void(const uint8_t *, int)> onPacket;

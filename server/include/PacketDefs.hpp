@@ -22,8 +22,8 @@ enum class CharacterClass : uint8_t {
 
 namespace Opcode {
 // Auth (headcode 0xF1/0xF3 with subcodes)
-constexpr uint8_t AUTH = 0xF1;        // sub 0x00=Welcome, 0x01=Login
-constexpr uint8_t CHARSELECT = 0xF3;  // sub 0x00=CharList, 0x03=CharSelect
+constexpr uint8_t AUTH = 0xF1;       // sub 0x00=Welcome, 0x01=Login
+constexpr uint8_t CHARSELECT = 0xF3; // sub 0x00=CharList, 0x03=CharSelect
 
 // Sub-opcodes for AUTH (0xF1)
 constexpr uint8_t SUB_WELCOME = 0x00;
@@ -65,10 +65,20 @@ constexpr uint8_t DROP_REMOVE = 0x2E;
 constexpr uint8_t INV_SYNC = 0x36;
 constexpr uint8_t INV_MOVE = 0x39;
 constexpr uint8_t ITEM_USE = 0x3A;
+
+// Shop
+constexpr uint8_t SHOP_OPEN = 0x3B;        // C->S: open shop (npcType)
+constexpr uint8_t SHOP_LIST = 0x3C;        // S->C: shop item list (C2)
+constexpr uint8_t SHOP_BUY = 0x3D;         // C->S: buy request
+constexpr uint8_t SHOP_BUY_RESULT = 0x3E;  // S->C: buy result
+constexpr uint8_t SHOP_SELL = 0x3F;        // C->S: sell request
+constexpr uint8_t SHOP_SELL_RESULT = 0x40; // S->C: sell result
 } // namespace Opcode
 
 // =====================================================
 // Section 1: Wire Headers (C1/C2/C3/C4 framing)
+// =====================================================
+
 // =====================================================
 
 #pragma pack(push, 1)
@@ -185,24 +195,22 @@ struct PMSG_CHARINFO_SEND {
 // =====================================================
 
 // S->C: Character Equipment (0x24, C2 variable-length)
-#pragma pack(push, 1)
 struct PMSG_EQUIPMENT_HEAD {
   PWMSG_HEAD h;  // C2:0x24 (4 bytes)
   uint8_t count; // Number of equipped slots (1 byte)
 };
-#pragma pack(pop)
+
 static_assert(sizeof(PMSG_EQUIPMENT_HEAD) == 5,
               "PMSG_EQUIPMENT_HEAD size mismatch");
 
-#pragma pack(push, 1)
 struct PMSG_EQUIPMENT_SLOT {
-  uint8_t slot;      // EquipSlot (0=right_hand, 1=left_hand, etc.)
-  uint8_t category;  // ItemCategory (0=Sword, 1=Axe, etc.)
-  uint8_t itemIndex; // Index within category (0=Sword01, 1=Sword02)
-  uint8_t itemLevel; // Enhancement level (+0 to +15)
+  uint8_t slot;       // EquipSlot (0=right_hand, 1=left_hand, etc.)
+  uint8_t category;   // ItemCategory (0=Sword, 1=Axe, etc.)
+  uint8_t itemIndex;  // Index within category (0=Sword01, 1=Sword02)
+  uint8_t itemLevel;  // Enhancement level (+0 to +15)
   char modelFile[32]; // Model file name (null-terminated, 32 chars max)
 };
-#pragma pack(pop)
+
 static_assert(sizeof(PMSG_EQUIPMENT_SLOT) == 36,
               "PMSG_EQUIPMENT_SLOT size mismatch");
 
@@ -340,7 +348,7 @@ struct PMSG_DROP_SPAWN_SEND {
   uint16_t dropIndex; // Unique drop ID
   int16_t defIndex;   // -1=Zen, 0-511+=item def index
   uint8_t quantity;
-  uint8_t itemLevel;  // Enhancement +0..+2
+  uint8_t itemLevel; // Enhancement +0..+2
   float worldX;
   float worldZ;
 };
@@ -365,6 +373,53 @@ struct PMSG_PICKUP_RESULT_SEND {
 struct PMSG_DROP_REMOVE_SEND {
   PBMSG_HEAD h; // C1:0x2E
   uint16_t dropIndex;
+};
+
+// =====================================================
+// Section 5b: Shop
+// =====================================================
+
+// C->S: Open Shop (0x3B)
+struct PMSG_SHOP_OPEN_RECV {
+  PBMSG_HEAD h;     // C1:0x3B
+  uint16_t npcType; // NPC type (250/251/253/254/255)
+};
+
+// S->C: Shop item entry (part of C2 list)
+struct PMSG_SHOP_ITEM {
+  int16_t defIndex;  // item defIndex (cat*32+idx)
+  uint8_t itemLevel; // +0 by default
+  uint32_t buyPrice; // price to buy
+};
+
+// C->S: Buy Request (0x3D)
+struct PMSG_SHOP_BUY_RECV {
+  PBMSG_HEAD h;      // C1:0x3D
+  int16_t defIndex;  // which item to buy
+  uint8_t itemLevel; // which level variant
+  uint8_t quantity;  // 1 for equipment, 1+ for stackables
+};
+
+// S->C: Buy Result (0x3E)
+struct PMSG_SHOP_BUY_RESULT_SEND {
+  PBMSG_HEAD h;   // C1:0x3E
+  uint8_t result; // 1=ok, 0=fail
+  int16_t defIndex;
+  uint8_t quantity;
+};
+
+// C->S: Sell Request (0x3F)
+struct PMSG_SHOP_SELL_RECV {
+  PBMSG_HEAD h;    // C1:0x3F
+  uint8_t bagSlot; // inventory slot to sell
+};
+
+// S->C: Sell Result (0x40)
+struct PMSG_SHOP_SELL_RESULT_SEND {
+  PBMSG_HEAD h;       // C1:0x40
+  uint8_t result;     // 1=ok, 0=fail
+  uint8_t bagSlot;    // which slot was sold
+  uint32_t zenGained; // how much zen received
 };
 
 // =====================================================
@@ -488,8 +543,12 @@ inline PSBMSG_HEAD MakeC1SubHeader(uint8_t size, uint8_t headcode,
 }
 
 inline PWMSG_HEAD MakeC2Header(uint16_t size, uint8_t headcode) {
-  return {0xC2, static_cast<uint8_t>(size >> 8),
-          static_cast<uint8_t>(size & 0xFF), headcode};
+  PWMSG_HEAD h;
+  h.type = 0xC2;
+  h.sizeH = (size >> 8) & 0xFF;
+  h.sizeL = size & 0xFF;
+  h.headcode = headcode;
+  return h;
 }
 
 // BUX decode for account/password

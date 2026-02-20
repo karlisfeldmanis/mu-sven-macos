@@ -334,11 +334,17 @@ private:
 
     shader.use();
 
-    int fbWidth, fbHeight;
+    int fbWidth, fbHeight, winW_, winH_;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+    glfwGetWindowSize(window, &winW_, &winH_);
+    float dpiScale = (winW_ > 0) ? (float)fbWidth / (float)winW_ : 1.0f;
+    int panelPx = (int)(250.0f * dpiScale);
+    int sceneW = fbWidth - panelPx;
+    if (sceneW < 1) sceneW = 1;
+    glViewport(panelPx, 0, sceneW, fbHeight);
 
     glm::mat4 projection = glm::perspective(
-        glm::radians(45.0f), (float)fbWidth / (float)fbHeight, 0.1f, 100000.0f);
+        glm::radians(45.0f), (float)sceneW / (float)fbHeight, 0.1f, 100000.0f);
     glm::mat4 view = camera.GetViewMatrix();
     // MU Online uses Z-up; rotate -90° around X to convert to OpenGL Y-up
     glm::mat4 model = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
@@ -414,6 +420,11 @@ private:
   }
 
   void RenderUI() {
+    // Restore full viewport for ImGui
+    int fbW_, fbH_;
+    glfwGetFramebufferSize(window, &fbW_, &fbH_);
+    glViewport(0, 0, fbW_, fbH_);
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();

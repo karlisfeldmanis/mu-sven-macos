@@ -87,6 +87,7 @@ public:
   float potionCooldown = 0.0f;
   float hpRemainder = 0.0f; // Fractional HP for safe zone regeneration
   int16_t quickSlotDefIndex = -1;
+  int shopNpcType = -1; // -1 means no shop is open
 
 private:
   int m_fd;

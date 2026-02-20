@@ -365,6 +365,7 @@ void Server::OnClientConnected(Session &session) {
     CharacterHandler::SendCharStats(session, m_db, c.id);
 
     // Initial inventory sync - Load from DB first
+    session.zen = c.money;
     InventoryHandler::LoadInventory(session, m_db, c.id);
     InventoryHandler::SendInventorySync(session);
 

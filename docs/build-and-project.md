@@ -6,12 +6,12 @@
 cd build && cmake .. && make -j$(sysctl -n hw.ncpu)
 ```
 
-Three targets: `MuRemaster` (world viewer), `ModelViewer` (BMD object browser), and `CharViewer` (character animation browser).
-Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui, giflib.
+Four targets: `MuRemaster` (game client), `MuServer` (game server), `ModelViewer` (BMD object browser), and `CharViewer` (character animation browser).
+Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui, giflib, SQLite3 (server only).
 
 ### Server Build
 ```bash
-cd server/build && cmake .. && make -j$(sysctl -n hw.ncpu)
+cd server_build && cmake ../server && make -j$(sysctl -n hw.ncpu)
 ```
 
 ### macOS Specifics
@@ -19,50 +19,135 @@ cd server/build && cmake .. && make -j$(sysctl -n hw.ncpu)
 - **GLEW Header Order**: `GL/glew.h` **must** be included before `GLFW/glfw3.h` to prevent symbol conflicts.
 - **Metal Translation Layer VBO Updates**: On macOS (OpenGL->Metal), `glBufferSubData` works for dynamic VBO updates. `glBufferData` + VAO re-setup does NOT work reliably. Always use `glBufferSubData` for animated mesh re-skinning.
 
+## Client Architecture
+
+The client is organized into focused modules, each owning a specific subsystem. Modules communicate via non-owning pointer context structs (e.g., `InventoryUIContext`, `InputContext`, `ClientGameState`).
+
+```
+main.cpp (orchestrator: init, render loop, shutdown)
+  ├── InputHandler        -- GLFW callbacks, mouse/keyboard, click-to-move
+  ├── InventoryUI         -- Inventory/equipment panels, drag-drop, tooltips, stat allocation
+  ├── ItemDatabase        -- Static item definitions (293 items), lookup functions
+  ├── ItemModelManager    -- 3D item model loading/rendering (UI slots + world drops)
+  ├── GroundItemRenderer  -- Ground drop physics, 3D models, floating labels
+  ├── FloatingDamageRenderer -- Floating damage/XP/heal numbers
+  ├── RayPicker           -- Mouse ray-cast: terrain, NPC, monster, ground item picking
+  ├── ClientPacketHandler -- Incoming packet dispatch (initial sync + game loop)
+  ├── ServerConnection    -- Typed send API wrapping NetworkClient
+  ├── HeroCharacter       -- Player model, movement, combat, equipment visuals
+  ├── MonsterManager      -- Monster rendering, state machine, nameplates
+  ├── NpcManager          -- NPC rendering, labels
+  ├── ObjectRenderer      -- World objects (2870+ instances), BlendMesh, roof hiding
+  ├── Terrain             -- Heightmap mesh, tile blending, lightmap
+  ├── FireEffect / VFXManager -- Particle effects
+  ├── GrassRenderer       -- Billboard grass with wind
+  └── Sky                 -- Sky dome
+```
+
 ## Source Files
 
 ### Headers (include/)
 
 | File | Purpose |
 |------|---------|
+| **Core Engine** | |
 | `BMDStructs.hpp` | Data structures for BMD binary model format (Vertex_t, Normal_t, Triangle_t, Mesh_t, Bone_t, Action_t) |
 | `BMDParser.hpp` | `BMDParser::Parse(path)` returns `unique_ptr<BMDData>`. Handles version 0xC encryption. |
 | `BMDUtils.hpp` | Bone math: `ComputeBoneMatrices()`, `ComputeBoneMatricesInterpolated()` (slerp), `MuMath::TransformPoint/RotateVector`, AABB. Uses 3x4 row-major matrices. |
 | `TextureLoader.hpp` | OZJ/OZT loading, texture resolution, `TextureScriptFlags` (_R/_H/_N suffixes), `TextureLoadResult` (ID + hasAlpha). |
-| `MeshBuffers.hpp` | Per-mesh GPU state: VAO/VBO/EBO + rendering flags (hasAlpha, noneBlend, hidden, bright) + BlendMesh (bmdTextureId, isWindowLight) + animation (vertexCount, isDynamic). |
+| `MeshBuffers.hpp` | Per-mesh GPU state: VAO/VBO/EBO + rendering flags (hasAlpha, noneBlend, hidden, bright) + BlendMesh + animation. |
 | `Shader.hpp` | RAII OpenGL shader wrapper. `use()`, `setMat4()`, `setVec3()`, `setBool()`. |
-| `Camera.hpp` | FPS camera with yaw/pitch/zoom, WASD movement, state persistence. |
+| `Camera.hpp` | Isometric camera with zoom, state persistence (`camera_save.txt`). |
+| `ViewerCommon.hpp` | Shared viewer utilities: OrbitCamera, DebugAxes, UploadMeshWithBones/RetransformMeshWithBones helpers. |
+| **World Rendering** | |
 | `Terrain.hpp` | 256x256 heightmap mesh, 4-tap tile blending, lightmap integration. |
-| `TerrainParser.hpp` | Parses MAP heightmaps, tile layers, alpha maps, attributes, objects, lightmaps. `TERRAIN_SIZE = 256`. `ObjectData` struct. |
-| `ObjectRenderer.hpp` | World object rendering: BMD model cache, type-to-filename mapping, per-instance transforms, per-mesh blend state, skeletal animation (AnimState, RetransformMesh), BlendMesh system, terrain lightmap sampling per object, per-type alpha (roof hiding). |
-| `ViewerCommon.hpp` | Shared viewer utilities: OrbitCamera, DebugAxes, UploadMeshWithBones/RetransformMeshWithBones helpers, ActivateMacOSApp, ImGui init. |
-| `HeroCharacter.hpp` | Player character: DK Naked model, click-to-move, skeletal walk animation, blob shadow, terrain snap, terrain lightmap sampling, point light uniforms. |
-| `MonsterManager.hpp` | Monster system: multi-type monster rendering, server-driven state machine, combat animations, hover behavior. |
-| `NetworkClient.hpp` | Client-side networking: connects to server, sends/receives packets. |
-| `ClickEffect.hpp` | Click-to-move visual feedback: animated ring effect at click position on terrain. |
+| `TerrainParser.hpp` | Parses MAP heightmaps, tile layers, alpha maps, attributes, objects, lightmaps. `TERRAIN_SIZE = 256`. |
+| `ObjectRenderer.hpp` | World object rendering: BMD model cache, per-instance transforms, BlendMesh glow, per-type alpha (roof hiding). |
 | `GrassRenderer.hpp` | Billboard grass system: wind animation, ball-push displacement, 3 texture layers. |
 | `Sky.hpp` | Sky dome: gradient hemisphere rendered behind scene. |
-| `FireEffect.hpp` | Particle-based fire system for Lorencia torches/bonfires/lights. Uses GPU instancing and billboarding. |
-| `Screenshot.hpp` | `Screenshot::Capture(window)` for JPEG; GIF system for optimized frame-diffed animations. |
+| `FireEffect.hpp` | Particle-based fire system for Lorencia torches/bonfires/lights. GPU instancing + billboarding. |
+| `VFXManager.hpp` | Visual effects manager for combat/skill effects. |
+| **Characters & Entities** | |
+| `HeroCharacter.hpp` | Player character: 5-part DK model, click-to-move, combat, equipment visuals, blob shadow. |
+| `MonsterManager.hpp` | Monster system: multi-type rendering, server-driven state machine (7 states), nameplate rendering. |
+| `NpcManager.hpp` | NPC rendering, name labels, two-phase init (models then server-spawned instances). |
+| `ClickEffect.hpp` | Click-to-move visual feedback: animated ring effect at click position. |
+| **Items & Inventory** | |
+| `ItemDatabase.hpp` | `namespace ItemDatabase`: 293 item definitions, lookup by defIndex/category, body part mapping. |
+| `ItemModelManager.hpp` | `class ItemModelManager`: static cache of 3D item BMDs, `RenderItemUI()` + `RenderItemWorld()`. |
+| `GroundItemRenderer.hpp` | `FloatingDamage` struct, `FloatingDamageRenderer::Spawn/UpdateAndRender`, `GroundItemRenderer` physics/models/labels. |
+| `InventoryUI.hpp` | `namespace InventoryUI`: inventory/equipment panels, drag-drop, tooltips, stat allocation, quick slot. Context via `InventoryUIContext`. |
+| `ClientTypes.hpp` | Shared client types: `ClientItemDefinition`, `ClientInventoryItem`, `ClientEquipSlot`, `GroundItem`, `ServerData`. |
+| **Networking** | |
+| `NetworkClient.hpp` | Low-level TCP socket: connect, send, recv with packet framing. |
+| `ServerConnection.hpp` | `class ServerConnection`: typed send API (`SendAttack`, `SendPickup`, `SendEquip`, etc.) wrapping NetworkClient. |
+| `ClientPacketHandler.hpp` | `namespace ClientPacketHandler`: incoming packet dispatch. Context via `ClientGameState`. |
+| **Input & UI** | |
+| `InputHandler.hpp` | `namespace InputHandler`: GLFW callbacks (mouse, keyboard, scroll), `ProcessInput()`. Context via `InputContext`. |
+| `RayPicker.hpp` | `namespace RayPicker`: mouse-to-world raycasting for terrain, NPCs, monsters, ground items. |
+| `UICoords.hpp` | HUD coordinate system with centered scaling. |
+| `Screenshot.hpp` | JPEG capture + GIF recording (frame-diffed animation). |
 
 ### Sources (src/)
 
 | File | Purpose |
 |------|---------|
+| **Core Engine** | |
 | `BMDParser.cpp` | BMD decryption (XOR key + cumulative wKey) and binary parsing. |
 | `BMDUtils.cpp` | Euler->quaternion->matrix, parent-chain bone concatenation, quaternion slerp interpolation. |
 | `TextureLoader.cpp` | OZJ (JPEG+header) and OZT (TGA+header) loading with RLE, V-flip, extension resolution. |
-| `Camera.cpp` | Camera math, smooth zoom lerp, state save/load to `camera_save.txt`. |
+| `Camera.cpp` | Camera math, smooth zoom lerp, state save/load. |
+| `ViewerCommon.cpp` | Shared viewer boilerplate. |
+| **World Rendering** | |
 | `Terrain.cpp` | Terrain vertex grid generation, texture array loading, shader-based 4-tap blending. |
 | `TerrainParser.cpp` | Decrypts and parses terrain files: heightmap, mapping, attributes, objects, lightmap. |
-| `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ instances with per-mesh blend, BlendMesh glow, skeletal animation, terrain lightmap sampling. |
-| `GrassRenderer.cpp` | 42k grass billboards with GPU vertex shader wind animation and ball-push displacement. |
-| `HeroCharacter.cpp` | DK Naked character: 5-part body, skeletal animation, click-to-move, blob shadow with stencil buffer. |
-| `MonsterManager.cpp` | Monster rendering, server-driven state machine (IDLE/WALKING/CHASING/ATTACKING/HIT/DYING/DEAD), hover for flying types. |
-| `NetworkClient.cpp` | Packet serialization/deserialization, TCP socket management. |
-| `main.cpp` | World viewer app: terrain + objects + grass + sky + fire + hero + monsters, click-to-move, combat, roof hiding. |
+| `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ instances with BlendMesh, terrain lightmap. |
+| `GrassRenderer.cpp` | 42k grass billboards with GPU vertex shader wind and ball-push displacement. |
+| `Sky.cpp` | Sky dome rendering. |
+| `FireEffect.cpp` | Fire particle system: emitter management, GPU instanced billboards. |
+| `VFXManager.cpp` | Visual effects update and rendering. |
+| **Characters & Entities** | |
+| `HeroCharacter.cpp` | DK character: 5-part body, skeletal animation, click-to-move, blob shadow with stencil buffer. |
+| `MonsterManager.cpp` | Monster rendering, server-driven state machine (IDLE/WALKING/CHASING/ATTACKING/HIT/DYING/DEAD), nameplate overlays. |
+| `NpcManager.cpp` | NPC models, animation, name label overlays. |
+| `ClickEffect.cpp` | Click-to-move ring effect. |
+| **Items & Inventory** | |
+| `ItemDatabase.cpp` | 293 item definitions (addDef calls), all lookup functions, body part mapping, category names. |
+| `ItemModelManager.cpp` | BMD item model cache with GPU upload, viewport-based UI rendering, world-space rendering. |
+| `GroundItemRenderer.cpp` | Ground item physics (gravity/bounce), zen pile rendering, floating damage update/render, ground item labels/tooltips. |
+| `InventoryUI.cpp` | Full inventory/equipment UI: panel rendering, drag-drop state machine, tooltip system, equipment stats, stat allocation, quick slot. |
+| **Networking** | |
+| `NetworkClient.cpp` | TCP socket management, packet framing. |
+| `ServerConnection.cpp` | Typed packet builders for all client->server messages. |
+| `ClientPacketHandler.cpp` | Packet dispatch: initial sync (NPCs, monsters, equipment, stats) + game loop (combat, drops, movement, level-up). |
+| **Input & UI** | |
+| `InputHandler.cpp` | GLFW callbacks: mouse movement, scroll zoom, left/right click dispatch, keyboard hotkeys (C/I/Q/Esc), `processInput()` for held keys. |
+| `RayPicker.cpp` | Ray-terrain intersection (binary search), ray-cylinder NPC/monster picking, ray-sphere ground item picking. |
+| `GameUI.cpp` | UI texture and widget helpers. |
+| `UITexture.cpp` | UI texture loading. |
+| `UIWidget.cpp` | UI widget primitives. |
+| `HUD.cpp` | HUD layout helpers. |
+| `MockData.cpp` | Mock character data for testing. |
+| **Main Executables** | |
+| `main.cpp` | Game client: init sequence, render loop (terrain/objects/entities/HUD/overlays), server connection, shutdown. ~1700 lines. |
 | `model_viewer_main.cpp` | Object browser: scans Object1/ for BMDs, orbit camera, ImGui. |
 | `char_viewer_main.cpp` | Character browser: Player.bmd skeleton + body part armor system. |
+
+### Server Sources (server/)
+
+| File | Purpose |
+|------|---------|
+| `server/src/main.cpp` | Server entry point. |
+| `server/src/Server.cpp` | TCP accept loop, session management. |
+| `server/src/Session.cpp` | Per-client session state. |
+| `server/src/PacketHandler.cpp` | Server packet routing to handlers. |
+| `server/src/Database.cpp` | SQLite database: characters, items, NPCs, monsters. |
+| `server/src/GameWorld.cpp` | Game world: terrain attributes, safe zones, spawn management. |
+| `server/src/StatCalculator.cpp` | DK stat formulas: HP, damage, defense, XP. |
+| `server/src/handlers/CharacterHandler.cpp` | Character creation, stat allocation, save/load. |
+| `server/src/handlers/CombatHandler.cpp` | Attack resolution, damage calculation, death/XP. |
+| `server/src/handlers/InventoryHandler.cpp` | Item pickup, equip/unequip, inventory moves, consumption. |
+| `server/src/handlers/WorldHandler.cpp` | Position sync, monster AI, NPC viewport. |
 
 ### Shaders (shaders/)
 
@@ -75,13 +160,15 @@ cd server/build && cmake .. && make -j$(sysctl -n hw.ncpu)
 
 ## Data Paths
 
-- Game assets: `references/other/MuMain/src/bin/Data/`
+- Game assets: `Data/`
   - `Object1/` -- BMD models + OZT/OZJ textures
   - `Monster/` -- Monster BMD models + textures
   - `World1/` -- Lorencia terrain data
   - `Player/` -- Player body part BMDs
-- Reference source: `references/other/Main5.2/Source Main 5.2/source/`
-- Reference server data: `references/other/Main5.2/MuServer_Season_5_Update_15/Data/`
+  - `Effect/` -- Effect textures (fire, thunder, etc.)
+  - `NPC/` -- NPC BMD models + textures
+  - `Item/` -- Item BMD models
+- Server database: `mu_server.db` (SQLite, auto-created)
 
 ## Key Constants
 
@@ -90,8 +177,49 @@ cd server/build && cmake .. && make -j$(sysctl -n hw.ncpu)
 | MAX_BONES | 200 | BMDStructs.hpp |
 | TERRAIN_SIZE | 256 | TerrainParser.hpp |
 | TERRAIN_SCALE | 100.0f | Terrain.cpp |
+| INVENTORY_SLOTS | 64 | ClientTypes.hpp |
+| MAX_GROUND_ITEMS | 64 | ClientTypes.hpp |
+| MAX_FLOATING_DAMAGE | 32 | GroundItemRenderer.hpp |
+| MAX_POINT_LIGHTS | 64 | main.cpp, MonsterManager.hpp |
 | Object record size | 30 bytes | TerrainParser.cpp |
 | MAX_WORLD_OBJECTS | 160 | reference _enum.h |
 | Alpha discard | 0.1 | shaders/model.frag |
 | Fog range | 1500-3500 | shaders/model.frag |
 | Game tick rate | 40ms (25 FPS) | Original engine ZzzScene.cpp |
+| Server port | 44405 | Server.cpp, main.cpp |
+
+## Packet Protocol
+
+Client-server communication uses a simple binary TCP protocol. Each packet starts with a 1-byte type ID.
+
+### Client -> Server
+
+| Type | Name | Payload |
+|------|------|---------|
+| 0x10 | PrecisePosition | float worldX, float worldZ |
+| 0x20 | Attack | uint16_t monsterIndex |
+| 0x21 | Pickup | uint16_t dropIndex |
+| 0x22 | CharSave | charId, level, stats, XP, quickSlot |
+| 0x23 | Equip | charId, slot, category, index, level |
+| 0x24 | Unequip | charId, slot |
+| 0x25 | StatAlloc | uint8_t statType |
+| 0x26 | InventoryMove | uint8_t from, uint8_t to |
+| 0x27 | ItemUse | uint8_t slot |
+| 0x31 | GridMove | uint8_t gridX, uint8_t gridY |
+
+### Server -> Client
+
+| Type | Name | Payload |
+|------|------|---------|
+| 0x01 | Welcome | Server identification |
+| 0x13 | NPC Viewport | NPC type, position, direction |
+| 0x29 | DamageResult | Monster HP update, damage amount |
+| 0x2A | MonsterDeath | Monster death + loot drops |
+| 0x2F | MonsterAttack | Monster attacks player |
+| 0x30 | MonsterRespawn | Monster respawn at new position |
+| 0x34 | MonsterSpawn | Initial monster data |
+| 0x35 | MonsterMove | Monster position update + chasing flag |
+| 0x36 | InventorySync | Full inventory state |
+| 0x37 | EquipmentSync | Equipment slots |
+| 0x38 | StatSync | Level, stats, XP |
+| 0x39 | GroundDrop | Item/zen drop on ground |

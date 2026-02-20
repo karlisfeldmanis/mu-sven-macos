@@ -168,7 +168,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
     mon.spawnZ = mon.worldZ;
     mon.state = MonsterInstance::ALIVE;
 
-    // Set stats based on type (from Monster.txt Main 5.2)
+    // Set stats based on type (from OpenMU Version075 MonsterDefinitions)
     if (mon.type == 0) { // Bull Fighter — AtkSpeed=1600, MvRange=3, View=5
       mon.hp = BULL_HP;
       mon.maxHp = BULL_HP;
@@ -208,7 +208,7 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 2.0f; // AtkSpeed=2000ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 400.0f;    // ViewRange=4
-      mon.aggressive = false;     // Yellow: passive, only fights back
+      mon.aggressive = true;      // OpenMU: all Lorencia monsters aggressive
     } else if (mon.type == 3) {   // Spider — AtkSpeed=1800, MvRange=2, View=5
       mon.hp = SPIDER_HP;
       mon.maxHp = SPIDER_HP;
@@ -221,9 +221,9 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.atkCooldownTime = 1.8f; // AtkSpeed=1800ms
       mon.wanderRange = 200.0f;   // MvRange=2
       mon.aggroRange = 500.0f;    // ViewRange=5
-      mon.aggressive = false;     // Yellow: passive, only fights back
+      mon.aggressive = true;      // OpenMU: all Lorencia monsters aggressive
     } else if (mon.type ==
-               4) { // Elite Bull Fighter — AtkSpeed=1600, MvRange=3, View=4
+               4) { // Elite Bull Fighter — AtkSpeed=1400, MvRange=3, View=4
       mon.hp = ELITE_BULL_HP;
       mon.maxHp = ELITE_BULL_HP;
       mon.defense = ELITE_BULL_DEFENSE;
@@ -232,12 +232,12 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.attackMax = ELITE_BULL_ATTACK_MAX;
       mon.attackRate = ELITE_BULL_ATTACK_RATE;
       mon.level = ELITE_BULL_LEVEL;
-      mon.atkCooldownTime = 1.6f; // AtkSpeed=1600ms
+      mon.atkCooldownTime = 1.4f; // AtkSpeed=1400ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 400.0f;    // ViewRange=4
       mon.aggressive = true;      // Red: attacks on sight
     } else if (mon.type ==
-               6) { // Lich — AtkSpeed=1800, MvRange=3, View=7 (ranged caster)
+               6) { // Lich — AtkSpeed=2000, MvRange=3, View=7 (ranged caster)
       mon.hp = LICH_HP;
       mon.maxHp = LICH_HP;
       mon.defense = LICH_DEFENSE;
@@ -246,12 +246,12 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.attackMax = LICH_ATTACK_MAX;
       mon.attackRate = LICH_ATTACK_RATE;
       mon.level = LICH_LEVEL;
-      mon.atkCooldownTime = 1.8f; // AtkSpeed=1800ms
+      mon.atkCooldownTime = 2.0f; // AtkSpeed=2000ms
       mon.wanderRange = 300.0f;   // MvRange=3
       mon.aggroRange = 700.0f;    // ViewRange=7
       mon.aggressive = true;      // Red: attacks on sight
     } else if (mon.type ==
-               7) { // Giant — AtkSpeed=2000, MvRange=3, View=5 (slow, powerful)
+               7) { // Giant — AtkSpeed=2200, MvRange=2, View=3 (slow, strong)
       mon.hp = GIANT_HP;
       mon.maxHp = GIANT_HP;
       mon.defense = GIANT_DEFENSE;
@@ -260,12 +260,12 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.attackMax = GIANT_ATTACK_MAX;
       mon.attackRate = GIANT_ATTACK_RATE;
       mon.level = GIANT_LEVEL;
-      mon.atkCooldownTime = 2.0f; // AtkSpeed=2000ms
-      mon.wanderRange = 300.0f;   // MvRange=3
-      mon.aggroRange = 500.0f;    // ViewRange=5
+      mon.atkCooldownTime = 2.2f; // AtkSpeed=2200ms
+      mon.wanderRange = 200.0f;   // MvRange=2
+      mon.aggroRange = 300.0f;    // ViewRange=3
       mon.aggressive = true;      // Red: attacks on sight
     } else if (mon.type ==
-               14) { // Skeleton Warrior — AtkSpeed=1600, MvRange=3, View=5
+               14) { // Skeleton Warrior — AtkSpeed=1400, MvRange=2, View=4
       mon.hp = SKEL_HP;
       mon.maxHp = SKEL_HP;
       mon.defense = SKEL_DEFENSE;
@@ -274,9 +274,9 @@ void GameWorld::LoadMonstersFromDB(Database &db, uint8_t mapId) {
       mon.attackMax = SKEL_ATTACK_MAX;
       mon.attackRate = SKEL_ATTACK_RATE;
       mon.level = SKEL_LEVEL;
-      mon.atkCooldownTime = 1.6f; // AtkSpeed=1600ms
-      mon.wanderRange = 300.0f;   // MvRange=3
-      mon.aggroRange = 500.0f;    // ViewRange=5
+      mon.atkCooldownTime = 1.4f; // AtkSpeed=1400ms
+      mon.wanderRange = 200.0f;   // MvRange=2
+      mon.aggroRange = 400.0f;    // ViewRange=4
       mon.aggressive = true;      // Red: attacks on sight
     } else {
       mon.hp = 30;
@@ -526,7 +526,9 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     }
 
     // Update aggro timer (positive = time remaining on active aggro)
-    if (mon.aggroTargetFd != -1) {
+    // Only decrement when NOT in respawn immunity (Block A may have just
+    // clamped timer to 0.0f this frame — don't push it negative again)
+    if (mon.aggroTargetFd != -1 && mon.aggroTimer > 0.0f) {
       mon.aggroTimer -= dt;
       if (mon.aggroTimer <= 0.0f) {
         mon.aggroTargetFd = -1; // Aggro expired
@@ -578,6 +580,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     if (!bestTarget) {
       if (mon.isChasing) {
         mon.isReturning = true;
+        mon.hp = mon.maxHp; // Reset HP on aggro loss
         moveTowardSpawn(mon);
       }
       continue;
@@ -587,6 +590,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     if (IsSafeZone(bestTarget->worldX, bestTarget->worldZ)) {
       mon.isChasing = false;
       mon.isReturning = true;
+      mon.hp = mon.maxHp; // Reset HP on aggro loss
       mon.aggroTargetFd = -1; // Drop aggro immediately
       mon.aggroTimer = 0.0f;
       moveTowardSpawn(mon);
@@ -602,6 +606,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       // Already chasing — leash check (distance from spawn)
       if (distFromSpawn > LEASH_RANGE) {
         mon.isReturning = true;
+        mon.hp = mon.maxHp; // Reset HP on leash
         moveTowardSpawn(mon);
         continue;
       }
@@ -609,6 +614,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       if (bestDist > mon.aggroRange * 3.0f) {
         mon.isChasing = false;
         mon.isReturning = true;
+        mon.hp = mon.maxHp; // Reset HP on de-aggro
         moveTowardSpawn(mon);
         continue;
       }
@@ -616,9 +622,11 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       // Not chasing — initial aggro check
       // Passive (yellow) monsters never proximity-aggro, only fight back
       // Allow fight-back if monster has active aggro target (was hit by player)
-      if ((!mon.aggressive && mon.aggroTargetFd == -1) ||
+      bool inImmunity = (mon.aggroTimer < 0.0f);
+      bool hasExplicitAggro = (mon.aggroTargetFd != -1);
+      if ((!mon.aggressive && !hasExplicitAggro) ||
           bestDist > mon.aggroRange || distFromSpawn > LEASH_RANGE ||
-          mon.aggroTimer < 0.0f) {
+          (inImmunity && !hasExplicitAggro)) {
         continue;
       }
     }

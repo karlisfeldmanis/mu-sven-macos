@@ -3,9 +3,9 @@
 
 #include "ClientTypes.hpp"
 #include "HeroCharacter.hpp"
+#include "ItemDatabase.hpp"
 #include "MonsterManager.hpp"
 #include "Terrain.hpp"
-#include "VFXManager.hpp"
 #include <cstdint>
 #include <functional>
 #include <glm/glm.hpp>
@@ -23,10 +23,12 @@ struct ClientGameState {
   ClientInventoryItem *inventory = nullptr;
   ClientEquipSlot *equipSlots = nullptr;
   GroundItem *groundItems = nullptr;
-  std::map<int16_t, ClientItemDefinition> *itemDefs = nullptr;
-
   uint32_t *zen = nullptr;
   bool *syncDone = nullptr;
+
+  bool *shopOpen = nullptr;
+  std::vector<ShopItem> *shopItems = nullptr;
+  std::map<int16_t, ClientItemDefinition> *itemDefs = nullptr;
 
   // Server-tracked character stats
   int *serverLevel = nullptr;

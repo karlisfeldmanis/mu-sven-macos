@@ -1,0 +1,38 @@
+#ifndef MU_ITEM_MODEL_MANAGER_HPP
+#define MU_ITEM_MODEL_MANAGER_HPP
+
+#include "BMDParser.hpp"
+#include "ViewerCommon.hpp"
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+class Shader;
+
+struct LoadedItemModel {
+  std::shared_ptr<BMDData> bmd;
+  std::vector<MeshBuffers> meshes; // Static buffers (bind pose)
+  glm::vec3 transformedMin{0};     // AABB from bone-transformed vertices
+  glm::vec3 transformedMax{0};
+};
+
+class ItemModelManager {
+public:
+  static void Init(Shader *shader, const std::string &dataPath);
+  static LoadedItemModel *Get(const std::string &filename);
+  static void RenderItemUI(const std::string &modelFile, int16_t defIndex,
+                           int x, int y, int w, int h, bool hovered = false);
+  static void RenderItemWorld(const std::string &filename, const glm::vec3 &pos,
+                              const glm::mat4 &view, const glm::mat4 &proj,
+                              float scale = 1.0f,
+                              glm::vec3 rotation = glm::vec3(0));
+
+private:
+  static std::map<std::string, LoadedItemModel> s_cache;
+  static Shader *s_shader;
+  static std::string s_dataPath;
+};
+
+#endif // MU_ITEM_MODEL_MANAGER_HPP

@@ -142,8 +142,7 @@ public:
   bool RemoveDrop(uint16_t dropIndex);
   const std::vector<GroundDrop> &GetDrops() const { return m_drops; }
 
-  // Monster stats (from Monster.txt Main 5.2 — identical to 0.97k for Lorencia
-  // mobs)
+  // Monster stats (from OpenMU Version075 MonsterDefinitions)
 
   // Bull Fighter (type 0) — Level 6, MvRange 3, View 5, AtkSpeed 1600
   static constexpr int BULL_HP = 100;
@@ -169,52 +168,52 @@ public:
   static constexpr int BUDGE_DEFENSE_RATE = 3;
   static constexpr int BUDGE_ATTACK_MIN = 10;
   static constexpr int BUDGE_ATTACK_MAX = 13;
-  static constexpr int BUDGE_ATTACK_RATE = 22;
+  static constexpr int BUDGE_ATTACK_RATE = 18;
   static constexpr int BUDGE_LEVEL = 4;
 
-  // Spider (type 3) — Level 2, MvRange 2, View 5 (Monster.txt Main 5.2)
+  // Spider (type 3) — Level 2, MvRange 2, View 5, AtkSpeed 1800
   static constexpr int SPIDER_HP = 30;
   static constexpr int SPIDER_DEFENSE = 1;
   static constexpr int SPIDER_DEFENSE_RATE = 1;
   static constexpr int SPIDER_ATTACK_MIN = 4;
   static constexpr int SPIDER_ATTACK_MAX = 7;
-  static constexpr int SPIDER_ATTACK_RATE = 15;
+  static constexpr int SPIDER_ATTACK_RATE = 8;
   static constexpr int SPIDER_LEVEL = 2;
 
-  // Elite Bull Fighter (type 4) — Level 12, MvRange 3, View 4, AtkSpeed 1600
+  // Elite Bull Fighter (type 4) — Level 12, MvRange 3, View 4, AtkSpeed 1400
   static constexpr int ELITE_BULL_HP = 190;
-  static constexpr int ELITE_BULL_DEFENSE = 15;
-  static constexpr int ELITE_BULL_DEFENSE_RATE = 15;
-  static constexpr int ELITE_BULL_ATTACK_MIN = 33;
-  static constexpr int ELITE_BULL_ATTACK_MAX = 38;
-  static constexpr int ELITE_BULL_ATTACK_RATE = 56;
+  static constexpr int ELITE_BULL_DEFENSE = 12;
+  static constexpr int ELITE_BULL_DEFENSE_RATE = 12;
+  static constexpr int ELITE_BULL_ATTACK_MIN = 31;
+  static constexpr int ELITE_BULL_ATTACK_MAX = 36;
+  static constexpr int ELITE_BULL_ATTACK_RATE = 50;
   static constexpr int ELITE_BULL_LEVEL = 12;
 
-  // Lich (type 6) — Level 14, MvRange 3, View 7, AtkSpeed 1800 (ranged caster)
+  // Lich (type 6) — Level 14, MvRange 3, View 7, AtkSpeed 2000 (ranged caster)
   static constexpr int LICH_HP = 255;
-  static constexpr int LICH_DEFENSE = 18;
-  static constexpr int LICH_DEFENSE_RATE = 18;
-  static constexpr int LICH_ATTACK_MIN = 40;
-  static constexpr int LICH_ATTACK_MAX = 50;
-  static constexpr int LICH_ATTACK_RATE = 72;
+  static constexpr int LICH_DEFENSE = 14;
+  static constexpr int LICH_DEFENSE_RATE = 14;
+  static constexpr int LICH_ATTACK_MIN = 41;
+  static constexpr int LICH_ATTACK_MAX = 46;
+  static constexpr int LICH_ATTACK_RATE = 62;
   static constexpr int LICH_LEVEL = 14;
 
-  // Giant (type 7) — Level 17, MvRange 3, View 5, AtkSpeed 2000 (slow, strong)
+  // Giant (type 7) — Level 17, MvRange 2, View 3, AtkSpeed 2200 (slow, strong)
   static constexpr int GIANT_HP = 400;
-  static constexpr int GIANT_DEFENSE = 25;
-  static constexpr int GIANT_DEFENSE_RATE = 25;
+  static constexpr int GIANT_DEFENSE = 18;
+  static constexpr int GIANT_DEFENSE_RATE = 18;
   static constexpr int GIANT_ATTACK_MIN = 57;
   static constexpr int GIANT_ATTACK_MAX = 62;
-  static constexpr int GIANT_ATTACK_RATE = 89;
+  static constexpr int GIANT_ATTACK_RATE = 80;
   static constexpr int GIANT_LEVEL = 17;
 
-  // Skeleton Warrior (type 14) — Level 19, MvRange 3, View 5, AtkSpeed 1600
+  // Skeleton Warrior (type 14) — Level 19, MvRange 2, View 4, AtkSpeed 1400
   static constexpr int SKEL_HP = 525;
-  static constexpr int SKEL_DEFENSE = 30;
-  static constexpr int SKEL_DEFENSE_RATE = 30;
-  static constexpr int SKEL_ATTACK_MIN = 63;
-  static constexpr int SKEL_ATTACK_MAX = 72;
-  static constexpr int SKEL_ATTACK_RATE = 105;
+  static constexpr int SKEL_DEFENSE = 22;
+  static constexpr int SKEL_DEFENSE_RATE = 22;
+  static constexpr int SKEL_ATTACK_MIN = 68;
+  static constexpr int SKEL_ATTACK_MAX = 74;
+  static constexpr int SKEL_ATTACK_RATE = 93;
   static constexpr int SKEL_LEVEL = 19;
 
   static constexpr float DYING_DURATION = 3.0f;

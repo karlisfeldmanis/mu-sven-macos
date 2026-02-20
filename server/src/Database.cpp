@@ -163,6 +163,12 @@ void Database::CreateTables() {
                "ALTER TABLE characters ADD COLUMN quick_slot_def_index INTEGER "
                "DEFAULT -1",
                nullptr, nullptr, nullptr);
+
+  // Migration: add buy_price to item_definitions (default 0)
+  sqlite3_exec(
+      m_db,
+      "ALTER TABLE item_definitions ADD COLUMN buy_price INTEGER DEFAULT 0",
+      nullptr, nullptr, nullptr);
 }
 
 void Database::CreateDefaultAccount() {
@@ -818,44 +824,83 @@ void Database::SeedItemDefinitions() {
       seeded = sqlite3_column_int(countStmt, 0);
     sqlite3_finalize(countStmt);
     printf("[DB] Seeded %d 0.97d item definitions\n", seeded);
+
+    // Set buy prices by category formula + specific overrides
+    // Weapons (cats 0-5): level_req * 100 + damage_max * 20
+    sqlite3_exec(m_db,
+                 "UPDATE item_definitions SET buy_price = level_req * 100 + "
+                 "damage_max * 20 "
+                 "WHERE category <= 5 AND buy_price = 0",
+                 nullptr, nullptr, nullptr);
+    // Shields (cat 6): level_req * 80 + defense * 30
+    sqlite3_exec(
+        m_db,
+        "UPDATE item_definitions SET buy_price = level_req * 80 + defense * 30 "
+        "WHERE category = 6 AND buy_price = 0",
+        nullptr, nullptr, nullptr);
+    // Armor (cats 7-11): level_req * 80 + defense * 30
+    sqlite3_exec(
+        m_db,
+        "UPDATE item_definitions SET buy_price = level_req * 80 + defense * 30 "
+        "WHERE category >= 7 AND category <= 11 AND buy_price = 0",
+        nullptr, nullptr, nullptr);
+    // Wings (cat 12, idx 0-6): fixed 50000
+    sqlite3_exec(m_db,
+                 "UPDATE item_definitions SET buy_price = 50000 "
+                 "WHERE category = 12 AND item_index <= 6",
+                 nullptr, nullptr, nullptr);
+    // Orbs (cat 12, idx 7-19): level_req * 200
+    sqlite3_exec(m_db,
+                 "UPDATE item_definitions SET buy_price = level_req * 200 "
+                 "WHERE category = 12 AND item_index >= 7 AND item_index <= 19",
+                 nullptr, nullptr, nullptr);
+    // Jewel of Chaos (12,15): 810000
+    sqlite3_exec(m_db,
+                 "UPDATE item_definitions SET buy_price = 810000 "
+                 "WHERE category = 12 AND item_index = 15",
+                 nullptr, nullptr, nullptr);
+    // Pets/Jewelry (cat 13): level_req * 300
+    sqlite3_exec(m_db,
+                 "UPDATE item_definitions SET buy_price = level_req * 300 "
+                 "WHERE category = 13 AND buy_price = 0",
+                 nullptr, nullptr, nullptr);
+    // Potions (cat 14) — specific prices
+    const char *potionPrices = R"(
+        UPDATE item_definitions SET buy_price = CASE item_index
+            WHEN 0 THEN 20 WHEN 1 THEN 80 WHEN 2 THEN 300 WHEN 3 THEN 1000
+            WHEN 4 THEN 120 WHEN 5 THEN 450 WHEN 6 THEN 1500
+            WHEN 7 THEN 3500 WHEN 8 THEN 100 WHEN 9 THEN 1000 WHEN 10 THEN 2000
+            WHEN 13 THEN 9000000 WHEN 14 THEN 6000000 WHEN 16 THEN 45000000
+            WHEN 20 THEN 900 WHEN 22 THEN 36000000
+            ELSE 500 END
+        WHERE category = 14;
+    )";
+    sqlite3_exec(m_db, potionPrices, nullptr, nullptr, nullptr);
+    // Scrolls (cat 15) — specific prices
+    const char *scrollPrices = R"(
+        UPDATE item_definitions SET buy_price = CASE item_index
+            WHEN 0 THEN 3800 WHEN 1 THEN 3100 WHEN 2 THEN 2400
+            WHEN 3 THEN 1500 WHEN 4 THEN 4400 WHEN 5 THEN 2800
+            WHEN 6 THEN 3500 WHEN 7 THEN 5000 WHEN 8 THEN 6200
+            WHEN 9 THEN 7500 WHEN 10 THEN 500
+            WHEN 11 THEN 12000 WHEN 12 THEN 18000 WHEN 13 THEN 30000
+            ELSE 1000 END
+        WHERE category = 15;
+    )";
+    sqlite3_exec(m_db, scrollPrices, nullptr, nullptr, nullptr);
+    // Ammo — Bolt (4,7) and Arrows (4,15) — cheap
+    sqlite3_exec(m_db,
+                 "UPDATE item_definitions SET buy_price = 100 "
+                 "WHERE (category = 4 AND item_index = 7) OR (category = 4 AND "
+                 "item_index = 15)",
+                 nullptr, nullptr, nullptr);
+    printf("[DB] Set buy prices for all items\n");
   }
 }
 
 ItemDefinition Database::GetItemDefinition(int id) {
-  ItemDefinition def;
-  sqlite3_stmt *stmt = nullptr;
-  const char *sql =
-      "SELECT id, category, item_index, name, model_file, level_req, "
-      "damage_min, "
-      "damage_max, defense, attack_speed, two_handed, width, height, "
-      "req_str, req_dex, req_vit, req_ene, class_flags "
-      "FROM item_definitions WHERE id=?";
-  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return def;
-  sqlite3_bind_int(stmt, 1, id);
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    def.id = sqlite3_column_int(stmt, 0);
-    def.category = static_cast<uint8_t>(sqlite3_column_int(stmt, 1));
-    def.itemIndex = static_cast<uint8_t>(sqlite3_column_int(stmt, 2));
-    def.name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3));
-    def.modelFile =
-        reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4));
-    def.level = static_cast<uint16_t>(sqlite3_column_int(stmt, 5));
-    def.damageMin = static_cast<uint16_t>(sqlite3_column_int(stmt, 6));
-    def.damageMax = static_cast<uint16_t>(sqlite3_column_int(stmt, 7));
-    def.defense = static_cast<uint16_t>(sqlite3_column_int(stmt, 8));
-    def.attackSpeed = static_cast<uint8_t>(sqlite3_column_int(stmt, 9));
-    def.twoHanded = static_cast<uint8_t>(sqlite3_column_int(stmt, 10));
-    def.width = static_cast<uint8_t>(sqlite3_column_int(stmt, 11));
-    def.height = static_cast<uint8_t>(sqlite3_column_int(stmt, 12));
-    def.reqStrength = static_cast<uint16_t>(sqlite3_column_int(stmt, 13));
-    def.reqDexterity = static_cast<uint16_t>(sqlite3_column_int(stmt, 14));
-    def.reqVitality = static_cast<uint16_t>(sqlite3_column_int(stmt, 15));
-    def.reqEnergy = static_cast<uint16_t>(sqlite3_column_int(stmt, 16));
-    def.classFlags = static_cast<uint32_t>(sqlite3_column_int64(stmt, 17));
-  }
-  sqlite3_finalize(stmt);
-  return def;
+  return GetItemDefinition(static_cast<uint8_t>(id / 32),
+                           static_cast<uint8_t>(id % 32));
 }
 
 ItemDefinition Database::GetItemDefinition(uint8_t category,
@@ -865,7 +910,8 @@ ItemDefinition Database::GetItemDefinition(uint8_t category,
   const char *sql =
       "SELECT id, category, item_index, name, model_file, level_req, "
       "damage_min, damage_max, defense, attack_speed, two_handed, "
-      "width, height, req_str, req_dex, req_vit, req_ene, class_flags "
+      "width, height, req_str, req_dex, req_vit, req_ene, class_flags, "
+      "buy_price "
       "FROM item_definitions WHERE category=? AND item_index=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return item;
@@ -892,6 +938,7 @@ ItemDefinition Database::GetItemDefinition(uint8_t category,
     item.reqVitality = static_cast<uint16_t>(sqlite3_column_int(stmt, 15));
     item.reqEnergy = static_cast<uint16_t>(sqlite3_column_int(stmt, 16));
     item.classFlags = static_cast<uint32_t>(sqlite3_column_int64(stmt, 17));
+    item.buyPrice = static_cast<uint32_t>(sqlite3_column_int(stmt, 18));
   }
   sqlite3_finalize(stmt);
   return item;

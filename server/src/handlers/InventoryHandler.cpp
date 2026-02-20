@@ -215,6 +215,28 @@ void HandlePickup(Session &session, const std::vector<uint8_t> &packet,
         h = 1;
       }
 
+      // Stackable items (category 14 = potions): try to merge into existing stack
+      static constexpr uint8_t MAX_STACK = 20;
+      if (cat == 14 && w == 1 && h == 1) {
+        for (int i = 0; i < 64; i++) {
+          if (session.bag[i].occupied && session.bag[i].primary &&
+              session.bag[i].defIndex == drop->defIndex &&
+              session.bag[i].quantity < MAX_STACK) {
+            session.bag[i].quantity++;
+            db.SaveCharacterInventory(session.characterId, drop->defIndex,
+                                      session.bag[i].quantity,
+                                      session.bag[i].itemLevel,
+                                      static_cast<uint8_t>(i));
+            printf("[Inventory] Stacked potion def=%d in slot %d (qty=%d)\n",
+                   drop->defIndex, i, session.bag[i].quantity);
+            result.success = 1;
+            session.Send(&result, sizeof(result));
+            SendInventorySync(session);
+            return;
+          }
+        }
+      }
+
       bool placed = false;
       int startSlot = 0;
 
@@ -323,6 +345,13 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
       healAmount = 100;
 
     if (healAmount > 0) {
+      // Full HP check — don't consume potion if already at max
+      if (session.hp >= session.maxHp) {
+        printf("[Inventory] Rejecting item use fd=%d: HP already full (%d/%d)\n",
+               session.GetFd(), session.hp, session.maxHp);
+        return;
+      }
+
       session.hp += healAmount;
       if (session.hp > session.maxHp)
         session.hp = session.maxHp;
@@ -331,6 +360,8 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
 
       if (item.quantity > 1) {
         item.quantity--;
+        db.SaveCharacterInventory(session.characterId, item.defIndex,
+                                  item.quantity, item.itemLevel, req->slot);
       } else {
         ItemDefinition def = db.GetItemDefinition(item.defIndex);
         int w = def.width > 0 ? def.width : 1;
@@ -344,6 +375,7 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
               session.bag[s] = {};
           }
         }
+        db.DeleteCharacterInventoryItem(session.characterId, req->slot);
       }
 
       printf("[Inventory] Item used fd=%d: Healed %d HP. New HP: %d/%d. "

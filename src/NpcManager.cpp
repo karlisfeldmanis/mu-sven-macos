@@ -2,6 +2,7 @@
 #include "HeroCharacter.hpp" // For PointLight struct
 #include "TextureLoader.hpp"
 #include "ViewerCommon.hpp"
+#include "imgui.h"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -625,4 +626,88 @@ void NpcManager::Cleanup() {
   m_ownedBmds.clear();
   m_shader.reset();
   m_shadowShader.reset();
+}
+
+void NpcManager::RenderLabels(ImDrawList *dl, const glm::mat4 &view,
+                               const glm::mat4 &proj, int winW, int winH,
+                               const glm::vec3 &camPos, int hoveredNpc) {
+  const float padX = 4.0f, padY = 2.0f;
+
+  for (int i = 0; i < GetNpcCount(); ++i) {
+    NpcInfo info = GetNpcInfo(i);
+    if (info.name.empty())
+      continue;
+
+    float dist = glm::distance(camPos, info.position);
+    if (dist > 2000.0f)
+      continue;
+
+    glm::vec3 labelPos = info.position + glm::vec3(0, info.height + 30.0f, 0);
+    glm::vec4 clip = proj * view * glm::vec4(labelPos, 1.0f);
+    if (clip.w <= 0)
+      continue;
+    glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    float sx = (ndc.x * 0.5f + 0.5f) * (float)winW;
+    float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * (float)winH;
+
+    ImVec2 textSize = ImGui::CalcTextSize(info.name.c_str());
+    float x0 = sx - textSize.x / 2 - padX;
+    float y0 = sy - textSize.y / 2 - padY;
+    float x1 = sx + textSize.x / 2 + padX;
+    float y1 = sy + textSize.y / 2 + padY;
+
+    bool hovered = (i == hoveredNpc);
+    ImU32 bgCol =
+        hovered ? IM_COL32(20, 40, 20, 200) : IM_COL32(10, 10, 10, 150);
+    ImU32 borderCol =
+        hovered ? IM_COL32(100, 255, 100, 200) : IM_COL32(80, 80, 80, 150);
+    ImU32 textCol = hovered ? IM_COL32(150, 255, 150, 255)
+                            : IM_COL32(200, 200, 200, 255);
+
+    // Fill
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), bgCol, 2.0f);
+    // Border
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), borderCol, 2.0f, 0, 1.0f);
+
+    // Shadow
+    dl->AddText(ImVec2(sx - textSize.x / 2 + 1, sy - textSize.y / 2 + 1),
+                IM_COL32(0, 0, 0, 180), info.name.c_str());
+    // Text
+    dl->AddText(ImVec2(sx - textSize.x / 2, sy - textSize.y / 2),
+                textCol, info.name.c_str());
+  }
+}
+
+int NpcManager::PickLabel(float screenX, float screenY, const glm::mat4 &view,
+                          const glm::mat4 &proj, int winW, int winH,
+                          const glm::vec3 &camPos) const {
+  const float padX = 4.0f, padY = 2.0f;
+
+  for (int i = 0; i < GetNpcCount(); ++i) {
+    NpcInfo info = GetNpcInfo(i);
+    if (info.name.empty())
+      continue;
+
+    float dist = glm::distance(camPos, info.position);
+    if (dist > 2000.0f)
+      continue;
+
+    glm::vec3 labelPos = info.position + glm::vec3(0, info.height + 30.0f, 0);
+    glm::vec4 clip = proj * view * glm::vec4(labelPos, 1.0f);
+    if (clip.w <= 0)
+      continue;
+    glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    float sx = (ndc.x * 0.5f + 0.5f) * (float)winW;
+    float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * (float)winH;
+
+    ImVec2 textSize = ImGui::CalcTextSize(info.name.c_str());
+    float x0 = sx - textSize.x / 2 - padX;
+    float y0 = sy - textSize.y / 2 - padY;
+    float x1 = sx + textSize.x / 2 + padX;
+    float y1 = sy + textSize.y / 2 + padY;
+
+    if (screenX >= x0 && screenX <= x1 && screenY >= y0 && screenY <= y1)
+      return i;
+  }
+  return -1;
 }

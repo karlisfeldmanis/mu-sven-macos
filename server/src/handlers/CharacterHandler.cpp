@@ -152,22 +152,49 @@ void RefreshCombatStats(Session &session, Database &db, int characterId) {
   session.weaponDamageMin = 0;
   session.weaponDamageMax = 0;
   session.totalDefense = 0;
+
+  // Track per-hand weapon damage for dual-wield calculation
+  int rightDmgMin = 0, rightDmgMax = 0;
+  int leftDmgMin = 0, leftDmgMax = 0;
+  bool hasRightWeapon = false, hasLeftWeapon = false;
+
   for (auto &slot : equip) {
     auto itemDef = db.GetItemDefinition(slot.category, slot.itemIndex);
     if (itemDef.id > 0) {
-      if (slot.slot == 0 || slot.slot == 1) { // R.Hand or L.Hand
-        if (slot.category <= 5) {             // Weapon
-          session.weaponDamageMin += itemDef.damageMin + slot.itemLevel * 3;
-          session.weaponDamageMax += itemDef.damageMax + slot.itemLevel * 3;
-        }
+      if (slot.slot == 0 && slot.category <= 5) { // R.Hand weapon
+        rightDmgMin = itemDef.damageMin + slot.itemLevel * 3;
+        rightDmgMax = itemDef.damageMax + slot.itemLevel * 3;
+        hasRightWeapon = true;
+      }
+      if (slot.slot == 1 && slot.category <= 5) { // L.Hand weapon (dual-wield)
+        leftDmgMin = itemDef.damageMin + slot.itemLevel * 3;
+        leftDmgMax = itemDef.damageMax + slot.itemLevel * 3;
+        hasLeftWeapon = true;
       }
       session.totalDefense += itemDef.defense + slot.itemLevel * 2;
 
       if (slot.slot == 7) { // Wings
-        session.weaponDamageMin += 15;
-        session.weaponDamageMax += 25;
+        rightDmgMin += 15;
+        rightDmgMax += 25;
       }
     }
+  }
+
+  // Main 5.2 dual-wield: DK/MG with weapons in both hands get 55% per hand
+  CharacterClass charCls = static_cast<CharacterClass>(session.classCode);
+  if (hasRightWeapon && hasLeftWeapon &&
+      (charCls == CharacterClass::CLASS_DK ||
+       charCls == CharacterClass::CLASS_MG)) {
+    session.weaponDamageMin =
+        (rightDmgMin * 55) / 100 + (leftDmgMin * 55) / 100;
+    session.weaponDamageMax =
+        (rightDmgMax * 55) / 100 + (leftDmgMax * 55) / 100;
+    printf("[Character] Dual-wield: R(%d-%d)*55%% + L(%d-%d)*55%% = %d-%d\n",
+           rightDmgMin, rightDmgMax, leftDmgMin, leftDmgMax,
+           session.weaponDamageMin, session.weaponDamageMax);
+  } else {
+    session.weaponDamageMin = rightDmgMin + leftDmgMin;
+    session.weaponDamageMax = rightDmgMax + leftDmgMax;
   }
 }
 
@@ -240,6 +267,89 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
     }
   }
 
+  // Save old equipment in this slot for swap/unequip
+  auto oldEquip = db.GetCharacterEquipment(charId);
+  uint8_t oldCat = 0xFF, oldIdx = 0, oldLvl = 0;
+  for (auto &oe : oldEquip) {
+    if (oe.slot == eq->slot && oe.category != 0xFF) {
+      oldCat = oe.category;
+      oldIdx = oe.itemIndex;
+      oldLvl = oe.itemLevel;
+      break;
+    }
+  }
+
+  // When equipping (category != 0xFF), remove item from inventory bag
+  if (eq->category != 0xFF) {
+    int16_t defIdx = (int16_t)((int)eq->category * 32 + (int)eq->itemIndex);
+    for (int i = 0; i < 64; i++) {
+      if (session.bag[i].occupied && session.bag[i].primary &&
+          session.bag[i].defIndex == defIdx) {
+        // Clear bag slot (including multi-cell)
+        auto itemDef = db.GetItemDefinition(defIdx);
+        int w = itemDef.width > 0 ? itemDef.width : 1;
+        int h = itemDef.height > 0 ? itemDef.height : 1;
+        int r = i / 8, c = i % 8;
+        for (int hh = 0; hh < h; hh++) {
+          for (int ww = 0; ww < w; ww++) {
+            int s = (r + hh) * 8 + (c + ww);
+            if (s < 64)
+              session.bag[s] = {};
+          }
+        }
+        db.DeleteCharacterInventoryItem(charId, i);
+        printf("[Character] Removed equipped item from bag slot %d (def=%d)\n",
+               i, defIdx);
+        break;
+      }
+    }
+  }
+
+  // When unequipping (category == 0xFF), move old item back to inventory
+  if (eq->category == 0xFF && oldCat != 0xFF) {
+    int16_t oldDef = (int16_t)((int)oldCat * 32 + (int)oldIdx);
+    auto itemDef = db.GetItemDefinition(oldDef);
+    int w = itemDef.width > 0 ? itemDef.width : 1;
+    int h = itemDef.height > 0 ? itemDef.height : 1;
+    // Find empty space in bag
+    bool placed = false;
+    for (int r = 0; r <= 8 - h && !placed; r++) {
+      for (int c2 = 0; c2 <= 8 - w && !placed; c2++) {
+        bool fits = true;
+        for (int hh = 0; hh < h && fits; hh++)
+          for (int ww = 0; ww < w && fits; ww++)
+            if (session.bag[(r + hh) * 8 + (c2 + ww)].occupied)
+              fits = false;
+        if (fits) {
+          int startSlot = r * 8 + c2;
+          for (int hh = 0; hh < h; hh++) {
+            for (int ww = 0; ww < w; ww++) {
+              int s = (r + hh) * 8 + (c2 + ww);
+              session.bag[s].occupied = true;
+              session.bag[s].primary = (hh == 0 && ww == 0);
+              session.bag[s].defIndex = oldDef;
+              session.bag[s].category = oldCat;
+              session.bag[s].itemIndex = oldIdx;
+              if (hh == 0 && ww == 0) {
+                session.bag[s].quantity = 1;
+                session.bag[s].itemLevel = oldLvl;
+              }
+            }
+          }
+          db.SaveCharacterInventory(charId, oldDef, 1, oldLvl,
+                                    static_cast<uint8_t>(startSlot));
+          printf("[Character] Unequipped item saved to bag slot %d (def=%d)\n",
+                 startSlot, oldDef);
+          placed = true;
+        }
+      }
+    }
+    if (!placed) {
+      printf("[Character] WARNING: No bag space for unequipped item def=%d\n",
+             oldDef);
+    }
+  }
+
   db.UpdateEquipment(charId, eq->slot, eq->category, eq->itemIndex,
                      eq->itemLevel);
 
@@ -252,6 +362,7 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
          session.totalDefense);
 
   SendEquipment(session, db, charId);
+  InventoryHandler::SendInventorySync(session);
   SendCharStats(session);
 }
 

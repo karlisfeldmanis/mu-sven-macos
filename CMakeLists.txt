@@ -77,12 +77,13 @@ add_executable(
   server/src/handlers/CombatHandler.cpp
   server/src/handlers/InventoryHandler.cpp
   server/src/handlers/WorldHandler.cpp
+  server/src/handlers/ShopHandler.cpp
 )
 target_include_directories(MuServer PRIVATE server/include)
 target_link_libraries(MuServer PRIVATE SQLite::SQLite3)
 
 # Main Game Executable
-add_executable(MuRemaster src/main.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/NetworkClient.cpp src/ServerConnection.cpp src/ClientPacketHandler.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+add_executable(MuRemaster src/main.cpp src/InputHandler.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/NetworkClient.cpp src/ServerConnection.cpp src/ClientPacketHandler.cpp src/ItemDatabase.cpp src/ItemModelManager.cpp src/GroundItemRenderer.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp src/RayPicker.cpp src/InventoryUI.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
 target_link_libraries(MuRemaster PRIVATE
     glfw
     GLEW::GLEW
@@ -111,10 +112,21 @@ target_link_libraries(CharViewer PRIVATE
     ${GIF_LIBRARY}
 )
 
+# Standalone Monster Viewer
+add_executable(MonsterViewer src/monster_viewer_main.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/MonsterManager.cpp src/ItemDatabase.cpp src/RayPicker.cpp src/NpcManager.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+target_link_libraries(MonsterViewer PRIVATE
+    glfw
+    GLEW::GLEW
+    OpenGL::GL
+    ${JPEG_LIBRARY}
+    ${GIF_LIBRARY}
+)
+
 if(APPLE)
     target_link_libraries(MuRemaster PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
     target_link_libraries(ModelViewer PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
     target_link_libraries(CharViewer PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
+    target_link_libraries(MonsterViewer PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreVideo" "-framework QuartzCore")
 endif()
 
-message(STATUS "Configured MuRemaster, ModelViewer, and CharViewer")
+message(STATUS "Configured MuRemaster, ModelViewer, CharViewer, and MonsterViewer")

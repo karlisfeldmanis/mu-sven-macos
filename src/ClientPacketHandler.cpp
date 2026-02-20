@@ -1,5 +1,7 @@
 #include "ClientPacketHandler.hpp"
 #include "../server/include/PacketDefs.hpp"
+#include "InventoryUI.hpp"
+#include "ItemDatabase.hpp"
 #include <cstring>
 #include <iostream>
 
@@ -8,50 +10,6 @@ namespace ClientPacketHandler {
 static ClientGameState *g_state = nullptr;
 
 void Init(ClientGameState *state) { g_state = state; }
-
-// ── Inventory helpers ──
-
-static int16_t GetDefIndexFromCategory(uint8_t category, uint8_t index) {
-  for (auto const &[id, def] : *g_state->itemDefs) {
-    if (def.category == category && def.itemIndex == index)
-      return id;
-  }
-  return -1;
-}
-
-static void SetBagItem(int slot, int16_t defIdx, uint8_t qty, uint8_t lvl) {
-  auto it = g_state->itemDefs->find(defIdx);
-  if (it == g_state->itemDefs->end())
-    return;
-  int w = it->second.width;
-  int h = it->second.height;
-  int r = slot / 8;
-  int c = slot % 8;
-
-  if (c + w > 8 || r + h > 8)
-    return;
-
-  for (int hh = 0; hh < h; hh++) {
-    for (int ww = 0; ww < w; ww++) {
-      int s = (r + hh) * 8 + (c + ww);
-      if (s >= INVENTORY_SLOTS || g_state->inventory[s].occupied)
-        return;
-    }
-  }
-
-  for (int hh = 0; hh < h; hh++) {
-    for (int ww = 0; ww < w; ww++) {
-      int s = (r + hh) * 8 + (c + ww);
-      g_state->inventory[s].occupied = true;
-      g_state->inventory[s].primary = (hh == 0 && ww == 0);
-      g_state->inventory[s].defIndex = defIdx;
-      if (g_state->inventory[s].primary) {
-        g_state->inventory[s].quantity = qty;
-        g_state->inventory[s].itemLevel = lvl;
-      }
-    }
-  }
-}
 
 // ── Equipment helpers ──
 
@@ -83,6 +41,8 @@ static void ApplyEquipToUI(uint8_t slot, const WeaponEquipInfo &weapon) {
 
 // ── Stats sync helper ──
 
+static bool s_initialStatsReceived = false;
+
 static void SyncCharStats(const PMSG_CHARSTATS_SEND *stats) {
   *g_state->serverLevel = stats->level;
   *g_state->serverStr = stats->strength;
@@ -94,7 +54,12 @@ static void SyncCharStats(const PMSG_CHARSTATS_SEND *stats) {
   *g_state->serverMP = stats->mana;
   *g_state->serverMaxMP = stats->maxMana;
   *g_state->serverLevelUpPoints = stats->levelUpPoints;
-  *g_state->quickSlotDefIndex = stats->quickSlotDefIndex;
+  // Only apply server quickSlotDefIndex on initial load — client manages it
+  // locally during gameplay (sent to server via CharSave)
+  if (!s_initialStatsReceived) {
+    *g_state->quickSlotDefIndex = stats->quickSlotDefIndex;
+    s_initialStatsReceived = true;
+  }
   *g_state->serverXP =
       ((int64_t)stats->experienceHi << 32) | stats->experienceLo;
   *g_state->serverDefense = stats->defense;
@@ -122,6 +87,14 @@ static void ParseEquipmentPacket(const uint8_t *pkt, int pktSize,
     char modelBuf[33] = {};
     std::memcpy(modelBuf, &pkt[off + 4], 32);
     weapon.modelFile = modelBuf;
+
+    // Resolve twoHanded flag from ItemDatabase
+    int16_t defIdx =
+        (int16_t)weapon.category * 32 + (int16_t)weapon.itemIndex;
+    auto &defs = ItemDatabase::GetItemDefs();
+    auto it = defs.find(defIdx);
+    if (it != defs.end())
+      weapon.twoHanded = it->second.twoHanded;
 
     if (serverData)
       serverData->equipment.push_back({slot, weapon});
@@ -159,9 +132,9 @@ static void ParseInventorySync(const uint8_t *pkt, int pktSize) {
     uint8_t lvl = pkt[off + 4];
 
     if (slot < INVENTORY_SLOTS) {
-      int16_t defIdx = GetDefIndexFromCategory(cat, idx);
+      int16_t defIdx = ItemDatabase::GetDefIndexFromCategory(cat, idx);
       if (defIdx != -1) {
-        SetBagItem(slot, defIdx, qty, lvl);
+        InventoryUI::SetBagItem(slot, defIdx, qty, lvl);
       } else {
         g_state->inventory[slot].occupied = true;
         g_state->inventory[slot].primary = true;
@@ -226,7 +199,8 @@ void HandleInitialPacket(const uint8_t *pkt, int pktSize, ServerData &result) {
 
     // Inventory sync
     if (headcode == Opcode::INV_SYNC && pktSize >= 9) {
-      // Initial sync uses slightly different format (category*32+index encoding)
+      // Initial sync uses slightly different format (category*32+index
+      // encoding)
       uint32_t zen;
       std::memcpy(&zen, pkt + 4, 4);
       *g_state->zen = zen;
@@ -317,8 +291,8 @@ void HandleInitialPacket(const uint8_t *pkt, int pktSize, ServerData &result) {
           *g_state->serverMaxMP, stats->charClass);
 
       std::cout << "[Net] Character stats: Lv." << *g_state->serverLevel
-                << " HP=" << *g_state->serverHP << "/"
-                << *g_state->serverMaxHP << " STR=" << *g_state->serverStr
+                << " HP=" << *g_state->serverHP << "/" << *g_state->serverMaxHP
+                << " STR=" << *g_state->serverStr
                 << " XP=" << *g_state->serverXP
                 << " Pts=" << *g_state->serverLevelUpPoints << std::endl;
     }
@@ -360,9 +334,14 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
         g_state->monsterManager->SetMonsterHP(idx, p->remainingHp, mi.maxHp);
         g_state->monsterManager->TriggerHitAnimation(idx);
 
-        glm::vec3 monPos = g_state->monsterManager->GetMonsterInfo(idx).position;
-        g_state->vfxManager->SpawnBurst(ParticleType::BLOOD,
-                                        monPos + glm::vec3(0, 50, 0), 12);
+        glm::vec3 monPos =
+            g_state->monsterManager->GetMonsterInfo(idx).position;
+        // Main 5.2: Regular hits create blood (10x BITMAP_BLOOD+1)
+        // Giant (type 7) excluded: if(to->Type != MODEL_MONSTER01+7)
+        glm::vec3 hitPos = monPos + glm::vec3(0, 50, 0);
+        if (mi.type != 7) {
+          g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 10);
+        }
 
         uint8_t dmgType = 0;
         if (p->damageType == 0)
@@ -467,8 +446,8 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
             *g_state->serverMaxMP, g_state->hero->GetClass());
 
         std::cout << "[Net] Stat alloc OK: type=" << (int)resp->statType
-                  << " val=" << resp->newValue
-                  << " pts=" << resp->levelUpPoints << std::endl;
+                  << " val=" << resp->newValue << " pts=" << resp->levelUpPoints
+                  << std::endl;
       }
     }
 
@@ -555,6 +534,30 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
                                      *g_state->serverHP - oldHP, 10);
       }
     }
+
+    // Shop Buy Result
+    if (headcode == Opcode::SHOP_BUY_RESULT &&
+        pktSize >= (int)sizeof(PMSG_SHOP_BUY_RESULT_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_SHOP_BUY_RESULT_SEND *>(pkt);
+      if (p->result) {
+        std::cout << "[Shop] Bought item defIndex=" << p->defIndex
+                  << " qty=" << (int)p->quantity << "\n";
+      } else {
+        std::cout << "[Shop] Failed to buy item\n";
+      }
+    }
+
+    // Shop Sell Result
+    if (headcode == Opcode::SHOP_SELL_RESULT &&
+        pktSize >= (int)sizeof(PMSG_SHOP_SELL_RESULT_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_SHOP_SELL_RESULT_SEND *>(pkt);
+      if (p->result) {
+        std::cout << "[Shop] Sold item bagSlot=" << (int)p->bagSlot
+                  << " gained " << p->zenGained << " zen\n";
+      } else {
+        std::cout << "[Shop] Failed to sell item\n";
+      }
+    }
   }
 
   // C2 packets (ongoing)
@@ -569,6 +572,27 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
     // Equipment sync (C2)
     if (headcode == Opcode::EQUIPMENT && pktSize >= 5) {
       ParseEquipmentPacket(pkt, pktSize, 4, 5, nullptr);
+    }
+
+    // Shop List
+    if (headcode == Opcode::SHOP_LIST) {
+      if (g_state->shopOpen && g_state->shopItems) {
+        g_state->shopItems->clear();
+        uint8_t count = pkt[4];
+        for (int i = 0; i < count; i++) {
+          int off = 5 + i * sizeof(PMSG_SHOP_ITEM);
+          if (off + (int)sizeof(PMSG_SHOP_ITEM) > pktSize)
+            break;
+          auto *si = reinterpret_cast<const PMSG_SHOP_ITEM *>(pkt + off);
+          ShopItem item;
+          item.defIndex = si->defIndex;
+          item.itemLevel = si->itemLevel;
+          item.buyPrice = si->buyPrice;
+          g_state->shopItems->push_back(item);
+        }
+        *g_state->shopOpen = true;
+        std::cout << "[Shop] Received list with " << (int)count << " items\n";
+      }
     }
   }
 }
