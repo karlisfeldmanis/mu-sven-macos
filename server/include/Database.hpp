@@ -166,6 +166,11 @@ public:
   // Experience
   static uint64_t GetXPForLevel(int level);
 
+  // Character skills
+  std::vector<uint8_t> GetCharacterSkills(int characterId);
+  void LearnSkill(int characterId, uint8_t skillId);
+  bool HasSkill(int characterId, uint8_t skillId);
+
 private:
   void CreateTables();
   sqlite3 *m_db = nullptr;

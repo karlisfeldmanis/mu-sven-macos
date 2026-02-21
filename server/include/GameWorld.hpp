@@ -7,6 +7,12 @@
 #include <string>
 #include <vector>
 
+// ─── Server Config (tunable rates) ─────────────────────────────────────
+namespace ServerConfig {
+  static constexpr int XP_MULTIPLIER = 100; // XP gain multiplier (1=normal, 100=100x)
+  static constexpr int DROP_RATE     = 1;   // Drop rate multiplier
+}
+
 struct NpcSpawn {
   uint16_t index;   // Unique object index (1001+)
   uint16_t type;    // NPC type ID (253=Amy, 250=Merchant, etc.)
@@ -14,6 +20,15 @@ struct NpcSpawn {
   uint8_t y;        // Grid Y
   uint8_t dir;      // Facing direction (0-7)
   std::string name; // Display name (for logging)
+
+  // Guard patrol state (OpenMU: GuardIntelligence.cs)
+  bool isGuard = false;         // true for type 247, 249
+  float worldX = 0, worldZ = 0; // Current world position
+  float spawnX = 0, spawnZ = 0; // Original spawn point
+  float wanderTimer = 0.0f;     // Countdown to next patrol move
+  float wanderTargetX = 0, wanderTargetZ = 0;
+  bool isWandering = false;
+  uint8_t lastBroadcastX = 0, lastBroadcastY = 0;
 };
 
 // Live monster state (server-authoritative)
@@ -54,6 +69,11 @@ struct MonsterInstance {
   float aggroRange = 500.0f;    // ViewRange * 100 (world units)
   bool aggressive = false;      // true=red (auto-aggro), false=yellow (passive)
 
+  // Stuck detection during chase
+  int stuckFrames = 0;         // Consecutive frames with no movement progress
+  float prevChaseX = 0.0f;     // Previous frame position for stuck detection
+  float prevChaseZ = 0.0f;
+
   // Server-side wander
   float wanderTimer = 0.0f;   // Countdown to next wander move
   float wanderTargetX = 0.0f; // Current wander destination (world coords)
@@ -92,6 +112,7 @@ public:
     int targetFd; // Which player to send to
     uint16_t monsterIndex;
     uint16_t damage;
+    uint8_t damageType;   // 0=Miss, 1=Normal, 2=Crit, 3=Exc, ...
     uint16_t remainingHp; // Player's remaining HP after damage
   };
 
@@ -102,12 +123,20 @@ public:
     uint8_t chasing;          // 1=chasing player, 0=returning to spawn/idle
   };
 
-  // Game tick — updates monster respawn timers, drop aging, wander AI
-  // dropExpiredCallback called for each expired drop index
+  // NPC (guard) movement update to broadcast
+  struct NpcMoveUpdate {
+    uint16_t npcIndex;
+    uint8_t targetX, targetY; // Grid cell the guard is heading toward
+  };
+
+  // Game tick — updates monster respawn timers, drop aging, wander AI, guard
+  // patrol dropExpiredCallback called for each expired drop index
   // outWanderMoves populated with wander position updates to broadcast
+  // outNpcMoves populated with guard patrol moves to broadcast
   void Update(float dt,
               std::function<void(uint16_t)> dropExpiredCallback = nullptr,
-              std::vector<MonsterMoveUpdate> *outWanderMoves = nullptr);
+              std::vector<MonsterMoveUpdate> *outWanderMoves = nullptr,
+              std::vector<NpcMoveUpdate> *outNpcMoves = nullptr);
 
   // Check monster aggro/attacks against player positions. Returns attacks to
   // broadcast. Also populates outMoves with position updates for moving
@@ -141,6 +170,8 @@ public:
   GroundDrop *FindDrop(uint16_t dropIndex);
   bool RemoveDrop(uint16_t dropIndex);
   const std::vector<GroundDrop> &GetDrops() const { return m_drops; }
+  uint16_t AllocDropIndex() { return m_nextDropIndex++; }
+  void AddDrop(const GroundDrop &drop) { m_drops.push_back(drop); }
 
   // Monster stats (from OpenMU Version075 MonsterDefinitions)
 
@@ -219,6 +250,12 @@ public:
   static constexpr float DYING_DURATION = 3.0f;
   static constexpr float RESPAWN_DELAY = 10.0f;
   static constexpr float DROP_DESPAWN_TIME = 30.0f;
+
+  // Guard patrol constants (OpenMU: GuardIntelligence.cs)
+  static constexpr float GUARD_PATROL_RANGE =
+      700.0f; // 7 tiles from spawn (OpenMU ViewRange=7)
+  static constexpr float GUARD_WANDER_SPEED =
+      150.0f; // Walk speed (slower than monsters)
 
   // Monster AI constants (shared across all types)
   static constexpr float ATTACK_RANGE = 200.0f; // Melee range (2 grid cells)

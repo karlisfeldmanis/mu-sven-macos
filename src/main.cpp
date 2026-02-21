@@ -1,5 +1,6 @@
 #include "BMDParser.hpp"
 #include "BMDUtils.hpp"
+#include "BoidManager.hpp"
 #include "Camera.hpp"
 #include "ClickEffect.hpp"
 #include "ClientPacketHandler.hpp"
@@ -158,6 +159,7 @@ Sky g_sky;
 
 GrassRenderer g_grass;
 VFXManager g_vfxManager;
+BoidManager g_boidManager;
 
 // Point lights collected from light-emitting world objects
 static const int MAX_POINT_LIGHTS = 64;
@@ -195,10 +197,15 @@ static int g_serverStr = 28, g_serverDex = 20, g_serverVit = 25,
 static int g_serverLevelUpPoints = 0;
 static int64_t g_serverXP = 0;
 static int g_serverDefense = 0, g_serverAttackSpeed = 0, g_serverMagicSpeed = 0;
+static int g_heroCharacterId = 0;
 
 // Inventory & UI state
 static bool g_showCharInfo = false;
 static bool g_showInventory = false;
+static bool g_showSkillWindow = false;
+
+// Learned skills (synced from server via 0x41)
+static std::vector<uint8_t> g_learnedSkills;
 
 // Quick slot (Q) item
 // Quick slot assignments
@@ -412,7 +419,8 @@ int main(int argc, char **argv) {
     FILE *ftest = fopen(fontPath, "rb");
     if (ftest) {
       fclose(ftest);
-      g_fontDefault = io.Fonts->AddFontFromFileTTF(fontPath, 13.0f * contentScale);
+      g_fontDefault =
+          io.Fonts->AddFontFromFileTTF(fontPath, 13.0f * contentScale);
       g_fontBold = io.Fonts->AddFontFromFileTTF(fontPath, 15.0f * contentScale);
     }
     if (!g_fontDefault)
@@ -527,6 +535,8 @@ int main(int argc, char **argv) {
   // Initialize fire effects and register emitters from fire-type objects
   g_fireEffect.Init(data_path + "/Effect");
   g_vfxManager.Init(data_path);
+  g_boidManager.Init(data_path);
+  g_boidManager.SetTerrainData(&terrainData);
   checkGLError("fire init");
   for (auto &inst : g_objectRenderer.GetInstances()) {
     auto &offsets = GetFireOffsets(inst.type);
@@ -540,14 +550,29 @@ int main(int argc, char **argv) {
       g_fireEffect.AddEmitter(worldPos + rot * off);
     }
   }
-  std::cout << "[FireEffect] Registered " << g_fireEffect.GetEmitterCount()
-            << " fire emitters" << std::endl;
-  // Print fire-type objects for debugging/testing
-  for (int i = 0; i < (int)terrainData.objects.size(); ++i) {
-    int t = terrainData.objects[i].type;
-    if (t == 50 || t == 51 || t == 52 || t == 55 || t == 80 || t == 130)
-      std::cout << "  fire obj idx=" << i << " type=" << t << std::endl;
+  // Register smoke emitters for torch smoke objects (types 131, 132)
+  // Main 5.2: CreateFire(1/2) on MODEL_LIGHT01+1/+2
+  for (auto &inst : g_objectRenderer.GetInstances()) {
+    auto &smokeOffsets = GetSmokeOffsets(inst.type);
+    for (auto &off : smokeOffsets) {
+      glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+      glm::mat3 rot;
+      for (int c = 0; c < 3; c++)
+        rot[c] = glm::normalize(glm::vec3(inst.modelMatrix[c]));
+      g_fireEffect.AddSmokeEmitter(worldPos + rot * off);
+    }
+    // Waterspout mist (Main 5.2: BITMAP_SMOKE from bones 1 & 4)
+    // Two spray points: upper and lower — blue water tint, not fire smoke
+    if (inst.type == 105) {
+      glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+      g_fireEffect.AddWaterSmokeEmitter(worldPos +
+                                        glm::vec3(0.0f, 180.0f, 0.0f));
+      g_fireEffect.AddWaterSmokeEmitter(worldPos +
+                                        glm::vec3(0.0f, 120.0f, 0.0f));
+    }
   }
+  std::cout << "[FireEffect] Registered " << g_fireEffect.GetEmitterCount()
+            << " fire+smoke emitters" << std::endl;
 
   // Collect point lights from light-emitting objects
   g_pointLights.clear();
@@ -561,6 +586,7 @@ int main(int argc, char **argv) {
     light.position = worldPos + glm::vec3(0.0f, props->heightOffset, 0.0f);
     light.color = props->color;
     light.range = props->range;
+    light.objectType = inst.type;
     g_pointLights.push_back(light);
   }
   // Cap at shader maximum
@@ -593,6 +619,8 @@ int main(int argc, char **argv) {
     uiCtx.syncDone = &g_syncDone;
     uiCtx.showCharInfo = &g_showCharInfo;
     uiCtx.showInventory = &g_showInventory;
+    uiCtx.showSkillWindow = &g_showSkillWindow;
+    uiCtx.learnedSkills = &g_learnedSkills;
     uiCtx.quickSlotDefIndex = &g_quickSlotDefIndex;
     uiCtx.potionCooldown = &g_potionCooldown;
     uiCtx.shopOpen = &g_shopOpen;
@@ -636,12 +664,14 @@ int main(int argc, char **argv) {
     inputCtx.hudCoords = &g_hudCoords;
     inputCtx.showCharInfo = &g_showCharInfo;
     inputCtx.showInventory = &g_showInventory;
+    inputCtx.showSkillWindow = &g_showSkillWindow;
     inputCtx.hoveredNpc = &g_hoveredNpc;
     inputCtx.hoveredMonster = &g_hoveredMonster;
     inputCtx.hoveredGroundItem = &g_hoveredGroundItem;
     inputCtx.selectedNpc = &g_selectedNpc;
     inputCtx.quickSlotDefIndex = &g_quickSlotDefIndex;
     inputCtx.shopOpen = &g_shopOpen;
+    inputCtx.heroCharacterId = &g_heroCharacterId;
     InputHandler::Init(inputCtx);
     InputHandler::RegisterCallbacks(window);
   }
@@ -655,6 +685,7 @@ int main(int argc, char **argv) {
     static ClientGameState gameState;
     gameState.hero = &g_hero;
     gameState.monsterManager = &g_monsterManager;
+    gameState.npcManager = &g_npcManager;
     gameState.vfxManager = &g_vfxManager;
     gameState.terrain = &g_terrain;
     gameState.inventory = g_inventory;
@@ -680,6 +711,8 @@ int main(int argc, char **argv) {
     gameState.serverAttackSpeed = &g_serverAttackSpeed;
     gameState.serverMagicSpeed = &g_serverMagicSpeed;
     gameState.quickSlotDefIndex = &g_quickSlotDefIndex;
+    gameState.heroCharacterId = &g_heroCharacterId;
+    gameState.learnedSkills = &g_learnedSkills;
     gameState.spawnDamageNumber = [](const glm::vec3 &pos, int dmg,
                                      uint8_t type) {
       FloatingDamageRenderer::Spawn(pos, dmg, type, g_floatingDmg,
@@ -791,7 +824,8 @@ int main(int argc, char **argv) {
   if (serverData.connected && !serverData.npcs.empty()) {
     g_npcManager.InitModels(data_path);
     for (auto &npc : serverData.npcs) {
-      g_npcManager.AddNpcByType(npc.type, npc.gridX, npc.gridY, npc.dir);
+      g_npcManager.AddNpcByType(npc.type, npc.gridX, npc.gridY, npc.dir,
+                                npc.serverIndex);
     }
     std::cout << "[NPC] Loaded " << serverData.npcs.size()
               << " NPCs from server" << std::endl;
@@ -821,8 +855,11 @@ int main(int argc, char **argv) {
   }
   g_syncDone = true; // Initial sync complete, allow updates
   g_npcManager.SetTerrainLightmap(terrainData.lightmap);
+  g_npcManager.SetVFXManager(&g_vfxManager);
   InventoryUI::RecalcEquipmentStats(); // Compute initial weapon/defense bonuses
   g_npcManager.SetPointLights(g_pointLights);
+  g_boidManager.SetTerrainLightmap(terrainData.lightmap);
+  g_boidManager.SetPointLights(g_pointLights);
   checkGLError("npc init");
 
   // Initialize monster manager and spawn monsters from server data
@@ -830,10 +867,12 @@ int main(int argc, char **argv) {
   g_monsterManager.SetTerrainData(&terrainData);
   g_monsterManager.SetTerrainLightmap(terrainData.lightmap);
   g_monsterManager.SetPointLights(g_pointLights);
+  g_monsterManager.SetVFXManager(&g_vfxManager);
   if (!serverData.monsters.empty()) {
     for (auto &mon : serverData.monsters) {
       g_monsterManager.AddMonster(mon.monsterType, mon.gridX, mon.gridY,
-                                  mon.dir, mon.serverIndex);
+                                  mon.dir, mon.serverIndex, mon.hp, mon.maxHp,
+                                  mon.state);
     }
     std::cout << "[Monster] Spawned " << serverData.monsters.size()
               << " monsters from server" << std::endl;
@@ -952,13 +991,15 @@ int main(int argc, char **argv) {
   {
     std::vector<glm::vec3> lightPos, lightCol;
     std::vector<float> lightRange;
+    std::vector<int> lightObjTypes;
     for (auto &pl : g_pointLights) {
       lightPos.push_back(pl.position);
       lightCol.push_back(pl.color);
       lightRange.push_back(pl.range);
+      lightObjTypes.push_back(pl.objectType);
     }
     g_objectRenderer.SetPointLights(lightPos, lightCol, lightRange);
-    g_terrain.SetPointLights(lightPos, lightCol, lightRange);
+    g_terrain.SetPointLights(lightPos, lightCol, lightRange, lightObjTypes);
   }
 
   glEnable(GL_DEPTH_TEST);
@@ -1199,7 +1240,13 @@ int main(int argc, char **argv) {
     // Update effects (VFX rendered after characters for correct layering)
     g_fireEffect.Update(deltaTime);
     g_vfxManager.Update(deltaTime);
+    g_boidManager.Update(deltaTime, g_hero.GetPosition(), 0, currentFrame);
     g_fireEffect.Render(view, projection);
+
+    // Render ambient creatures (birds/fish) before characters
+    g_boidManager.RenderShadows(view, projection);
+    g_boidManager.Render(view, projection, camPos);
+    g_boidManager.RenderLeaves(view, projection);
 
     // Render NPC characters with shadows
     g_npcManager.RenderShadows(view, projection);
@@ -1499,6 +1546,8 @@ int main(int argc, char **argv) {
       InventoryUI::RenderShopPanel(panelDl, g_hudCoords);
     if (g_showCharInfo)
       InventoryUI::RenderCharInfoPanel(panelDl, g_hudCoords);
+    if (g_showSkillWindow)
+      InventoryUI::RenderSkillPanel(panelDl, g_hudCoords);
     if (g_showInventory || g_shopOpen) {
       bool wasShowInvent = g_showInventory;
       g_showInventory = true; // force flag for proper layout parsing
@@ -1669,6 +1718,7 @@ int main(int argc, char **argv) {
   // Cleanup
   // Cleanup handled by RAII/End
   g_monsterManager.Cleanup();
+  g_boidManager.Cleanup();
   g_npcManager.Cleanup();
   g_hero.Cleanup();
   g_clickEffect.Cleanup();

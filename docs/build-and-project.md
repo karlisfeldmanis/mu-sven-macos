@@ -6,7 +6,7 @@
 cd build && cmake .. && make -j$(sysctl -n hw.ncpu)
 ```
 
-Four targets: `MuRemaster` (game client), `MuServer` (game server), `ModelViewer` (BMD object browser), and `CharViewer` (character animation browser).
+Five targets: `MuRemaster` (game client), `MuServer` (game server), `ModelViewer` (BMD object browser), `CharViewer` (character animation browser), and `MonsterViewer` (combat simulator).
 Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui, giflib, SQLite3 (server only).
 
 ### Server Build
@@ -66,10 +66,10 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `GrassRenderer.hpp` | Billboard grass system: wind animation, ball-push displacement, 3 texture layers. |
 | `Sky.hpp` | Sky dome: gradient hemisphere rendered behind scene. |
 | `FireEffect.hpp` | Particle-based fire system for Lorencia torches/bonfires/lights. GPU instancing + billboarding. |
-| `VFXManager.hpp` | Visual effects manager for combat/skill effects. |
+| `VFXManager.hpp` | Visual effects: particle bursts (blood/fire/energy/spark/smoke), ribbon trails (lightning/ice), fire effects. GPU instanced billboards. |
 | **Characters & Entities** | |
-| `HeroCharacter.hpp` | Player character: 5-part DK model, click-to-move, combat, equipment visuals, blob shadow. |
-| `MonsterManager.hpp` | Monster system: multi-type rendering, server-driven state machine (7 states), nameplate rendering. |
+| `HeroCharacter.hpp` | Player character: 5-part DK model, click-to-move, combat, weapon attachment (bone 33/42/47), equipment visuals, blob shadow. |
+| `MonsterManager.hpp` | Monster system: multi-type rendering, server-driven state machine (7 states), skeleton weapon attachment, arrow projectiles, debris, nameplate rendering. |
 | `NpcManager.hpp` | NPC rendering, name labels, two-phase init (models then server-spawned instances). |
 | `ClickEffect.hpp` | Click-to-move visual feedback: animated ring effect at click position. |
 | **Items & Inventory** | |
@@ -105,10 +105,10 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `GrassRenderer.cpp` | 42k grass billboards with GPU vertex shader wind and ball-push displacement. |
 | `Sky.cpp` | Sky dome rendering. |
 | `FireEffect.cpp` | Fire particle system: emitter management, GPU instanced billboards. |
-| `VFXManager.cpp` | Visual effects update and rendering. |
+| `VFXManager.cpp` | VFX: particle bursts (8 types), ribbon/lightning trails, per-monster combat effects (Budge fire, Lich lightning, Spider web). Main 5.2 1:1 migration. |
 | **Characters & Entities** | |
-| `HeroCharacter.cpp` | DK character: 5-part body, skeletal animation, click-to-move, blob shadow with stencil buffer. |
-| `MonsterManager.cpp` | Monster rendering, server-driven state machine (IDLE/WALKING/CHASING/ATTACKING/HIT/DYING/DEAD), nameplate overlays. |
+| `HeroCharacter.cpp` | DK character: 5-part body, skeletal animation, click-to-move, weapon bone attachment (safe zone/combat), blob shadow with stencil buffer. |
+| `MonsterManager.cpp` | Monster rendering, state machine, skeleton weapons (Sword/Shield/Bow/Axe via RetransformMeshWithBones), arrow projectiles (Arrow01.bmd), death debris, nameplates. |
 | `NpcManager.cpp` | NPC models, animation, name label overlays. |
 | `ClickEffect.cpp` | Click-to-move ring effect. |
 | **Items & Inventory** | |
@@ -132,6 +132,7 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `main.cpp` | Game client: init sequence, render loop (terrain/objects/entities/HUD/overlays), server connection, shutdown. ~1700 lines. |
 | `model_viewer_main.cpp` | Object browser: scans Object1/ for BMDs, orbit camera, ImGui. |
 | `char_viewer_main.cpp` | Character browser: Player.bmd skeleton + body part armor system. |
+| `monster_viewer_main.cpp` | Monster combat simulator: spawn all Lorencia types, weapon switching, ranged/melee combat, VFX testing. |
 
 ### Server Sources (server/)
 
@@ -148,6 +149,7 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `server/src/handlers/CombatHandler.cpp` | Attack resolution, damage calculation, death/XP. |
 | `server/src/handlers/InventoryHandler.cpp` | Item pickup, equip/unequip, inventory moves, consumption. |
 | `server/src/handlers/WorldHandler.cpp` | Position sync, monster AI, NPC viewport. |
+| `server/src/handlers/ShopHandler.cpp` | NPC shop: buy/sell with zen validation, inventory slot management. |
 
 ### Shaders (shaders/)
 

@@ -35,6 +35,7 @@ constexpr uint8_t SUB_CHARSELECT = 0x03;
 
 // World & Viewport
 constexpr uint8_t NPC_VIEWPORT = 0x13;
+constexpr uint8_t NPC_MOVE = 0x14; // S->C: guard patrol movement
 constexpr uint8_t POSITION = 0x15;
 constexpr uint8_t MON_VIEWPORT_V1 = 0x1F;
 constexpr uint8_t MON_RESPAWN = 0x30;
@@ -58,6 +59,7 @@ constexpr uint8_t MON_DEATH = 0x2A;
 constexpr uint8_t MON_ATTACK = 0x2F;
 
 // Inventory & Drops
+constexpr uint8_t ITEM_DROP = 0x23;   // C->S: Drop item from inventory
 constexpr uint8_t DROP_SPAWN = 0x2B;
 constexpr uint8_t PICKUP = 0x2C;
 constexpr uint8_t PICKUP_RESULT = 0x2D;
@@ -73,6 +75,9 @@ constexpr uint8_t SHOP_BUY = 0x3D;         // C->S: buy request
 constexpr uint8_t SHOP_BUY_RESULT = 0x3E;  // S->C: buy result
 constexpr uint8_t SHOP_SELL = 0x3F;        // C->S: sell request
 constexpr uint8_t SHOP_SELL_RESULT = 0x40; // S->C: sell result
+
+// Skills
+constexpr uint8_t SKILL_LIST = 0x41; // S->C: learned skill list (C2)
 } // namespace Opcode
 
 // =====================================================
@@ -342,6 +347,12 @@ struct PMSG_ITEM_USE_RECV {
   uint8_t slot; // 0-63
 };
 
+// C->S: Drop Item from Inventory (0x23)
+struct PMSG_ITEM_DROP_RECV {
+  PBMSG_HEAD h; // C1:0x23
+  uint8_t slot; // Inventory bag slot (0-63)
+};
+
 // S->C: Ground Drop Spawned (0x2B)
 struct PMSG_DROP_SPAWN_SEND {
   PBMSG_HEAD h;       // C1:0x2B
@@ -479,6 +490,14 @@ struct PMSG_MONSTER_MOVE_SEND {
   uint8_t targetX; // Target grid X
   uint8_t targetY; // Target grid Y
   uint8_t chasing; // 1=chasing player, 0=idle/returning
+};
+
+// S->C: NPC (Guard) Movement (0x14)
+struct PMSG_NPC_MOVE_SEND {
+  PBMSG_HEAD h; // C1:0x14
+  uint16_t npcIndex;
+  uint8_t targetX; // Target grid X
+  uint8_t targetY; // Target grid Y
 };
 
 // S->C: Monster Respawn (0x30)

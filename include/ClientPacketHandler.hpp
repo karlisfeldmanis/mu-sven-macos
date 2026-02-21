@@ -5,17 +5,20 @@
 #include "HeroCharacter.hpp"
 #include "ItemDatabase.hpp"
 #include "MonsterManager.hpp"
+#include "NpcManager.hpp"
 #include "Terrain.hpp"
 #include <cstdint>
 #include <functional>
 #include <glm/glm.hpp>
 #include <map>
+#include <vector>
 
 // Context struct that ClientPacketHandler uses to access game state.
 // All pointers are owned by main.cpp — this is a non-owning view.
 struct ClientGameState {
   HeroCharacter *hero = nullptr;
   MonsterManager *monsterManager = nullptr;
+  NpcManager *npcManager = nullptr;
   VFXManager *vfxManager = nullptr;
   Terrain *terrain = nullptr;
 
@@ -46,6 +49,8 @@ struct ClientGameState {
   int *serverAttackSpeed = nullptr;
   int *serverMagicSpeed = nullptr;
   int16_t *quickSlotDefIndex = nullptr;
+  int *heroCharacterId = nullptr;
+  std::vector<uint8_t> *learnedSkills = nullptr;
 
   // Callbacks for main.cpp-specific functionality
   std::function<void(const glm::vec3 &, int, uint8_t)> spawnDamageNumber;

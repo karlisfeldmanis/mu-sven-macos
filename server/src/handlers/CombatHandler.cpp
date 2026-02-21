@@ -1,4 +1,5 @@
 #include "handlers/CombatHandler.hpp"
+#include "GameWorld.hpp"
 #include "PacketDefs.hpp"
 #include "Server.hpp"
 #include "StatCalculator.hpp"
@@ -43,11 +44,16 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       session.level, session.dexterity, session.strength);
   int defRate = mon->defenseRate;
 
-  int hitChance = 95;
-  if (attackRate + defRate > 0) {
-    hitChance = (attackRate * 100) / (attackRate + defRate);
-    hitChance = std::clamp(hitChance, 5, 100);
+  // OpenMU hit chance: if attacker stronger, chance = 1 - defRate/atkRate
+  // If defender stronger, flat 3% (min 5% floor)
+  int hitChance;
+  if (attackRate > 0 && defRate < attackRate) {
+    hitChance = 100 - (defRate * 100) / attackRate;
+  } else {
+    hitChance = 5; // Minimum 5% hit chance
   }
+  if (hitChance < 5) hitChance = 5;
+  if (hitChance > 100) hitChance = 100;
 
   if (rand() % 100 >= hitChance) {
     missed = true;
@@ -60,10 +66,10 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
 
     int critRoll = rand() % 100;
     if (critRoll < 1) {
-      damage = baseMax * 2; // Excellent
+      damage = (baseMax * 120) / 100; // Excellent: 1.2x max (OpenMU)
       damageType = 3;
     } else if (critRoll < 6) {
-      damage = (int)(baseMax * 1.5f); // Critical
+      damage = baseMax; // Critical: max damage (OpenMU)
       damageType = 2;
     }
 
@@ -77,10 +83,11 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       mon->isChasing = true;
       mon->isReturning = false;
       mon->isWandering = false;
+      mon->attackCooldown = 0.0f; // Attack back immediately
       printf("[AI] Mon %d (type %d): AGGRO on attacker fd=%d (dmg=%d)\n",
              mon->index, mon->type, session.GetFd(), damage);
     } else {
-      mon->aggroTimer = 10.0f;
+      mon->aggroTimer = 15.0f;
     }
 
     // Pack assist
@@ -102,10 +109,11 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
         float dist = std::sqrt(dx * dx + dz * dz);
         if (dist < ASSIST_RANGE) {
           ally.aggroTargetFd = session.GetFd();
-          ally.aggroTimer = 10.0f;
+          ally.aggroTimer = 15.0f;
           ally.isChasing = true;
           ally.isReturning = false;
           ally.isWandering = false;
+          ally.attackCooldown = 0.0f; // Attack back immediately (pack assist)
           printf("[AI] Mon %d (type %d): PACK ASSIST on attacker fd=%d "
                  "(dist=%.0f from attacked)\n",
                  ally.index, ally.type, session.GetFd(), dist);
@@ -121,9 +129,15 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       mon->state = MonsterInstance::DYING;
       mon->stateTimer = 0.0f;
 
-      int xp = mon->level * 10 * 100; // 100x Boost for testing
-      if (xp < 1)
-        xp = 1;
+      // OpenMU XP formula: (targetLevel + 25) * targetLevel / 3.0 * 1.25
+      double baseXP = (mon->level + 25.0) * mon->level / 3.0;
+      if (session.level > mon->level + 10) {
+        baseXP *= (double)(mon->level + 10) / session.level;
+      }
+      if (mon->level >= 65) {
+        baseXP += (mon->level - 64) * (mon->level / 4);
+      }
+      int xp = std::max(1, (int)(baseXP * 1.25 * ServerConfig::XP_MULTIPLIER));
 
       // Broadcast death + XP
       PMSG_MONSTER_DEATH_SEND deathPkt{};
@@ -147,8 +161,9 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
 
           session.maxHp = StatCalculator::CalculateMaxHP(charCls, session.level,
                                                          session.vitality);
-          session.maxMana = StatCalculator::CalculateMaxMP(
-              charCls, session.level, session.energy);
+          session.maxMana = StatCalculator::CalculateMaxManaOrAG(
+              charCls, session.level, session.strength, session.dexterity,
+              session.vitality, session.energy);
 
           session.hp = session.maxHp;
           session.mana = session.maxMana;

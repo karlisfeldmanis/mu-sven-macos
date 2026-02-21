@@ -236,11 +236,16 @@ float Terrain::GetHeight(float x, float y) {
 
 void Terrain::SetPointLights(const std::vector<glm::vec3> &positions,
                              const std::vector<glm::vec3> &colors,
-                             const std::vector<float> &ranges) {
+                             const std::vector<float> &ranges,
+                             const std::vector<int> &objectTypes) {
   plCount = std::min((int)positions.size(), 64);
   plPositions.assign(positions.begin(), positions.begin() + plCount);
   plColors.assign(colors.begin(), colors.begin() + plCount);
   plRanges.assign(ranges.begin(), ranges.begin() + plCount);
+  if ((int)objectTypes.size() >= plCount)
+    plObjectTypes.assign(objectTypes.begin(), objectTypes.begin() + plCount);
+  else
+    plObjectTypes.assign(plCount, 0);
 }
 
 void Terrain::Render(const glm::mat4 &view, const glm::mat4 &projection,
@@ -649,8 +654,24 @@ void Terrain::applyDynamicLights() {
     const int cellRange = 3; // Original uses range 3 for most light types
     float rf = (float)cellRange;
 
-    // Scale colors to match original intensity (original uses ~0.3-0.7 range)
-    glm::vec3 color = plColors[li] * 0.35f;
+    // Per-type flickering (Main 5.2 ZzzObject.cpp:3908-3940)
+    // Use slow sine-wave modulation instead of per-frame random to avoid strobing.
+    // Original runs at 25fps tick rate; at 60fps pure random is 2.4x too fast.
+    static float s_flickerPhase = 0.0f;
+    if (li == 0) s_flickerPhase += 0.04f; // ~2.4 rad/sec ≈ gentle flicker
+    glm::vec3 color = plColors[li];
+    int objType = (li < (int)plObjectTypes.size()) ? plObjectTypes[li] : 0;
+    if (objType == 90) { // StreetLight
+      float phase = s_flickerPhase + (float)li * 1.7f; // per-light offset
+      float L = 0.7f + 0.1f * std::sin(phase); // [0.6, 0.8]
+      color = glm::vec3(L, L * 0.8f, L * 0.6f);
+    } else if (objType == 150) { // Candle
+      float phase = s_flickerPhase + (float)li * 2.3f;
+      float L = 0.5f + 0.2f * std::sin(phase); // [0.3, 0.7]
+      color = glm::vec3(L, L * 0.6f, L * 0.2f);
+    } else {
+      color *= 0.35f; // Default scaling for non-flickering lights
+    }
 
     int gxi = (int)gx;
     int gzi = (int)gz;

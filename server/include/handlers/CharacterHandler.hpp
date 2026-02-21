@@ -21,6 +21,9 @@ void SendEquipment(Session &session, Database &db, int characterId);
 // Used by HandleCharSelect, HandleEquip, and OnClientConnected
 void RefreshCombatStats(Session &session, Database &db, int characterId);
 
+// Send learned skill list to client
+void SendSkillList(Session &session);
+
 // Packet handlers
 void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
                     Database &db);

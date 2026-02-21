@@ -89,6 +89,9 @@ public:
   int16_t quickSlotDefIndex = -1;
   int shopNpcType = -1; // -1 means no shop is open
 
+  // Learned skills (skill IDs)
+  std::vector<uint8_t> learnedSkills;
+
 private:
   int m_fd;
   bool m_alive = true;

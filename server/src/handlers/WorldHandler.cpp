@@ -204,8 +204,9 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   session.maxHp =
       StatCalculator::CalculateMaxHP(charCls, session.level, session.vitality);
   session.hp = std::min(static_cast<int>(c.life), session.maxHp);
-  session.maxMana =
-      StatCalculator::CalculateMaxMP(charCls, session.level, session.energy);
+  session.maxMana = StatCalculator::CalculateMaxManaOrAG(
+      charCls, session.level, session.strength, session.dexterity,
+      session.vitality, session.energy);
   session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
 
   // Use shared RefreshCombatStats instead of duplicated code
@@ -215,14 +216,21 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   session.zen = c.money;
   InventoryHandler::LoadInventory(session, db, c.id);
 
+  // Load learned skills from DB
+  session.learnedSkills = db.GetCharacterSkills(c.id);
+
   SendNpcViewport(session, world);
   InventoryHandler::SendInventorySync(session);
   CharacterHandler::SendCharStats(session, db, session.characterId);
 
+  // Send skill list to client
+  CharacterHandler::SendSkillList(session);
+
   printf("[World] Character '%s' entered Lorencia at (%d,%d) STR=%d "
-         "weapon=%d-%d def=%d zen=%u\n",
+         "weapon=%d-%d def=%d zen=%u skills=%zu\n",
          name, c.posX, c.posY, session.strength, session.weaponDamageMin,
-         session.weaponDamageMax, session.totalDefense, session.zen);
+         session.weaponDamageMax, session.totalDefense, session.zen,
+         session.learnedSkills.size());
 }
 
 } // namespace WorldHandler

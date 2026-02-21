@@ -36,6 +36,8 @@ struct InventoryUIContext {
   bool *syncDone;
   bool *showCharInfo;
   bool *showInventory;
+  bool *showSkillWindow;
+  std::vector<uint8_t> *learnedSkills;
   int16_t *quickSlotDefIndex;
   float *potionCooldown;
   bool *shopOpen;
@@ -48,6 +50,7 @@ struct InventoryUIContext {
   int *serverHP, *serverMaxHP, *serverMP, *serverMaxMP;
   int64_t *serverXP;
 
+  int *heroCharacterId;
   HeroCharacter *hero;
   ServerConnection *server;
   UICoords *hudCoords;
@@ -68,6 +71,7 @@ void RecalcEquipmentStats();
 void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c);
 void RenderInventoryPanel(ImDrawList *dl, const UICoords &c);
 void RenderShopPanel(ImDrawList *dl, const UICoords &c);
+void RenderSkillPanel(ImDrawList *dl, const UICoords &c);
 
 // Tooltip
 void AddPendingItemTooltip(int16_t defIndex, int itemLevel);

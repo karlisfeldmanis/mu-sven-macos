@@ -24,9 +24,12 @@ Client uses modular namespace/class design with non-owning pointer context struc
 - **GroundItemRenderer** -- Ground drop physics/models/labels, floating damage numbers
 - **ClientPacketHandler** -- Incoming packet dispatch (initial sync + game loop)
 - **ServerConnection** -- Typed send API (SendAttack, SendPickup, SendEquip, etc.)
+- **VFXManager** -- Particle bursts, ribbon/lightning trails, fire/meteor effects (Main 5.2 1:1)
+- **MonsterManager** -- Monster rendering, weapons, arrow projectiles, debris, nameplates
+- **HeroCharacter** -- Player model, weapon attachment (safe zone back / combat hand), stat formulas
 
 Server uses handler-based architecture with SQLite persistence:
-- **PacketHandler** routes to **CharacterHandler**, **CombatHandler**, **InventoryHandler**, **WorldHandler**
+- **PacketHandler** routes to **CharacterHandler**, **CombatHandler**, **InventoryHandler**, **WorldHandler**, **ShopHandler**
 - **Database** manages SQLite (characters, items, NPCs, monsters)
 - **GameWorld** manages terrain attributes, safe zones, monster AI
 - **StatCalculator** implements DK stat formulas
@@ -46,6 +49,39 @@ Detailed reference docs are in `docs/`:
 | [docs/rendering.md](docs/rendering.md) | Coordinate system, blend states, shadows, world objects, EncTerrain.obj format |
 | [docs/terrain-and-environment.md](docs/terrain-and-environment.md) | Terrain, water, lightmap, point lights, BlendMesh, fire, grass, luminosity |
 | [docs/reference-navigation.md](docs/reference-navigation.md) | Key functions and files in original Main 5.2 source |
+
+## Database
+
+Canonical path: `server_build/mu_server.db` (auto-created on first server run via `SeedItemDefinitions()` + `SeedNpcSpawns()`). Delete to reset/re-seed. Schema: `characters`, `character_inventory`, `character_equipment`, `character_skills`, `item_definitions`, `npc_spawns`.
+
+## AG (Ability Gauge) System
+
+DK does NOT use Mana — uses AG (Ability Gauge / Stamina) for skill costs.
+- **Formula**: `MaxAG = 1.0*ENE + 0.3*VIT + 0.2*DEX + 0.15*STR` (OpenMU ClassDarkKnight.cs)
+- Server repurposes mana packet fields for AG when class is DK
+- Client shows "AG" label instead of "Mana" in HUD and character panel
+- AG recovers at 5% of max per second (server-side tick in GameWorld)
+
+## Skill System
+
+Skills are server-authoritative. Stored in `character_skills` table. DK starts with 0 skills, learns all via skill orbs (category 12 items). Packet: `SKILL_LIST` (0x41, C2 variable-length).
+
+### DK 0.97d Skills
+
+| Skill | ID | AG Cost | Level Req | Orb Index | Description |
+|-------|----|---------|-----------|-----------|-------------|
+| Falling Slash | 19 | 9 | 1 | 20 | Downward slash |
+| Lunge | 20 | 9 | 1 | 21 | Forward thrust |
+| Uppercut | 21 | 8 | 1 | 22 | Upward strike |
+| Cyclone | 22 | 9 | 1 | 23 | Spinning attack |
+| Slash | 23 | 10 | 1 | 24 | Horizontal slash |
+| Twisting Slash | 41 | 10 | 30 | 7 | AoE spinning slash |
+| Rageful Blow | 42 | 20 | 170 | 12 | Powerful ground strike |
+| Death Stab | 43 | 12 | 160 | 19 | Piercing stab |
+
+### Skill Icons
+
+`Data/Interface/Skill.OZJ` — 512x512 sprite sheet, 25 icons/row, each 20x28px. Icon index = skill ID.
 
 ## Critical Rules
 
@@ -68,3 +104,10 @@ Detailed reference docs are in `docs/`:
 - Per-pixel point lights with large ranges create reddish spots -- use CPU-side lightmap instead.
 - Item definitions use `defIndex = category * 32 + itemIndex` as the unique key across all systems.
 - Client inventory is authoritative from server -- client sends requests, server validates and sends back results.
+- **Weapon attachment**: `parentMat = charBone[attachBone] * offset`, then `wFinalBones[i] = parentMat * weaponLocalBone[i]`, then re-skin vertices. Weapon mesh upload MUST use `isDynamic=true` or `RetransformMeshWithBones` is a no-op.
+- **BlendMesh in Main 5.2**: `BlendMesh=N` means mesh with `Texture==N` renders additive, other meshes render normally. It is NOT "render only mesh N". Arrow uses BlendMesh=1 (mesh 1 = fire glow additive, mesh 0 = shaft normal).
+- **Skill model textures**: Models in `Data/Skill/` reference textures in that same directory. When loading via `loadMonsterModel`, pass `texDirOverride` pointing to `Data/Skill/` or textures won't resolve.
+- **Bone positions are model-local**: `cachedBones` from `ComputeBoneMatrices` are in BMD-local space. To get world positions, apply model rotation matrix: `rotate(-90°Z) * rotate(-90°Y) * rotate(facing)` then scale + translate.
+- **Giant (type 7) has no blood**: Main 5.2 excludes MODEL_MONSTER01+7 from blood particle spawning.
+- **NPC direction values**: DB stores OpenMU-style 1-8 (West=1, SouthWest=2, South=3, SouthEast=4, East=5, NE=6, North=7, NW=8). Main 5.2 MonsterSetBase uses raw protocol 0-7 (add +1 for our DB). Client formula: `facing = (dir-1) * PI/4`.
+- **NPC coordinates are version-stable**: Lorencia NPC positions (grid x/y) are identical across Version075, 095d, Season 6, and Main 5.2. Season 6 inherits from 095d which inherits from 075.

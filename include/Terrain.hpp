@@ -21,7 +21,8 @@ public:
   int GetDebugMode() const { return debugMode; }
   void SetPointLights(const std::vector<glm::vec3> &positions,
                       const std::vector<glm::vec3> &colors,
-                      const std::vector<float> &ranges);
+                      const std::vector<float> &ranges,
+                      const std::vector<int> &objectTypes = {});
   void SetLuminosity(float l) { m_luminosity = l; }
 
   // Physics helper
@@ -39,6 +40,7 @@ private:
   float m_luminosity = 1.0f;
   std::vector<glm::vec3> plPositions, plColors;
   std::vector<float> plRanges;
+  std::vector<int> plObjectTypes; // Object type per light (for flicker)
   int plCount = 0;
   GLuint VAO, VBO, EBO;
   GLuint shaderProgram;

@@ -114,7 +114,8 @@ BoneWorldMatrix BuildWeaponOffsetMatrix(const glm::vec3 &rotDeg,
 } // namespace MuMath
 
 std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd, int action,
-                                                 int frame) {
+                                                 int frame,
+                                                 const glm::vec3 &bodyAngle) {
   int numBones = (int)bmd->Bones.size();
   std::vector<BoneWorldMatrix> world(numBones);
 
@@ -127,6 +128,14 @@ std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd, int action,
 
   if (bmd->Actions.empty() || action >= (int)bmd->Actions.size())
     return world;
+
+  // Main 5.2: AngleMatrix(BodyAngle, ParentMatrix) for root bones
+  bool hasBodyAngle =
+      (bodyAngle.x != 0.0f || bodyAngle.y != 0.0f || bodyAngle.z != 0.0f);
+  float parentMatrix[3][4];
+  if (hasBodyAngle) {
+    MuMath::AngleMatrix(bodyAngle, parentMatrix);
+  }
 
   for (int i = 0; i < numBones; ++i) {
     auto &bone = bmd->Bones[i];
@@ -149,7 +158,14 @@ std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd, int action,
     local[2][3] = bm.Position[f].z;
 
     if (bone.Parent == -1) {
-      memcpy(world[i].data(), local, sizeof(float) * 12);
+      if (hasBodyAngle) {
+        // Main 5.2: R_ConcatTransforms(ParentMatrix, Matrix, BoneMatrix[i])
+        float result[3][4];
+        MuMath::ConcatTransforms(parentMatrix, local, result);
+        memcpy(world[i].data(), result, sizeof(float) * 12);
+      } else {
+        memcpy(world[i].data(), local, sizeof(float) * 12);
+      }
     } else if (bone.Parent >= 0 && bone.Parent < numBones) {
       float result[3][4];
       MuMath::ConcatTransforms((const float(*)[4])world[bone.Parent].data(),
@@ -217,7 +233,8 @@ bool GetInterpolatedBoneData(const BMDData *bmd, int action, float frame,
 }
 
 std::vector<BoneWorldMatrix>
-ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame) {
+ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame,
+                                const glm::vec3 &bodyAngle) {
   int numBones = (int)bmd->Bones.size();
   std::vector<BoneWorldMatrix> world(numBones);
 
@@ -226,6 +243,13 @@ ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame) {
     for (int r = 0; r < 3; ++r)
       for (int c = 0; c < 4; ++c)
         world[i][r][c] = (r == c) ? 1.0f : 0.0f;
+
+  bool hasBodyAngle =
+      (bodyAngle.x != 0.0f || bodyAngle.y != 0.0f || bodyAngle.z != 0.0f);
+  float parentMatrix[3][4];
+  if (hasBodyAngle) {
+    MuMath::AngleMatrix(bodyAngle, parentMatrix);
+  }
 
   for (int i = 0; i < numBones; ++i) {
     glm::vec3 pos;
@@ -242,7 +266,13 @@ ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame) {
 
     auto &bone = bmd->Bones[i];
     if (bone.Parent == -1) {
-      memcpy(world[i].data(), local, sizeof(float) * 12);
+      if (hasBodyAngle) {
+        float result[3][4];
+        MuMath::ConcatTransforms(parentMatrix, local, result);
+        memcpy(world[i].data(), result, sizeof(float) * 12);
+      } else {
+        memcpy(world[i].data(), local, sizeof(float) * 12);
+      }
     } else if (bone.Parent >= 0 && bone.Parent < numBones) {
       float result[3][4];
       MuMath::ConcatTransforms((const float(*)[4])world[bone.Parent].data(),
@@ -256,7 +286,8 @@ ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame) {
 
 std::vector<BoneWorldMatrix>
 ComputeBoneMatricesBlended(const BMDData *bmd, int action1, float frame1,
-                           int action2, float frame2, float blendAlpha) {
+                           int action2, float frame2, float blendAlpha,
+                           const glm::vec3 &bodyAngle) {
   int numBones = (int)bmd->Bones.size();
   std::vector<BoneWorldMatrix> world(numBones);
 
@@ -265,6 +296,13 @@ ComputeBoneMatricesBlended(const BMDData *bmd, int action1, float frame1,
     for (int r = 0; r < 3; ++r)
       for (int c = 0; c < 4; ++c)
         world[i][r][c] = (r == c) ? 1.0f : 0.0f;
+
+  bool hasBodyAngle =
+      (bodyAngle.x != 0.0f || bodyAngle.y != 0.0f || bodyAngle.z != 0.0f);
+  float parentMatrix[3][4];
+  if (hasBodyAngle) {
+    MuMath::AngleMatrix(bodyAngle, parentMatrix);
+  }
 
   for (int i = 0; i < numBones; ++i) {
     glm::vec3 pos1, pos2;
@@ -298,7 +336,13 @@ ComputeBoneMatricesBlended(const BMDData *bmd, int action1, float frame1,
 
     auto &bone = bmd->Bones[i];
     if (bone.Parent == -1) {
-      memcpy(world[i].data(), local, sizeof(float) * 12);
+      if (hasBodyAngle) {
+        float result[3][4];
+        MuMath::ConcatTransforms(parentMatrix, local, result);
+        memcpy(world[i].data(), result, sizeof(float) * 12);
+      } else {
+        memcpy(world[i].data(), local, sizeof(float) * 12);
+      }
     } else if (bone.Parent >= 0 && bone.Parent < numBones) {
       float result[3][4];
       MuMath::ConcatTransforms((const float(*)[4])world[bone.Parent].data(),

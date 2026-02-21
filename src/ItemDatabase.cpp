@@ -179,6 +179,17 @@ static const DropDef items[] = {
     {"Wings of Dragon", "Wing06.bmd", 0, 0, 0},
     {"Wings of Darkness", "Wing07.bmd", 0, 0, 0},
 
+    // Orbs (391-408)
+    [391] = {"Orb of Twisting Slash", "Gem01.bmd", 0, 0, 0},
+    [396] = {"Orb of Rageful Blow", "Gem06.bmd", 0, 0, 0},
+    [399] = {"Jewel of Chaos", "Jewel04.bmd", 0, 0, 0},
+    [403] = {"Orb of Death Stab", "Gem13.bmd", 0, 0, 0},
+    {"Orb of Falling Slash", "Gem01.bmd", 0, 0, 0},
+    {"Orb of Lunge", "Gem01.bmd", 0, 0, 0},
+    {"Orb of Uppercut", "Gem01.bmd", 0, 0, 0},
+    {"Orb of Cyclone", "Gem01.bmd", 0, 0, 0},
+    {"Orb of Slash", "Gem01.bmd", 0, 0, 0},
+
     // Category 13: Rings (416-447)
     [416] = {"Ring of Ice", "Ring01.bmd", 0, 0, 0},
     {"Ring of Poison", "Ring02.bmd", 0, 0, 0},
@@ -654,6 +665,14 @@ void Init() {
   addDef(769, 12, 19, "Orb of Death Stab", "Gem13.bmd", 1, 1, 160, 0, 0, 0, 72,
          2);
 
+  // Basic DK skill orbs (indices 20-24)
+  addDef(770, 12, 20, "Orb of Falling Slash", "Gem01.bmd", 1, 1, 0, 0, 0, 0, 1,
+         2);
+  addDef(771, 12, 21, "Orb of Lunge", "Gem01.bmd", 1, 1, 0, 0, 0, 0, 1, 2);
+  addDef(772, 12, 22, "Orb of Uppercut", "Gem01.bmd", 1, 1, 0, 0, 0, 0, 1, 2);
+  addDef(773, 12, 23, "Orb of Cyclone", "Gem01.bmd", 1, 1, 0, 0, 0, 0, 1, 2);
+  addDef(774, 12, 24, "Orb of Slash", "Gem01.bmd", 1, 1, 0, 0, 0, 0, 1, 2);
+
   // Category 12 (Jewels mix) & Category 13 (Jewelry/Pets) (IDs 800+)
   addDef(815, 12, 15, "Jewel of Chaos", "Jewel15.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
   addDef(800, 13, 0, "Guardian Angel", "Helper01.bmd", 1, 1, 0, 0, 0, 0, 23,
@@ -687,7 +706,7 @@ void Init() {
   addDef(856, 14, 6, "Large Mana Potion", "Potion07.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
   addDef(858, 14, 8, "Antidote", "Antidote01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
-  addDef(859, 14, 9, "Ale", "Potion09.bmd", 1, 2, 0, 0, 0, 0, 0, 15);
+  addDef(859, 14, 9, "Ale", "Beer01.bmd", 1, 2, 0, 0, 0, 0, 0, 15);
   addDef(860, 14, 10, "Town Portal", "Scroll01.bmd", 1, 2, 0, 0, 0, 0, 0, 15);
   addDef(863, 14, 13, "Jewel of Bless", "Jewel01.bmd", 1, 1, 0, 0, 0, 0, 0, 15);
   addDef(864, 14, 14, "Jewel of Soul", "Jewel02.bmd", 1, 1, 0, 0, 0, 0, 0, 15);

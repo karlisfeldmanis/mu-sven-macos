@@ -26,13 +26,19 @@ void HeroCharacter::RecalcStats() {
   if (m_maxHp < 1)
     m_maxHp = 1;
 
-  // MaxMana = 25 + (Level-1)*1.0 + (Energy-10)*1.5
-  m_maxMana = (int)(25 + (m_level - 1) * 1.0f + (m_energy - 10) * 1.5f);
+  // DK uses AG (Ability Gauge): ENE*1.0 + VIT*0.3 + DEX*0.2 + STR*0.15
+  // Other classes use Mana: 20 + (Level-1)*0.5 + (Energy-10)*1
+  if (m_class == 16) { // CLASS_DK
+    m_maxMana = (int)(m_energy * 1.0f + m_vitality * 0.3f +
+                      m_dexterity * 0.2f + m_strength * 0.15f);
+  } else {
+    m_maxMana = (int)(20 + (m_level - 1) * 0.5f + (m_energy - 10) * 1);
+  }
   if (m_maxMana < 1)
     m_maxMana = 1;
 
-  // Damage = STR / 8 + weapon .. STR / 4 + weapon (original MU formula)
-  m_damageMin = std::max(1, (int)m_strength / 8 + m_weaponDamageMin);
+  // Damage = STR / 6 + weapon .. STR / 4 + weapon (OpenMU DK formula)
+  m_damageMin = std::max(1, (int)m_strength / 6 + m_weaponDamageMin);
   m_damageMax = std::max(m_damageMin, (int)m_strength / 4 + m_weaponDamageMax);
 
   // Defense = DEX / 3 + equipped armor/shield defense
@@ -144,31 +150,30 @@ void HeroCharacter::SetDefenseBonus(int def) {
 
 DamageResult HeroCharacter::RollAttack(int targetDefense,
                                        int targetDefSuccessRate) const {
-  // 1. Miss check (reference Attack.cpp)
+  // 1. Miss check — OpenMU formula (matches server)
   int atkRate = m_attackSuccessRate;
   int defRate = targetDefSuccessRate;
-  if (atkRate < defRate) {
-    // Attacker weaker: 95% miss
-    if (rand() % 100 >= 5)
-      return {0, DamageType::MISS};
-  } else if (defRate > 0 && atkRate > 0) {
-    // Normal: miss chance = defRate / atkRate
-    if (rand() % atkRate < defRate)
-      return {0, DamageType::MISS};
+  int hitChance;
+  if (atkRate > 0 && defRate < atkRate) {
+    hitChance = 100 - (defRate * 100) / atkRate;
+  } else {
+    hitChance = 5;
   }
+  if (hitChance < 5) hitChance = 5;
+  if (rand() % 100 >= hitChance)
+    return {0, DamageType::MISS};
 
-  // 2. Critical check: rate = DEX / 5, cap 20%
-  int critRate = std::min((int)m_dexterity / 5, 20);
-  if (rand() % 100 < critRate) {
-    int dmg = m_damageMax + m_level / 2; // Max + level bonus
-    return {std::max(1, dmg - targetDefense), DamageType::CRITICAL};
-  }
-
-  // 3. Excellent check: rate = DEX / 10, cap 10%
-  int excRate = std::min((int)m_dexterity / 10, 10);
-  if (rand() % 100 < excRate) {
-    int dmg = (m_damageMax * 120) / 100; // 120% of max
+  // 2. Excellent check: 1% chance, 1.2x max damage (matches server)
+  int critRoll = rand() % 100;
+  if (critRoll < 1) {
+    int dmg = (m_damageMax * 120) / 100;
     return {std::max(1, dmg - targetDefense), DamageType::EXCELLENT};
+  }
+
+  // 3. Critical check: 5% chance, max damage (matches server)
+  if (critRoll < 6) {
+    int dmg = m_damageMax;
+    return {std::max(1, dmg - targetDefense), DamageType::CRITICAL};
   }
 
   // 4. Normal hit: random in [min, max]
@@ -292,8 +297,8 @@ int HeroCharacter::nextAttackAction() {
   // Dual-wield: R1→L1→R2→L2 cycle (Main 5.2 SwordCount%4)
   if (isDualWielding()) {
     static constexpr int cycle[4] = {
-        ACTION_ATTACK_SWORD_R1, ACTION_ATTACK_SWORD_L1,
-        ACTION_ATTACK_SWORD_R2, ACTION_ATTACK_SWORD_L2};
+        ACTION_ATTACK_SWORD_R1, ACTION_ATTACK_SWORD_L1, ACTION_ATTACK_SWORD_R2,
+        ACTION_ATTACK_SWORD_L2};
     return cycle[sc % 4];
   }
 
@@ -631,10 +636,11 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     // SafeZone: back rotation (70,0,90) + offset (-20,5,55)
     // Combat: identity (weapon BMD's own bone handles orientation)
     BoneWorldMatrix weaponOffsetMat =
-        m_inSafeZone ? MuMath::BuildWeaponOffsetMatrix(
-                           glm::vec3(70.f, 0.f, 90.f), glm::vec3(-20.f, 5.f, 55.f))
-                     : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
-                                                       glm::vec3(0, 0, 0));
+        m_inSafeZone
+            ? MuMath::BuildWeaponOffsetMatrix(glm::vec3(70.f, 0.f, 90.f),
+                                              glm::vec3(-20.f, 5.f, 55.f))
+            : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
+                                              glm::vec3(0, 0, 0));
 
     // parentMat = CharBone[attachBone] * OffsetMatrix
     BoneWorldMatrix parentMat;
@@ -718,10 +724,11 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     // SafeZone: back rotation for shield — slightly different offset
     // Original: shield gets (-10, 0, 0) offset on back
     BoneWorldMatrix shieldOffsetMat =
-        m_inSafeZone ? MuMath::BuildWeaponOffsetMatrix(
-                           glm::vec3(70.f, 0.f, 90.f), glm::vec3(-10.f, 0.f, 0.f))
-                     : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
-                                                       glm::vec3(0, 0, 0));
+        m_inSafeZone
+            ? MuMath::BuildWeaponOffsetMatrix(glm::vec3(70.f, 0.f, 90.f),
+                                              glm::vec3(-10.f, 0.f, 0.f))
+            : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
+                                              glm::vec3(0, 0, 0));
 
     BoneWorldMatrix shieldParentMat;
     MuMath::ConcatTransforms((const float(*)[4])bones[shieldBone].data(),
@@ -967,15 +974,24 @@ void HeroCharacter::ProcessMovement(float deltaTime) {
     glm::vec3 newPos = m_pos + step;
 
     const int S = TerrainParser::TERRAIN_SIZE;
-    int gz = (int)(newPos.x / 100.0f);
-    int gx = (int)(newPos.z / 100.0f);
-    bool walkable =
-        (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
-        (m_terrainData->mapping.attributes[gz * S + gx] & 0x04) == 0;
+    auto isWalkableAt = [&](float wx, float wz) -> bool {
+      int tgz = (int)(wx / 100.0f);
+      int tgx = (int)(wz / 100.0f);
+      return (tgx >= 0 && tgz >= 0 && tgx < S && tgz < S) &&
+             (m_terrainData->mapping.attributes[tgz * S + tgx] & 0x04) == 0;
+    };
 
-    if (walkable) {
+    // Wall sliding: try full move, then X-only, then Z-only
+    // (Main 5.2 MapPath.cpp: direction fallback when diagonal is blocked)
+    if (isWalkableAt(newPos.x, newPos.z)) {
       m_pos.x = newPos.x;
       m_pos.z = newPos.z;
+    } else if (std::abs(step.x) > 0.01f &&
+               isWalkableAt(m_pos.x + step.x, m_pos.z)) {
+      m_pos.x += step.x; // Slide along X axis
+    } else if (std::abs(step.z) > 0.01f &&
+               isWalkableAt(m_pos.x, m_pos.z + step.z)) {
+      m_pos.z += step.z; // Slide along Z axis
     } else {
       StopMoving();
     }
@@ -989,8 +1005,8 @@ void HeroCharacter::MoveTo(const glm::vec3 &target) {
     return;
   m_target = target;
   // Only reset walk animation if not already walking
-  int walkAction = (!m_inSafeZone && m_weaponBmd) ? weaponWalkAction()
-                                                  : ACTION_WALK_MALE;
+  int walkAction =
+      (!m_inSafeZone && m_weaponBmd) ? weaponWalkAction() : ACTION_WALK_MALE;
   if (!m_moving || m_action != walkAction) {
     SetAction(walkAction);
     m_animFrame = 0.0f;
@@ -1100,8 +1116,7 @@ void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
             << m_weaponBmd->Meshes.size() << " meshes, "
             << m_weaponBmd->Bones.size() << " bones"
             << " (bone=" << (int)catRender.attachBone
-            << " idle=" << weaponIdleAction()
-            << " walk=" << weaponWalkAction()
+            << " idle=" << weaponIdleAction() << " walk=" << weaponWalkAction()
             << " 2H=" << weapon.twoHanded << ")" << std::endl;
 
   // Update animation to combat stance if outside SafeZone

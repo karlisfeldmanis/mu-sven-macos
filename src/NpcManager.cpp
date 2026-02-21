@@ -1,6 +1,7 @@
 #include "NpcManager.hpp"
 #include "HeroCharacter.hpp" // For PointLight struct
 #include "TextureLoader.hpp"
+#include "VFXManager.hpp"
 #include "ViewerCommon.hpp"
 #include "imgui.h"
 #include <algorithm>
@@ -10,9 +11,14 @@
 
 // NPC type → display name mapping (matches Database::SeedNpcSpawns)
 static const std::unordered_map<uint16_t, std::string> s_npcNames = {
-    {253, "Potion Girl Amy"},      {250, "Weapon Merchant"},
-    {251, "Hanzo the Blacksmith"}, {254, "Pasi the Mage"},
-    {255, "Lumen the Barmaid"},    {240, "Safety Guardian"}};
+    {253, "Potion Girl Amy"},
+    {250, "Weapon Merchant"},
+    {251, "Hanzo the Blacksmith"},
+    {254, "Pasi the Mage"},
+    {255, "Lumen the Barmaid"},
+    {240, "Safety Guardian"},
+    {247, "Guard"},
+    {249, "Guard"}};
 
 glm::vec3 NpcManager::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
   const int SIZE = 256;
@@ -101,7 +107,7 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
   NpcInstance npc;
   npc.modelIdx = modelIdx;
   npc.scale = scale;
-  npc.action = 0;  // Idle
+  npc.action = m_models[modelIdx].defaultAction; // 0 for NPCs, 4/12 for guards
   npc.npcType = 0; // Set by AddNpcByType or Init caller
 
   // Grid to world: WorldX = gridY * 100, WorldZ = gridX * 100
@@ -131,16 +137,9 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
     }
   }
 
-  std::string npcTexPath = "";
-  // Determine texture path from skeleton's first mesh
-  if (!mdl.skeleton->Meshes.empty()) {
-    // NPC textures are in Data/NPC/
-    // The texture path is resolved by UploadMeshWithBones
-  }
-
-  // Find NPC texture directory
-  // Skeleton file is in Data/NPC/, textures are there too
-  std::string texDir = ""; // Will be set in Init()
+  // Determine texture directory: guards use Data/Player/, NPCs use Data/NPC/
+  bool isGuard = (mdl.weaponAttachBone >= 0);
+  std::string texDir = isGuard ? (m_dataPath + "/Player/") : m_npcTexPath;
 
   // Upload skeleton meshes (for single-model NPCs like Smith, Wizard, Storage)
   if (skeletonHasMeshes) {
@@ -148,22 +147,52 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
     NpcInstance::BodyPart bp;
     bp.bmdIdx = -1; // skeleton
     for (auto &mesh : mdl.skeleton->Meshes) {
-      UploadMeshWithBones(mesh, m_npcTexPath, bones, bp.meshBuffers, aabb,
-                          true);
+      UploadMeshWithBones(mesh, texDir, bones, bp.meshBuffers, aabb, true);
     }
     npc.bodyParts.push_back(std::move(bp));
   }
 
-  // Upload body part meshes (for multi-part NPCs like Man, Girl, Female)
+  // Upload body part meshes (for multi-part NPCs like Man, Girl, Female,
+  // Guards)
   for (int pi = 0; pi < (int)mdl.parts.size(); ++pi) {
     AABB aabb{};
     NpcInstance::BodyPart bp;
     bp.bmdIdx = pi;
     for (auto &mesh : mdl.parts[pi]->Meshes) {
-      UploadMeshWithBones(mesh, m_npcTexPath, bones, bp.meshBuffers, aabb,
-                          true);
+      UploadMeshWithBones(mesh, texDir, bones, bp.meshBuffers, aabb, true);
     }
     npc.bodyParts.push_back(std::move(bp));
+  }
+
+  // Upload weapon meshes (guards only)
+  if (mdl.weaponBmd) {
+    std::string weaponTexDir = m_dataPath + "/Item/";
+    auto wBones = ComputeBoneMatrices(mdl.weaponBmd);
+    AABB wAabb{};
+    for (auto &mesh : mdl.weaponBmd->Meshes) {
+      UploadMeshWithBones(mesh, weaponTexDir, wBones, npc.weaponMeshBuffers,
+                          wAabb, true);
+    }
+    // Create weapon shadow mesh buffers
+    for (auto &mb : npc.weaponMeshBuffers) {
+      NpcInstance::ShadowMesh sm;
+      sm.vertexCount = mb.vertexCount;
+      if (sm.vertexCount == 0) {
+        npc.weaponShadowMeshes.push_back(sm);
+        continue;
+      }
+      glGenVertexArrays(1, &sm.vao);
+      glGenBuffers(1, &sm.vbo);
+      glBindVertexArray(sm.vao);
+      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+      glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3), nullptr,
+                   GL_DYNAMIC_DRAW);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                            (void *)0);
+      glEnableVertexAttribArray(0);
+      glBindVertexArray(0);
+      npc.weaponShadowMeshes.push_back(sm);
+    }
   }
 
   // Create shadow mesh buffers
@@ -198,6 +227,7 @@ void NpcManager::InitModels(const std::string &dataPath) {
 
   std::string npcPath = dataPath + "/NPC/";
   m_npcTexPath = npcPath;
+  m_dataPath = dataPath;
 
   // Create shaders
   std::ifstream shaderTest("shaders/model.vert");
@@ -236,13 +266,52 @@ void NpcManager::InitModels(const std::string &dataPath) {
   // Scale overrides
   m_typeScale[251] = 0.95f; // Blacksmith slightly smaller
 
+  // ── Guard NPCs (Main 5.2: ZzzCharacter.cpp:13859-13890) ──
+  // Guards use Player.bmd skeleton + armor set 9 (heavy plate)
+  std::string playerPath = dataPath + "/Player/";
+  std::string itemPath = dataPath + "/Item/";
+
+  // Type 249: Berdysh Guard (spear, right hand bone 33)
+  int berdyshIdx =
+      loadModel(playerPath, "player.bmd",
+                {"HelmMale09.bmd", "ArmorMale09.bmd", "PantMale09.bmd",
+                 "GloveMale09.bmd", "BootMale09.bmd"},
+                "BerdyshGuard");
+  if (berdyshIdx >= 0) {
+    auto spearBmd = BMDParser::Parse(itemPath + "Spear07.bmd");
+    if (spearBmd) {
+      m_models[berdyshIdx].weaponBmd = spearBmd.get();
+      m_models[berdyshIdx].weaponAttachBone = 33; // Right hand
+      m_models[berdyshIdx].defaultAction = 4;     // PLAYER_STOP_SWORD
+      m_ownedBmds.push_back(std::move(spearBmd));
+    }
+    m_typeToModel[249] = berdyshIdx;
+  }
+
+  // Type 247: Crossbow Guard (bow, left hand bone 42)
+  int crossbowIdx =
+      loadModel(playerPath, "player.bmd",
+                {"HelmMale09.bmd", "ArmorMale09.bmd", "PantMale09.bmd",
+                 "GloveMale09.bmd", "BootMale09.bmd"},
+                "CrossbowGuard");
+  if (crossbowIdx >= 0) {
+    auto bowBmd = BMDParser::Parse(itemPath + "Bow07.bmd");
+    if (bowBmd) {
+      m_models[crossbowIdx].weaponBmd = bowBmd.get();
+      m_models[crossbowIdx].weaponAttachBone = 42; // Left hand
+      m_models[crossbowIdx].defaultAction = 12;    // PLAYER_STOP_CROSSBOW
+      m_ownedBmds.push_back(std::move(bowBmd));
+    }
+    m_typeToModel[247] = crossbowIdx;
+  }
+
   m_modelsLoaded = true;
   std::cout << "[NPC] Models loaded: " << m_models.size() << " types, "
             << m_typeToModel.size() << " type mappings" << std::endl;
 }
 
 void NpcManager::AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY,
-                              uint8_t dir) {
+                              uint8_t dir, uint16_t serverIndex) {
   auto it = m_typeToModel.find(npcType);
   if (it == m_typeToModel.end()) {
     std::cerr << "[NPC] Unknown NPC type " << npcType << " at (" << (int)gridX
@@ -256,16 +325,26 @@ void NpcManager::AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY,
 
   addNpc(it->second, gridX, gridY, dir, scale);
 
-  // Set type and name on the just-added NPC
+  // Set type, name, and server index on the just-added NPC
   auto &added = m_npcs.back();
   added.npcType = npcType;
+  added.serverIndex = serverIndex;
   auto nameIt = s_npcNames.find(npcType);
   if (nameIt != s_npcNames.end())
     added.name = nameIt->second;
 
-  std::cout << "[NPC] Server-spawned NPC type=" << npcType << " at grid ("
-            << (int)gridX << "," << (int)gridY << ") dir=" << (int)dir
-            << std::endl;
+  // Guard walk actions (Player.bmd action indices from _enum.h)
+  // Type 249 (Berdysh): idle=4 (PLAYER_STOP_SWORD), walk=5 (PLAYER_WALK_SWORD)
+  // Type 247 (Crossbow): idle=12 (PLAYER_STOP_CROSSBOW), walk=13
+  // (PLAYER_WALK_CROSSBOW)
+  if (npcType == 249)
+    added.walkAction = 5;
+  else if (npcType == 247)
+    added.walkAction = 13;
+
+  std::cout << "[NPC] Server-spawned NPC type=" << npcType
+            << " idx=" << serverIndex << " at grid (" << (int)gridX << ","
+            << (int)gridY << ") dir=" << (int)dir << std::endl;
 }
 
 void NpcManager::Init(const std::string &dataPath) {
@@ -333,15 +412,110 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     if (npc.action >= 0 && npc.action < (int)mdl.skeleton->Actions.size())
       numKeys = mdl.skeleton->Actions[npc.action].NumAnimationKeys;
     if (numKeys > 1) {
-      npc.animFrame += ANIM_SPEED * deltaTime;
-      if (npc.animFrame >= (float)numKeys)
+      // Guards use Player.bmd which has faster PlaySpeed (0.30*25=7.5 fps)
+      float speed = (npc.walkAction > 0) ? 7.5f : ANIM_SPEED;
+      npc.animFrame += speed * deltaTime;
+      if (npc.animFrame >= (float)numKeys) {
         npc.animFrame = std::fmod(npc.animFrame, (float)numKeys);
+        // NPC action switching (Main 5.2: ZzzCharacter.cpp:3352-3358)
+        // Blacksmith: 75% action 0 (hammering), 25% action 1-2
+        if (npc.npcType == 251) {
+          int numActions = (int)mdl.skeleton->Actions.size();
+          if (rand() % 4 == 0 && numActions > 1) {
+            npc.action = 1 + rand() % std::min(2, numActions - 1);
+          } else {
+            npc.action = 0;
+          }
+          npc.animFrame = 0.0f;
+        }
+      }
+    }
+
+    // Guard patrol movement: interpolate toward move target
+    if (npc.isMoving) {
+      glm::vec3 diff = npc.moveTarget - npc.position;
+      diff.y = 0.0f; // Only move in XZ plane
+      float dist = glm::length(diff);
+      // Server uses GUARD_WANDER_SPEED = 150 units/sec
+      float step = 150.0f * deltaTime;
+      if (dist <= step || dist < 1.0f) {
+        // Arrived at target
+        npc.position.x = npc.moveTarget.x;
+        npc.position.z = npc.moveTarget.z;
+        npc.position.y = snapToTerrain(npc.position.x, npc.position.z);
+        npc.isMoving = false;
+        // Switch back to idle action
+        npc.action = mdl.defaultAction;
+        npc.animFrame = 0.0f;
+      } else {
+        glm::vec3 dir = diff / dist;
+        float nextX = npc.position.x + dir.x * step;
+        float nextZ = npc.position.z + dir.z * step;
+
+        bool blocked = false;
+        if (m_terrainData) {
+          int gy = (int)(nextX / 100.0f);
+          int gx = (int)(nextZ / 100.0f);
+          const int S = TerrainParser::TERRAIN_SIZE;
+          if (gx >= 0 && gy >= 0 && gx < S && gy < S) {
+            uint8_t attr = m_terrainData->mapping.attributes[gy * S + gx];
+            if ((attr & 0x04) != 0) {
+              blocked = true;
+            }
+          }
+        }
+
+        if (blocked) {
+          npc.isMoving = false;
+          npc.action = mdl.defaultAction;
+          npc.animFrame = 0.0f;
+        } else {
+          npc.position.x = nextX;
+          npc.position.z = nextZ;
+          npc.position.y = snapToTerrain(npc.position.x, npc.position.z);
+          // Update facing toward movement direction
+          npc.facing = std::atan2(dir.x, dir.z);
+        }
+      }
     }
 
     // Compute bone matrices
     auto bones = ComputeBoneMatricesInterpolated(mdl.skeleton, npc.action,
                                                  npc.animFrame);
     npc.cachedBones = bones;
+
+    // ── Blacksmith VFX (Main 5.2: ZzzCharacter.cpp:5917-5939) ──
+    // MODEL_SMITH (NPC type 251): sparks from bone 17 during hammer frames 5-6
+    if (npc.npcType == 251 && m_vfxManager && npc.action == 0 &&
+        npc.animFrame >= 5.0f && npc.animFrame <= 6.0f) {
+      // Get bone 17 (hammer hand) position in model-local space
+      const int HAMMER_BONE = 17;
+      if (HAMMER_BONE < (int)bones.size()) {
+        // Bone position is the translation column of the 3x4 matrix
+        glm::vec3 boneLocal(bones[HAMMER_BONE][0][3], bones[HAMMER_BONE][1][3],
+                            bones[HAMMER_BONE][2][3]);
+
+        // Transform from BMD-local to world space:
+        // Apply model rotation: rotate(-90°Z) * rotate(-90°Y) * rotate(facing)
+        float c1 = std::cos(glm::radians(-90.0f));
+        float s1 = std::sin(glm::radians(-90.0f));
+        // rotate(-90°Z): (x,y,z) -> (y, -x, z)
+        glm::vec3 r1(boneLocal.y, -boneLocal.x, boneLocal.z);
+        // rotate(-90°Y): (x,y,z) -> (z, y, -x)
+        glm::vec3 r2(r1.z, r1.y, -r1.x);
+
+        // Fix: Adjust facing for guards (-90 degrees to align correctly)
+        float adjustedFacing = npc.facing - glm::radians(90.0f);
+        float cf = std::cos(adjustedFacing);
+        float sf = std::sin(adjustedFacing);
+        glm::vec3 r3(r2.x * cf - r2.y * sf, r2.x * sf + r2.y * cf, r2.z);
+        // Apply scale and translate to world
+        glm::vec3 sparkPos = npc.position + r3 * npc.scale;
+
+        // Spawn 4 spark particles (Main 5.2: CreateJoint + CreateParticle x4)
+        m_vfxManager->SpawnBurst(ParticleType::HIT_SPARK, sparkPos, 4);
+      }
+    }
 
     // Re-skin meshes
     int partIdx = 0;
@@ -356,9 +530,11 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
 
     // Build model matrix
     glm::mat4 model = glm::translate(glm::mat4(1.0f), npc.position);
+    // Fix: Rotate -90 degrees around Z to align guards correctly
     model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
     model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-    model = glm::rotate(model, npc.facing, glm::vec3(0, 0, 1));
+    model = glm::rotate(model, npc.facing - glm::radians(90.0f),
+                        glm::vec3(0, 0, 1));
     if (npc.scale != 1.0f)
       model = glm::scale(model, glm::vec3(npc.scale));
 
@@ -368,19 +544,91 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     glm::vec3 tLight = sampleTerrainLightAt(npc.position);
     m_shader->setVec3("terrainLight", tLight);
 
+    // Blacksmith forge glow: BlendMesh=4, Luminosity=0.8 constant
+    // Main 5.2: o->BlendMesh = 4; o->BlendMeshLight = Luminosity;
+    // Luminosity for Lorencia is a constant 0.8f (ZzzCharacter.cpp:5500)
+    bool isBlacksmith = (npc.npcType == 251);
+    float forgeLum = 1.0f;
+    if (isBlacksmith) {
+      forgeLum = 0.8f;
+      m_shader->setFloat("blendMeshLight", forgeLum);
+    }
+
     // Draw all body part meshes
+    int meshDrawIdx = 0;
     for (auto &bp : npc.bodyParts) {
       for (auto &mb : bp.meshBuffers) {
+        if (mb.indexCount == 0 || mb.hidden) {
+          meshDrawIdx++;
+          continue;
+        }
+        glBindTexture(GL_TEXTURE_2D, mb.texture);
+        glBindVertexArray(mb.vao);
+
+        // Blacksmith mesh 4 = forge glow (additive blend)
+        bool forgeGlow = isBlacksmith && (mb.bmdTextureId == 4);
+
+        if (forgeGlow || mb.bright) {
+          glBlendFunc(GL_ONE, GL_ONE);
+          glDepthMask(GL_FALSE);
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+          glDepthMask(GL_TRUE);
+          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        } else if (mb.noneBlend) {
+          glDisable(GL_BLEND);
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+          glEnable(GL_BLEND);
+        } else {
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        }
+        meshDrawIdx++;
+      }
+    }
+
+    // Reset blendMeshLight after blacksmith
+    if (isBlacksmith) {
+      m_shader->setFloat("blendMeshLight", 1.0f);
+    }
+
+    // ── Guard weapon rendering (Main 5.2: ZzzCharacter.cpp:13859-13890) ──
+    if (mdl.weaponBmd && mdl.weaponAttachBone >= 0 &&
+        !npc.weaponMeshBuffers.empty() &&
+        mdl.weaponAttachBone < (int)bones.size()) {
+      // Guard weapon attachment: same as HeroCharacter — parentMat = bone *
+      // identity offset. The correct idle animation (PLAYER_STOP_SWORD /
+      // PLAYER_STOP_CROSSBOW) positions the hands for weapon hold.
+      BoneWorldMatrix offsetMat = MuMath::BuildWeaponOffsetMatrix(
+          glm::vec3(0.0f), glm::vec3(0.0f));
+
+      BoneWorldMatrix parentMat;
+      MuMath::ConcatTransforms(
+          (const float(*)[4])bones[mdl.weaponAttachBone].data(),
+          (const float(*)[4])offsetMat.data(), (float(*)[4])parentMat.data());
+
+      // Compute weapon bone matrices with parentMat as root
+      auto wLocalBones = ComputeBoneMatrices(mdl.weaponBmd);
+      std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
+      for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
+        MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
+                                 (const float(*)[4])wLocalBones[bi].data(),
+                                 (float(*)[4])wFinalBones[bi].data());
+      }
+
+      // Re-skin weapon meshes
+      for (int mi = 0; mi < (int)npc.weaponMeshBuffers.size() &&
+                       mi < (int)mdl.weaponBmd->Meshes.size();
+           ++mi) {
+        RetransformMeshWithBones(mdl.weaponBmd->Meshes[mi], wFinalBones,
+                                 npc.weaponMeshBuffers[mi]);
+      }
+
+      // Draw weapon meshes
+      for (auto &mb : npc.weaponMeshBuffers) {
         if (mb.indexCount == 0 || mb.hidden)
           continue;
         glBindTexture(GL_TEXTURE_2D, mb.texture);
         glBindVertexArray(mb.vao);
-
-        if (mb.noneBlend) {
-          glDisable(GL_BLEND);
-          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-          glEnable(GL_BLEND);
-        } else if (mb.bright) {
+        if (mb.bright) {
           glBlendFunc(GL_ONE, GL_ONE);
           glDepthMask(GL_FALSE);
           glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
@@ -610,11 +858,34 @@ void NpcManager::RenderOutline(int npcIndex, const glm::mat4 &view,
   glBindVertexArray(0);
 }
 
+void NpcManager::SetNpcMoveTarget(uint16_t serverIndex, float worldX,
+                                  float worldZ) {
+  for (auto &npc : m_npcs) {
+    if (npc.serverIndex == serverIndex) {
+      float worldY = snapToTerrain(worldX, worldZ);
+      npc.moveTarget = glm::vec3(worldX, worldY, worldZ);
+      npc.isMoving = true;
+      // Switch to walk action
+      if (npc.walkAction > 0)
+        npc.action = npc.walkAction;
+      return;
+    }
+  }
+}
+
 void NpcManager::Cleanup() {
   for (auto &npc : m_npcs) {
     for (auto &bp : npc.bodyParts)
       CleanupMeshBuffers(bp.meshBuffers);
     for (auto &sm : npc.shadowMeshes) {
+      if (sm.vao)
+        glDeleteVertexArrays(1, &sm.vao);
+      if (sm.vbo)
+        glDeleteBuffers(1, &sm.vbo);
+    }
+    // Weapon meshes (guards)
+    CleanupMeshBuffers(npc.weaponMeshBuffers);
+    for (auto &sm : npc.weaponShadowMeshes) {
       if (sm.vao)
         glDeleteVertexArrays(1, &sm.vao);
       if (sm.vbo)
@@ -629,8 +900,8 @@ void NpcManager::Cleanup() {
 }
 
 void NpcManager::RenderLabels(ImDrawList *dl, const glm::mat4 &view,
-                               const glm::mat4 &proj, int winW, int winH,
-                               const glm::vec3 &camPos, int hoveredNpc) {
+                              const glm::mat4 &proj, int winW, int winH,
+                              const glm::vec3 &camPos, int hoveredNpc) {
   const float padX = 4.0f, padY = 2.0f;
 
   for (int i = 0; i < GetNpcCount(); ++i) {
@@ -661,8 +932,8 @@ void NpcManager::RenderLabels(ImDrawList *dl, const glm::mat4 &view,
         hovered ? IM_COL32(20, 40, 20, 200) : IM_COL32(10, 10, 10, 150);
     ImU32 borderCol =
         hovered ? IM_COL32(100, 255, 100, 200) : IM_COL32(80, 80, 80, 150);
-    ImU32 textCol = hovered ? IM_COL32(150, 255, 150, 255)
-                            : IM_COL32(200, 200, 200, 255);
+    ImU32 textCol =
+        hovered ? IM_COL32(150, 255, 150, 255) : IM_COL32(200, 200, 200, 255);
 
     // Fill
     dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), bgCol, 2.0f);
@@ -673,8 +944,8 @@ void NpcManager::RenderLabels(ImDrawList *dl, const glm::mat4 &view,
     dl->AddText(ImVec2(sx - textSize.x / 2 + 1, sy - textSize.y / 2 + 1),
                 IM_COL32(0, 0, 0, 180), info.name.c_str());
     // Text
-    dl->AddText(ImVec2(sx - textSize.x / 2, sy - textSize.y / 2),
-                textCol, info.name.c_str());
+    dl->AddText(ImVec2(sx - textSize.x / 2, sy - textSize.y / 2), textCol,
+                info.name.c_str());
   }
 }
 

@@ -9,14 +9,15 @@ struct ImDrawList;
 struct ImFont;
 struct ClientItemDefinition;
 
-// Floating damage number display state
+// Floating damage number display state (Main 5.2: ZzzEffectPoint.cpp)
 struct FloatingDamage {
   glm::vec3 worldPos; // World position where damage occurred
   int damage;
-  uint8_t type;  // 0=normal(orange), 2=excellent(green), 3=critical(blue),
-                 // 7=miss, 8=incoming(red), 9=XP, 10=heal
-  float timer;   // Counts up from 0
-  float maxTime; // When to remove (1.5s)
+  uint8_t type;    // 0=normal(orange), 2=excellent(green), 3=critical(blue),
+                   // 7=miss, 8=incoming(red), 9=XP, 10=heal
+  float gravity;   // Main 5.2: starts at 10, decreases 0.3/tick. Alpha = gravity*0.4
+  float yOffset;   // Accumulated vertical displacement
+  float fontScale; // Font size multiplier
   bool active;
 };
 

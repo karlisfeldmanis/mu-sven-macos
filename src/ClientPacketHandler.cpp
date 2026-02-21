@@ -65,6 +65,9 @@ static void SyncCharStats(const PMSG_CHARSTATS_SEND *stats) {
   *g_state->serverDefense = stats->defense;
   *g_state->serverAttackSpeed = stats->attackSpeed;
   *g_state->serverMagicSpeed = stats->magicSpeed;
+  if (g_state->heroCharacterId) {
+    *g_state->heroCharacterId = stats->characterId;
+  }
 }
 
 // ── Equipment packet parsing (shared between initial and ongoing) ──
@@ -89,8 +92,7 @@ static void ParseEquipmentPacket(const uint8_t *pkt, int pktSize,
     weapon.modelFile = modelBuf;
 
     // Resolve twoHanded flag from ItemDatabase
-    int16_t defIdx =
-        (int16_t)weapon.category * 32 + (int16_t)weapon.itemIndex;
+    int16_t defIdx = (int16_t)weapon.category * 32 + (int16_t)weapon.itemIndex;
     auto &defs = ItemDatabase::GetItemDefs();
     auto it = defs.find(defIdx);
     if (it != defs.end())
@@ -168,6 +170,9 @@ void HandleInitialPacket(const uint8_t *pkt, int pktSize, ServerData &result) {
         if (off + 9 > pktSize)
           break;
         ServerNpcSpawn npc;
+        // Extract server index from high bit-masked bytes
+        npc.serverIndex =
+            (uint16_t)(((pkt[off + 0] & 0x7F) << 8) | pkt[off + 1]);
         npc.type = (uint16_t)((pkt[off + 2] << 8) | pkt[off + 3]);
         npc.gridX = pkt[off + 4];
         npc.gridY = pkt[off + 5];
@@ -191,6 +196,10 @@ void HandleInitialPacket(const uint8_t *pkt, int pktSize, ServerData &result) {
         mon.gridX = pkt[off + 4];
         mon.gridY = pkt[off + 5];
         mon.dir = pkt[off + 6];
+        // hp/maxHp are packed uint16_t (little-endian on macOS)
+        mon.hp = (uint16_t)(pkt[off + 7] | (pkt[off + 8] << 8));
+        mon.maxHp = (uint16_t)(pkt[off + 9] | (pkt[off + 10] << 8));
+        mon.state = pkt[off + 11];
         result.monsters.push_back(mon);
       }
       std::cout << "[Net] Monster viewport V2: " << (int)count << " monsters"
@@ -310,6 +319,16 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
 
   if (type == 0xC1) {
     uint8_t headcode = pkt[2];
+
+    // NPC (guard) movement
+    if (headcode == Opcode::NPC_MOVE &&
+        pktSize >= (int)sizeof(PMSG_NPC_MOVE_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_NPC_MOVE_SEND *>(pkt);
+      float worldX = (float)p->targetY * 100.0f;
+      float worldZ = (float)p->targetX * 100.0f;
+      if (g_state->npcManager)
+        g_state->npcManager->SetNpcMoveTarget(p->npcIndex, worldX, worldZ);
+    }
 
     // Monster move/chase
     if (headcode == Opcode::MON_MOVE &&
@@ -572,6 +591,20 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
     // Equipment sync (C2)
     if (headcode == Opcode::EQUIPMENT && pktSize >= 5) {
       ParseEquipmentPacket(pkt, pktSize, 4, 5, nullptr);
+    }
+
+    // Skill List
+    if (headcode == Opcode::SKILL_LIST && pktSize >= 5) {
+      uint8_t count = pkt[4];
+      if (g_state->learnedSkills) {
+        g_state->learnedSkills->clear();
+        for (int i = 0; i < count; i++) {
+          if (5 + i >= pktSize)
+            break;
+          g_state->learnedSkills->push_back(pkt[5 + i]);
+        }
+        std::cout << "[Net] Received " << (int)count << " learned skills\n";
+      }
     }
 
     // Shop List

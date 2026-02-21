@@ -17,6 +17,7 @@ struct PointLight {
   glm::vec3 position;
   glm::vec3 color;
   float range;
+  int objectType = 0; // World object type (for per-type flicker)
 };
 
 // Item identity received from server (equipment packet 0x24)

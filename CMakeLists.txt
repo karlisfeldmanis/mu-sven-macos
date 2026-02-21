@@ -83,7 +83,7 @@ target_include_directories(MuServer PRIVATE server/include)
 target_link_libraries(MuServer PRIVATE SQLite::SQLite3)
 
 # Main Game Executable
-add_executable(MuRemaster src/main.cpp src/InputHandler.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/NetworkClient.cpp src/ServerConnection.cpp src/ClientPacketHandler.cpp src/ItemDatabase.cpp src/ItemModelManager.cpp src/GroundItemRenderer.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp src/RayPicker.cpp src/InventoryUI.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+add_executable(MuRemaster src/main.cpp src/InputHandler.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/BoidManager.cpp src/NetworkClient.cpp src/ServerConnection.cpp src/ClientPacketHandler.cpp src/ItemDatabase.cpp src/ItemModelManager.cpp src/GroundItemRenderer.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp src/RayPicker.cpp src/InventoryUI.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
 target_link_libraries(MuRemaster PRIVATE
     glfw
     GLEW::GLEW

@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+class VFXManager;
 struct ImDrawList;
 
 // PointLight defined in HeroCharacter.hpp
@@ -20,6 +21,7 @@ struct ImDrawList;
 
 // NPC spawn data received from server (0x13 viewport packet)
 struct ServerNpcSpawn {
+  uint16_t serverIndex; // Unique NPC index (1001+)
   uint16_t type;  // NPC type ID (253=Amy, 250=Merchant, etc.)
   uint8_t gridX;
   uint8_t gridY;
@@ -44,7 +46,8 @@ public:
   // 1) InitModels() loads BMD models + shaders only
   // 2) AddNpcByType() places individual NPCs from server data
   void InitModels(const std::string &dataPath);
-  void AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY, uint8_t dir);
+  void AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY, uint8_t dir,
+                    uint16_t serverIndex = 0);
 
   void Render(const glm::mat4 &view, const glm::mat4 &proj,
               const glm::vec3 &camPos, float deltaTime);
@@ -66,8 +69,12 @@ public:
     m_pointLights = lights;
   }
   void SetLuminosity(float l) { m_luminosity = l; }
+  void SetVFXManager(VFXManager *vfx) { m_vfxManager = vfx; }
   int GetNpcCount() const { return (int)m_npcs.size(); }
   NpcInfo GetNpcInfo(int index) const;
+
+  // Server-driven NPC movement (guard patrol)
+  void SetNpcMoveTarget(uint16_t serverIndex, float worldX, float worldZ);
 
 private:
   // Shared model data (loaded once per NPC model type)
@@ -75,6 +82,9 @@ private:
     std::string name;
     BMDData *skeleton;             // Non-owning, points into m_ownedBmds
     std::vector<BMDData *> parts;  // Non-owning body part BMDs
+    BMDData *weaponBmd = nullptr;  // Non-owning weapon model (guards only)
+    int weaponAttachBone = -1;     // -1 = no weapon, 33 = R hand, 42 = L hand
+    int defaultAction = 0;        // Starting action (4 = weapon idle for guards)
   };
 
   // Per-NPC instance
@@ -86,7 +96,13 @@ private:
     int action = 0;
     float scale = 1.0f;
     uint16_t npcType = 0;
+    uint16_t serverIndex = 0; // Server-assigned index (1001+)
     std::string name;
+
+    // Guard patrol movement (server-driven)
+    bool isMoving = false;
+    glm::vec3 moveTarget{0.0f};
+    int walkAction = 0; // BMD action for walking (1 for player model)
 
     // Per-instance mesh buffers (for CPU re-skinning)
     struct BodyPart {
@@ -102,6 +118,10 @@ private:
     };
     std::vector<ShadowMesh> shadowMeshes;
     std::vector<BoneWorldMatrix> cachedBones;
+
+    // Weapon (guards only — attached to hand bone)
+    std::vector<MeshBuffers> weaponMeshBuffers;
+    std::vector<ShadowMesh> weaponShadowMeshes;
   };
 
   std::vector<std::unique_ptr<BMDData>> m_ownedBmds; // Owns all loaded BMDs
@@ -111,8 +131,9 @@ private:
   std::unique_ptr<Shader> m_shader;
   std::unique_ptr<Shader> m_shadowShader;
 
-  // Path to NPC textures
+  // Path to NPC textures and data root
   std::string m_npcTexPath;
+  std::string m_dataPath;
 
   // External data
   const TerrainData *m_terrainData = nullptr;
@@ -120,6 +141,7 @@ private:
   std::vector<PointLight> m_pointLights;
   static constexpr int MAX_POINT_LIGHTS = 64;
   float m_luminosity = 1.0f;
+  VFXManager *m_vfxManager = nullptr;
 
   // NPC type → model index mapping (for server-spawned NPCs)
   std::unordered_map<uint16_t, int> m_typeToModel;
@@ -134,7 +156,8 @@ private:
   void addNpc(int modelIdx, int gridX, int gridY, int dir, float scale = 1.0f);
   float snapToTerrain(float worldX, float worldZ);
   glm::vec3 sampleTerrainLightAt(const glm::vec3 &worldPos) const;
-  static constexpr float ANIM_SPEED = 4.0f;
+  // Main 5.2: default NPC PlaySpeed = 0.25 per tick at 25fps = 6.25 fps
+  static constexpr float ANIM_SPEED = 6.25f;
 };
 
 #endif // NPC_MANAGER_HPP

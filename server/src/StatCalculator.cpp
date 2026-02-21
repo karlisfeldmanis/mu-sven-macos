@@ -47,7 +47,7 @@ int CalculateMinDamage(CharacterClass cls, int strength, int dexterity,
   case CharacterClass::CLASS_DW:
     return strength / 6;
   case CharacterClass::CLASS_DK:
-    return strength / 8;
+    return strength / 6;
   case CharacterClass::CLASS_ELF:
     return hasBow ? ((strength / 14) + (dexterity / 7))
                   : ((strength + dexterity) / 7);
@@ -160,6 +160,19 @@ int CalculateMagicSpeed(CharacterClass cls, int dexterity) {
     return dexterity / 20;
   }
   return 1;
+}
+
+int CalculateMaxAG(int strength, int dexterity, int vitality, int energy) {
+  // OpenMU ClassDarkKnight.cs: ENE*1.0 + VIT*0.3 + DEX*0.2 + STR*0.15
+  return (int)(energy * 1.0f + vitality * 0.3f + dexterity * 0.2f +
+               strength * 0.15f);
+}
+
+int CalculateMaxManaOrAG(CharacterClass cls, int level, int strength,
+                         int dexterity, int vitality, int energy) {
+  if (cls == CharacterClass::CLASS_DK)
+    return CalculateMaxAG(strength, dexterity, vitality, energy);
+  return CalculateMaxMP(cls, level, energy);
 }
 
 int GetLevelUpPoints(CharacterClass cls) {

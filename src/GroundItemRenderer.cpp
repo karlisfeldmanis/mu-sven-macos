@@ -8,17 +8,21 @@
 
 namespace FloatingDamageRenderer {
 
-void Spawn(const glm::vec3 &pos, int damage, uint8_t type,
-           FloatingDamage *pool, int poolSize) {
+void Spawn(const glm::vec3 &pos, int damage, uint8_t type, FloatingDamage *pool,
+           int poolSize) {
   for (int i = 0; i < poolSize; ++i) {
     auto &d = pool[i];
     if (!d.active) {
-      d.worldPos = pos + glm::vec3(((rand() % 40) - 20), 80.0f + (rand() % 30),
-                                   ((rand() % 40) - 20));
+      // Main 5.2: CreatePoint — spawn 140 units above target with random XZ
+      // offset
+      d.worldPos =
+          pos + glm::vec3(((rand() % 40) - 20), 140.0f, ((rand() % 40) - 20));
       d.damage = damage;
       d.type = type;
-      d.timer = 0.0f;
-      d.maxTime = 1.5f;
+      d.gravity = 10.0f; // Main 5.2: initial upward velocity
+      d.yOffset = 0.0f;
+      // Main 5.2: large damage gets bigger font
+      d.fontScale = (damage >= 3000) ? 1.5f : 1.0f;
       d.active = true;
       return;
     }
@@ -26,22 +30,28 @@ void Spawn(const glm::vec3 &pos, int damage, uint8_t type,
 }
 
 void UpdateAndRender(FloatingDamage *pool, int poolSize, float deltaTime,
-                     ImDrawList *dl, ImFont *font,
-                     const glm::mat4 &view, const glm::mat4 &proj,
-                     int winW, int winH) {
+                     ImDrawList *dl, ImFont *font, const glm::mat4 &view,
+                     const glm::mat4 &proj, int winW, int winH) {
   glm::mat4 vp = proj * view;
+  float ticks = deltaTime * 25.0f; // Convert to 25fps tick-based
+
   for (int i = 0; i < poolSize; ++i) {
     auto &d = pool[i];
     if (!d.active)
       continue;
-    d.timer += deltaTime;
-    if (d.timer >= d.maxTime) {
+
+    // Main 5.2: MovePoints (ZzzEffectPoint.cpp)
+    // Gravity-based vertical motion: position += gravity, gravity -= 0.3/tick
+    d.yOffset += d.gravity * ticks;
+    d.gravity -= 0.3f * ticks;
+
+    if (d.gravity <= 0.0f) {
       d.active = false;
       continue;
     }
 
-    // Float upward
-    glm::vec3 pos = d.worldPos + glm::vec3(0, d.timer * 60.0f, 0);
+    // Current position
+    glm::vec3 pos = d.worldPos + glm::vec3(0, d.yOffset, 0);
 
     // Project to screen
     glm::vec4 clip = vp * glm::vec4(pos, 1.0f);
@@ -50,41 +60,44 @@ void UpdateAndRender(FloatingDamage *pool, int poolSize, float deltaTime,
     float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * winW;
     float sy = ((1.0f - (clip.y / clip.w)) * 0.5f) * winH;
 
-    // Fade out in last 0.5s
-    float alpha = d.timer > 1.0f ? 1.0f - (d.timer - 1.0f) / 0.5f : 1.0f;
-    alpha = std::max(0.0f, std::min(1.0f, alpha));
+    // Main 5.2: alpha = gravity * 0.4 (starts at 4.0, clamped to 1.0, fades to
+    // 0)
+    float alpha = std::min(d.gravity * 0.4f, 1.0f);
 
-    // Color by type
+    // Color by type (Main 5.2 colors: red <1000, orange >=1000)
     ImU32 col;
     const char *text;
     char buf[16];
+    int a = (int)(alpha * 255);
     if (d.type == 7) {
-      col = IM_COL32(250, 250, 250, (int)(alpha * 255));
+      col = IM_COL32(250, 250, 250, a);
       text = "MISS";
     } else if (d.type == 9) {
       snprintf(buf, sizeof(buf), "+%d XP", d.damage);
       text = buf;
-      col = IM_COL32(220, 180, 255, (int)(alpha * 255));
+      col = IM_COL32(220, 180, 255, a);
     } else if (d.type == 10) {
       snprintf(buf, sizeof(buf), "+%d", d.damage);
       text = buf;
-      col = IM_COL32(60, 255, 60, (int)(alpha * 255));
+      col = IM_COL32(60, 255, 60, a);
     } else {
       snprintf(buf, sizeof(buf), "%d", d.damage);
       text = buf;
       if (d.type == 8)
-        col = IM_COL32(255, 60, 60, (int)(alpha * 255));
+        col = IM_COL32(255, 60, 60, a); // Incoming (player taking damage)
       else if (d.type == 2)
-        col = IM_COL32(80, 180, 255, (int)(alpha * 255));
+        col = IM_COL32(80, 180, 255, a); // Critical
       else if (d.type == 3)
-        col = IM_COL32(80, 255, 120, (int)(alpha * 255));
+        col = IM_COL32(80, 255, 120, a); // Excellent
+      else if (d.damage >= 1000)
+        col = IM_COL32(242, 178, 38, a); // Orange (Main 5.2: >=1000)
       else
-        col = IM_COL32(255, 200, 60, (int)(alpha * 255));
+        col = IM_COL32(255, 200, 100,
+                       a); // Light Orange (Normal hitting monsters)
     }
 
     // Draw with shadow
-    float scale = 1.5f - d.timer * 0.3f;
-    float fontSize = 18.0f * scale;
+    float fontSize = 20.0f * d.fontScale;
     ImVec2 tpos(sx, sy);
     dl->AddText(font, fontSize, ImVec2(tpos.x + 1, tpos.y + 1),
                 IM_COL32(0, 0, 0, (int)(alpha * 200)), text);
@@ -215,8 +228,8 @@ void RenderModels(GroundItem *items, int maxItems, float deltaTime,
 
     const char *modelFile = ItemDatabase::GetDropModelName(gi.defIndex);
     if (modelFile) {
-      ItemModelManager::RenderItemWorld(modelFile, gi.position, view,
-                                        proj, gi.scale, gi.angle);
+      ItemModelManager::RenderItemWorld(modelFile, gi.position, view, proj,
+                                        gi.scale, gi.angle);
     } else if (gi.defIndex == -1) {
       RenderZenPile(gi.quantity, gi.position, gi.angle, gi.scale, view, proj);
     }
@@ -224,9 +237,8 @@ void RenderModels(GroundItem *items, int maxItems, float deltaTime,
 }
 
 void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
-                  const glm::mat4 &view, const glm::mat4 &proj,
-                  int winW, int winH, const glm::vec3 &camPos,
-                  int hoveredGroundItem,
+                  const glm::mat4 &view, const glm::mat4 &proj, int winW,
+                  int winH, const glm::vec3 &camPos, int hoveredGroundItem,
                   const std::map<int16_t, ClientItemDefinition> &itemDefs) {
   glm::mat4 vp = proj * view;
   for (int i = 0; i < maxItems; ++i) {
@@ -264,14 +276,14 @@ void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
 
     if (isHovered) {
       col = IM_COL32(255, 255, 255, 255);
-      dl->AddText(font, 13.0f, ImVec2(tx + 2, ty + 1),
-                  IM_COL32(0, 0, 0, 200), label);
-      dl->AddText(font, 13.0f, ImVec2(tx - 1, ty - 1),
-                  IM_COL32(0, 0, 0, 200), label);
+      dl->AddText(font, 13.0f, ImVec2(tx + 2, ty + 1), IM_COL32(0, 0, 0, 200),
+                  label);
+      dl->AddText(font, 13.0f, ImVec2(tx - 1, ty - 1), IM_COL32(0, 0, 0, 200),
+                  label);
     }
 
-    dl->AddText(font, 13.0f, ImVec2(tx + 1, ty + 1),
-                IM_COL32(0, 0, 0, 160), label);
+    dl->AddText(font, 13.0f, ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 160),
+                label);
     dl->AddText(font, 13.0f, ImVec2(tx, ty), col, label);
 
     // Hover tooltip
@@ -289,8 +301,7 @@ void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
       dl->AddRect(tPos, ImVec2(tPos.x + 180, tPos.y + 80),
                   IM_COL32(150, 150, 255, 200), 4.0f);
       float curY = tPos.y + 8;
-      dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(255, 215, 80, 255),
-                  label);
+      dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(255, 215, 80, 255), label);
       curY += 18;
       if (gi.defIndex != -1) {
         auto dit = itemDefs.find(gi.defIndex);
@@ -299,22 +310,22 @@ void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
           if (dd.reqStr > 0) {
             char rb[32];
             snprintf(rb, sizeof(rb), "STR: %d", dd.reqStr);
-            dl->AddText(ImVec2(tPos.x + 8, curY),
-                        IM_COL32(200, 200, 200, 255), rb);
+            dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(200, 200, 200, 255),
+                        rb);
             curY += 14;
           }
           if (dd.reqDex > 0) {
             char rb[32];
             snprintf(rb, sizeof(rb), "DEX: %d", dd.reqDex);
-            dl->AddText(ImVec2(tPos.x + 8, curY),
-                        IM_COL32(200, 200, 200, 255), rb);
+            dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(200, 200, 200, 255),
+                        rb);
             curY += 14;
           }
           if (dd.levelReq > 0) {
             char rb[32];
             snprintf(rb, sizeof(rb), "Lv: %d", dd.levelReq);
-            dl->AddText(ImVec2(tPos.x + 8, curY),
-                        IM_COL32(200, 200, 200, 255), rb);
+            dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(200, 200, 200, 255),
+                        rb);
             curY += 14;
           }
         }

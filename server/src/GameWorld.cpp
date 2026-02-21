@@ -112,10 +112,25 @@ void GameWorld::LoadNpcsFromDB(Database &db, uint8_t mapId) {
     npc.y = s.posY;
     npc.dir = s.direction;
     npc.name = s.name;
+
+    // Guard patrol init (OpenMU: GuardIntelligence.cs)
+    // Type 247 (crossbow) and 249 (berdysh) are guards
+    if (npc.type == 247 || npc.type == 249) {
+      npc.isGuard = true;
+      npc.worldX = (float)npc.y * 100.0f; // Grid Y -> WorldX
+      npc.worldZ = (float)npc.x * 100.0f; // Grid X -> WorldZ
+      npc.spawnX = npc.worldX;
+      npc.spawnZ = npc.worldZ;
+      npc.wanderTimer = 3.0f + (float)(rand() % 5000) / 1000.0f; // Stagger
+      npc.lastBroadcastX = npc.x;
+      npc.lastBroadcastY = npc.y;
+    }
+
     m_npcs.push_back(npc);
 
-    printf("[World] NPC #%d: type=%d pos=(%d,%d) dir=%d %s\n", npc.index,
-           npc.type, npc.x, npc.y, npc.dir, npc.name.c_str());
+    printf("[World] NPC #%d: type=%d pos=(%d,%d) dir=%d %s%s\n", npc.index,
+           npc.type, npc.x, npc.y, npc.dir, npc.name.c_str(),
+           npc.isGuard ? " [GUARD]" : "");
   }
 
   printf("[World] Loaded %zu NPCs for map %d from database\n", m_npcs.size(),
@@ -325,7 +340,8 @@ emitMoveIfChanged(MonsterInstance &mon, uint8_t targetX, uint8_t targetY,
 
 void GameWorld::Update(float dt,
                        std::function<void(uint16_t)> dropExpiredCallback,
-                       std::vector<MonsterMoveUpdate> *outWanderMoves) {
+                       std::vector<MonsterMoveUpdate> *outWanderMoves,
+                       std::vector<NpcMoveUpdate> *outNpcMoves) {
   // Update monster states
   for (auto &mon : m_monsterInstances) {
     mon.stateTimer += dt;
@@ -353,18 +369,27 @@ void GameWorld::Update(float dt,
             float step = WANDER_SPEED * dt;
             if (step > dist)
               step = dist;
-            float nextX = mon.worldX + (dx / dist) * step;
-            float nextZ = mon.worldZ + (dz / dist) * step;
-            // Check walkability before moving
-            if (!IsWalkable(nextX, nextZ)) {
-              mon.isWandering = false;
-              mon.wanderTimer = 1.0f + (float)(rand() % 2000) / 1000.0f;
-            } else {
+            float stepX = (dx / dist) * step;
+            float stepZ = (dz / dist) * step;
+            float nextX = mon.worldX + stepX;
+            float nextZ = mon.worldZ + stepZ;
+            // Wall sliding: try full move, then X-only, then Z-only
+            if (IsWalkable(nextX, nextZ)) {
               mon.worldX = nextX;
               mon.worldZ = nextZ;
-              mon.gridY = static_cast<uint8_t>(mon.worldX / 100.0f);
-              mon.gridX = static_cast<uint8_t>(mon.worldZ / 100.0f);
+            } else if (std::abs(stepX) > 0.01f &&
+                       IsWalkable(mon.worldX + stepX, mon.worldZ)) {
+              mon.worldX += stepX;
+            } else if (std::abs(stepZ) > 0.01f &&
+                       IsWalkable(mon.worldX, mon.worldZ + stepZ)) {
+              mon.worldZ += stepZ;
+            } else {
+              // Fully blocked — stop wandering
+              mon.isWandering = false;
+              mon.wanderTimer = 1.0f + (float)(rand() % 2000) / 1000.0f;
             }
+            mon.gridY = static_cast<uint8_t>(mon.worldX / 100.0f);
+            mon.gridX = static_cast<uint8_t>(mon.worldZ / 100.0f);
           }
         } else if (mon.wanderTimer <= 0.0f) {
           // Pick a new random wander target within per-type wanderRange of
@@ -434,6 +459,100 @@ void GameWorld::Update(float dt,
     }
   }
 
+  // ── Guard patrol AI (OpenMU: GuardIntelligence.cs) ──
+  // Guards wander within 7 tiles of spawn, 80% idle chance per decision tick
+  for (auto &npc : m_npcs) {
+    if (!npc.isGuard)
+      continue;
+
+    if (npc.isWandering) {
+      // Move toward wander target
+      float dx = npc.wanderTargetX - npc.worldX;
+      float dz = npc.wanderTargetZ - npc.worldZ;
+      float dist = std::sqrt(dx * dx + dz * dz);
+      if (dist < 10.0f) {
+        // Arrived — idle for 3-8 seconds
+        npc.isWandering = false;
+        npc.wanderTimer = 3.0f + (float)(rand() % 5000) / 1000.0f;
+        npc.y = static_cast<uint8_t>(npc.worldX / 100.0f);
+        npc.x = static_cast<uint8_t>(npc.worldZ / 100.0f);
+      } else {
+        float step = GUARD_WANDER_SPEED * dt;
+        if (step > dist)
+          step = dist;
+        float sX = (dx / dist) * step;
+        float sZ = (dz / dist) * step;
+        float nextX = npc.worldX + sX;
+        float nextZ = npc.worldZ + sZ;
+        // Guards can walk on safe zones (OpenMU: CanWalkOnSafezone = true)
+        auto guardWalkable = [&](float wx, float wz) {
+          return IsWalkable(wx, wz) || IsSafeZone(wx, wz);
+        };
+        // Wall sliding: try full move, then X-only, then Z-only
+        if (guardWalkable(nextX, nextZ)) {
+          npc.worldX = nextX;
+          npc.worldZ = nextZ;
+        } else if (std::abs(sX) > 0.01f &&
+                   guardWalkable(npc.worldX + sX, npc.worldZ)) {
+          npc.worldX += sX;
+        } else if (std::abs(sZ) > 0.01f &&
+                   guardWalkable(npc.worldX, npc.worldZ + sZ)) {
+          npc.worldZ += sZ;
+        } else {
+          npc.isWandering = false;
+          npc.wanderTimer = 2.0f + (float)(rand() % 3000) / 1000.0f;
+        }
+        npc.y = static_cast<uint8_t>(npc.worldX / 100.0f);
+        npc.x = static_cast<uint8_t>(npc.worldZ / 100.0f);
+      }
+    } else {
+      npc.wanderTimer -= dt;
+      if (npc.wanderTimer <= 0.0f) {
+        // 80% idle, 20% move (OpenMU: random.Next(0, 4) > 0 = 75% idle)
+        if (rand() % 5 == 0) {
+          // Pick a random patrol target within GUARD_PATROL_RANGE of spawn
+          bool found = false;
+          for (int tries = 0; tries < 5; tries++) {
+            float angle = (float)(rand() % 628) / 100.0f;
+            float r = (float)(rand() % (int)GUARD_PATROL_RANGE);
+            float tx = npc.spawnX + std::cos(angle) * r;
+            float tz = npc.spawnZ + std::sin(angle) * r;
+            // Guards walk on safe zones
+            if (IsWalkable(tx, tz) || IsSafeZone(tx, tz)) {
+              npc.wanderTargetX = tx;
+              npc.wanderTargetZ = tz;
+              found = true;
+              break;
+            }
+          }
+          if (found) {
+            npc.isWandering = true;
+            // Broadcast guard movement
+            if (outNpcMoves) {
+              uint8_t tgtGX = static_cast<uint8_t>(npc.wanderTargetZ / 100.0f);
+              uint8_t tgtGY = static_cast<uint8_t>(npc.wanderTargetX / 100.0f);
+              // Only broadcast if position changed
+              if (tgtGX != npc.lastBroadcastX || tgtGY != npc.lastBroadcastY) {
+                NpcMoveUpdate upd;
+                upd.npcIndex = npc.index;
+                upd.targetX = tgtGX;
+                upd.targetY = tgtGY;
+                outNpcMoves->push_back(upd);
+                npc.lastBroadcastX = tgtGX;
+                npc.lastBroadcastY = tgtGY;
+              }
+            }
+          } else {
+            npc.wanderTimer = 3.0f + (float)(rand() % 3000) / 1000.0f;
+          }
+        } else {
+          // Idle — wait 2-6 seconds
+          npc.wanderTimer = 2.0f + (float)(rand() % 4000) / 1000.0f;
+        }
+      }
+    }
+  }
+
   // Age ground drops and remove expired ones
   for (auto it = m_drops.begin(); it != m_drops.end();) {
     it->age += dt;
@@ -458,10 +577,13 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     float dz = mon.spawnZ - mon.worldZ;
     float distToSpawn = std::sqrt(dx * dx + dz * dz);
     if (distToSpawn < 10.0f) {
-      // Arrived at spawn — fully reset
+      // Arrived at spawn — fully reset all state so proximity aggro works again
       mon.isChasing = false;
       mon.isReturning = false;
       mon.isWandering = false;
+      mon.aggroTargetFd = -1;
+      mon.aggroTimer = 0.0f;
+      mon.stuckFrames = 0;
       mon.wanderTimer = 2.0f + (float)(rand() % 3000) / 1000.0f;
       mon.worldX = mon.spawnX;
       mon.worldZ = mon.spawnZ;
@@ -482,11 +604,20 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       // Convert degree to 0-7 orientation (0=E, 1=SE, 2=S, etc.)
       mon.dir = static_cast<uint8_t>(((int)(deg + 22.5f) % 360) / 45);
 
-      float nextX = mon.worldX + (dx / distToSpawn) * step;
-      float nextZ = mon.worldZ + (dz / distToSpawn) * step;
+      float sX = (dx / distToSpawn) * step;
+      float sZ = (dz / distToSpawn) * step;
+      float nextX = mon.worldX + sX;
+      float nextZ = mon.worldZ + sZ;
+      // Wall sliding: try full move, then X-only, then Z-only
       if (IsWalkable(nextX, nextZ)) {
         mon.worldX = nextX;
         mon.worldZ = nextZ;
+      } else if (std::abs(sX) > 0.01f &&
+                 IsWalkable(mon.worldX + sX, mon.worldZ)) {
+        mon.worldX += sX;
+      } else if (std::abs(sZ) > 0.01f &&
+                 IsWalkable(mon.worldX, mon.worldZ + sZ)) {
+        mon.worldZ += sZ;
       }
       mon.gridY = static_cast<uint8_t>(mon.worldX / 100.0f);
       mon.gridX = static_cast<uint8_t>(mon.worldZ / 100.0f);
@@ -536,6 +667,32 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       }
     }
 
+    // Passive out-of-combat HP regeneration (~1% Max HP per second roughly)
+    // ONLY regenerate if:
+    // 1. Not chasing
+    // 2. Not returning to spawn
+    // 3. Not in recent combat (aggroTimer <= 0)
+    if (!mon.isChasing && !mon.isReturning && mon.aggroTimer <= 0.0f) {
+      if (mon.hp > 0 && mon.hp < mon.maxHp) {
+        // Probabilistic check: ~1% max HP per second on average
+        if (rand() % 1000 < (int)(dt * 1000.0f)) {
+          int heal = std::max(1, mon.maxHp / 100);
+          mon.hp = std::min(mon.maxHp, mon.hp + heal);
+
+          MonsterAttackResult hpUpdate;
+          hpUpdate.targetFd = -1; // Silent update for all
+          hpUpdate.monsterIndex = mon.index;
+          hpUpdate.damage = 0;
+          hpUpdate.damageType = 0;
+          hpUpdate.remainingHp = mon.hp;
+          attacks.push_back(hpUpdate);
+
+          printf("[AI] Mon %d Regened HP: %d/%d\n", mon.index, mon.hp,
+                 mon.maxHp);
+        }
+      }
+    }
+
     // Find best target (prioritize aggro target)
     float bestDist = 1e9f;
     const PlayerTarget *bestTarget = nullptr;
@@ -557,9 +714,15 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
           break;
         }
       }
-      // If aggro target not found (disconnected) or dead, clear it
+      // If aggro target not found (disconnected) or dead, clear and return
       if (!bestTarget && mon.aggroTargetFd != -1) {
         mon.aggroTargetFd = -1;
+        if (mon.isChasing) {
+          mon.isChasing = false;
+          mon.isReturning = true;
+          mon.hp = mon.maxHp;
+          moveTowardSpawn(mon);
+        }
       }
     }
 
@@ -590,7 +753,7 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
     if (IsSafeZone(bestTarget->worldX, bestTarget->worldZ)) {
       mon.isChasing = false;
       mon.isReturning = true;
-      mon.hp = mon.maxHp; // Reset HP on aggro loss
+      mon.hp = mon.maxHp;     // Reset HP on aggro loss
       mon.aggroTargetFd = -1; // Drop aggro immediately
       mon.aggroTimer = 0.0f;
       moveTowardSpawn(mon);
@@ -624,13 +787,17 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       // Allow fight-back if monster has active aggro target (was hit by player)
       bool inImmunity = (mon.aggroTimer < 0.0f);
       bool hasExplicitAggro = (mon.aggroTargetFd != -1);
-      if ((!mon.aggressive && !hasExplicitAggro) ||
-          bestDist > mon.aggroRange || distFromSpawn > LEASH_RANGE ||
-          (inImmunity && !hasExplicitAggro)) {
+      if ((!mon.aggressive && !hasExplicitAggro) || bestDist > mon.aggroRange ||
+          distFromSpawn > LEASH_RANGE || (inImmunity && !hasExplicitAggro)) {
         continue;
       }
     }
 
+    if (!mon.isChasing) {
+      mon.stuckFrames = 0;
+      mon.prevChaseX = mon.worldX;
+      mon.prevChaseZ = mon.worldZ;
+    }
     mon.isChasing = true;
     mon.isWandering = false;
 
@@ -645,8 +812,10 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       float step = CHASE_SPEED * dt;
       if (step > bestDist)
         step = bestDist;
-      float nextX = mon.worldX + (dx / bestDist) * step;
-      float nextZ = mon.worldZ + (dz / bestDist) * step;
+      float stepX = (dx / bestDist) * step;
+      float stepZ = (dz / bestDist) * step;
+      float nextX = mon.worldX + stepX;
+      float nextZ = mon.worldZ + stepZ;
 
       if (IsSafeZone(nextX, nextZ)) {
         mon.isChasing = false;
@@ -656,10 +825,42 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
         continue;
       }
 
+      // Wall sliding: try full move, then X-only, then Z-only
       if (IsWalkable(nextX, nextZ)) {
         mon.worldX = nextX;
         mon.worldZ = nextZ;
+      } else if (std::abs(stepX) > 0.01f &&
+                 IsWalkable(mon.worldX + stepX, mon.worldZ)) {
+        mon.worldX += stepX;
+      } else if (std::abs(stepZ) > 0.01f &&
+                 IsWalkable(mon.worldX, mon.worldZ + stepZ)) {
+        mon.worldZ += stepZ;
       }
+
+      // Stuck detection: if monster barely moved, increment counter
+      float movedDx = mon.worldX - mon.prevChaseX;
+      float movedDz = mon.worldZ - mon.prevChaseZ;
+      float movedDist = movedDx * movedDx + movedDz * movedDz;
+      if (movedDist < 1.0f) {
+        mon.stuckFrames++;
+        if (mon.stuckFrames > 60) { // ~3 seconds at 20 ticks/sec
+          mon.isChasing = false;
+          mon.isReturning = true;
+          mon.aggroTargetFd = -1;
+          mon.stuckFrames = 0;
+          mon.hp = mon.maxHp;
+          printf("[AI] Mon %d (type %d): STUCK for %d frames, returning to "
+                 "spawn\n",
+                 mon.index, mon.type, 60);
+          moveTowardSpawn(mon);
+          continue;
+        }
+      } else {
+        mon.stuckFrames = 0;
+      }
+      mon.prevChaseX = mon.worldX;
+      mon.prevChaseZ = mon.worldZ;
+
       mon.gridY = static_cast<uint8_t>(mon.worldX / 100.0f);
       mon.gridX = static_cast<uint8_t>(mon.worldZ / 100.0f);
 
@@ -673,6 +874,21 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
       emitMoveIfChanged(mon, mon.gridX, mon.gridY, true, false, outMoves);
 
       if (mon.attackCooldown <= 0.0f) {
+        // Fresh distance check
+        float freshDx = bestTarget->worldX - mon.worldX;
+        float freshDz = bestTarget->worldZ - mon.worldZ;
+        float freshDist = std::sqrt(freshDx * freshDx + freshDz * freshDz);
+        if (freshDist > ATTACK_RANGE) {
+          continue;
+        }
+
+        // Wall check: verify midpoint between monster and target is walkable
+        float midX = (mon.worldX + bestTarget->worldX) * 0.5f;
+        float midZ = (mon.worldZ + bestTarget->worldZ) * 0.5f;
+        if (!IsWalkable(midX, midZ)) {
+          continue; // Can't attack through walls
+        }
+
         int dmg =
             mon.attackMin + (mon.attackMax > mon.attackMin
                                  ? rand() % (mon.attackMax - mon.attackMin + 1)
@@ -704,6 +920,8 @@ GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
         attacks.push_back(result);
 
         mon.attackCooldown = mon.atkCooldownTime;
+        // Keep combat timer active when monster attacks
+        mon.aggroTimer = 10.0f;
       }
     }
   }

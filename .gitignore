@@ -41,3 +41,6 @@ compile_commands.json
 mu_server.db
 server/mu_server.db
 
+# Server build directory (auto-generated)
+server_build/
+

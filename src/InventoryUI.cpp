@@ -48,6 +48,7 @@ static const EquipSlotRect g_equipLayoutRects[] = {
 // Slot background textures
 static GLuint g_slotBackgrounds[12] = {0};
 static UITexture g_texInventoryBg;
+static GLuint g_texSkillIcons = 0; // Skill.OZJ sprite sheet
 
 // Render queue for deferred 3D item rendering
 static std::vector<ItemRenderJob> g_renderQueue;
@@ -142,7 +143,8 @@ static void DrawCloseButton(ImDrawList *dl, const UICoords &c, float px,
   ImVec2 mp = ImGui::GetIO().MousePos;
   bool hovered =
       mp.x >= bMin.x && mp.x < bMax.x && mp.y >= bMin.y && mp.y < bMax.y;
-  ImU32 bgCol = hovered ? IM_COL32(200, 40, 40, 255) : IM_COL32(100, 20, 20, 200);
+  ImU32 bgCol =
+      hovered ? IM_COL32(200, 40, 40, 255) : IM_COL32(100, 20, 20, 200);
   dl->AddRectFilled(bMin, bMax, bgCol, 2.0f);
   if (hovered)
     dl->AddRect(bMin, bMax, IM_COL32(255, 100, 100, 255), 2.0f);
@@ -520,18 +522,33 @@ void RecalcEquipmentStats() {
 }
 
 // Get the equip slot index for a given item category (-1 if none)
-static int GetEquipSlotForCategory(uint8_t category) {
+static int GetEquipSlotForCategory(uint8_t category,
+                                   bool isAlternativeHand = false) {
   switch (category) {
-  case 0: case 1: case 2: case 3: case 4: case 5:
-    return 0; // Weapons → R.Hand
-  case 6:  return 1;  // Shield → L.Hand
-  case 7:  return 2;  // Helm
-  case 8:  return 3;  // Armor
-  case 9:  return 4;  // Pants
-  case 10: return 5;  // Gloves
-  case 11: return 6;  // Boots
-  case 12: return 7;  // Wings
-  default: return -1;
+  case 0:
+  case 1:
+  case 2:
+  case 3:
+  case 4:
+  case 5:
+    return isAlternativeHand ? 1
+                             : 0; // Weapons → R.Hand or L.Hand if alternative
+  case 6:
+    return 1; // Shield → L.Hand
+  case 7:
+    return 2; // Helm
+  case 8:
+    return 3; // Armor
+  case 9:
+    return 4; // Pants
+  case 10:
+    return 5; // Gloves
+  case 11:
+    return 6; // Boots
+  case 12:
+    return 7; // Wings
+  default:
+    return -1;
   }
 }
 
@@ -565,6 +582,9 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
 
   // Find equipped item for comparison
   int equipSlot = GetEquipSlotForCategory(def->category);
+  // Special handling for weapons to compare with left hand if right hand is
+  // empty or weapon doesn't fit right hand. We'll just compare against primary
+  // recommended slot (right hand for weapons) for tooltips.
   const DropDef *equippedDef = GetEquippedDropDef(equipSlot);
   // Don't compare against itself (same defIndex in the same slot)
   if (equippedDef && equipSlot >= 0 && s_ctx->equipSlots[equipSlot].equipped) {
@@ -587,11 +607,16 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
   // Potion healing info
   int potionHeal = 0;
   if (def->category == 14) {
-    if ((defIndex % 32) == 0) potionHeal = 10;
-    else if ((defIndex % 32) == 1) potionHeal = 20;
-    else if ((defIndex % 32) == 2) potionHeal = 50;
-    else if ((defIndex % 32) == 3) potionHeal = 100;
-    if (potionHeal > 0) th += lineH;
+    if ((defIndex % 32) == 0)
+      potionHeal = 10;
+    else if ((defIndex % 32) == 1)
+      potionHeal = 20;
+    else if ((defIndex % 32) == 2)
+      potionHeal = 50;
+    else if ((defIndex % 32) == 3)
+      potionHeal = 100;
+    if (potionHeal > 0)
+      th += lineH;
   }
 
   // Hands specification
@@ -939,37 +964,34 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
     DrawPanelText(dl, c, px, py, 15, 272, buf, colGreen);
   }
 
-  // Combat Info
-  int dMin = *s_ctx->serverStr / 8 + s_ctx->hero->GetWeaponBonusMin();
+  // Combat Info (OpenMU DK formulas: STR/6 min, STR/4 max)
+  int dMin = *s_ctx->serverStr / 6 + s_ctx->hero->GetWeaponBonusMin();
   int dMax = *s_ctx->serverStr / 4 + s_ctx->hero->GetWeaponBonusMax();
 
   snprintf(buf, sizeof(buf), "Damage: %d - %d", dMin, dMax);
   DrawPanelText(dl, c, px, py, 15, 300, buf, colValue);
 
-  snprintf(buf, sizeof(buf), "Atk Speed: %d", *s_ctx->serverAttackSpeed);
-  DrawPanelText(dl, c, px, py, 15, 330, buf, colValue);
-
-  snprintf(buf, sizeof(buf), "Mag Speed: %d", *s_ctx->serverMagicSpeed);
-  DrawPanelText(dl, c, px, py, 15, 345, buf, colValue);
-
-  int critRate = std::min((int)*s_ctx->serverDex / 5, 20);
-  int excRate = std::min((int)*s_ctx->serverDex / 10, 10);
-
-  snprintf(buf, sizeof(buf), "Crit: %d%%", critRate);
-  DrawPanelText(dl, c, px, py, 15, 360, buf, IM_COL32(100, 200, 255, 255));
-
-  snprintf(buf, sizeof(buf), "Exc: %d%%", excRate);
-  DrawPanelText(dl, c, px, py, 100, 360, buf, IM_COL32(100, 255, 100, 255));
-
-  int baseDef = *s_ctx->serverDefense - s_ctx->hero->GetDefenseBonus();
+  // Defense: base (DEX/3) + equipment
+  int baseDef = *s_ctx->serverDex / 3;
   int addDef = s_ctx->hero->GetDefenseBonus();
   if (addDef > 0) {
     snprintf(buf, sizeof(buf), "Defense: %d + %d", baseDef, addDef);
-    DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
   } else {
-    snprintf(buf, sizeof(buf), "Defense: %d", *s_ctx->serverDefense);
-    DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
+    snprintf(buf, sizeof(buf), "Defense: %d", baseDef);
   }
+  DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
+
+  // Defense Rate (OpenMU: DEX/3 for DK)
+  int defRate = *s_ctx->serverDex / 3;
+  snprintf(buf, sizeof(buf), "Def Rate: %d", defRate);
+  DrawPanelText(dl, c, px, py, 15, 330, buf, colValue);
+
+  // Crit/Excellent rates (OpenMU: flat 5% crit, 1% excellent)
+  snprintf(buf, sizeof(buf), "Crit: 5%%");
+  DrawPanelText(dl, c, px, py, 15, 345, buf, IM_COL32(100, 200, 255, 255));
+
+  snprintf(buf, sizeof(buf), "Exc: 1%%");
+  DrawPanelText(dl, c, px, py, 100, 345, buf, IM_COL32(100, 255, 100, 255));
 
   // HP / MP Bars
   int curHP = s_ctx->hero->GetHP();
@@ -999,7 +1021,9 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   DrawPanelTextRight(dl, c, px, py, hbarX, hbarY - 3, hbarW, buf, colValue);
 
   float mbarY = 405;
-  DrawPanelText(dl, c, px, py, 15, mbarY - 2, "MP", colLabel);
+  // DK uses AG (Ability Gauge) instead of MP
+  const char *manaLabel = (s_ctx->hero->GetClass() == 16) ? "AG" : "MP";
+  DrawPanelText(dl, c, px, py, 15, mbarY - 2, manaLabel, colLabel);
   dl->AddRectFilled(ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
                            c.ToScreenY(py + mbarY * g_uiPanelScale)),
                     ImVec2(c.ToScreenX(px + (hbarX + hbarW) * g_uiPanelScale),
@@ -1425,18 +1449,18 @@ void RenderShopPanel(ImDrawList *dl, const UICoords &c) {
       ImVec2 iMax(c.ToScreenX(vX + def.width * cellW * g_uiPanelScale),
                   c.ToScreenY(vY + def.height * cellH * g_uiPanelScale));
 
-      bool hoverItem = mp.x >= iMin.x && mp.x < iMax.x && mp.y >= iMin.y &&
-                       mp.y < iMax.y;
+      bool hoverItem =
+          mp.x >= iMin.x && mp.x < iMax.x && mp.y >= iMin.y && mp.y < iMax.y;
 
       dl->AddRectFilled(iMin, iMax,
                         hoverItem ? IM_COL32(255, 255, 255, 30)
                                   : IM_COL32(0, 0, 0, 40),
                         2.0f);
 
-      const char *model = def.modelFile.empty()
-                              ? ItemDatabase::GetDropModelName(
-                                    s_shopGrid[slot].defIndex)
-                              : def.modelFile.c_str();
+      const char *model =
+          def.modelFile.empty()
+              ? ItemDatabase::GetDropModelName(s_shopGrid[slot].defIndex)
+              : def.modelFile.c_str();
       if (model && model[0]) {
         int winH = (int)ImGui::GetIO().DisplaySize.y;
         g_renderQueue.push_back({model, s_shopGrid[slot].defIndex, (int)iMin.x,
@@ -1451,12 +1475,11 @@ void RenderShopPanel(ImDrawList *dl, const UICoords &c) {
       if (s_shopGrid[slot].itemLevel > 0) {
         char lvlBuf[8];
         snprintf(lvlBuf, sizeof(lvlBuf), "+%d", s_shopGrid[slot].itemLevel);
-        dl->AddText(ImVec2(iMin.x + 2, iMin.y + 2),
-                    IM_COL32(255, 200, 80, 255), lvlBuf);
+        dl->AddText(ImVec2(iMin.x + 2, iMin.y + 2), IM_COL32(255, 200, 80, 255),
+                    lvlBuf);
       }
     }
   }
-
 }
 
 bool HandlePanelClick(float vx, float vy) {
@@ -1550,7 +1573,8 @@ bool HandlePanelClick(float vx, float vy) {
   }
 
   // Inventory panel (also visible when shop is open)
-  if ((*s_ctx->showInventory || *s_ctx->shopOpen) && IsPointInPanel(vx, vy, GetInventoryPanelX())) {
+  if ((*s_ctx->showInventory || *s_ctx->shopOpen) &&
+      IsPointInPanel(vx, vy, GetInventoryPanelX())) {
     float px = GetInventoryPanelX(), py = PANEL_Y;
     float relX = (vx - px) / g_uiPanelScale;
     float relY = (vy - py) / g_uiPanelScale;
@@ -1659,9 +1683,10 @@ bool HandlePanelRightClick(float vx, float vy) {
     return false;
   auto &g_itemDefs = ItemDatabase::GetItemDefs();
 
-  // Check showInventory OR shopOpen — when shop is open, inventory is force-shown
-  // during rendering but the flag itself may be false
-  if ((*s_ctx->showInventory || *s_ctx->shopOpen) && IsPointInPanel(vx, vy, GetInventoryPanelX())) {
+  // Check showInventory OR shopOpen — when shop is open, inventory is
+  // force-shown during rendering but the flag itself may be false
+  if ((*s_ctx->showInventory || *s_ctx->shopOpen) &&
+      IsPointInPanel(vx, vy, GetInventoryPanelX())) {
     float px = GetInventoryPanelX(), py = PANEL_Y;
     float relX = (vx - px) / g_uiPanelScale;
     float relY = (vy - py) / g_uiPanelScale;
@@ -1793,7 +1818,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
           // L.Hand: weapons (cat 0-5) only for DK dual-wield, one-handed only
           if (ep.slot == 1 && cat <= 5) {
             uint8_t baseClass = s_ctx->hero->GetClass() >> 4;
-            bool canDualWield = (baseClass == 0); // 0 = DK
+            bool canDualWield =
+                (baseClass == 1 || baseClass == 3); // 1=DK, 3=MG
             auto defIt = g_itemDefs.find(g_dragDefIndex);
             bool isTwoHanded =
                 (defIt != g_itemDefs.end() && defIt->second.twoHanded);
@@ -1830,6 +1856,24 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
           s_ctx->equipSlots[ep.slot].modelFile =
               ItemDatabase::GetDropModelName(g_dragDefIndex);
 
+          auto defIt = g_itemDefs.find(g_dragDefIndex);
+
+          // Handle conflict: 2H weapon in R.Hand forces L.Hand uneq
+          if (ep.slot == 0 && defIt != g_itemDefs.end() &&
+              defIt->second.twoHanded) {
+            if (s_ctx->equipSlots[1].equipped) {
+              std::cout << "[UI] 2H weapon equipped: auto-unequipping left hand"
+                        << std::endl;
+              // Unequip slot 1 locally (ideally server handles this, but we
+              // force it)
+              s_ctx->server->SendUnequip(*s_ctx->heroCharacterId, 1);
+              s_ctx->equipSlots[1].equipped = false;
+              s_ctx->equipSlots[1].category = 0xFF;
+              WeaponEquipInfo emptyInfo;
+              s_ctx->hero->EquipShield(emptyInfo);
+            }
+          }
+
           // Update Hero Visuals Immediately
           WeaponEquipInfo info;
           info.category = cat;
@@ -1837,7 +1881,6 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
           info.itemLevel = g_dragItemLevel;
           info.modelFile = s_ctx->equipSlots[ep.slot].modelFile;
           // Resolve twoHanded flag for animation selection
-          auto defIt = g_itemDefs.find(g_dragDefIndex);
           if (defIt != g_itemDefs.end())
             info.twoHanded = defIt->second.twoHanded;
 
@@ -1857,7 +1900,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
 
           // Send Equip packet
           if (*s_ctx->syncDone) {
-            s_ctx->server->SendEquip(1, static_cast<uint8_t>(ep.slot), cat, idx,
+            s_ctx->server->SendEquip(*s_ctx->heroCharacterId,
+                                     static_cast<uint8_t>(ep.slot), cat, idx,
                                      g_dragItemLevel);
           }
 
@@ -1870,9 +1914,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
                        swapItem.itemLevel);
             // Server handles the swap: unequip old + equip new via the
             // HandleEquip flow which saves unequipped items to inventory
-            std::cout << "[UI] Swapped: old equip (def="
-                      << swapItem.defIndex << ") -> Inv " << g_dragFromSlot
-                      << std::endl;
+            std::cout << "[UI] Swapped: old equip (def=" << swapItem.defIndex
+                      << ") -> Inv " << g_dragFromSlot << std::endl;
           }
           std::cout << "[UI] Equipped item from Inv " << g_dragFromSlot
                     << " to Equip " << ep.slot << std::endl;
@@ -1934,7 +1977,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
             // Send Unequip packet
             if (*s_ctx->syncDone)
               s_ctx->server->SendUnequip(
-                  1, static_cast<uint8_t>(g_dragFromEquipSlot));
+                  *s_ctx->heroCharacterId,
+                  static_cast<uint8_t>(g_dragFromEquipSlot));
 
             std::cout << "[UI] Unequipped item to Inv " << targetSlot
                       << std::endl;
@@ -1969,6 +2013,22 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
           }
         }
       }
+    }
+  }
+
+  // 4. Drop item to ground — dragged from bag slot and released outside panels
+  if (g_dragFromSlot >= 0 && *s_ctx->syncDone) {
+    bool insideInvPanel = IsPointInPanel(vx, vy, GetInventoryPanelX());
+    bool insideCharPanel =
+        *s_ctx->showCharInfo && IsPointInPanel(vx, vy, GetCharInfoPanelX());
+    bool insideShopPanel =
+        *s_ctx->shopOpen && IsPointInPanel(vx, vy, GetShopPanelX());
+
+    if (!insideInvPanel && !insideCharPanel && !insideShopPanel &&
+        !droppedOnHUD) {
+      s_ctx->server->SendDropItem(static_cast<uint8_t>(g_dragFromSlot));
+      std::cout << "[UI] Dropped item from slot " << g_dragFromSlot
+                << " to ground" << std::endl;
     }
   }
 
@@ -2032,6 +2092,11 @@ void LoadSlotBackgrounds(const std::string &dataPath) {
       TextureLoader::Resolve(dataPath + "/Interface", "newui_item_ring.OZT");
   g_slotBackgrounds[11] =
       TextureLoader::Resolve(dataPath + "/Interface", "newui_item_ring.OZT");
+
+  // Skill icon sprite sheet (25 icons per row, 20x28px each on 512x512)
+  g_texSkillIcons = TextureLoader::LoadOZJ(dataPath + "/Interface/Skill.OZJ");
+  if (g_texSkillIcons)
+    printf("[UI] Loaded Skill.OZJ icon sheet (tex=%u)\n", g_texSkillIcons);
 }
 
 float GetCharInfoPanelX() { return PANEL_X_RIGHT; }
@@ -2045,6 +2110,218 @@ float GetShopPanelX() { return GetInventoryPanelX() - PANEL_W - 5.0f; }
 bool IsPointInPanel(float vx, float vy, float panelX) {
   return vx >= panelX && vx < panelX + PANEL_W && vy >= PANEL_Y &&
          vy < PANEL_Y + PANEL_H;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Skill Window (S key) — DK 0.97d / Blade Knight skills
+// ═══════════════════════════════════════════════════════════════════
+
+// DK skill data (0.97d scope + Blade Knight)
+struct DKSkillDef {
+  uint8_t skillId;
+  const char *name;
+  int agCost;
+  int levelReq;
+  int damageBonus;
+  const char *desc;
+};
+
+static const DKSkillDef g_dkSkills[] = {
+    {19, "Falling Slash", 9, 1, 15, "Downward slash attack"},
+    {20, "Lunge", 9, 1, 15, "Forward thrust attack"},
+    {21, "Uppercut", 8, 1, 15, "Upward strike attack"},
+    {22, "Cyclone", 9, 1, 18, "Spinning attack"},
+    {23, "Slash", 10, 1, 20, "Horizontal slash"},
+    {41, "Twisting Slash", 10, 30, 25, "AoE spinning slash"},
+    {42, "Rageful Blow", 20, 170, 60, "Powerful ground strike"},
+    {43, "Death Stab", 12, 160, 70, "Piercing stab attack"},
+};
+static constexpr int NUM_DK_SKILLS = 8;
+
+// Skill icon sprite sheet: 25 cols, 20x28px per icon, 512x512 texture
+static constexpr int SKILL_ICON_COLS = 25;
+static constexpr float SKILL_ICON_W = 20.0f;
+static constexpr float SKILL_ICON_H = 28.0f;
+static constexpr float SKILL_TEX_SIZE = 512.0f;
+
+void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
+  // Position: left of char info panel
+  float px = *s_ctx->showCharInfo ? PANEL_X_RIGHT - PANEL_W - 5.0f
+                                  : PANEL_X_RIGHT;
+  float py = PANEL_Y;
+  float pw = PANEL_W;
+  float ph = 360.0f * g_uiPanelScale;
+
+  // Colors
+  const ImU32 colBg = IM_COL32(15, 15, 25, 240);
+  const ImU32 colBr = IM_COL32(60, 65, 90, 200);
+  const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
+  const ImU32 colLabel = IM_COL32(170, 170, 190, 255);
+  const ImU32 colValue = IM_COL32(255, 255, 255, 255);
+  const ImU32 colGreen = IM_COL32(100, 255, 100, 255);
+  const ImU32 colRed = IM_COL32(255, 80, 80, 255);
+  const ImU32 colDim = IM_COL32(255, 255, 255, 100); // 40% opacity
+  char buf[256];
+
+  // Background
+  dl->AddRectFilled(ImVec2(c.ToScreenX(px), c.ToScreenY(py)),
+                    ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBg,
+                    5.0f);
+  dl->AddRect(ImVec2(c.ToScreenX(px), c.ToScreenY(py)),
+              ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBr, 5.0f,
+              0, 1.5f);
+
+  // Title
+  DrawPanelTextCentered(dl, c, px, py, 0, 11, BASE_PANEL_W, "Skills",
+                        colTitle, s_ctx->fontDefault);
+
+  // Close button
+  {
+    float bx = BASE_PANEL_W - 24;
+    float by = 6;
+    float bw = 16, bh = 14;
+    ImVec2 bMin(c.ToScreenX(px + bx * g_uiPanelScale),
+                c.ToScreenY(py + by * g_uiPanelScale));
+    ImVec2 bMax(c.ToScreenX(px + (bx + bw) * g_uiPanelScale),
+                c.ToScreenY(py + (by + bh) * g_uiPanelScale));
+    ImVec2 mp = ImGui::GetIO().MousePos;
+    bool hovered =
+        mp.x >= bMin.x && mp.x < bMax.x && mp.y >= bMin.y && mp.y < bMax.y;
+    ImU32 bgCol =
+        hovered ? IM_COL32(200, 40, 40, 255) : IM_COL32(100, 20, 20, 200);
+    dl->AddRectFilled(bMin, bMax, bgCol, 2.0f);
+    if (hovered)
+      dl->AddRect(bMin, bMax, IM_COL32(255, 100, 100, 255), 2.0f);
+    ImVec2 xSize = ImGui::CalcTextSize("X");
+    ImVec2 xPos(bMin.x + (bMax.x - bMin.x) * 0.5f - xSize.x * 0.5f,
+                bMin.y + (bMax.y - bMin.y) * 0.5f - xSize.y * 0.5f);
+    dl->AddText(xPos, IM_COL32(255, 255, 255, 255), "X");
+
+    if (hovered && ImGui::IsMouseClicked(0))
+      *s_ctx->showSkillWindow = false;
+  }
+
+  // Check which skills are learned
+  auto isLearned = [](uint8_t skillId) -> bool {
+    if (!s_ctx->learnedSkills)
+      return false;
+    for (auto s : *s_ctx->learnedSkills) {
+      if (s == skillId)
+        return true;
+    }
+    return false;
+  };
+
+  // Render skill rows
+  float startY = 40.0f;
+  float rowH = 38.0f;
+  float iconDisplayW = 28.0f; // Display size (scaled from 20x28)
+  float iconDisplayH = 38.0f;
+
+  ImVec2 mousePos = ImGui::GetIO().MousePos;
+
+  for (int i = 0; i < NUM_DK_SKILLS; i++) {
+    const auto &skill = g_dkSkills[i];
+    bool learned = isLearned(skill.skillId);
+    float ry = startY + i * rowH;
+
+    // Row background (alternating)
+    ImU32 rowBg = (i % 2 == 0) ? IM_COL32(25, 28, 40, 200)
+                                : IM_COL32(20, 22, 35, 200);
+
+    float rowMinX = px + 8 * g_uiPanelScale;
+    float rowMinY = py + ry * g_uiPanelScale;
+    float rowMaxX = px + (BASE_PANEL_W - 8) * g_uiPanelScale;
+    float rowMaxY = py + (ry + rowH - 2) * g_uiPanelScale;
+
+    ImVec2 rMin(c.ToScreenX(rowMinX), c.ToScreenY(rowMinY));
+    ImVec2 rMax(c.ToScreenX(rowMaxX), c.ToScreenY(rowMaxY));
+
+    bool rowHovered = mousePos.x >= rMin.x && mousePos.x < rMax.x &&
+                      mousePos.y >= rMin.y && mousePos.y < rMax.y;
+
+    if (rowHovered)
+      rowBg = IM_COL32(40, 45, 65, 220);
+
+    dl->AddRectFilled(rMin, rMax, rowBg, 3.0f);
+
+    // Skill icon from Skill.OZJ sprite sheet
+    if (g_texSkillIcons != 0) {
+      int iconIdx = skill.skillId;
+      int col = iconIdx % SKILL_ICON_COLS;
+      int row = iconIdx / SKILL_ICON_COLS;
+      float u0 = (SKILL_ICON_W * col) / SKILL_TEX_SIZE;
+      float v0 = (SKILL_ICON_H * row) / SKILL_TEX_SIZE;
+      float u1 = u0 + SKILL_ICON_W / SKILL_TEX_SIZE;
+      float v1 = v0 + SKILL_ICON_H / SKILL_TEX_SIZE;
+
+      float iconX = px + 12 * g_uiPanelScale;
+      float iconY = py + (ry + 1) * g_uiPanelScale;
+      float iconW = iconDisplayW * g_uiPanelScale;
+      float iconH = iconDisplayH * g_uiPanelScale;
+
+      ImVec2 iMin(c.ToScreenX(iconX), c.ToScreenY(iconY));
+      ImVec2 iMax(c.ToScreenX(iconX + iconW), c.ToScreenY(iconY + iconH));
+
+      ImU32 iconTint = learned ? IM_COL32(255, 255, 255, 255)
+                               : IM_COL32(255, 255, 255, 100);
+      dl->AddImage((ImTextureID)(uintptr_t)g_texSkillIcons, iMin, iMax,
+                   ImVec2(u0, v0), ImVec2(u1, v1), iconTint);
+    }
+
+    // Skill name
+    ImU32 nameCol = learned ? colValue : colDim;
+    DrawPanelText(dl, c, px, py, 42, ry + 4, skill.name, nameCol);
+
+    // AG cost
+    snprintf(buf, sizeof(buf), "AG: %d", skill.agCost);
+    ImU32 agCol = learned ? IM_COL32(100, 180, 255, 255)
+                          : IM_COL32(100, 180, 255, 100);
+    DrawPanelText(dl, c, px, py, 42, ry + 20, buf, agCol);
+
+    // Level requirement (right side)
+    if (skill.levelReq > 1) {
+      snprintf(buf, sizeof(buf), "Lv.%d", skill.levelReq);
+      bool meetsReq = *s_ctx->serverLevel >= skill.levelReq;
+      ImU32 reqCol = meetsReq ? colGreen : colRed;
+      if (!learned)
+        reqCol = (reqCol & 0x00FFFFFF) | 0x64000000; // 40% alpha
+      DrawPanelTextRight(dl, c, px, py, 20, ry + 4, 150, buf, reqCol);
+    }
+
+    // Tooltip on hover
+    if (rowHovered) {
+      float tw = 200;
+      float lineH = 18;
+      int numLines = 5;
+      float th = lineH * numLines + 10;
+
+      BeginPendingTooltip(tw, th);
+      AddPendingTooltipLine(colTitle, skill.name);
+
+      snprintf(buf, sizeof(buf), "AG Cost: %d", skill.agCost);
+      AddPendingTooltipLine(IM_COL32(100, 180, 255, 255), buf);
+
+      snprintf(buf, sizeof(buf), "Damage: +%d", skill.damageBonus);
+      AddPendingTooltipLine(IM_COL32(255, 200, 100, 255), buf);
+
+      snprintf(buf, sizeof(buf), "Level Req: %d", skill.levelReq);
+      bool meetsReq = *s_ctx->serverLevel >= skill.levelReq;
+      AddPendingTooltipLine(meetsReq ? colGreen : colRed, buf);
+
+      AddPendingTooltipLine(colLabel, skill.desc);
+
+      if (!learned) {
+        AddPendingTooltipLine(IM_COL32(255, 150, 50, 255), "(Not learned)");
+      }
+    }
+  }
+
+  // Footer
+  int learnedCount = s_ctx->learnedSkills ? (int)s_ctx->learnedSkills->size() : 0;
+  snprintf(buf, sizeof(buf), "Learned: %d / %d", learnedCount, NUM_DK_SKILLS);
+  DrawPanelText(dl, c, px, py, 15, startY + NUM_DK_SKILLS * rowH + 5, buf,
+                colLabel);
 }
 
 } // namespace InventoryUI

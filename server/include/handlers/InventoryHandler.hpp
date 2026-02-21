@@ -24,6 +24,8 @@ void HandlePickup(Session &session, const std::vector<uint8_t> &packet,
                   GameWorld &world, Server &server, Database &db);
 void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
                    Database &db);
+void HandleItemDrop(Session &session, const std::vector<uint8_t> &packet,
+                    GameWorld &world, Server &server, Database &db);
 
 } // namespace InventoryHandler
 

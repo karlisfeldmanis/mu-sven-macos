@@ -46,6 +46,21 @@ const std::vector<glm::vec3> &GetFireOffsets(int objectType) {
   }
 }
 
+// Smoke offset table (Main 5.2: ZzzObject.cpp — CreateFire type 1/2)
+// Type 131 = Light02 (torch smoke), Type 132 = Light03 (smoke variant)
+static const std::vector<glm::vec3> kSmokeTorchOffsets = {
+    glm::vec3(0.0f, 0.0f, 0.0f)};
+
+const std::vector<glm::vec3> &GetSmokeOffsets(int objectType) {
+  switch (objectType) {
+  case 131:
+  case 132:
+    return kSmokeTorchOffsets;
+  default:
+    return kNoOffsets;
+  }
+}
+
 int GetFireTypeFromFilename(const std::string &bmdFilename) {
   if (bmdFilename == "FireLight01.bmd")
     return 50;
@@ -59,6 +74,10 @@ int GetFireTypeFromFilename(const std::string &bmdFilename) {
     return 80;
   if (bmdFilename == "Light01.bmd")
     return 130;
+  if (bmdFilename == "Light02.bmd")
+    return 131;
+  if (bmdFilename == "Light03.bmd")
+    return 132;
   return -1;
 }
 
@@ -86,6 +105,20 @@ void FireEffect::Init(const std::string &effectDataPath) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
   std::cout << "[FireEffect] Loaded fire texture: " << firePath << std::endl;
+
+  // Load water texture (Main 5.2: water mist for fountains)
+  std::string waterPath = effectDataPath + "/water.OZJ";
+  waterTexture = TextureLoader::LoadOZJ(waterPath);
+  if (waterTexture == 0) {
+    std::cerr << "[FireEffect] Failed to load water texture: " << waterPath
+              << std::endl;
+  } else {
+    glBindTexture(GL_TEXTURE_2D, waterTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    std::cout << "[FireEffect] Loaded water texture: " << waterPath
+              << std::endl;
+  }
 
   // Compile billboard shader
   {
@@ -178,6 +211,24 @@ void FireEffect::AddEmitter(const glm::vec3 &worldPos) {
   Emitter e;
   e.position = worldPos;
   e.spawnAccum = RandFloat(0.0f, 1.0f); // stagger initial spawns
+  e.smoke = false;
+  emitters.push_back(e);
+}
+
+void FireEffect::AddSmokeEmitter(const glm::vec3 &worldPos) {
+  Emitter e;
+  e.position = worldPos;
+  e.spawnAccum = RandFloat(0.0f, 1.0f);
+  e.smoke = true;
+  emitters.push_back(e);
+}
+
+void FireEffect::AddWaterSmokeEmitter(const glm::vec3 &worldPos) {
+  Emitter e;
+  e.position = worldPos;
+  e.spawnAccum = RandFloat(0.0f, 1.0f);
+  e.smoke = true;
+  e.water = true;
   emitters.push_back(e);
 }
 
@@ -191,7 +242,9 @@ void FireEffect::Update(float deltaTime) {
 
   // Spawn new particles from emitters
   for (auto &emitter : emitters) {
-    emitter.spawnAccum += SPAWN_RATE * deltaTime;
+    // Smoke spawns slower (Main 5.2: rand()%2 == 50% chance per tick)
+    float rate = emitter.smoke ? 6.0f : SPAWN_RATE;
+    emitter.spawnAccum += rate * deltaTime;
     while (emitter.spawnAccum >= 1.0f &&
            (int)particles.size() < MAX_PARTICLES) {
       emitter.spawnAccum -= 1.0f;
@@ -202,19 +255,37 @@ void FireEffect::Update(float deltaTime) {
       p.position.y += RandFloat(-10.0f, 10.0f);
       p.position.z += RandFloat(-10.0f, 10.0f);
 
-      // Upward drift with slight horizontal wander
-      p.velocity = glm::vec3(RandFloat(-5.0f, 5.0f), RandFloat(40.0f, 80.0f),
-                             RandFloat(-5.0f, 5.0f));
+      if (emitter.smoke) {
+        // Smoke: slower upward, larger, longer life
+        p.velocity = glm::vec3(RandFloat(-8.0f, 8.0f), RandFloat(20.0f, 45.0f),
+                               RandFloat(-8.0f, 8.0f));
+        p.scale = RandFloat(80.0f, 140.0f);
+        p.maxLifetime = 1.8f;
+        p.lifetime = 1.8f;
+        if (emitter.water) {
+          p.isWater = true;
+          // Water mist: white tint
+          float w = RandFloat(0.7f, 1.0f);
+          p.color = glm::vec3(w, w, w);
+        } else {
+          p.isWater = false;
+          // Regular smoke: gray
+          float g = RandFloat(0.3f, 0.5f);
+          p.color = glm::vec3(g, g, g);
+        }
+      } else {
+        p.isWater = false;
+        // Fire: warm orange, faster upward
+        p.velocity = glm::vec3(RandFloat(-5.0f, 5.0f), RandFloat(40.0f, 80.0f),
+                               RandFloat(-5.0f, 5.0f));
+        p.scale = RandFloat(60.0f, 100.0f);
+        p.maxLifetime = PARTICLE_LIFETIME;
+        p.lifetime = PARTICLE_LIFETIME;
+        float lum = RandFloat(0.6f, 1.1f);
+        p.color = glm::vec3(lum, lum * 0.6f, lum * 0.4f);
+      }
 
-      p.scale = RandFloat(60.0f, 100.0f); // Billboard size in world units
       p.rotation = RandFloat(0.0f, 6.2832f);
-      p.maxLifetime = PARTICLE_LIFETIME;
-      p.lifetime = PARTICLE_LIFETIME;
-
-      // Warm orange color with random luminosity
-      float lum = RandFloat(0.6f, 1.1f);
-      p.color = glm::vec3(lum, lum * 0.6f, lum * 0.4f);
-
       particles.push_back(p);
     }
   }
@@ -275,16 +346,57 @@ void FireEffect::Render(const glm::mat4 &view, const glm::mat4 &projection) {
   billboardShader->setInt("fireTexture", 0);
 
   glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, fireTexture);
 
   // Additive blending, no depth writes
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE); // Pre-multiplied additive
   glDepthMask(GL_FALSE);
 
-  // Draw instanced billboards
   glBindVertexArray(quadVAO);
-  glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0, count);
+
+  // Batch 1: Fire & Smoke (using fireTexture)
+  {
+    std::vector<InstanceData> fireBatch;
+    for (int i = 0; i < count; ++i) {
+      if (!particles[i].isWater) {
+        fireBatch.push_back(instanceData[i]);
+      }
+    }
+
+    if (!fireBatch.empty()) {
+      glBindTexture(GL_TEXTURE_2D, fireTexture);
+      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+      glBufferSubData(GL_ARRAY_BUFFER, 0,
+                      fireBatch.size() * sizeof(InstanceData),
+                      fireBatch.data());
+      glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0,
+                              (int)fireBatch.size());
+    }
+  }
+
+  // Batch 2: Water Mist (using waterTexture)
+  if (waterTexture != 0) {
+    std::vector<InstanceData> waterBatch;
+    for (int i = 0; i < count; ++i) {
+      if (particles[i].isWater) {
+        // Override frame for water (not a sprite sheet)
+        InstanceData d = instanceData[i];
+        d.frame = 0.0f;
+        waterBatch.push_back(d);
+      }
+    }
+
+    if (!waterBatch.empty()) {
+      glBindTexture(GL_TEXTURE_2D, waterTexture);
+      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+      glBufferSubData(GL_ARRAY_BUFFER, 0,
+                      waterBatch.size() * sizeof(InstanceData),
+                      waterBatch.data());
+      glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0,
+                              (int)waterBatch.size());
+    }
+  }
+
   glBindVertexArray(0);
 
   // Restore GL state
@@ -312,6 +424,10 @@ void FireEffect::Cleanup() {
   if (fireTexture) {
     glDeleteTextures(1, &fireTexture);
     fireTexture = 0;
+  }
+  if (waterTexture) {
+    glDeleteTextures(1, &waterTexture);
+    waterTexture = 0;
   }
   billboardShader.reset();
   emitters.clear();

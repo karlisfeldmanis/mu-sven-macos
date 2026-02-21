@@ -8,7 +8,8 @@
 #include <string>
 #include <vector>
 
-// Fire offset table: MU local-space offsets where fire spawns on each object type
+// Fire offset table: MU local-space offsets where fire spawns on each object
+// type
 struct FireOffsetEntry {
   int type;
   std::vector<glm::vec3> offsets; // MU local coords (x, y, z)
@@ -17,14 +18,21 @@ struct FireOffsetEntry {
 // Returns MU-local fire offsets for a given object type, or empty if no fire
 const std::vector<glm::vec3> &GetFireOffsets(int objectType);
 
-// Returns the object type for a BMD filename, or -1 if not a fire object
+// Returns MU-local smoke offsets for a given object type, or empty if no smoke
+const std::vector<glm::vec3> &GetSmokeOffsets(int objectType);
+
+// Returns the object type for a BMD filename, or -1 if not a fire/smoke object
 int GetFireTypeFromFilename(const std::string &bmdFilename);
 
 class FireEffect {
 public:
   void Init(const std::string &effectDataPath);
   void ClearEmitters();
-  void AddEmitter(const glm::vec3 &worldPos); // GL world coordinates
+  void AddEmitter(const glm::vec3 &worldPos); // Fire emitter (GL world coords)
+  void
+  AddSmokeEmitter(const glm::vec3 &worldPos); // Smoke emitter (gray, slower)
+  void
+  AddWaterSmokeEmitter(const glm::vec3 &worldPos); // Water mist (blue tint)
   void Update(float deltaTime);
   void Render(const glm::mat4 &view, const glm::mat4 &projection);
   void Cleanup();
@@ -36,6 +44,8 @@ private:
   struct Emitter {
     glm::vec3 position;
     float spawnAccum = 0.0f;
+    bool smoke = false; // true = gray smoke, false = orange fire
+    bool water = false; // true = blue water mist
   };
 
   struct Particle {
@@ -46,6 +56,7 @@ private:
     float lifetime;
     float maxLifetime;
     glm::vec3 color;
+    bool isWater = false;
   };
 
   // Per-instance GPU data (must match vertex attribute layout)
@@ -62,6 +73,7 @@ private:
   std::vector<Particle> particles;
 
   GLuint fireTexture = 0;
+  GLuint waterTexture = 0;
   std::unique_ptr<Shader> billboardShader;
   GLuint quadVAO = 0, quadVBO = 0, quadEBO = 0;
   GLuint instanceVBO = 0;

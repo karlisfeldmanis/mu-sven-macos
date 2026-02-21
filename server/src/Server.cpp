@@ -100,8 +100,9 @@ void Server::Run() {
     float dt = std::chrono::duration<float>(now - lastTick).count();
     lastTick = now;
 
-    // Game tick: update monster states, drop aging, wander AI
+    // Game tick: update monster states, drop aging, wander AI, guard patrol
     std::vector<GameWorld::MonsterMoveUpdate> wanderMoves;
+    std::vector<GameWorld::NpcMoveUpdate> npcMoves;
     m_world.Update(
         dt,
         [this](uint16_t dropIndex) {
@@ -111,7 +112,7 @@ void Server::Run() {
           pkt.dropIndex = dropIndex;
           Broadcast(&pkt, sizeof(pkt));
         },
-        &wanderMoves);
+        &wanderMoves, &npcMoves);
 
     // Broadcast wander moves to all clients
     for (auto &mv : wanderMoves) {
@@ -121,6 +122,16 @@ void Server::Run() {
       movePkt.targetX = mv.targetX;
       movePkt.targetY = mv.targetY;
       movePkt.chasing = mv.chasing;
+      Broadcast(&movePkt, sizeof(movePkt));
+    }
+
+    // Broadcast guard patrol moves to all clients
+    for (auto &mv : npcMoves) {
+      PMSG_NPC_MOVE_SEND movePkt{};
+      movePkt.h = MakeC1Header(sizeof(movePkt), Opcode::NPC_MOVE);
+      movePkt.npcIndex = mv.npcIndex;
+      movePkt.targetX = mv.targetX;
+      movePkt.targetY = mv.targetY;
       Broadcast(&movePkt, sizeof(movePkt));
     }
 
@@ -149,8 +160,9 @@ void Server::Run() {
         pt.fd = s->GetFd();
         pt.worldX = s->worldX;
         pt.worldZ = s->worldZ;
-        pt.defense = s->totalDefense;
-        pt.defenseRate = (int)s->dexterity / 4; // simplified defense rate
+        CharacterClass cls = static_cast<CharacterClass>(s->classCode);
+        pt.defense = StatCalculator::CalculateDefense(cls, s->dexterity) + s->totalDefense;
+        pt.defenseRate = StatCalculator::CalculateDefenseRate(cls, s->dexterity);
         pt.life = s->hp;
         pt.dead = s->dead;
         targets.push_back(pt);
@@ -262,6 +274,21 @@ void Server::Run() {
           }
         } else {
           session->hpRemainder = 0.0f;
+        }
+      }
+
+      // AG/Mana recovery (5% per second for DK AG, 2% for others in safe zone)
+      if (session->inWorld && !session->dead &&
+          session->mana < session->maxMana) {
+        bool isDK = session->classCode == 16;
+        // DK AG recovers everywhere; other classes only in safe zone
+        if (isDK || m_world.IsSafeZone(session->worldX, session->worldZ)) {
+          float rate = isDK ? 0.05f : 0.02f;
+          int gain = (int)(rate * session->maxMana * dt);
+          if (gain >= 1) {
+            session->mana = std::min(session->mana + gain, session->maxMana);
+            CharacterHandler::SendCharStats(*session);
+          }
         }
       }
 
@@ -390,10 +417,13 @@ void Server::OnClientConnected(Session &session) {
     session.worldZ = c.posX * 100.0f;
     session.maxHp = StatCalculator::CalculateMaxHP(
         static_cast<CharacterClass>(c.charClass), c.level, c.vitality);
-    session.maxMana = StatCalculator::CalculateMaxMP(
-        static_cast<CharacterClass>(c.charClass), c.level, c.energy);
+    session.maxMana = StatCalculator::CalculateMaxManaOrAG(
+        static_cast<CharacterClass>(c.charClass), c.level, c.strength,
+        c.dexterity, c.vitality, c.energy);
     session.hp = std::min(static_cast<int>(c.life), session.maxHp);
     session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
+    session.experience = c.experience;
+    session.levelUpPoints = c.levelUpPoints;
     session.dead = false;
   }
   CharacterHandler::RefreshCombatStats(session, m_db, c.id);

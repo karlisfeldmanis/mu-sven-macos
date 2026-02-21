@@ -23,12 +23,20 @@ static const InputContext *s_ctx = nullptr;
 static int s_pendingNpcIdx = -1;
 
 // Distance thresholds for NPC interaction
-static constexpr float NPC_INTERACT_RANGE = 200.0f;  // Open shop when within this range
-static constexpr float NPC_STOP_OFFSET = 150.0f;     // Stop this far from NPC center
-static constexpr float NPC_CLOSE_RANGE = 500.0f;     // Auto-close shop beyond this
+static constexpr float NPC_INTERACT_RANGE =
+    200.0f; // Open shop when within this range
+static constexpr float NPC_STOP_OFFSET =
+    150.0f; // Stop this far from NPC center
+static constexpr float NPC_CLOSE_RANGE = 500.0f; // Auto-close shop beyond this
 
 // Set true after first ProcessInput — prevents callbacks during early init
 static bool s_gameReady = false;
+
+// GLFW cursors for hover feedback (Main 5.2: CursorId changes on hover)
+static GLFWcursor *s_cursorArrow = nullptr;    // Default
+static GLFWcursor *s_cursorAttack = nullptr;   // Monster hover (crosshair)
+static GLFWcursor *s_cursorInteract = nullptr; // NPC/item hover (hand)
+static GLFWwindow *s_window = nullptr;
 
 // ── GLFW callbacks ──
 
@@ -51,12 +59,12 @@ static void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
           (float)xpos, (float)ypos, view, proj, winW, winH, camPos);
     }
     if (*s_ctx->hoveredNpc < 0) {
-      *s_ctx->hoveredMonster = RayPicker::PickMonster(window, xpos, ypos);
-      if (*s_ctx->hoveredMonster < 0) {
-        *s_ctx->hoveredGroundItem =
-            RayPicker::PickGroundItem(window, xpos, ypos);
+      // Ground items have higher pick priority than monsters so loot is easy
+      *s_ctx->hoveredGroundItem = RayPicker::PickGroundItem(window, xpos, ypos);
+      if (*s_ctx->hoveredGroundItem < 0) {
+        *s_ctx->hoveredMonster = RayPicker::PickMonster(window, xpos, ypos);
       } else {
-        *s_ctx->hoveredGroundItem = -1;
+        *s_ctx->hoveredMonster = -1;
       }
     } else {
       *s_ctx->hoveredMonster = -1;
@@ -66,6 +74,16 @@ static void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
     *s_ctx->hoveredNpc = -1;
     *s_ctx->hoveredMonster = -1;
     *s_ctx->hoveredGroundItem = -1;
+  }
+
+  // Update cursor based on hover state (Main 5.2: CursorId switching)
+  if (s_window) {
+    if (*s_ctx->hoveredMonster >= 0)
+      glfwSetCursor(s_window, s_cursorAttack);
+    else if (*s_ctx->hoveredNpc >= 0 || *s_ctx->hoveredGroundItem >= 0)
+      glfwSetCursor(s_window, s_cursorInteract);
+    else
+      glfwSetCursor(s_window, s_cursorArrow);
   }
 }
 
@@ -86,6 +104,8 @@ static void HandlePickupClick(GLFWwindow *window, double mx, double my) {
 
     if (distToHero < 150.0f) {
       // Close enough, pick up immediately
+      s_ctx->hero->CancelAttack();
+      s_ctx->hero->StopMoving();
       s_ctx->server->SendPickup(s_ctx->groundItems[bestIdx].dropIndex);
       std::cout << "[Pickup] Sent direct pickup for index "
                 << s_ctx->groundItems[bestIdx].dropIndex << " (Close range)"
@@ -158,25 +178,26 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
             s_ctx->camera->GetProjectionMatrix((float)winW, (float)winH);
         glm::vec3 camPos = s_ctx->camera->GetPosition();
         npcHit = s_ctx->npcMgr->PickLabel((float)mx, (float)my, view, proj,
-                                           winW, winH, camPos);
+                                          winW, winH, camPos);
       }
 
       if (npcHit >= 0) {
         HandleNpcInteraction(npcHit);
       } else {
-        // Preserve selectedNpc while shop is open (needed for auto-close distance check)
+        // Preserve selectedNpc while shop is open (needed for auto-close
+        // distance check)
         if (!*s_ctx->shopOpen) {
           *s_ctx->selectedNpc = -1;
         }
         s_pendingNpcIdx = -1;
-        if (*s_ctx->hoveredMonster >= 0) {
+        if (*s_ctx->hoveredGroundItem >= 0) {
+          HandlePickupClick(window, mx, my);
+        } else if (*s_ctx->hoveredMonster >= 0) {
           MonsterInfo info =
               s_ctx->monsterMgr->GetMonsterInfo(*s_ctx->hoveredMonster);
           s_ctx->hero->AttackMonster(*s_ctx->hoveredMonster, info.position);
           s_ctx->hero
               ->ClearPendingPickup(); // Cancel pickup if attacking monster
-        } else if (*s_ctx->hoveredGroundItem >= 0) {
-          HandlePickupClick(window, mx, my);
         } else {
           // Ground click — move to terrain
           if (s_ctx->hero->IsAttacking())
@@ -225,6 +246,8 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
       *s_ctx->showCharInfo = !*s_ctx->showCharInfo;
     if (key == GLFW_KEY_I)
       *s_ctx->showInventory = !*s_ctx->showInventory;
+    if (key == GLFW_KEY_S)
+      *s_ctx->showSkillWindow = !*s_ctx->showSkillWindow;
     if (key == GLFW_KEY_Q)
       InventoryUI::ConsumeQuickSlotItem();
     if (key == GLFW_KEY_ESCAPE) {
@@ -235,6 +258,8 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
         *s_ctx->showCharInfo = false;
       else if (*s_ctx->showInventory)
         *s_ctx->showInventory = false;
+      else if (*s_ctx->showSkillWindow)
+        *s_ctx->showSkillWindow = false;
     }
   }
 }
@@ -251,6 +276,13 @@ void InputHandler::Init(const InputContext &ctx) {
 }
 
 void InputHandler::RegisterCallbacks(GLFWwindow *window) {
+  s_window = window;
+
+  // Create hover cursors (Main 5.2: sword cursor for attack, hand for interact)
+  s_cursorArrow = glfwCreateStandardCursor(GLFW_ARROW_CURSOR);
+  s_cursorAttack = glfwCreateStandardCursor(GLFW_CROSSHAIR_CURSOR);
+  s_cursorInteract = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
+
   glfwSetCursorPosCallback(window, mouse_callback);
   glfwSetScrollCallback(window, scroll_callback);
   glfwSetMouseButtonCallback(window, mouse_button_callback);
@@ -286,8 +318,7 @@ void InputHandler::ProcessInput(GLFWwindow *window, float deltaTime) {
   // Pending NPC interaction: open shop when hero reaches the NPC
   if (s_pendingNpcIdx >= 0 && s_pendingNpcIdx < s_ctx->npcMgr->GetNpcCount()) {
     NpcInfo info = s_ctx->npcMgr->GetNpcInfo(s_pendingNpcIdx);
-    float dist =
-        glm::distance(s_ctx->hero->GetPosition(), info.position);
+    float dist = glm::distance(s_ctx->hero->GetPosition(), info.position);
     if (dist < NPC_INTERACT_RANGE) {
       s_ctx->server->SendShopOpen(info.type);
       s_pendingNpcIdx = -1;
@@ -298,8 +329,7 @@ void InputHandler::ProcessInput(GLFWwindow *window, float deltaTime) {
   if (*s_ctx->shopOpen && *s_ctx->selectedNpc >= 0 &&
       *s_ctx->selectedNpc < s_ctx->npcMgr->GetNpcCount()) {
     NpcInfo info = s_ctx->npcMgr->GetNpcInfo(*s_ctx->selectedNpc);
-    float dist =
-        glm::distance(s_ctx->hero->GetPosition(), info.position);
+    float dist = glm::distance(s_ctx->hero->GetPosition(), info.position);
     if (dist > NPC_CLOSE_RANGE) {
       *s_ctx->shopOpen = false;
       *s_ctx->selectedNpc = -1;

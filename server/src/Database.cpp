@@ -54,14 +54,14 @@ void Database::CreateTables() {
             pos_x INTEGER DEFAULT 130,
             pos_y INTEGER DEFAULT 130,
             direction INTEGER DEFAULT 2,
-            strength INTEGER DEFAULT 20,
+            strength INTEGER DEFAULT 28,
             dexterity INTEGER DEFAULT 20,
-            vitality INTEGER DEFAULT 20,
-            energy INTEGER DEFAULT 20,
-            life INTEGER DEFAULT 100,
-            max_life INTEGER DEFAULT 100,
-            mana INTEGER DEFAULT 50,
-            max_mana INTEGER DEFAULT 50,
+            vitality INTEGER DEFAULT 25,
+            energy INTEGER DEFAULT 10,
+            life INTEGER DEFAULT 110,
+            max_life INTEGER DEFAULT 110,
+            mana INTEGER DEFAULT 20,
+            max_mana INTEGER DEFAULT 20,
             money INTEGER DEFAULT 0,
             experience INTEGER DEFAULT 0,
             level_up_points INTEGER DEFAULT 0,
@@ -169,6 +169,22 @@ void Database::CreateTables() {
       m_db,
       "ALTER TABLE item_definitions ADD COLUMN buy_price INTEGER DEFAULT 0",
       nullptr, nullptr, nullptr);
+
+  // Character skills table (learned skills)
+  const char *skillSql = R"(
+        CREATE TABLE IF NOT EXISTS character_skills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_id INTEGER NOT NULL,
+            skill_id INTEGER NOT NULL,
+            UNIQUE(character_id, skill_id),
+            FOREIGN KEY (character_id) REFERENCES characters(id)
+        );
+    )";
+  char *skillErr = nullptr;
+  if (sqlite3_exec(m_db, skillSql, nullptr, nullptr, &skillErr) != SQLITE_OK) {
+    printf("[DB] character_skills create error: %s\n", skillErr);
+    sqlite3_free(skillErr);
+  }
 }
 
 void Database::CreateDefaultAccount() {
@@ -204,7 +220,7 @@ void Database::CreateDefaultAccount() {
         "INSERT INTO characters (account_id, slot, name, class, level, "
         "strength, dexterity, vitality, energy, life, max_life, mana, "
         "max_mana, level_up_points) "
-        "VALUES (%d, 0, 'TestDK', 16, 1, 28, 20, 25, 10, 110, 110, 30, 30, 0)",
+        "VALUES (%d, 0, 'TestDK', 16, 1, 28, 20, 25, 10, 110, 110, 20, 20, 0)",
         accountId);
     sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
     printf("[DB] Created TestDK character for account %d\n", accountId);
@@ -397,23 +413,29 @@ void Database::SeedNpcSpawns() {
     return;
   }
 
-  // Lorencia (map 0) NPCs from MonsterSetBase.txt (0.97d scope)
+  // Lorencia (map 0) NPCs from MonsterSetBase.txt + OpenMU Lorencia.cs
   const char *sql = R"(
         INSERT INTO npc_spawns (type, map_id, pos_x, pos_y, direction, name) VALUES
-            (253, 0, 127, 86,  2, 'Potion Girl Amy'),
-            (250, 0, 183, 137, 2, 'Weapon Merchant'),
-            (251, 0, 116, 141, 3, 'Hanzo the Blacksmith'),
-            (254, 0, 118, 113, 3, 'Pasi the Mage'),
-            (255, 0, 123, 135, 1, 'Lumen the Barmaid'),
-            (240, 0, 146, 110, 3, 'Safety Guardian'),
-            (240, 0, 147, 145, 1, 'Safety Guardian');
+            (253, 0, 127, 86,  3, 'Potion Girl Amy'),
+            (250, 0, 183, 137, 3, 'Weapon Merchant'),
+            (251, 0, 116, 141, 4, 'Hanzo the Blacksmith'),
+            (254, 0, 118, 113, 4, 'Pasi the Mage'),
+            (255, 0, 123, 135, 2, 'Lumen the Barmaid'),
+            (240, 0, 146, 110, 4, 'Safety Guardian'),
+            (240, 0, 147, 145, 2, 'Safety Guardian'),
+            (249, 0, 131, 88,  2, 'Guard'),
+            (249, 0, 173, 125, 4, 'Guard'),
+            (249, 0, 94,  125, 8, 'Guard'),
+            (249, 0, 94,  130, 8, 'Guard'),
+            (249, 0, 131, 148, 2, 'Guard'),
+            (247, 0, 114, 125, 4, 'Guard');
     )";
   char *err = nullptr;
   if (sqlite3_exec(m_db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
     printf("[DB] SeedNpcSpawns error: %s\n", err);
     sqlite3_free(err);
   } else {
-    printf("[DB] Seeded 7 Lorencia NPC spawns\n");
+    printf("[DB] Seeded 13 Lorencia NPC spawns (7 vendors + 6 guards)\n");
   }
 }
 
@@ -661,6 +683,12 @@ void Database::SeedItemDefinitions() {
              (12, 17, 'Orb of Penetration', 'Gem11.bmd', 64, 0, 0, 0, 0, 0, 1, 1, 130, 0, 0, 0, 4),
              (12, 18, 'Orb of Ice Arrow', 'Gem12.bmd', 81, 0, 0, 0, 0, 0, 1, 1, 0, 258, 0, 0, 4),
              (12, 19, 'Orb of Death Stab', 'Gem13.bmd', 72, 0, 0, 0, 0, 0, 1, 1, 160, 0, 0, 0, 2),
+             -- Basic DK skill orbs (indices 20-24)
+             (12, 20, 'Orb of Falling Slash', 'Gem01.bmd', 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2),
+             (12, 21, 'Orb of Lunge', 'Gem01.bmd', 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2),
+             (12, 22, 'Orb of Uppercut', 'Gem01.bmd', 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2),
+             (12, 23, 'Orb of Cyclone', 'Gem01.bmd', 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2),
+             (12, 24, 'Orb of Slash', 'Gem01.bmd', 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2),
             -- Jewel of Chaos
             (12, 15, 'Jewel of Chaos', 'Jewel01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
 
@@ -849,10 +877,11 @@ void Database::SeedItemDefinitions() {
                  "UPDATE item_definitions SET buy_price = 50000 "
                  "WHERE category = 12 AND item_index <= 6",
                  nullptr, nullptr, nullptr);
-    // Orbs (cat 12, idx 7-19): level_req * 200
+    // Orbs (cat 12, idx 7-24): level_req * 200
     sqlite3_exec(m_db,
                  "UPDATE item_definitions SET buy_price = level_req * 200 "
-                 "WHERE category = 12 AND item_index >= 7 AND item_index <= 19",
+                 "WHERE category = 12 AND item_index >= 7 AND item_index <= 24"
+                 " AND item_index != 15",
                  nullptr, nullptr, nullptr);
     // Jewel of Chaos (12,15): 810000
     sqlite3_exec(m_db,
@@ -1213,4 +1242,45 @@ uint64_t Database::GetXPForLevel(int level) {
   static constexpr double kScale =
       ((double)0xFFFFFFFF * 0.95) / (400.0 * 400.0 * 400.0);
   return (uint64_t)(kScale * (double)level * (double)level * (double)level);
+}
+
+std::vector<uint8_t> Database::GetCharacterSkills(int characterId) {
+  std::vector<uint8_t> skills;
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql =
+      "SELECT skill_id FROM character_skills WHERE character_id=?";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return skills;
+  sqlite3_bind_int(stmt, 1, characterId);
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    skills.push_back(static_cast<uint8_t>(sqlite3_column_int(stmt, 0)));
+  }
+  sqlite3_finalize(stmt);
+  return skills;
+}
+
+void Database::LearnSkill(int characterId, uint8_t skillId) {
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql = "INSERT OR IGNORE INTO character_skills (character_id, "
+                     "skill_id) VALUES (?, ?)";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return;
+  sqlite3_bind_int(stmt, 1, characterId);
+  sqlite3_bind_int(stmt, 2, skillId);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  printf("[DB] Character %d learned skill %d\n", characterId, skillId);
+}
+
+bool Database::HasSkill(int characterId, uint8_t skillId) {
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql = "SELECT 1 FROM character_skills WHERE character_id=? AND "
+                     "skill_id=?";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return false;
+  sqlite3_bind_int(stmt, 1, characterId);
+  sqlite3_bind_int(stmt, 2, skillId);
+  bool found = (sqlite3_step(stmt) == SQLITE_ROW);
+  sqlite3_finalize(stmt);
+  return found;
 }

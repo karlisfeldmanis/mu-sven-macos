@@ -333,6 +333,62 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
     return;
   }
 
+  // Skill orbs (category 12) — learn skill on use
+  if (item.category == 12) {
+    // Map orb itemIndex to skill ID
+    static const struct {
+      uint8_t orbIndex;
+      uint8_t skillId;
+    } orbSkillMap[] = {
+        {20, 19}, // Orb of Falling Slash → Falling Slash
+        {21, 20}, // Orb of Lunge → Lunge
+        {22, 21}, // Orb of Uppercut → Uppercut
+        {23, 22}, // Orb of Cyclone → Cyclone
+        {24, 23}, // Orb of Slash → Slash
+        {7, 41},  // Orb of Twisting Slash → Twisting Slash
+        {12, 42}, // Orb of Rageful Blow → Rageful Blow
+        {19, 43}, // Orb of Death Stab → Death Stab
+    };
+
+    uint8_t skillId = 0;
+    for (auto &m : orbSkillMap) {
+      if (m.orbIndex == item.itemIndex) {
+        skillId = m.skillId;
+        break;
+      }
+    }
+
+    if (skillId > 0) {
+      if (db.HasSkill(session.characterId, skillId)) {
+        printf("[Inventory] fd=%d already knows skill %d\n", session.GetFd(),
+               skillId);
+        return;
+      }
+
+      // Learn the skill
+      db.LearnSkill(session.characterId, skillId);
+      session.learnedSkills.push_back(skillId);
+
+      // Consume the orb
+      if (item.quantity > 1) {
+        item.quantity--;
+        db.SaveCharacterInventory(session.characterId, item.defIndex,
+                                  item.quantity, item.itemLevel, req->slot);
+      } else {
+        session.bag[req->slot] = {};
+        db.DeleteCharacterInventoryItem(session.characterId, req->slot);
+      }
+
+      // Send updated skill list and inventory
+      CharacterHandler::SendSkillList(session);
+      SendInventorySync(session);
+
+      printf("[Inventory] fd=%d learned skill %d from orb idx=%d\n",
+             session.GetFd(), skillId, item.itemIndex);
+      return;
+    }
+  }
+
   if (item.category == 14) {
     int healAmount = 0;
     if (item.itemIndex == 0)
@@ -393,6 +449,75 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
           session.experience, session.quickSlotDefIndex);
     }
   }
+}
+
+void HandleItemDrop(Session &session, const std::vector<uint8_t> &packet,
+                    GameWorld &world, Server &server, Database &db) {
+  if (packet.size() < sizeof(PMSG_ITEM_DROP_RECV))
+    return;
+  const auto *req = reinterpret_cast<const PMSG_ITEM_DROP_RECV *>(packet.data());
+
+  if (req->slot >= 64)
+    return;
+  if (session.dead)
+    return;
+
+  auto &item = session.bag[req->slot];
+  if (!item.occupied || !item.primary) {
+    printf("[Inventory] Drop rejected fd=%d: slot %d empty\n", session.GetFd(),
+           req->slot);
+    return;
+  }
+
+  int16_t defIndex = item.defIndex;
+  uint8_t quantity = item.quantity;
+  uint8_t itemLevel = item.itemLevel;
+
+  // Get item dimensions to clear all occupied slots
+  ItemDefinition def = db.GetItemDefinition(defIndex);
+  int w = def.width > 0 ? def.width : 1;
+  int h = def.height > 0 ? def.height : 1;
+  int r = req->slot / 8;
+  int c = req->slot % 8;
+
+  // Clear all slots occupied by this item
+  for (int hh = 0; hh < h; hh++) {
+    for (int ww = 0; ww < w; ww++) {
+      int s = (r + hh) * 8 + (c + ww);
+      if (s < 64)
+        session.bag[s] = {};
+    }
+  }
+  db.DeleteCharacterInventoryItem(session.characterId, req->slot);
+
+  // Spawn drop on the ground near the player
+  GroundDrop drop{};
+  drop.index = world.AllocDropIndex();
+  drop.defIndex = defIndex;
+  drop.quantity = quantity;
+  drop.itemLevel = itemLevel;
+  drop.worldX = session.worldX + (float)(rand() % 60 - 30);
+  drop.worldZ = session.worldZ + (float)(rand() % 60 - 30);
+  drop.age = 0.0f;
+  world.AddDrop(drop);
+
+  // Broadcast drop spawn to all clients
+  PMSG_DROP_SPAWN_SEND spawnPkt{};
+  spawnPkt.h = MakeC1Header(sizeof(spawnPkt), Opcode::DROP_SPAWN);
+  spawnPkt.dropIndex = drop.index;
+  spawnPkt.defIndex = drop.defIndex;
+  spawnPkt.quantity = drop.quantity;
+  spawnPkt.itemLevel = drop.itemLevel;
+  spawnPkt.worldX = drop.worldX;
+  spawnPkt.worldZ = drop.worldZ;
+  server.Broadcast(&spawnPkt, sizeof(spawnPkt));
+
+  // Sync inventory to client
+  SendInventorySync(session);
+
+  printf("[Inventory] Player fd=%d dropped item def=%d from slot %d at "
+         "(%.0f,%.0f)\n",
+         session.GetFd(), defIndex, req->slot, drop.worldX, drop.worldZ);
 }
 
 } // namespace InventoryHandler

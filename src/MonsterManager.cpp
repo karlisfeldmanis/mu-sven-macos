@@ -196,15 +196,37 @@ void MonsterManager::InitModels(const std::string &dataPath) {
   m_typeToModel[3] = spiderIdx;
 
   // Elite Bull Fighter: server type 4, Monster01.bmd (Scale 1.15)
-  // Shared with Bull Fighter model but different scale
-  m_typeToModel[4] = bullIdx; // Use the same loaded model index
+  // Separate model entry so it can have different weapons than Bull Fighter
+  int eliteBullIdx = -1;
   if (bullIdx >= 0) {
-    // We need to handle per-type scale if we share models.
-    // For now, let's just use the same model but I'll add a way to override
-    // scale per instance if needed. Actually, Bull Fighter and Elite Bull
-    // Fighter share the same BMD but have different server types. I will adjust
-    // the spawning logic to use the correct scale.
+    auto &bullModel = m_models[bullIdx];
+    MonsterModel eliteBull;
+    eliteBull.name = "Elite Bull Fighter";
+    eliteBull.texDir = bullModel.texDir;
+    eliteBull.bmd = bullModel.bmd; // Share BMD pointer (non-owning)
+    eliteBull.scale = 1.15f;
+    eliteBull.collisionRadius = bullModel.collisionRadius;
+    eliteBull.collisionHeight = bullModel.collisionHeight;
+    eliteBull.bodyOffset = bullModel.bodyOffset;
+    eliteBull.rootBone = bullModel.rootBone;
+    eliteBull.level = 12;       // OpenMU: Level=12
+    eliteBull.defense = 12;     // OpenMU: Defense=12
+    eliteBull.defenseRate = 12; // OpenMU: DefRate=12
+    eliteBull.attackRate = 50;  // OpenMU: AtkRate=50
+    // Pre-upload mesh buffers (separate GL objects from Bull Fighter)
+    auto identBones = ComputeBoneMatrices(eliteBull.bmd);
+    AABB dummyAABB{};
+    for (auto &mesh : eliteBull.bmd->Meshes) {
+      UploadMeshWithBones(mesh, eliteBull.texDir, identBones,
+                          eliteBull.meshBuffers, dummyAABB, true);
+    }
+    eliteBullIdx = (int)m_models.size();
+    m_models.push_back(std::move(eliteBull));
+    std::cout << "[Monster] Created Elite Bull Fighter model (separate from Bull "
+                 "Fighter for weapon support)"
+              << std::endl;
   }
+  m_typeToModel[4] = eliteBullIdx;
 
   // Lich: server type 6, Monster05.bmd (scale 0.85, ranged caster)
   int lichIdx = loadMonsterModel("Monster05.bmd", "Lich", 0.85f, 80.0f, 150.0f);
@@ -214,6 +236,7 @@ void MonsterManager::InitModels(const std::string &dataPath) {
     lich.defense = 14;     // OpenMU: Defense=14
     lich.defenseRate = 14; // OpenMU: DefRate=14
     lich.attackRate = 62;  // OpenMU: AtkRate=62
+    lich.blendMesh = 0;    // Main 5.2: BlendMesh=0, BlendMeshLight=1.0
   }
   m_typeToModel[6] = lichIdx;
 
@@ -316,7 +339,8 @@ void MonsterManager::InitModels(const std::string &dataPath) {
 
     // Load weapons for skeleton types (Main 5.2: c->Weapon[n].Type)
     std::string itemPath = dataPath + "/Item/";
-    auto loadWeapon = [&](uint16_t type, const char *bmdFile, int bone) {
+    auto loadWeapon = [&](uint16_t type, const char *bmdFile, int bone,
+                          glm::vec3 rot, glm::vec3 off) {
       auto it = m_typeToModel.find(type);
       if (it == m_typeToModel.end() || it->second < 0)
         return;
@@ -329,19 +353,28 @@ void MonsterManager::InitModels(const std::string &dataPath) {
       wd.bmd = wpnBmd.get();
       wd.texDir = itemPath;
       wd.attachBone = bone;
+      wd.rot = rot;
+      wd.offset = off;
       m_models[it->second].weaponDefs.push_back(wd);
       m_ownedBmds.push_back(std::move(wpnBmd));
-      std::cout << "[Monster] Loaded weapon " << bmdFile << " for type "
-                << type << " (bone " << bone << ")" << std::endl;
+      std::cout << "[Monster] Loaded weapon " << bmdFile << " for type " << type
+                << " (bone " << bone << ")" << std::endl;
     };
-    // Skeleton Warrior (type 14): Sword07.bmd R-Hand(33) + Shield05.bmd L-Hand(42)
-    loadWeapon(14, "Sword07.bmd", 33);
-    loadWeapon(14, "Shield05.bmd", 42);
+    // Identity offset: same as HeroCharacter combat mode.
+    // Our skeletons use Player.bmd bones (33/42) and weapon BMDs are designed
+    // to work with those bones without additional rotation/offset.
+    glm::vec3 noRot(0), noOff(0);
+
+    // Skeleton Warrior (type 14): Sword07.bmd R-Hand(33) + Shield05.bmd
+    // L-Hand(42)
+    loadWeapon(14, "Sword07.bmd", 33, noRot, noOff);
+    loadWeapon(14, "Shield05.bmd", 42, noRot, noOff);
     // Skeleton Archer (type 15): Bow03.bmd L-Hand(42)
-    loadWeapon(15, "Bow03.bmd", 42);
-    // Skeleton Captain (type 16): Axe04.bmd R-Hand(33) + Shield07.bmd L-Hand(42)
-    loadWeapon(16, "Axe04.bmd", 33);
-    loadWeapon(16, "Shield07.bmd", 42);
+    loadWeapon(15, "Bow03.bmd", 42, noRot, noOff);
+    // Skeleton Captain (type 16): Axe04.bmd R-Hand(33) + Shield07.bmd
+    // L-Hand(42)
+    loadWeapon(16, "Axe04.bmd", 33, noRot, noOff);
+    loadWeapon(16, "Shield07.bmd", 42, noRot, noOff);
   } else {
     std::cerr << "[Monster] Failed to load Player.bmd — skeleton types "
                  "disabled"
@@ -349,6 +382,54 @@ void MonsterManager::InitModels(const std::string &dataPath) {
     m_typeToModel[14] = -1;
     m_typeToModel[15] = -1;
     m_typeToModel[16] = -1;
+  }
+
+  // ── Non-skeleton monster weapons (Main 5.2 ZzzCharacter.cpp) ──
+  // These monsters use their own BMD skeletons, not Player.bmd.
+  // LinkBone values from Main 5.2: SetMonsterLinkBone()
+  {
+    std::string itemPath = dataPath + "/Item/";
+    glm::vec3 noRot(0), noOff(0);
+
+    auto loadMonsterWeapon = [&](uint16_t type, const char *bmdFile, int bone,
+                                 glm::vec3 rot, glm::vec3 off) {
+      auto it = m_typeToModel.find(type);
+      if (it == m_typeToModel.end() || it->second < 0)
+        return;
+      auto wpnBmd = BMDParser::Parse(itemPath + bmdFile);
+      if (!wpnBmd) {
+        std::cerr << "[Monster] Failed to load weapon " << bmdFile << std::endl;
+        return;
+      }
+      WeaponDef wd;
+      wd.bmd = wpnBmd.get();
+      wd.texDir = itemPath;
+      wd.attachBone = bone;
+      wd.rot = rot;
+      wd.offset = off;
+      m_models[it->second].weaponDefs.push_back(wd);
+      m_ownedBmds.push_back(std::move(wpnBmd));
+      std::cout << "[Monster] Loaded weapon " << bmdFile << " for type " << type
+                << " (bone " << bone << ")" << std::endl;
+    };
+
+    // Bull Fighter (type 0): MODEL_AXE+6 = Axe07.bmd, R-Hand bone 42
+    // Main 5.2: c->Weapon[0].LinkBone = 42 (Monster01.bmd "left_bone")
+    loadMonsterWeapon(0, "Axe07.bmd", 42, noRot, noOff);
+
+    // Elite Bull Fighter (type 4): MODEL_SPEAR+7 = Spear08.bmd, R-Hand bone 42
+    // Main 5.2: shares Monster01.bmd, same bone layout as Bull Fighter
+    loadMonsterWeapon(4, "Spear08.bmd", 42, noRot, noOff);
+
+    // Lich (type 6): MODEL_STAFF+2 = Staff03.bmd, R-Hand bone 41
+    // Main 5.2: c->Weapon[0].LinkBone = 41 (Monster05.bmd "knife_gdf")
+    loadMonsterWeapon(6, "Staff03.bmd", 41, noRot, noOff);
+
+    // Giant (type 7): MODEL_AXE+2 = Axe03.bmd, DUAL WIELD (both hands)
+    // Main 5.2: c->Weapon[0].LinkBone = 41, c->Weapon[1].LinkBone = 32
+    // Monster06.bmd: bone 41 = "knife_bone" (R), bone 32 = "hand_bone01" (L)
+    loadMonsterWeapon(7, "Axe03.bmd", 41, noRot, noOff);
+    loadMonsterWeapon(7, "Axe03.bmd", 32, noRot, noOff);
   }
 
   // Load Debris models (not mapped to server types)
@@ -359,9 +440,8 @@ void MonsterManager::InitModels(const std::string &dataPath) {
       loadMonsterModel("../Skill/BigStone01.bmd", "Stone Debris", 0.6f, 0, 0);
 
   // Arrow projectile model (Main 5.2: MODEL_ARROW → Arrow01.bmd)
-  m_arrowModelIdx =
-      loadMonsterModel("../Skill/Arrow01.bmd", "Arrow", 0.8f, 0, 0, 0.0f,
-                        skillPath);
+  m_arrowModelIdx = loadMonsterModel("../Skill/Arrow01.bmd", "Arrow", 0.8f, 0,
+                                     0, 0.0f, skillPath);
 
   m_modelsLoaded = true;
   std::cout << "[Monster] Models loaded: " << m_models.size() << " types"
@@ -370,7 +450,8 @@ void MonsterManager::InitModels(const std::string &dataPath) {
 
 void MonsterManager::AddMonster(uint16_t monsterType, uint8_t gridX,
                                 uint8_t gridY, uint8_t dir,
-                                uint16_t serverIndex) {
+                                uint16_t serverIndex, int hp, int maxHp,
+                                uint8_t state) {
   auto it = m_typeToModel.find(monsterType);
   if (it == m_typeToModel.end()) {
     std::cerr << "[Monster] Unknown monster type " << monsterType << " at ("
@@ -385,10 +466,6 @@ void MonsterManager::AddMonster(uint16_t monsterType, uint8_t gridX,
   MonsterInstance mon;
   mon.modelIdx = modelIdx;
   mon.scale = mdl.scale;
-  // Elite Bull Fighter (type 4): scale 1.15 vs Bull Fighter's 0.80
-  // They share the same BMD model, so override per-instance
-  if (monsterType == 4)
-    mon.scale = 1.15f;
   mon.monsterType = monsterType;
   mon.serverIndex = serverIndex;
 
@@ -454,6 +531,14 @@ void MonsterManager::AddMonster(uint16_t monsterType, uint8_t gridX,
     mon.shadowMeshes.push_back(sm);
   }
 
+  mon.hp = hp;
+  mon.maxHp = maxHp > 0 ? maxHp : hp;
+  mon.state = static_cast<MonsterState>(state);
+  if (mon.state == MonsterState::DEAD || mon.state == MonsterState::DYING) {
+    mon.corpseAlpha = 0.0f;
+    mon.spawnAlpha = 0.0f;
+  }
+
   // Create per-instance weapon mesh buffers (skeleton types)
   for (auto &wd : mdl.weaponDefs) {
     MonsterInstance::WeaponMeshSet wms;
@@ -473,7 +558,9 @@ void MonsterManager::AddMonster(uint16_t monsterType, uint8_t gridX,
 }
 
 void MonsterManager::setAction(MonsterInstance &mon, int action) {
-  if (mon.action == action)
+  // Always restart attack animations so repeated attacks play properly
+  bool isAttack = (action == ACTION_ATTACK1 || action == ACTION_ATTACK2);
+  if (mon.action == action && !isAttack)
     return;
 
   // Trigger blending for ALL animation changes
@@ -783,6 +870,7 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
 }
 
 void MonsterManager::Update(float deltaTime) {
+  m_worldTime += deltaTime;
   int idx = 0;
   for (auto &mon : m_monsters) {
     // Safety: if HP is 0 but monster isn't dying/dead, force death
@@ -1024,39 +1112,86 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       mon.ambientVfxTimer += deltaTime;
 
       // Budge Dragon (type 2): fire breath during ATTACK1 only (bone 7 = mouth)
-      // Main 5.2: 1 particle per tick, frames 0-4, offset (0, 32-64, 0) in bone space
+      // Main 5.2: 1 particle per tick, frames 0-4, offset (0, 32-64, 0) in bone
+      // space
       if (mon.monsterType == 2 && mon.action == ACTION_ATTACK1 &&
           mon.animFrame <= 4.0f) {
-        glm::vec3 firePos = mon.position + glm::vec3(0, 80, 0);
         if (7 < (int)bones.size()) {
-          // Main 5.2: TransformPosition(BoneTransform[7], (0, rand%32+32, 0))
-          // Bone matrices are in model-local space — must apply model rotation
-          // (-90°Z, -90°Y, facing) to convert to world space
           glm::mat4 modelRot = glm::mat4(1.0f);
-          modelRot = glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-          modelRot = glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+          modelRot =
+              glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+          modelRot =
+              glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
           modelRot = glm::rotate(modelRot, mon.facing, glm::vec3(0, 0, 1));
 
           glm::vec3 localOff(0.0f, (float)(rand() % 32 + 32), 0.0f);
-          const auto &bm = bones[7];
-          // Apply bone 3x3 rotation to offset
-          glm::vec3 worldOff;
-          worldOff.x = bm[0][0] * localOff.x + bm[0][1] * localOff.y + bm[0][2] * localOff.z;
-          worldOff.y = bm[1][0] * localOff.x + bm[1][1] * localOff.y + bm[1][2] * localOff.z;
-          worldOff.z = bm[2][0] * localOff.x + bm[2][1] * localOff.y + bm[2][2] * localOff.z;
-          glm::vec3 bonePos(bm[0][3], bm[1][3], bm[2][3]);
-          // Transform bone-local position through model rotation to world space
-          glm::vec3 localPos = (bonePos + worldOff);
-          glm::vec3 worldPos = glm::vec3(modelRot * glm::vec4(localPos, 1.0f));
-          firePos = worldPos * mon.scale + mon.position;
+
+          auto applyFireToBone = [&](int boneIdx) {
+            const auto &bm = bones[boneIdx];
+            glm::vec3 worldOff;
+            worldOff.x = bm[0][0] * localOff.x + bm[0][1] * localOff.y +
+                         bm[0][2] * localOff.z;
+            worldOff.y = bm[1][0] * localOff.x + bm[1][1] * localOff.y +
+                         bm[1][2] * localOff.z;
+            worldOff.z = bm[2][0] * localOff.x + bm[2][1] * localOff.y +
+                         bm[2][2] * localOff.z;
+            glm::vec3 bonePos(bm[0][3], bm[1][3], bm[2][3]);
+            glm::vec3 localPos = (bonePos + worldOff);
+            glm::vec3 worldPos =
+                glm::vec3(modelRot * glm::vec4(localPos, 1.0f));
+            glm::vec3 firePos = worldPos * mon.scale + mon.position;
+            m_vfxManager->SpawnBurst(ParticleType::FIRE, firePos, 1);
+          };
+
+          applyFireToBone(7);
         }
-        m_vfxManager->SpawnBurst(ParticleType::FIRE, firePos, 1);
       }
 
-      // Ambient smoke: Budge Dragon (2), Spider (3), Lich (6)
+      // Lich (type 6): fire breath (Cursed Lich variation) on both hands during
+      // ATTACK1
+      if (mon.monsterType == 6 && mon.action == ACTION_ATTACK1 &&
+          mon.animFrame <= 4.0f) {
+        if (41 < (int)bones.size()) {
+          glm::mat4 modelRot = glm::mat4(1.0f);
+          modelRot =
+              glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+          modelRot =
+              glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+          modelRot = glm::rotate(modelRot, mon.facing, glm::vec3(0, 0, 1));
+
+          glm::vec3 localOff(0.0f, (float)(rand() % 32 + 32), 0.0f);
+
+          auto applyFireToBone = [&](int boneIdx) {
+            const auto &bm = bones[boneIdx];
+            glm::vec3 worldOff;
+            worldOff.x = bm[0][0] * localOff.x + bm[0][1] * localOff.y +
+                         bm[0][2] * localOff.z;
+            worldOff.y = bm[1][0] * localOff.x + bm[1][1] * localOff.y +
+                         bm[1][2] * localOff.z;
+            worldOff.z = bm[2][0] * localOff.x + bm[2][1] * localOff.y +
+                         bm[2][2] * localOff.z;
+            glm::vec3 bonePos(bm[0][3], bm[1][3], bm[2][3]);
+            glm::vec3 localPos = (bonePos + worldOff);
+            glm::vec3 worldPos =
+                glm::vec3(modelRot * glm::vec4(localPos, 1.0f));
+            glm::vec3 firePos = worldPos * mon.scale + mon.position;
+            m_vfxManager->SpawnBurst(ParticleType::FIRE, firePos, 1);
+          };
+
+          // Correct hand bones for Lich: 27=L Hand, 36=R Hand
+          // Tightened offset for palm-only effect
+          localOff = glm::vec3(0.0f, (float)(rand() % 16 + 8), 0.0f);
+
+          if (27 < (int)bones.size())
+            applyFireToBone(27); // Left palm
+          if (36 < (int)bones.size())
+            applyFireToBone(36); // Right palm
+        }
+      }
+
+      // Ambient smoke: Hound (1), Budge Dragon (2)
       // Main 5.2: rand()%4 per tick (~25fps) = ~6/sec. At 60fps, use timer.
-      if ((mon.monsterType == 2 || mon.monsterType == 3 ||
-           mon.monsterType == 6) &&
+      if ((mon.monsterType == 1 || mon.monsterType == 2) &&
           mon.ambientVfxTimer >= 0.5f) {
         mon.ambientVfxTimer = 0.0f;
         glm::vec3 smokePos =
@@ -1098,6 +1233,15 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     float renderAlpha = mon.corpseAlpha * mon.spawnAlpha;
     m_shader->setFloat("objectAlpha", renderAlpha);
 
+    // BlendMesh UV scroll (Main 5.2: Lich — texCoordV scrolls over time)
+    // -(float)((int)(WorldTime)%2000)*0.0005f
+    bool hasBlendMesh = (mdl.blendMesh >= 0);
+    float blendMeshUVOffset = 0.0f;
+    if (hasBlendMesh) {
+      int wt = (int)(m_worldTime * 1000.0f) % 2000;
+      blendMeshUVOffset = -(float)wt * 0.0005f;
+    }
+
     // Draw all meshes
     for (auto &mb : mon.meshBuffers) {
       if (mb.indexCount == 0 || mb.hidden)
@@ -1105,7 +1249,17 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
 
-      if (mb.noneBlend) {
+      // Main 5.2 BlendMesh: mesh with Texture==blendMesh renders additive
+      bool isBlendMesh = hasBlendMesh && (mb.bmdTextureId == mdl.blendMesh);
+      if (isBlendMesh) {
+        m_shader->setVec2("texCoordOffset", glm::vec2(0.0f, blendMeshUVOffset));
+        glBlendFunc(GL_ONE, GL_ONE);
+        glDepthMask(GL_FALSE);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        glDepthMask(GL_TRUE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
+      } else if (mb.noneBlend) {
         glDisable(GL_BLEND);
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
         glEnable(GL_BLEND);
@@ -1121,8 +1275,8 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     }
 
     // Draw weapons (skeleton types: sword, shield, bow on Player.bmd bones)
-    for (int wi = 0; wi < (int)mdl.weaponDefs.size() &&
-                     wi < (int)mon.weaponMeshes.size();
+    for (int wi = 0;
+         wi < (int)mdl.weaponDefs.size() && wi < (int)mon.weaponMeshes.size();
          ++wi) {
       auto &wd = mdl.weaponDefs[wi];
       auto &wms = mon.weaponMeshes[wi];
@@ -1131,16 +1285,16 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       if (wd.attachBone >= (int)bones.size())
         continue;
 
-      // Parent matrix: character bone at attach point
+      // Parent matrix: character bone * weapon local transform
+      // Main 5.2: ParentMatrix = BoneTransform[LinkBone] * AngleMatrix(rot) +
+      // offset
       const auto &parentBone = bones[wd.attachBone];
-      // Weapon offset: identity for combat (no rotation/offset needed)
-      BoneWorldMatrix identOffset;
-      float identMat[3][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}};
-      memcpy(identOffset.data(), identMat, sizeof(identMat));
+      BoneWorldMatrix weaponLocal =
+          MuMath::BuildWeaponOffsetMatrix(wd.rot, wd.offset);
 
       BoneWorldMatrix parentMat;
       MuMath::ConcatTransforms((const float(*)[4])parentBone.data(),
-                               (const float(*)[4])identOffset.data(),
+                               (const float(*)[4])weaponLocal.data(),
                                (float(*)[4])parentMat.data());
 
       // Compute weapon local bones and combine with parent
@@ -1153,8 +1307,8 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
 
       // Re-skin and draw each weapon mesh
-      for (int mi = 0; mi < (int)wms.meshBuffers.size() &&
-                        mi < (int)wd.bmd->Meshes.size();
+      for (int mi = 0;
+           mi < (int)wms.meshBuffers.size() && mi < (int)wd.bmd->Meshes.size();
            ++mi) {
         RetransformMeshWithBones(wd.bmd->Meshes[mi], wFinalBones,
                                  wms.meshBuffers[mi]);
@@ -1435,8 +1589,10 @@ void MonsterManager::TriggerAttackAnimation(int index) {
     // (-90°Z, -90°Y, facing) to convert to world space
     if (41 < (int)mon.cachedBones.size()) {
       glm::mat4 modelRot = glm::mat4(1.0f);
-      modelRot = glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-      modelRot = glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+      modelRot =
+          glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+      modelRot =
+          glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
       modelRot = glm::rotate(modelRot, mon.facing, glm::vec3(0, 0, 1));
       const auto &m = mon.cachedBones[41];
       glm::vec3 boneLocal(m[0][3], m[1][3], m[2][3]);
@@ -1461,8 +1617,10 @@ void MonsterManager::TriggerAttackAnimation(int index) {
     // Get left hand bone (42) for arrow origin if available
     if (42 < (int)mon.cachedBones.size()) {
       glm::mat4 modelRot = glm::mat4(1.0f);
-      modelRot = glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-      modelRot = glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+      modelRot =
+          glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+      modelRot =
+          glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
       modelRot = glm::rotate(modelRot, mon.facing, glm::vec3(0, 0, 1));
       const auto &bm = mon.cachedBones[42];
       glm::vec3 boneLocal(bm[0][3], bm[1][3], bm[2][3]);
@@ -1715,7 +1873,8 @@ void MonsterManager::renderArrows(const glm::mat4 &view,
 
   for (const auto &a : m_arrows) {
     // Arrow model matrix: position, then rotate to face direction, then scale
-    // Main 5.2: Arrow uses angle-based rotation (yaw from direction, pitch from gravity)
+    // Main 5.2: Arrow uses angle-based rotation (yaw from direction, pitch from
+    // gravity)
     glm::mat4 model = glm::translate(glm::mat4(1.0f), a.position);
     // Standard BMD rotation base
     model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
@@ -1846,8 +2005,20 @@ void MonsterManager::RenderNameplates(ImDrawList *dl, ImFont *font,
     ImU32 hpCol = hpFrac > 0.5f    ? IM_COL32(60, 220, 60, (int)(alpha * 220))
                   : hpFrac > 0.25f ? IM_COL32(220, 220, 60, (int)(alpha * 220))
                                    : IM_COL32(220, 60, 60, (int)(alpha * 220));
-    if (hpFrac > 0.0f)
+    if (hpFrac > 0.0f) {
       dl->AddRectFilled(ImVec2(barX, barY),
                         ImVec2(barX + barW * hpFrac, barY + barH), hpCol);
+    }
+
+    // HP text
+    char hpText[32];
+    snprintf(hpText, sizeof(hpText), "%d / %d", mi.hp, mi.maxHp);
+    ImVec2 hpTextSize = font->CalcTextSizeA(11.0f, FLT_MAX, 0, hpText);
+    float hpTx = sx - hpTextSize.x * 0.5f;
+    float hpTy = barY + barH + 1.0f;
+    dl->AddText(font, 11.0f, ImVec2(hpTx + 1, hpTy + 1),
+                IM_COL32(0, 0, 0, (int)(alpha * 180)), hpText);
+    dl->AddText(font, 11.0f, ImVec2(hpTx, hpTy),
+                IM_COL32(220, 220, 220, (int)(alpha * 220)), hpText);
   }
 }

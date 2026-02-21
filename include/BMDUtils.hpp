@@ -49,9 +49,13 @@ BoneWorldMatrix BuildWeaponOffsetMatrix(const glm::vec3 &rotDeg,
 
 } // namespace MuMath
 
-// Compute bone world matrices for a given action and frame
-std::vector<BoneWorldMatrix> ComputeBoneMatrices(const BMDData *bmd,
-                                                 int action = 0, int frame = 0);
+// Compute bone world matrices for a given action and frame.
+// bodyAngle (degrees): character facing rotation applied to root bone
+// (Main 5.2: AngleMatrix(BodyAngle) * rootBoneLocal). Pass (0,0,0) for
+// weapon BMDs or bind-pose queries where no body rotation is needed.
+std::vector<BoneWorldMatrix>
+ComputeBoneMatrices(const BMDData *bmd, int action = 0, int frame = 0,
+                    const glm::vec3 &bodyAngle = glm::vec3(0));
 
 // Get interpolated bone position and rotation for a single action/frame
 bool GetInterpolatedBoneData(const BMDData *bmd, int action, float frame,
@@ -61,12 +65,14 @@ bool GetInterpolatedBoneData(const BMDData *bmd, int action, float frame,
 // Compute bone world matrices with fractional frame interpolation (slerp)
 // Uses pre-computed quaternions for smooth animation between keyframes
 std::vector<BoneWorldMatrix>
-ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame);
+ComputeBoneMatricesInterpolated(const BMDData *bmd, int action, float frame,
+                                const glm::vec3 &bodyAngle = glm::vec3(0));
 
 // Compute bone world matrices with cross-action blending
 std::vector<BoneWorldMatrix>
 ComputeBoneMatricesBlended(const BMDData *bmd, int action1, float frame1,
-                           int action2, float frame2, float blendAlpha);
+                           int action2, float frame2, float blendAlpha,
+                           const glm::vec3 &bodyAngle = glm::vec3(0));
 
 // Compute AABB from bone-transformed vertices
 AABB ComputeTransformedAABB(const BMDData *bmd,

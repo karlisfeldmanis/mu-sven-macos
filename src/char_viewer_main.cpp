@@ -543,6 +543,9 @@ private:
   glm::vec3 weaponOffset{0, 0, 0};
   int weaponBone = 33;
 
+  // BodyAngle: character facing rotation applied to root bone (Main 5.2 match)
+  glm::vec3 bodyAngle{0, 0, 0};
+
   // --- Init ---
 
   bool InitWindow() {
@@ -651,7 +654,7 @@ private:
     UnloadParts();
     currentArmorSet = armorSetIdx;
 
-    auto bones = ComputeBoneMatrices(skeleton.get());
+    auto bones = ComputeBoneMatrices(skeleton.get(), 0, 0, bodyAngle);
     AABB totalAABB{};
 
     // Load 5 equipment body parts (Helm, Armor, Pants, Gloves, Boots)
@@ -815,6 +818,42 @@ private:
     weaponOffset = cfg.offset;
     weaponBone = cfg.bone;
 
+    // Diagnostic: dump bone 33 matrix for weapon attachment analysis
+    {
+      auto charBones = ComputeBoneMatricesInterpolated(skeleton.get(), 4, 0.0f);
+      if (weaponBone < (int)charBones.size()) {
+        auto &bm = charBones[weaponBone];
+        printf("\n=== BONE %d MATRIX (Action 4, Frame 0) ===\n", weaponBone);
+        printf("  [%.6f, %.6f, %.6f, %.6f]\n", bm[0][0], bm[0][1], bm[0][2], bm[0][3]);
+        printf("  [%.6f, %.6f, %.6f, %.6f]\n", bm[1][0], bm[1][1], bm[1][2], bm[1][3]);
+        printf("  [%.6f, %.6f, %.6f, %.6f]\n", bm[2][0], bm[2][1], bm[2][2], bm[2][3]);
+        // Show what each axis maps to
+        glm::vec3 bX(bm[0][0], bm[1][0], bm[2][0]);
+        glm::vec3 bY(bm[0][1], bm[1][1], bm[2][1]);
+        glm::vec3 bZ(bm[0][2], bm[1][2], bm[2][2]);
+        glm::vec3 pos(bm[0][3], bm[1][3], bm[2][3]);
+        printf("  Bone X-axis: (%.4f, %.4f, %.4f)\n", bX.x, bX.y, bX.z);
+        printf("  Bone Y-axis: (%.4f, %.4f, %.4f)\n", bY.x, bY.y, bY.z);
+        printf("  Bone Z-axis: (%.4f, %.4f, %.4f)\n", bZ.x, bZ.y, bZ.z);
+        printf("  Position:    (%.4f, %.4f, %.4f)\n", pos.x, pos.y, pos.z);
+        // After model matrix (-90° X): MU(x,y,z) → GL(x,-z,y)
+        printf("  GL-space X-axis: (%.4f, %.4f, %.4f)\n", bX.x, -bX.z, bX.y);
+        printf("  GL-space Y-axis: (%.4f, %.4f, %.4f)\n", bY.x, -bY.z, bY.y);
+        printf("  GL-space Z-axis: (%.4f, %.4f, %.4f)\n", bZ.x, -bZ.z, bZ.y);
+      }
+
+      // Also dump weapon bone 0
+      if (weaponBmd && !weaponBmd->Bones.empty()) {
+        auto wBones = ComputeBoneMatrices(weaponBmd.get());
+        auto &wb = wBones[0];
+        printf("=== WEAPON BONE 0 MATRIX ===\n");
+        printf("  [%.6f, %.6f, %.6f, %.6f]\n", wb[0][0], wb[0][1], wb[0][2], wb[0][3]);
+        printf("  [%.6f, %.6f, %.6f, %.6f]\n", wb[1][0], wb[1][1], wb[1][2], wb[1][3]);
+        printf("  [%.6f, %.6f, %.6f, %.6f]\n", wb[2][0], wb[2][1], wb[2][2], wb[2][3]);
+      }
+      printf("===========================\n\n");
+    }
+
     std::cout << "[CharViewer] Weapon: " << files[index] << " ("
               << weaponBmd->Meshes.size() << " meshes, "
               << weaponBmd->Bones.size() << " bones, bone=" << weaponBone
@@ -838,9 +877,9 @@ private:
         animFrame = std::fmod(animFrame, (float)currentNumKeys);
     }
 
-    // Compute skeleton bones for current frame
+    // Compute skeleton bones for current frame (with BodyAngle on root bone)
     auto bones = ComputeBoneMatricesInterpolated(skeleton.get(), currentAction,
-                                                 animFrame);
+                                                 animFrame, bodyAngle);
 
     // Re-skin all body part meshes
     for (int p = 0; p < PART_COUNT; ++p) {
@@ -1099,6 +1138,12 @@ private:
       }
     }
 
+    // --- BodyAngle (Main 5.2: character root bone rotation) ---
+    ImGui::Separator();
+    ImGui::Text("BodyAngle:");
+    ImGui::DragFloat3("##bodyangle", &bodyAngle.x, 1.0f, -360.0f, 360.0f,
+                      "%.0f");
+
     // --- Armor set selection ---
     ImGui::Separator();
     ImGui::Text("Armor Set:");
@@ -1159,6 +1204,42 @@ private:
 
       // Debug sliders for attachment tuning
       if (ImGui::TreeNode("Attachment")) {
+        // --- Preset selector ---
+        struct OffsetPreset {
+          const char *name;
+          int bone;
+          glm::vec3 rot;
+          glm::vec3 off;
+        };
+        static const OffsetPreset presets[] = {
+            {"Identity", 33, {0, 0, 0}, {0, 0, 0}},
+            {"Main5.2 Melee", 33, {70, 0, 90}, {-20, 5, 40}},
+            {"Main5.2 Melee (L)", 42, {145, 0, 275}, {0, 10, -30}},
+            {"Main5.2 Bow", 42, {0, 20, 180}, {-10, 8, 40}},
+            {"Main5.2 Shield", 42, {70, 0, 90}, {-10, 0, 0}},
+            {"Main5.2 Shield+6", 42, {30, 0, 90}, {-15, 0, -25}},
+            {"rot(90,0,0)", 33, {90, 0, 0}, {0, 0, 0}},
+            {"rot(-90,0,0)", 33, {-90, 0, 0}, {0, 0, 0}},
+            {"rot(0,90,0)", 33, {0, 90, 0}, {0, 0, 0}},
+            {"rot(0,0,90)", 33, {0, 0, 90}, {0, 0, 0}},
+            {"rot(180,0,0)", 33, {180, 0, 0}, {0, 0, 0}},
+            {"rot(0,180,0)", 33, {0, 180, 0}, {0, 0, 0}},
+            {"rot(0,0,180)", 33, {0, 0, 180}, {0, 0, 0}},
+        };
+        static int selectedPreset = 0;
+        if (ImGui::Combo("Preset", &selectedPreset,
+                         [](void *data, int idx) -> const char * {
+                           return ((const OffsetPreset *)data)[idx].name;
+                         },
+                         (void *)presets,
+                         sizeof(presets) / sizeof(presets[0]))) {
+          auto &p = presets[selectedPreset];
+          weaponBone = p.bone;
+          weaponRot = p.rot;
+          weaponOffset = p.off;
+        }
+
+        ImGui::Separator();
         ImGui::SliderInt("Bone", &weaponBone, 0,
                          (int)skeleton->Bones.size() - 1);
         ImGui::DragFloat3("Rotation", &weaponRot.x, 1.0f, -360.0f, 360.0f,
@@ -1170,6 +1251,7 @@ private:
           weaponRot = cfg.rot;
           weaponOffset = cfg.offset;
           weaponBone = cfg.bone;
+          selectedPreset = 0;
         }
         ImGui::Checkbox("Show Debug Lines", &showWeaponDebug);
         ImGui::TreePop();

@@ -104,6 +104,13 @@ void ServerConnection::SendItemUse(uint8_t slot) {
   m_client.Send(&pkt, sizeof(pkt));
 }
 
+void ServerConnection::SendDropItem(uint8_t bagSlot) {
+  PMSG_ITEM_DROP_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::ITEM_DROP);
+  pkt.slot = bagSlot;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
 void ServerConnection::SendGridMove(uint8_t gridX, uint8_t gridY) {
   PMSG_MOVE_RECV pkt{};
   pkt.h = MakeC1Header(sizeof(pkt), Opcode::MOVE);

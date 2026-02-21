@@ -14,29 +14,31 @@ struct GroundItem;
 struct UICoords;
 
 struct InputContext {
-    HeroCharacter *hero;
-    Camera *camera;
-    ClickEffect *clickEffect;
-    ServerConnection *server;
-    MonsterManager *monsterMgr;
-    NpcManager *npcMgr;
-    GroundItem *groundItems;
-    int maxGroundItems;
-    UICoords *hudCoords;
-    bool *showCharInfo;
-    bool *showInventory;
-    int *hoveredNpc;
-    int *hoveredMonster;
-    int *hoveredGroundItem;
-    int *selectedNpc;
-    int16_t *quickSlotDefIndex;
-    bool *shopOpen;
+  HeroCharacter *hero;
+  Camera *camera;
+  ClickEffect *clickEffect;
+  ServerConnection *server;
+  MonsterManager *monsterMgr;
+  NpcManager *npcMgr;
+  GroundItem *groundItems;
+  int maxGroundItems;
+  UICoords *hudCoords;
+  bool *showCharInfo;
+  bool *showInventory;
+  bool *showSkillWindow;
+  int *hoveredNpc;
+  int *hoveredMonster;
+  int *hoveredGroundItem;
+  int *selectedNpc;
+  int16_t *quickSlotDefIndex;
+  bool *shopOpen;
+  int *heroCharacterId;
 };
 
 namespace InputHandler {
-    void Init(const InputContext &ctx);
-    void RegisterCallbacks(GLFWwindow *window);
-    void ProcessInput(GLFWwindow *window, float deltaTime);
-}
+void Init(const InputContext &ctx);
+void RegisterCallbacks(GLFWwindow *window);
+void ProcessInput(GLFWwindow *window, float deltaTime);
+} // namespace InputHandler
 
 #endif // MU_INPUT_HANDLER_HPP

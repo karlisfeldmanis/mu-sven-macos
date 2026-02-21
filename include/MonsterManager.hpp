@@ -39,6 +39,9 @@ struct ServerMonsterSpawn {
   uint8_t gridX;
   uint8_t gridY;
   uint8_t dir;
+  int hp = 30;
+  int maxHp = 30;
+  uint8_t state = 0;
 };
 
 struct MonsterInfo {
@@ -60,7 +63,8 @@ class MonsterManager {
 public:
   void InitModels(const std::string &dataPath);
   void AddMonster(uint16_t monsterType, uint8_t gridX, uint8_t gridY,
-                  uint8_t dir, uint16_t serverIndex = 0);
+                  uint8_t dir, uint16_t serverIndex = 0, int hp = 30,
+                  int maxHp = 30, uint8_t state = 0);
 
   void Update(float deltaTime);
   void Render(const glm::mat4 &view, const glm::mat4 &proj,
@@ -120,9 +124,11 @@ public:
 private:
   // Weapon attached to a monster bone (Main 5.2: c->Weapon[n])
   struct WeaponDef {
-    BMDData *bmd = nullptr;   // Weapon BMD (owned by m_ownedBmds)
-    std::string texDir;       // Texture directory for weapon meshes
-    int attachBone = 33;      // Player.bmd bone index (33=R Hand, 42=L Hand)
+    BMDData *bmd = nullptr; // Weapon BMD (owned by m_ownedBmds)
+    std::string texDir;     // Texture directory for weapon meshes
+    int attachBone = 33;    // Player.bmd bone index (33=R Hand, 42=L Hand)
+    glm::vec3 rot{0};       // Local rotation (degrees) — Main 5.2 AngleMatrix
+    glm::vec3 offset{0}; // Local offset in bone space — Main 5.2 Matrix[i][3]
   };
 
   struct MonsterModel {
@@ -147,6 +153,9 @@ private:
     int actionMap[7] = {0, 1, 2, 3, 4, 5, 6};
     // Weapons (skeleton types: sword, shield, bow attached to Player.bmd bones)
     std::vector<WeaponDef> weaponDefs;
+    // BlendMesh: mesh with this TextureId renders additive (Main 5.2 BlendMesh)
+    // -1 = disabled. Lich: 0, Skeleton: 0.
+    int blendMesh = -1;
 
     // Helper: get the BMD to use for bone/animation computation
     BMDData *getAnimBmd() const { return animBmd ? animBmd : bmd; }
@@ -230,7 +239,7 @@ private:
     float pitch;         // Pitch angle in radians (increases with gravity)
     float yaw;           // Heading yaw in radians
     float scale;
-    float lifetime;      // Seconds remaining (30 ticks / 25fps = 1.2s)
+    float lifetime; // Seconds remaining (30 ticks / 25fps = 1.2s)
   };
 
   std::vector<std::unique_ptr<BMDData>> m_ownedBmds;
@@ -253,6 +262,7 @@ private:
   std::vector<PointLight> m_pointLights;
   static constexpr int MAX_POINT_LIGHTS = 64;
   float m_luminosity = 1.0f;
+  float m_worldTime = 0.0f; // Accumulated time for UV scroll effects
 
   std::unordered_map<uint16_t, int> m_typeToModel;
   bool m_modelsLoaded = false;

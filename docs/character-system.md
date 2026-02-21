@@ -62,22 +62,47 @@ Enum values map **1:1 to BMD action indices**. No offset needed. `MAX_PLAYER_ACT
 | HP per VIT | 3.0 |
 | Points per Level | 5 |
 
-### Derived Combat Formulas
+### Derived Combat Formulas (OpenMU Version075)
 
 ```
-DamageMin = STR / 8 + weaponDamageMin
+DamageMin = STR / 6 + weaponDamageMin
 DamageMax = STR / 4 + weaponDamageMax
 Defense = DEX / 3 + equipmentDefense
 AttackSuccessRate = Level * 5 + DEX * 3/2 + STR / 4
 DefenseSuccessRate = DEX / 3
 MaxHP = BaseHP + Level * LevelLife + (VIT - BaseVIT) * VITtoLife
+MaxAG = 1.0*ENE + 0.3*VIT + 0.2*DEX + 0.15*STR
 ```
 
-### XP Table (gObjSetExperienceTable)
+### AG (Ability Gauge)
 
-`XP_for_level = (Level + 9) * Level * Level * 10`
+DK uses AG instead of Mana. AG is the resource for all DK skills.
+- Recovery: 5% of MaxAG per second (server-side)
+- Server repurposes mana/maxMana packet fields for AG values
 
-Cubic curve, MaxLevel=400.
+### DK Skills (0.97d scope)
+
+| Skill | ID | AG Cost | Level Req | Damage Bonus |
+|-------|----|---------|-----------|-------------|
+| Falling Slash | 19 | 9 | 1 | +15 |
+| Lunge | 20 | 9 | 1 | +15 |
+| Uppercut | 21 | 8 | 1 | +15 |
+| Cyclone | 22 | 9 | 1 | +18 |
+| Slash | 23 | 10 | 1 | +20 |
+| Twisting Slash | 41 | 10 | 30 | +25 |
+| Rageful Blow | 42 | 20 | 170 | +60 |
+| Death Stab | 43 | 12 | 160 | +70 |
+
+All DK skills are learned from orbs (category 12 items). DK starts with 0 skills.
+
+### XP Formula (OpenMU Version075)
+
+`XP = (targetLevel + 25) * targetLevel / 3.0 * 1.25` with level scaling.
+
+### Item Enhancement Table (OpenMU)
+
+Weapon/Armor damage/defense per level: `{0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 31, 36}`
+Shield defense per level: `+1/level`
 
 ## Movement
 
