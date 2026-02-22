@@ -1,7 +1,6 @@
 #include "handlers/ShopHandler.hpp"
 #include "PacketDefs.hpp"
 #include "handlers/InventoryHandler.hpp"
-#include <cstdio>
 #include <map>
 
 namespace ShopHandler {
@@ -41,19 +40,21 @@ static std::map<uint16_t, std::vector<std::pair<uint8_t, uint8_t>>> s_shops = {
            {4, 1},  {4, 7},  {4, 15}, {6, 0},  {6, 1},  {6, 2},  {6, 3},
            {12, 20}, {12, 21}, {12, 22}, {12, 23}, {12, 24},  // Basic DK orbs
            {12, 7},  {12, 12}, {12, 19}}},                     // BK orbs
-    // Pasi (254) - DW Scrolls
+    // Pasi (254) - DW Scrolls, Staves & Armor
     {254,
-     {{15, 0},
-      {15, 1},
-      {15, 2},
-      {15, 3},
-      {15, 4},
-      {15, 5},
-      {15, 6},
-      {15, 7},
-      {15, 8},
-      {15, 9},
-      {15, 10}}},
+     {// Scrolls
+      {15, 0}, {15, 1}, {15, 2}, {15, 3}, {15, 4},
+      {15, 5}, {15, 6}, {15, 7}, {15, 8}, {15, 9}, {15, 10},
+      // Staves
+      {5, 0}, {5, 1}, {5, 2}, {5, 3}, {5, 4}, {5, 5}, {5, 6}, {5, 7},
+      // Pad Set (beginner DW)
+      {7, 2}, {8, 2}, {9, 2}, {10, 2}, {11, 2},
+      // Bone Set (mid DW)
+      {7, 4}, {8, 4}, {9, 4}, {10, 4}, {11, 4},
+      // Sphinx Set (mid-high DW)
+      {7, 7}, {8, 7}, {9, 7}, {10, 7}, {11, 7},
+      // Legendary Set (high DW)
+      {7, 3}, {8, 3}, {9, 3}, {10, 3}, {11, 3}}},
     // Lumen (255) - Barmaid
     {255, {{14, 9}, {14, 10}}}};
 
@@ -64,12 +65,12 @@ void HandleShopOpen(Session &session, const std::vector<uint8_t> &packet,
   auto *recv = reinterpret_cast<const PMSG_SHOP_OPEN_RECV *>(packet.data());
 
   uint16_t npcType = recv->npcType;
-  session.shopNpcType = npcType;
 
   if (s_shops.find(npcType) == s_shops.end()) {
-    printf("[Shop] Unregistered shop npcType: %d\n", npcType);
-    return;
+    return; // NPC has no shop (guards, etc.)
   }
+
+  session.shopNpcType = npcType;
 
   const auto &items = s_shops[npcType];
 

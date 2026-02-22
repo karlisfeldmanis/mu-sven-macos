@@ -11,10 +11,16 @@
 
 class Shader;
 
+struct ItemShadowMesh {
+  GLuint vao = 0, vbo = 0;
+  int vertexCount = 0;
+};
+
 struct LoadedItemModel {
   std::shared_ptr<BMDData> bmd;
-  std::vector<MeshBuffers> meshes; // Static buffers (bind pose)
-  glm::vec3 transformedMin{0};     // AABB from bone-transformed vertices
+  std::vector<MeshBuffers> meshes;           // Static buffers (bind pose)
+  std::vector<ItemShadowMesh> shadowMeshes;  // Dynamic shadow projection buffers
+  glm::vec3 transformedMin{0};               // AABB from bone-transformed vertices
   glm::vec3 transformedMax{0};
 };
 
@@ -28,10 +34,17 @@ public:
                               const glm::mat4 &view, const glm::mat4 &proj,
                               float scale = 1.0f,
                               glm::vec3 rotation = glm::vec3(0));
+  // Shadow projection for ground items (same technique as monsters/NPCs)
+  static void RenderItemWorldShadow(const std::string &filename,
+                                    const glm::vec3 &pos,
+                                    const glm::mat4 &view,
+                                    const glm::mat4 &proj, float scale = 1.0f,
+                                    glm::vec3 rotation = glm::vec3(0));
 
 private:
   static std::map<std::string, LoadedItemModel> s_cache;
   static Shader *s_shader;
+  static std::unique_ptr<Shader> s_shadowShader;
   static std::string s_dataPath;
 };
 

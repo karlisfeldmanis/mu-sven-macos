@@ -47,6 +47,9 @@ void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
                   int winW, int winH, const glm::vec3 &camPos,
                   int hoveredGroundItem,
                   const std::map<int16_t, ClientItemDefinition> &itemDefs);
+// Render blob shadows for all active ground items (call before RenderModels)
+void RenderShadows(GroundItem *items, int maxItems, const glm::mat4 &view,
+                   const glm::mat4 &proj);
 } // namespace GroundItemRenderer
 
 #endif // MU_GROUND_ITEM_RENDERER_HPP

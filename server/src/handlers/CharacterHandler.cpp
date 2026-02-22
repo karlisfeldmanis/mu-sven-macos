@@ -8,6 +8,9 @@
 
 namespace CharacterHandler {
 
+// Forward declarations for level bonus helpers (defined below SendEquipment)
+static int GetDefenseLevelBonus(int category, int itemLevel);
+
 void SendCharStats(Session &session, Database &db, int characterId) {
   CharacterData c = db.GetCharacterById(characterId);
   if (c.id == 0) {
@@ -15,13 +18,13 @@ void SendCharStats(Session &session, Database &db, int characterId) {
     return;
   }
 
-  // Pre-calculate equipment defense for accurate stat reporting
+  // Pre-calculate equipment defense using same formula as RefreshCombatStats
   auto equip = db.GetCharacterEquipment(characterId);
   session.totalDefense = 0;
   for (auto &slot : equip) {
     auto itemDef = db.GetItemDefinition(slot.category, slot.itemIndex);
     if (itemDef.id > 0) {
-      session.totalDefense += itemDef.defense + slot.itemLevel * 2;
+      session.totalDefense += itemDef.defense + GetDefenseLevelBonus(slot.category, slot.itemLevel);
     }
   }
 
@@ -233,19 +236,27 @@ void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
 
   session.quickSlotDefIndex = save->quickSlotDefIndex;
 
-  db.UpdateCharacterStats(charId, session.level, session.strength,
-                          session.dexterity, session.vitality, session.energy,
-                          save->life, save->maxLife, session.levelUpPoints,
-                          session.experience, session.quickSlotDefIndex);
+  uint8_t posX = static_cast<uint8_t>(session.worldZ / 100.0f);
+  uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
+  db.SaveCharacterFull(
+      charId, session.level, session.strength, session.dexterity,
+      session.vitality, session.energy, save->life, save->maxLife,
+      static_cast<uint16_t>(std::max(session.mana, 0)),
+      static_cast<uint16_t>(session.maxMana), session.levelUpPoints,
+      session.experience, session.zen, posX, posY, session.quickSlotDefIndex);
 
-  session.hp = save->life;
+  if (session.dead && save->life > 0) {
+    // Respawn: enforce full HP and AG/mana server-side
+    session.dead = false;
+    session.hp = session.maxHp;
+    session.mana = session.maxMana;
+    printf("[Character] Player fd=%d respawned (HP=%d/%d)\n", session.GetFd(),
+           session.hp, session.maxHp);
+  } else {
+    session.hp = save->life;
+  }
   if (save->maxLife >= save->life) {
     session.maxHp = save->maxLife;
-  }
-  if (session.dead && save->life > 0) {
-    session.dead = false;
-    printf("[Character] Player fd=%d respawned (HP=%d)\n", session.GetFd(),
-           save->life);
   }
 
   printf("[Character] Character %d saved from fd=%d (lvl=%d pts=%d)\n", charId,
@@ -349,6 +360,8 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
   }
 
   // When equipping (category != 0xFF), remove item from inventory bag
+  // Track which slot was freed so we can prefer it for the old weapon
+  int freedSlot = -1;
   if (eq->category != 0xFF) {
     int16_t defIdx = (int16_t)((int)eq->category * 32 + (int)eq->itemIndex);
     for (int i = 0; i < 64; i++) {
@@ -366,6 +379,7 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
               session.bag[s] = {};
           }
         }
+        freedSlot = i;
         db.DeleteCharacterInventoryItem(charId, i);
         printf("[Character] Removed equipped item from bag slot %d (def=%d)\n",
                i, defIdx);
@@ -375,44 +389,61 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
   }
 
   // Move old equipped item back to inventory (both unequip AND swap cases)
-  if (oldCat != 0xFF && !(eq->category == oldCat && eq->itemIndex == oldIdx)) {
+  // Note: must also handle same category+index but different itemLevel (e.g.
+  // equipping +0 sword over +5 sword — the +5 must go back to inventory)
+  if (oldCat != 0xFF &&
+      !(eq->category == oldCat && eq->itemIndex == oldIdx &&
+        eq->itemLevel == oldLvl)) {
     int16_t oldDef = (int16_t)((int)oldCat * 32 + (int)oldIdx);
     auto itemDef = db.GetItemDefinition(oldDef);
     int w = itemDef.width > 0 ? itemDef.width : 1;
     int h = itemDef.height > 0 ? itemDef.height : 1;
-    // Find empty space in bag
-    bool placed = false;
-    for (int r = 0; r <= 8 - h && !placed; r++) {
-      for (int c2 = 0; c2 <= 8 - w && !placed; c2++) {
-        bool fits = true;
-        for (int hh = 0; hh < h && fits; hh++)
-          for (int ww = 0; ww < w && fits; ww++)
-            if (session.bag[(r + hh) * 8 + (c2 + ww)].occupied)
-              fits = false;
-        if (fits) {
-          int startSlot = r * 8 + c2;
-          for (int hh = 0; hh < h; hh++) {
-            for (int ww = 0; ww < w; ww++) {
-              int s = (r + hh) * 8 + (c2 + ww);
-              session.bag[s].occupied = true;
-              session.bag[s].primary = (hh == 0 && ww == 0);
-              session.bag[s].defIndex = oldDef;
-              session.bag[s].category = oldCat;
-              session.bag[s].itemIndex = oldIdx;
-              if (hh == 0 && ww == 0) {
-                session.bag[s].quantity = 1;
-                session.bag[s].itemLevel = oldLvl;
-              }
-            }
+
+    // Helper lambda: try to place old weapon at a specific slot
+    auto tryPlace = [&](int startSlot) -> bool {
+      int r = startSlot / 8, c2 = startSlot % 8;
+      if (c2 + w > 8 || r + h > 8)
+        return false;
+      for (int hh = 0; hh < h; hh++)
+        for (int ww = 0; ww < w; ww++)
+          if (session.bag[(r + hh) * 8 + (c2 + ww)].occupied)
+            return false;
+      for (int hh = 0; hh < h; hh++) {
+        for (int ww = 0; ww < w; ww++) {
+          int s = (r + hh) * 8 + (c2 + ww);
+          session.bag[s].occupied = true;
+          session.bag[s].primary = (hh == 0 && ww == 0);
+          session.bag[s].defIndex = oldDef;
+          session.bag[s].category = oldCat;
+          session.bag[s].itemIndex = oldIdx;
+          if (hh == 0 && ww == 0) {
+            session.bag[s].quantity = 1;
+            session.bag[s].itemLevel = oldLvl;
           }
-          db.SaveCharacterInventory(charId, oldDef, 1, oldLvl,
-                                    static_cast<uint8_t>(startSlot));
-          printf("[Character] Unequipped item saved to bag slot %d (def=%d)\n",
-                 startSlot, oldDef);
-          placed = true;
+        }
+      }
+      db.SaveCharacterInventory(charId, oldDef, 1, oldLvl,
+                                static_cast<uint8_t>(startSlot));
+      printf("[Character] Unequipped item saved to bag slot %d (def=%d)\n",
+             startSlot, oldDef);
+      return true;
+    };
+
+    bool placed = false;
+
+    // First: try the slot that was just freed (most natural swap position)
+    if (freedSlot >= 0)
+      placed = tryPlace(freedSlot);
+
+    // Second: scan entire bag for any empty space
+    if (!placed) {
+      for (int r = 0; r <= 8 - h && !placed; r++) {
+        for (int c2 = 0; c2 <= 8 - w && !placed; c2++) {
+          placed = tryPlace(r * 8 + c2);
         }
       }
     }
+
     if (!placed) {
       printf("[Character] WARNING: No bag space for unequipped item def=%d\n",
              oldDef);
@@ -421,6 +452,13 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
 
   db.UpdateEquipment(charId, eq->slot, eq->category, eq->itemIndex,
                      eq->itemLevel);
+
+  // Update session equipment cache
+  if (eq->slot < Session::NUM_EQUIP_SLOTS) {
+    session.equipment[eq->slot].category = eq->category;
+    session.equipment[eq->slot].itemIndex = eq->itemIndex;
+    session.equipment[eq->slot].itemLevel = eq->itemLevel;
+  }
 
   RefreshCombatStats(session, db, charId);
 
@@ -485,11 +523,17 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
 
   SendCharStats(session);
 
-  db.UpdateCharacterStats(
-      session.characterId, session.level, session.strength, session.dexterity,
-      session.vitality, session.energy, static_cast<uint16_t>(session.hp),
-      static_cast<uint16_t>(session.maxHp), session.levelUpPoints,
-      session.experience, session.quickSlotDefIndex);
+  {
+    uint8_t posX = static_cast<uint8_t>(session.worldZ / 100.0f);
+    uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
+    db.SaveCharacterFull(
+        session.characterId, session.level, session.strength, session.dexterity,
+        session.vitality, session.energy, static_cast<uint16_t>(session.hp),
+        static_cast<uint16_t>(session.maxHp),
+        static_cast<uint16_t>(std::max(session.mana, 0)),
+        static_cast<uint16_t>(session.maxMana), session.levelUpPoints,
+        session.experience, session.zen, posX, posY, session.quickSlotDefIndex);
+  }
 
   printf("[Character] Stat alloc: type=%d newVal=%d pts=%d maxHP=%d\n",
          req->statType, resp.newValue, session.levelUpPoints, session.maxHp);

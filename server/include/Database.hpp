@@ -126,6 +126,13 @@ public:
                             uint16_t energy, uint16_t life, uint16_t maxLife,
                             uint16_t levelUpPoints, uint64_t experience,
                             int16_t quickSlotDefIndex);
+  void SaveCharacterFull(int charId, uint16_t level, uint16_t strength,
+                         uint16_t dexterity, uint16_t vitality,
+                         uint16_t energy, uint16_t life, uint16_t maxLife,
+                         uint16_t mana, uint16_t maxMana,
+                         uint16_t levelUpPoints, uint64_t experience,
+                         uint32_t money, uint8_t posX, uint8_t posY,
+                         int16_t quickSlotDefIndex);
   void CreateDefaultAccount();
 
   // NPC spawns
@@ -143,6 +150,7 @@ public:
   std::vector<ItemDropInfo> GetItemsByLevelRange(int minLevel, int maxLevel);
   std::vector<EquipmentSlot> GetCharacterEquipment(int characterId);
   void SeedDefaultEquipment(int characterId);
+  void SeedVeteranCharacter(int accountId);
   void UpdateEquipment(int characterId, uint8_t slot, uint8_t category,
                        uint8_t itemIndex, uint8_t itemLevel);
 
@@ -159,6 +167,7 @@ public:
                               uint8_t slot);
   void ClearCharacterInventory(int characterId);
   void DeleteCharacterInventoryItem(int characterId, uint8_t slot);
+  void DeleteCharacterInventoryAll(int characterId);
 
   // Money / Zen
   void UpdateCharacterMoney(int characterId, uint32_t money);

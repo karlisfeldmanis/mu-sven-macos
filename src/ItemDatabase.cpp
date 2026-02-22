@@ -112,63 +112,63 @@ static const DropDef items[] = {
 
     // Category 7: Helms (224-255)
     [224] = {"Bronze Helm", "HelmMale01.bmd", 0, 0, 8},
-    {"Dragon Helm", "HelmMale10.bmd", 0, 0, 48},
-    {"Pad Helm", "HelmClass01.bmd", 0, 0, 2},
-    {"Legendary Helm", "HelmClass02.bmd", 0, 0, 28},
-    {"Bone Helm", "HelmClass03.bmd", 0, 0, 14},
+    {"Dragon Helm", "HelmMale02.bmd", 0, 0, 48},
+    {"Pad Helm", "HelmMale03.bmd", 0, 0, 2},
+    {"Legendary Helm", "HelmMale04.bmd", 0, 0, 28},
+    {"Bone Helm", "HelmMale05.bmd", 0, 0, 14},
     {"Leather Helm", "HelmMale06.bmd", 0, 0, 4},
-    {"Scale Helm", "HelmMale03.bmd", 0, 0, 12},   // Added for variety
-    {"Sphinx Helm", "HelmClass04.bmd", 0, 0, 21}, // Added for variety
-    {"Brass Helm", "HelmMale07.bmd", 0, 0, 18},   // Added for variety
-    {"Plate Helm", "HelmMale08.bmd", 0, 0, 35},   // Added for variety
+    {"Scale Helm", "HelmMale07.bmd", 0, 0, 12},
+    {"Sphinx Mask", "HelmMale08.bmd", 0, 0, 21},
+    {"Brass Helm", "HelmMale09.bmd", 0, 0, 18},
+    {"Plate Helm", "HelmMale10.bmd", 0, 0, 35},
 
     // Category 8: Armor (256-287)
     [256] = {"Bronze Armor", "ArmorMale01.bmd", 0, 0, 15},
-    {"Dragon Armor", "ArmorMale10.bmd", 0, 0, 65},
-    {"Pad Armor", "ArmorClass01.bmd", 0, 0, 5},
-    {"Legendary Armor", "ArmorClass02.bmd", 0, 0, 42},
-    {"Bone Armor", "ArmorClass03.bmd", 0, 0, 24},
+    {"Dragon Armor", "ArmorMale02.bmd", 0, 0, 65},
+    {"Pad Armor", "ArmorMale03.bmd", 0, 0, 5},
+    {"Legendary Armor", "ArmorMale04.bmd", 0, 0, 42},
+    {"Bone Armor", "ArmorMale05.bmd", 0, 0, 24},
     {"Leather Armor", "ArmorMale06.bmd", 0, 0, 8},
-    {"Scale Armor", "ArmorMale03.bmd", 0, 0, 20},
-    {"Sphinx Armor", "ArmorClass04.bmd", 0, 0, 32},
-    {"Brass Armor", "ArmorMale07.bmd", 0, 0, 28},
-    {"Plate Armor", "ArmorMale08.bmd", 0, 0, 50},
+    {"Scale Armor", "ArmorMale07.bmd", 0, 0, 20},
+    {"Sphinx Armor", "ArmorMale08.bmd", 0, 0, 32},
+    {"Brass Armor", "ArmorMale09.bmd", 0, 0, 28},
+    {"Plate Armor", "ArmorMale10.bmd", 0, 0, 50},
 
     // Category 9: Pants (288-319)
     [288] = {"Bronze Pants", "PantMale01.bmd", 0, 0, 12},
-    {"Dragon Pants", "PantMale10.bmd", 0, 0, 55},
-    {"Pad Pants", "PantClass01.bmd", 0, 0, 4},
-    {"Legendary Pants", "PantClass02.bmd", 0, 0, 35},
-    {"Bone Pants", "PantClass03.bmd", 0, 0, 19},
+    {"Dragon Pants", "PantMale02.bmd", 0, 0, 55},
+    {"Pad Pants", "PantMale03.bmd", 0, 0, 4},
+    {"Legendary Pants", "PantMale04.bmd", 0, 0, 35},
+    {"Bone Pants", "PantMale05.bmd", 0, 0, 19},
     {"Leather Pants", "PantMale06.bmd", 0, 0, 6},
-    {"Scale Pants", "PantMale03.bmd", 0, 0, 16},
-    {"Sphinx Pants", "PantClass04.bmd", 0, 0, 27},
-    {"Brass Pants", "PantMale07.bmd", 0, 0, 23},
-    {"Plate Pants", "PantMale08.bmd", 0, 0, 43},
+    {"Scale Pants", "PantMale07.bmd", 0, 0, 16},
+    {"Sphinx Pants", "PantMale08.bmd", 0, 0, 27},
+    {"Brass Pants", "PantMale09.bmd", 0, 0, 23},
+    {"Plate Pants", "PantMale10.bmd", 0, 0, 43},
 
     // Category 10: Gloves (320-351)
     [320] = {"Bronze Gloves", "GloveMale01.bmd", 0, 0, 6},
-    {"Dragon Gloves", "GloveMale10.bmd", 0, 0, 40},
-    {"Pad Gloves", "GloveClass01.bmd", 0, 0, 1},
-    {"Legendary Gloves", "GloveClass02.bmd", 0, 0, 22},
-    {"Bone Gloves", "GloveClass03.bmd", 0, 0, 10},
+    {"Dragon Gloves", "GloveMale02.bmd", 0, 0, 40},
+    {"Pad Gloves", "GloveMale03.bmd", 0, 0, 1},
+    {"Legendary Gloves", "GloveMale04.bmd", 0, 0, 22},
+    {"Bone Gloves", "GloveMale05.bmd", 0, 0, 10},
     {"Leather Gloves", "GloveMale06.bmd", 0, 0, 2},
-    {"Scale Gloves", "GloveMale03.bmd", 0, 0, 8},
-    {"Sphinx Gloves", "GloveClass04.bmd", 0, 0, 15},
-    {"Brass Gloves", "GloveMale07.bmd", 0, 0, 12},
-    {"Plate Gloves", "GloveMale08.bmd", 0, 0, 28},
+    {"Scale Gloves", "GloveMale07.bmd", 0, 0, 8},
+    {"Sphinx Gloves", "GloveMale08.bmd", 0, 0, 15},
+    {"Brass Gloves", "GloveMale09.bmd", 0, 0, 12},
+    {"Plate Gloves", "GloveMale10.bmd", 0, 0, 28},
 
     // Category 11: Boots (352-383)
     [352] = {"Bronze Boots", "BootMale01.bmd", 0, 0, 6},
-    {"Dragon Boots", "BootMale10.bmd", 0, 0, 40},
-    {"Pad Boots", "BootClass01.bmd", 0, 0, 1},
-    {"Legendary Boots", "BootClass02.bmd", 0, 0, 22},
-    {"Bone Boots", "BootClass03.bmd", 0, 0, 10},
+    {"Dragon Boots", "BootMale02.bmd", 0, 0, 40},
+    {"Pad Boots", "BootMale03.bmd", 0, 0, 1},
+    {"Legendary Boots", "BootMale04.bmd", 0, 0, 22},
+    {"Bone Boots", "BootMale05.bmd", 0, 0, 10},
     {"Leather Boots", "BootMale06.bmd", 0, 0, 2},
-    {"Scale Boots", "BootMale03.bmd", 0, 0, 8},
-    {"Sphinx Boots", "BootClass04.bmd", 0, 0, 15},
-    {"Brass Boots", "BootMale07.bmd", 0, 0, 12},
-    {"Plate Boots", "BootMale08.bmd", 0, 0, 28},
+    {"Scale Boots", "BootMale07.bmd", 0, 0, 8},
+    {"Sphinx Boots", "BootMale08.bmd", 0, 0, 15},
+    {"Brass Boots", "BootMale09.bmd", 0, 0, 12},
+    {"Plate Boots", "BootMale10.bmd", 0, 0, 28},
 
     // Category 12: Wings/Orbs (384-415)
     [384] = {"Wings of Elf", "Wing01.bmd", 0, 0, 0},
@@ -480,155 +480,155 @@ void Init() {
          0, 0, 34, 0, false);
   addDef(225, 7, 1, "Dragon Helm", "HelmMale02.bmd", 2, 2, 120, 30, 0, 0, 57, 2,
          0, 0, 68, 0, false);
-  addDef(226, 7, 2, "Pad Helm", "HelmClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
+  addDef(226, 7, 2, "Pad Helm", "HelmMale03.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
          0, 28, 0, false);
-  addDef(227, 7, 3, "Legendary Helm", "HelmClass02.bmd", 2, 2, 30, 0, 0, 0, 50,
+  addDef(227, 7, 3, "Legendary Helm", "HelmMale04.bmd", 2, 2, 30, 0, 0, 0, 50,
          1, 0, 0, 42, 0, false);
-  addDef(228, 7, 4, "Bone Helm", "HelmClass03.bmd", 2, 2, 30, 0, 0, 0, 18, 1, 0,
+  addDef(228, 7, 4, "Bone Helm", "HelmMale05.bmd", 2, 2, 30, 0, 0, 0, 18, 1, 0,
          0, 30, 0, false);
   addDef(229, 7, 5, "Leather Helm", "HelmMale06.bmd", 2, 2, 20, 0, 0, 0, 1, 2,
          0, 0, 30, 0, false);
   addDef(230, 7, 6, "Scale Helm", "HelmMale07.bmd", 2, 2, 110, 0, 0, 0, 26, 2,
          0, 0, 40, 0, false);
-  addDef(231, 7, 7, "Sphinx Mask", "HelmClass04.bmd", 2, 2, 30, 0, 0, 0, 32, 1,
+  addDef(231, 7, 7, "Sphinx Mask", "HelmMale08.bmd", 2, 2, 30, 0, 0, 0, 32, 1,
          0, 0, 36, 0, false);
   addDef(232, 7, 8, "Brass Helm", "HelmMale09.bmd", 2, 2, 100, 30, 0, 0, 36, 2,
          0, 0, 44, 0, false);
   addDef(233, 7, 9, "Plate Helm", "HelmMale10.bmd", 2, 2, 130, 0, 0, 0, 46, 2,
          0, 0, 50, 0, false);
-  addDef(234, 7, 10, "Vine Helm", "HelmClass05.bmd", 2, 2, 30, 60, 0, 0, 6, 4,
+  addDef(234, 7, 10, "Vine Helm", "HelmElf01.bmd", 2, 2, 30, 60, 0, 0, 6, 4,
          0, 0, 22, 0, false);
-  addDef(235, 7, 11, "Silk Helm", "HelmClass06.bmd", 2, 2, 0, 0, 0, 20, 1, 4, 0,
+  addDef(235, 7, 11, "Silk Helm", "HelmElf02.bmd", 2, 2, 0, 0, 0, 20, 1, 4, 0,
          0, 26, 0, false);
-  addDef(236, 7, 12, "Wind Helm", "HelmClass07.bmd", 2, 2, 30, 80, 0, 0, 28, 4,
+  addDef(236, 7, 12, "Wind Helm", "HelmElf03.bmd", 2, 2, 30, 80, 0, 0, 28, 4,
          0, 0, 32, 0, false);
-  addDef(237, 7, 13, "Spirit Helm", "HelmClass08.bmd", 2, 2, 40, 80, 0, 0, 40,
+  addDef(237, 7, 13, "Spirit Helm", "HelmElf04.bmd", 2, 2, 40, 80, 0, 0, 40,
          4, 0, 0, 38, 0, false);
-  addDef(238, 7, 14, "Guardian Helm", "HelmClass09.bmd", 2, 2, 40, 80, 0, 0, 53,
+  addDef(238, 7, 14, "Guardian Helm", "HelmElf05.bmd", 2, 2, 40, 80, 0, 0, 53,
          4, 0, 0, 45, 0, false);
   // Armors (8)
   addDef(256, 8, 0, "Bronze Armor", "ArmorMale01.bmd", 2, 2, 25, 20, 0, 0, 1, 2,
          0, 0, 34, 0, false);
   addDef(257, 8, 1, "Dragon Armor", "ArmorMale02.bmd", 2, 3, 120, 30, 0, 0, 59,
          2, 0, 0, 68, 0, false);
-  addDef(258, 8, 2, "Pad Armor", "ArmorClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
+  addDef(258, 8, 2, "Pad Armor", "ArmorMale03.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
          0, 28, 0, false);
-  addDef(259, 8, 3, "Legendary Armor", "ArmorClass02.bmd", 2, 2, 40, 0, 0, 0,
+  addDef(259, 8, 3, "Legendary Armor", "ArmorMale04.bmd", 2, 2, 40, 0, 0, 0,
          56, 1, 0, 0, 42, 0, false);
-  addDef(260, 8, 4, "Bone Armor", "ArmorClass03.bmd", 2, 2, 40, 0, 0, 0, 22, 1,
+  addDef(260, 8, 4, "Bone Armor", "ArmorMale05.bmd", 2, 2, 40, 0, 0, 0, 22, 1,
          0, 0, 30, 0, false);
   addDef(261, 8, 5, "Leather Armor", "ArmorMale06.bmd", 2, 3, 20, 0, 0, 0, 1, 2,
          0, 0, 30, 0, false);
   addDef(262, 8, 6, "Scale Armor", "ArmorMale07.bmd", 2, 2, 110, 0, 0, 0, 28, 2,
          0, 0, 40, 0, false);
-  addDef(263, 8, 7, "Sphinx Armor", "ArmorClass04.bmd", 2, 3, 40, 0, 0, 0, 38,
+  addDef(263, 8, 7, "Sphinx Armor", "ArmorMale08.bmd", 2, 3, 40, 0, 0, 0, 38,
          1, 0, 0, 36, 0, false);
   addDef(264, 8, 8, "Brass Armor", "ArmorMale09.bmd", 2, 2, 100, 30, 0, 0, 38,
          2, 0, 0, 44, 0, false);
   addDef(265, 8, 9, "Plate Armor", "ArmorMale10.bmd", 2, 2, 130, 0, 0, 0, 48, 2,
          0, 0, 50, 0, false);
-  addDef(266, 8, 10, "Vine Armor", "ArmorClass05.bmd", 2, 2, 30, 60, 0, 0, 10,
+  addDef(266, 8, 10, "Vine Armor", "ArmorElf01.bmd", 2, 2, 30, 60, 0, 0, 10,
          4, 0, 0, 22, 0, false);
-  addDef(267, 8, 11, "Silk Armor", "ArmorClass06.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
+  addDef(267, 8, 11, "Silk Armor", "ArmorElf02.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
          0, 0, 26, 0, false);
-  addDef(268, 8, 12, "Wind Armor", "ArmorClass07.bmd", 2, 2, 30, 80, 0, 0, 32,
+  addDef(268, 8, 12, "Wind Armor", "ArmorElf03.bmd", 2, 2, 30, 80, 0, 0, 32,
          4, 0, 0, 32, 0, false);
-  addDef(269, 8, 13, "Spirit Armor", "ArmorClass08.bmd", 2, 2, 40, 80, 0, 0, 44,
+  addDef(269, 8, 13, "Spirit Armor", "ArmorElf04.bmd", 2, 2, 40, 80, 0, 0, 44,
          4, 0, 0, 38, 0, false);
-  addDef(270, 8, 14, "Guardian Armor", "ArmorClass09.bmd", 2, 2, 40, 80, 0, 0,
+  addDef(270, 8, 14, "Guardian Armor", "ArmorElf05.bmd", 2, 2, 40, 80, 0, 0,
          57, 4, 0, 0, 45, 0, false);
   // Pants (9)
   addDef(288, 9, 0, "Bronze Pants", "PantMale01.bmd", 2, 2, 25, 20, 0, 0, 1, 2,
          0, 0, 34, 0, false);
   addDef(289, 9, 1, "Dragon Pants", "PantMale02.bmd", 2, 2, 120, 30, 0, 0, 55,
          2, 0, 0, 68, 0, false);
-  addDef(290, 9, 2, "Pad Pants", "PantClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
+  addDef(290, 9, 2, "Pad Pants", "PantMale03.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
          0, 28, 0, false);
-  addDef(291, 9, 3, "Legendary Pants", "PantClass02.bmd", 2, 2, 40, 0, 0, 0, 53,
+  addDef(291, 9, 3, "Legendary Pants", "PantMale04.bmd", 2, 2, 40, 0, 0, 0, 53,
          1, 0, 0, 42, 0, false);
-  addDef(292, 9, 4, "Bone Pants", "PantClass03.bmd", 2, 2, 40, 0, 0, 0, 20, 1,
+  addDef(292, 9, 4, "Bone Pants", "PantMale05.bmd", 2, 2, 40, 0, 0, 0, 20, 1,
          0, 0, 30, 0, false);
   addDef(293, 9, 5, "Leather Pants", "PantMale06.bmd", 2, 2, 20, 0, 0, 0, 1, 2,
          0, 0, 30, 0, false);
   addDef(294, 9, 6, "Scale Pants", "PantMale07.bmd", 2, 2, 110, 0, 0, 0, 25, 2,
          0, 0, 40, 0, false);
-  addDef(295, 9, 7, "Sphinx Pants", "PantClass04.bmd", 2, 2, 40, 0, 0, 0, 34, 1,
+  addDef(295, 9, 7, "Sphinx Pants", "PantMale08.bmd", 2, 2, 40, 0, 0, 0, 34, 1,
          0, 0, 36, 0, false);
   addDef(296, 9, 8, "Brass Pants", "PantMale09.bmd", 2, 2, 100, 30, 0, 0, 35, 2,
          0, 0, 44, 0, false);
   addDef(297, 9, 9, "Plate Pants", "PantMale10.bmd", 2, 2, 130, 0, 0, 0, 45, 2,
          0, 0, 50, 0, false);
-  addDef(298, 9, 10, "Vine Pants", "PantClass05.bmd", 2, 2, 30, 60, 0, 0, 8, 4,
+  addDef(298, 9, 10, "Vine Pants", "PantElf01.bmd", 2, 2, 30, 60, 0, 0, 8, 4,
          0, 0, 22, 0, false);
-  addDef(299, 9, 11, "Silk Pants", "PantClass06.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
+  addDef(299, 9, 11, "Silk Pants", "PantElf02.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
          0, 0, 26, 0, false);
-  addDef(300, 9, 12, "Wind Pants", "PantClass07.bmd", 2, 2, 30, 80, 0, 0, 30, 4,
+  addDef(300, 9, 12, "Wind Pants", "PantElf03.bmd", 2, 2, 30, 80, 0, 0, 30, 4,
          0, 0, 32, 0, false);
-  addDef(301, 9, 13, "Spirit Pants", "PantClass08.bmd", 2, 2, 40, 80, 0, 0, 42,
+  addDef(301, 9, 13, "Spirit Pants", "PantElf04.bmd", 2, 2, 40, 80, 0, 0, 42,
          4, 0, 0, 38, 0, false);
-  addDef(302, 9, 14, "Guardian Pants", "PantClass09.bmd", 2, 2, 40, 80, 0, 0,
+  addDef(302, 9, 14, "Guardian Pants", "PantElf05.bmd", 2, 2, 40, 80, 0, 0,
          54, 4, 0, 0, 45, 0, false);
   // Gloves (10)
   addDef(320, 10, 0, "Bronze Gloves", "GloveMale01.bmd", 2, 2, 25, 20, 0, 0, 1,
          2, 0, 0, 34, 0, false);
   addDef(321, 10, 1, "Dragon Gloves", "GloveMale02.bmd", 2, 2, 120, 30, 0, 0,
          52, 2, 0, 0, 68, 0, false);
-  addDef(322, 10, 2, "Pad Gloves", "GloveClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1,
+  addDef(322, 10, 2, "Pad Gloves", "GloveMale03.bmd", 2, 2, 0, 0, 0, 20, 1, 1,
          0, 0, 28, 0, false);
-  addDef(323, 10, 3, "Legendary Gloves", "GloveClass02.bmd", 2, 2, 20, 0, 0, 0,
+  addDef(323, 10, 3, "Legendary Gloves", "GloveMale04.bmd", 2, 2, 20, 0, 0, 0,
          44, 1, 0, 0, 42, 0, false);
-  addDef(324, 10, 4, "Bone Gloves", "GloveClass03.bmd", 2, 2, 20, 0, 0, 0, 14,
+  addDef(324, 10, 4, "Bone Gloves", "GloveMale05.bmd", 2, 2, 20, 0, 0, 0, 14,
          1, 0, 0, 30, 0, false);
   addDef(325, 10, 5, "Leather Gloves", "GloveMale06.bmd", 2, 2, 20, 0, 0, 0, 1,
          2, 0, 0, 30, 0, false);
   addDef(326, 10, 6, "Scale Gloves", "GloveMale07.bmd", 2, 2, 110, 0, 0, 0, 22,
          2, 0, 0, 40, 0, false);
-  addDef(327, 10, 7, "Sphinx Gloves", "GloveClass04.bmd", 2, 2, 20, 0, 0, 0, 28,
+  addDef(327, 10, 7, "Sphinx Gloves", "GloveMale08.bmd", 2, 2, 20, 0, 0, 0, 28,
          1, 0, 0, 36, 0, false);
   addDef(328, 10, 8, "Brass Gloves", "GloveMale09.bmd", 2, 2, 100, 30, 0, 0, 32,
          2, 0, 0, 44, 0, false);
   addDef(329, 10, 9, "Plate Gloves", "GloveMale10.bmd", 2, 2, 130, 0, 0, 0, 42,
          2, 0, 0, 50, 0, false);
-  addDef(330, 10, 10, "Vine Gloves", "GloveClass05.bmd", 2, 2, 30, 60, 0, 0, 4,
+  addDef(330, 10, 10, "Vine Gloves", "GloveElf01.bmd", 2, 2, 30, 60, 0, 0, 4,
          4, 0, 0, 22, 0, false);
-  addDef(331, 10, 11, "Silk Gloves", "GloveClass06.bmd", 2, 2, 0, 0, 0, 20, 1,
+  addDef(331, 10, 11, "Silk Gloves", "GloveElf02.bmd", 2, 2, 0, 0, 0, 20, 1,
          4, 0, 0, 26, 0, false);
-  addDef(332, 10, 12, "Wind Gloves", "GloveClass07.bmd", 2, 2, 30, 80, 0, 0, 26,
+  addDef(332, 10, 12, "Wind Gloves", "GloveElf03.bmd", 2, 2, 30, 80, 0, 0, 26,
          4, 0, 0, 32, 0, false);
-  addDef(333, 10, 13, "Spirit Gloves", "GloveClass08.bmd", 2, 2, 40, 80, 0, 0,
+  addDef(333, 10, 13, "Spirit Gloves", "GloveElf04.bmd", 2, 2, 40, 80, 0, 0,
          38, 4, 0, 0, 38, 0, false);
-  addDef(334, 10, 14, "Guardian Gloves", "GloveClass09.bmd", 2, 2, 40, 80, 0, 0,
+  addDef(334, 10, 14, "Guardian Gloves", "GloveElf05.bmd", 2, 2, 40, 80, 0, 0,
          50, 4, 0, 0, 45, 0, false);
   // Boots (11)
   addDef(352, 11, 0, "Bronze Boots", "BootMale01.bmd", 2, 2, 25, 20, 0, 0, 1, 2,
          0, 0, 34, 0, false);
   addDef(353, 11, 1, "Dragon Boots", "BootMale02.bmd", 2, 2, 120, 30, 0, 0, 54,
          2, 0, 0, 68, 0, false);
-  addDef(354, 11, 2, "Pad Boots", "BootClass01.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
+  addDef(354, 11, 2, "Pad Boots", "BootMale03.bmd", 2, 2, 0, 0, 0, 20, 1, 1, 0,
          0, 28, 0, false);
-  addDef(355, 11, 3, "Legendary Boots", "BootClass02.bmd", 2, 2, 30, 0, 0, 0,
+  addDef(355, 11, 3, "Legendary Boots", "BootMale04.bmd", 2, 2, 30, 0, 0, 0,
          46, 1, 0, 0, 42, 0, false);
-  addDef(356, 11, 4, "Bone Boots", "BootClass03.bmd", 2, 2, 30, 0, 0, 0, 16, 1,
+  addDef(356, 11, 4, "Bone Boots", "BootMale05.bmd", 2, 2, 30, 0, 0, 0, 16, 1,
          0, 0, 30, 0, false);
   addDef(357, 11, 5, "Leather Boots", "BootMale06.bmd", 2, 2, 20, 0, 0, 0, 1, 2,
          0, 0, 30, 0, false);
   addDef(358, 11, 6, "Scale Boots", "BootMale07.bmd", 2, 2, 110, 0, 0, 0, 22, 2,
          0, 0, 40, 0, false);
-  addDef(359, 11, 7, "Sphinx Boots", "BootClass04.bmd", 2, 2, 30, 0, 0, 0, 30,
+  addDef(359, 11, 7, "Sphinx Boots", "BootMale08.bmd", 2, 2, 30, 0, 0, 0, 30,
          1, 0, 0, 36, 0, false);
   addDef(360, 11, 8, "Brass Boots", "BootMale09.bmd", 2, 2, 100, 30, 0, 0, 32,
          2, 0, 0, 44, 0, false);
   addDef(361, 11, 9, "Plate Boots", "BootMale10.bmd", 2, 2, 130, 0, 0, 0, 42, 2,
          0, 0, 50, 0, false);
-  addDef(362, 11, 10, "Vine Boots", "BootClass05.bmd", 2, 2, 30, 60, 0, 0, 5, 4,
+  addDef(362, 11, 10, "Vine Boots", "BootElf01.bmd", 2, 2, 30, 60, 0, 0, 5, 4,
          0, 0, 22, 0, false);
-  addDef(363, 11, 11, "Silk Boots", "BootClass06.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
+  addDef(363, 11, 11, "Silk Boots", "BootElf02.bmd", 2, 2, 0, 0, 0, 20, 1, 4,
          0, 0, 26, 0, false);
-  addDef(364, 11, 12, "Wind Boots", "BootClass07.bmd", 2, 2, 30, 80, 0, 0, 27,
+  addDef(364, 11, 12, "Wind Boots", "BootElf03.bmd", 2, 2, 30, 80, 0, 0, 27,
          4, 0, 0, 32, 0, false);
-  addDef(365, 11, 13, "Spirit Boots", "BootClass08.bmd", 2, 2, 40, 80, 0, 0, 40,
+  addDef(365, 11, 13, "Spirit Boots", "BootElf04.bmd", 2, 2, 40, 80, 0, 0, 40,
          4, 0, 0, 38, 0, false);
-  addDef(366, 11, 14, "Guardian Boots", "BootClass09.bmd", 2, 2, 40, 80, 0, 0,
+  addDef(366, 11, 14, "Guardian Boots", "BootElf05.bmd", 2, 2, 40, 80, 0, 0,
          52, 4, 0, 0, 45, 0, false);
 
   // Category 12: Wings (IDs 700+)
@@ -791,19 +791,20 @@ void Init() {
          4, 0, 0, 58);
 
   // Missing Helms (7) — indices 15-21
-  addDef(0, 7, 15, "Storm Crow Helm", "HelmMale11.bmd", 2, 2, 150, 70, 0, 0, 72,
+  // Note: Storm Crow set (index 15) had no helm in 0.97k, HelmMale16.bmd may not exist
+  addDef(0, 7, 15, "Storm Crow Helm", "HelmMale16.bmd", 2, 2, 150, 70, 0, 0, 72,
          8, 0, 0, 50);
-  addDef(0, 7, 16, "Black Dragon Helm", "HelmMale12.bmd", 2, 2, 170, 60, 0, 0,
+  addDef(0, 7, 16, "Black Dragon Helm", "HelmMale17.bmd", 2, 2, 170, 60, 0, 0,
          82, 2, 0, 0, 55);
-  addDef(0, 7, 17, "Dark Phoenix Helm", "HelmMale13.bmd", 2, 2, 205, 62, 0, 0,
+  addDef(0, 7, 17, "Dark Phoenix Helm", "HelmMale18.bmd", 2, 2, 205, 62, 0, 0,
          92, 10, 0, 0, 60);
-  addDef(0, 7, 18, "Grand Soul Helm", "HelmClass10.bmd", 2, 2, 59, 20, 0, 0, 81,
+  addDef(0, 7, 18, "Grand Soul Helm", "HelmMale19.bmd", 2, 2, 59, 20, 0, 0, 81,
          1, 0, 0, 48);
-  addDef(0, 7, 19, "Divine Helm", "HelmClass11.bmd", 2, 2, 50, 110, 0, 0, 85, 4,
+  addDef(0, 7, 19, "Divine Helm", "HelmMale20.bmd", 2, 2, 50, 110, 0, 0, 85, 4,
          0, 0, 52);
-  addDef(0, 7, 20, "Thunder Hawk Helm", "HelmMale14.bmd", 2, 2, 150, 70, 0, 0,
+  addDef(0, 7, 20, "Thunder Hawk Helm", "HelmMale21.bmd", 2, 2, 150, 70, 0, 0,
          88, 8, 0, 0, 54);
-  addDef(0, 7, 21, "Great Dragon Helm", "HelmMale15.bmd", 2, 2, 200, 58, 0, 0,
+  addDef(0, 7, 21, "Great Dragon Helm", "HelmMale22.bmd", 2, 2, 200, 58, 0, 0,
          104, 10, 0, 0, 66);
 
   // Missing Armors (8) — indices 15-21
@@ -1134,6 +1135,12 @@ std::string GetBodyPartModelFile(uint8_t category, uint8_t index) {
   auto *def = GetDropInfo(defIndex);
   if (def && def->model) {
     return def->model;
+  }
+  // Fallback: check g_itemDefs (covers elf helms, DW armor, etc.
+  // that are beyond the static items[] array bounds)
+  auto it = g_itemDefs.find(defIndex);
+  if (it != g_itemDefs.end() && !it->second.modelFile.empty()) {
+    return it->second.modelFile;
   }
   return "";
 }

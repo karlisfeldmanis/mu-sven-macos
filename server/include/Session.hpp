@@ -66,6 +66,16 @@ public:
   uint16_t levelUpPoints = 0;
   uint64_t experience = 0;
 
+  // Equipment slots (12 slots: right hand, left hand, helm, armor, pants,
+  // gloves, boots, wings, pet, pendant, ring1, ring2)
+  static constexpr int NUM_EQUIP_SLOTS = 12;
+  struct EquippedItem {
+    uint8_t category = 0xFF; // 0xFF = empty
+    uint8_t itemIndex = 0;
+    uint8_t itemLevel = 0;
+  };
+  std::array<EquippedItem, NUM_EQUIP_SLOTS> equipment{};
+
   // Inventory bag (8x8 = 64 slots)
   struct InventoryItem {
     int16_t defIndex = -2; // -2=empty, matches primary slot

@@ -216,6 +216,11 @@ static constexpr float POTION_COOLDOWN_TIME = 30.0f;
 static bool g_shopOpen = false;
 static std::vector<ShopItem> g_shopItems;
 
+// Town teleport state
+static bool g_teleportingToTown = false;
+static float g_teleportTimer = 0.0f;
+static constexpr float TELEPORT_CAST_TIME = 2.5f; // Seconds of heal anim
+
 // Client-side inventory (synced from server via 0x36)
 // ClientInventoryItem defined in ClientTypes.hpp
 static ClientInventoryItem g_inventory[INVENTORY_SLOTS] = {};
@@ -452,6 +457,13 @@ int main(int argc, char **argv) {
   // reconstruct from bridge objects (type 80) with orientation awareness.
   {
     const int S = TerrainParser::TERRAIN_SIZE;
+    // Guard: skip bridge reconstruction if terrain mapping data is missing
+    if ((int)terrainData.mapping.attributes.size() < S * S ||
+        (int)terrainData.mapping.layer1.size() < S * S) {
+      std::cerr << "[Terrain] Warning: mapping data missing, skipping bridge "
+                   "reconstruction"
+                << std::endl;
+    } else {
     int count = 0;
     for (const auto &obj : terrainData.objects) {
       if (obj.type != 80)
@@ -501,6 +513,7 @@ int main(int argc, char **argv) {
     std::cout << "[Terrain] Marked " << finalCount
               << " bridge cells as TW_NOGROUND (" << count
               << " from objects + expansion)" << std::endl;
+    } // else (has mapping data)
   }
 
   // Make terrain data accessible for movement/height
@@ -1090,6 +1103,45 @@ int main(int argc, char **argv) {
       wasInSafe = nowInSafe;
     }
 
+    // Town teleport: play heal animation, then warp to Lorencia safe zone
+    if (g_teleportingToTown) {
+      g_teleportTimer -= deltaTime;
+      g_hero.SetAction(67); // SKILL_VITALITY (heal animation)
+      if (g_teleportTimer <= 0.0f) {
+        g_teleportingToTown = false;
+        // Teleport to Lorencia safe zone (grid 125,125)
+        const int S = TerrainParser::TERRAIN_SIZE;
+        int startGX = 125, startGZ = 125;
+        glm::vec3 spawnPos(12500.0f, 0.0f, 12500.0f);
+        for (int radius = 0; radius < 30; radius++) {
+          bool found = false;
+          for (int dy = -radius; dy <= radius && !found; dy++) {
+            for (int dx = -radius; dx <= radius && !found; dx++) {
+              if (radius > 0 && std::abs(dx) != radius &&
+                  std::abs(dy) != radius)
+                continue;
+              int cx = startGX + dx, cz = startGZ + dy;
+              if (cx < 1 || cz < 1 || cx >= S - 1 || cz >= S - 1)
+                continue;
+              uint8_t attr = g_terrainDataPtr->mapping.attributes[cz * S + cx];
+              if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
+                spawnPos =
+                    glm::vec3((float)cz * 100.0f, 0.0f, (float)cx * 100.0f);
+                found = true;
+              }
+            }
+          }
+          if (found)
+            break;
+        }
+        g_hero.SetPosition(spawnPos);
+        g_hero.SnapToTerrain();
+        g_hero.SetAction(1); // Back to idle
+        g_camera.SetPosition(g_hero.GetPosition());
+        g_server.SendPrecisePosition(spawnPos.x, spawnPos.z);
+      }
+    }
+
     // Hero respawn: after death timer expires, respawn in Lorencia safe zone
     if (g_hero.ReadyToRespawn()) {
       // Find walkable safe zone tile (same spiral search as init)
@@ -1120,6 +1172,7 @@ int main(int argc, char **argv) {
       g_hero.SnapToTerrain();
       g_camera.SetPosition(g_hero.GetPosition());
       g_serverHP = g_serverMaxHP; // Reset HUD HP
+      g_serverMP = g_serverMaxMP; // Reset AG/Mana on respawn
 
       // Notify server that player is alive (clears session.dead)
       g_server.SendCharSave(1, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
@@ -1184,7 +1237,7 @@ int main(int argc, char **argv) {
       uint8_t heroAttr = 0;
       if (gx >= 0 && gz >= 0 && gx < S && gz < S)
         heroAttr = g_terrainDataPtr->mapping.attributes[gz * S + gx];
-      g_hero.SetInSafeZone((heroAttr & 0x01) != 0 || (heroAttr & 0x08) != 0);
+      g_hero.SetInSafeZone((heroAttr & 0x01) != 0);
     }
 
     // Auto-screenshot/diagnostic camera override
@@ -1261,6 +1314,10 @@ int main(int argc, char **argv) {
     g_monsterManager.RenderShadows(view, projection);
     g_monsterManager.Render(view, projection, camPos, deltaTime);
 
+    // Render ground item shadows (before hero so items don't shadow-over hero)
+    GroundItemRenderer::RenderShadows(g_groundItems, MAX_GROUND_ITEMS, view,
+                                      projection);
+
     // Render hero character, shadow, and click effect (after all world
     // geometry)
     g_clickEffect.Render(view, projection, deltaTime, g_hero.GetShader());
@@ -1329,19 +1386,22 @@ int main(int argc, char **argv) {
         ImGui::PopStyleColor();
         ImGui::SameLine();
 
-        // MP bar
-        ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
-                              ImVec4(0.2f, 0.3f, 0.9f, 1.0f));
+        // MP / AG bar (DK uses AG instead of Mana)
         {
+          bool isDK = (g_hero.GetClass() == 16);
+          ImVec4 mpColor = isDK ? ImVec4(0.0f, 0.8f, 0.6f, 1.0f)  // AG: teal
+                                : ImVec4(0.2f, 0.3f, 0.9f, 1.0f); // MP: blue
+          ImGui::PushStyleColor(ImGuiCol_PlotHistogram, mpColor);
           int curMP = g_hero.GetMana();
           int maxMP = g_hero.GetMaxMana();
           float mpFrac = maxMP > 0 ? (float)curMP / (float)maxMP : 0.0f;
           mpFrac = std::clamp(mpFrac, 0.0f, 1.0f);
           char mpLabel[32];
-          snprintf(mpLabel, sizeof(mpLabel), "MP %d/%d", curMP, maxMP);
+          const char *mpName = isDK ? "AG" : "MP";
+          snprintf(mpLabel, sizeof(mpLabel), "%s %d/%d", mpName, curMP, maxMP);
           ImGui::ProgressBar(mpFrac, ImVec2(120, 20), mpLabel);
+          ImGui::PopStyleColor();
         }
-        ImGui::PopStyleColor();
         ImGui::SameLine();
 
         // Level
@@ -1371,7 +1431,7 @@ int main(int argc, char **argv) {
         }
         ImGui::PopStyleColor();
 
-        ImGui::SameLine(vp->Size.x - 220);
+        ImGui::SameLine(vp->Size.x - 440);
 
         // Buttons
         if (ImGui::Button("Char (C)", ImVec2(100, 30))) {
@@ -1380,6 +1440,26 @@ int main(int argc, char **argv) {
         ImGui::SameLine();
         if (ImGui::Button("Inv (I)", ImVec2(100, 30))) {
           g_showInventory = !g_showInventory;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Skills (S)", ImVec2(100, 30))) {
+          g_showSkillWindow = !g_showSkillWindow;
+        }
+        ImGui::SameLine();
+        if (g_teleportingToTown) {
+          ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(80, 80, 40, 255));
+          char tpBuf[32];
+          snprintf(tpBuf, sizeof(tpBuf), "Casting %.0f...",
+                   g_teleportTimer > 0 ? g_teleportTimer : 0.0f);
+          ImGui::Button(tpBuf, ImVec2(100, 30));
+          ImGui::PopStyleColor();
+        } else {
+          if (ImGui::Button("To Lorencia", ImVec2(100, 30))) {
+            if (!g_hero.IsDead()) {
+              g_teleportingToTown = true;
+              g_teleportTimer = TELEPORT_CAST_TIME;
+            }
+          }
         }
 
         // Quick Slot (Q)

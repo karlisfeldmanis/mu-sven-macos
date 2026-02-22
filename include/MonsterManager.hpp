@@ -5,6 +5,7 @@
 #include "BMDUtils.hpp"
 #include "HeroCharacter.hpp" // For PointLight
 #include "MeshBuffers.hpp"
+#include "PathFinder.hpp"
 #include "Shader.hpp"
 #include "TerrainParser.hpp"
 #include "VFXManager.hpp"
@@ -176,7 +177,6 @@ private:
     MonsterState state = MonsterState::IDLE;
     float stateTimer = 0.0f;
     float bobTimer = 0.0f; // Budge Dragon hover timer (ZzzCharacter.cpp:6224)
-    glm::vec3 wanderTarget;
 
     int hp = 30;
     int maxHp = 30;
@@ -196,16 +196,17 @@ private:
     bool isBlending = false;
     static constexpr float BLEND_DURATION = 0.12f;
 
+    // Melee idle hysteresis (prevents oscillation at melee range boundary)
+    bool inMeleeIdle = false;
+
     // Server-driven position target (from 0x35 packet)
     glm::vec3 serverTargetPos{0.0f};
     bool serverChasing = false;
-    float serverPosAge = 999.0f; // Time since last server position update
 
-    // Stutter detection (debug): track position deltas to detect vibration
-    glm::vec3 prevPosition{0.0f};
-    glm::vec3 prevDelta{0.0f};
-    float stutterScore = 0.0f;    // Accumulates when direction reverses
-    float stutterLogTimer = 0.0f; // Throttle stutter warnings
+    // A* path following with Catmull-Rom spline smoothing
+    std::vector<glm::vec3> splinePoints; // World-space waypoints from A* path
+    float splineT = 0.0f;               // Parametric position along spline
+    float splineRate = 0.0f;            // Pre-computed t advance per second
 
     std::vector<MeshBuffers> meshBuffers;
     // Per-weapon mesh buffers (parallel to model.weaponDefs)
@@ -257,6 +258,7 @@ private:
 
   // Player.bmd for skeleton monster animations (types 14, 15, 16)
   std::unique_ptr<BMDData> m_playerBmd;
+  PathFinder m_pathFinder; // A* pathfinder for client-side movement
   const TerrainData *m_terrainData = nullptr;
   std::vector<glm::vec3> m_terrainLightmap;
   std::vector<PointLight> m_pointLights;
@@ -289,7 +291,7 @@ private:
   static constexpr float CHASE_SPEED =
       200.0f; // Chase speed (player=334, can outrun)
   static constexpr float WANDER_SPEED =
-      150.0f; // More dynamic wander/walk speed
+      150.0f; // Wander/walk speed
 
   // Player position for cosmetic facing (not used for AI — that's server-side)
   glm::vec3 m_playerPos{0.0f};

@@ -207,23 +207,28 @@ void Database::CreateDefaultAccount() {
     printf("[DB] Created test account (ID: %d)\n", accountId);
   }
 
-  // Check if character TestDK exists
-  sqlite3_prepare_v2(m_db, "SELECT id FROM characters WHERE name='TestDK'", -1,
+  // Only seed default characters if account has none
+  sqlite3_prepare_v2(m_db,
+                     "SELECT COUNT(*) FROM characters WHERE account_id=?", -1,
                      &stmt, nullptr);
-  bool charExists = (sqlite3_step(stmt) == SQLITE_ROW);
+  sqlite3_bind_int(stmt, 1, accountId);
+  int charCount = 0;
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    charCount = sqlite3_column_int(stmt, 0);
   sqlite3_finalize(stmt);
 
-  if (!charExists) {
+  if (charCount == 0) {
     char sql[512];
     snprintf(
         sql, sizeof(sql),
         "INSERT INTO characters (account_id, slot, name, class, level, "
         "strength, dexterity, vitality, energy, life, max_life, mana, "
-        "max_mana, level_up_points) "
-        "VALUES (%d, 0, 'TestDK', 16, 1, 28, 20, 25, 10, 110, 110, 20, 20, 0)",
+        "max_mana, money, level_up_points) "
+        "VALUES (%d, 0, 'TestPlayer', 16, 1, 28, 20, 25, 10, 110, 110, 20, "
+        "20, 1000000, 0)",
         accountId);
     sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
-    printf("[DB] Created TestDK character for account %d\n", accountId);
+    printf("[DB] Created TestPlayer character for account %d\n", accountId);
   }
 }
 
@@ -387,6 +392,42 @@ void Database::UpdateCharacterStats(int charId, uint16_t level,
          (unsigned long long)experience, levelUpPoints);
 }
 
+void Database::SaveCharacterFull(int charId, uint16_t level,
+                                 uint16_t strength, uint16_t dexterity,
+                                 uint16_t vitality, uint16_t energy,
+                                 uint16_t life, uint16_t maxLife,
+                                 uint16_t mana, uint16_t maxMana,
+                                 uint16_t levelUpPoints, uint64_t experience,
+                                 uint32_t money, uint8_t posX, uint8_t posY,
+                                 int16_t quickSlotDefIndex) {
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql =
+      "UPDATE characters SET level=?, strength=?, dexterity=?, vitality=?, "
+      "energy=?, life=?, max_life=?, mana=?, max_mana=?, "
+      "level_up_points=?, experience=?, money=?, pos_x=?, pos_y=?, "
+      "quick_slot_def_index=? WHERE id=?";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return;
+  sqlite3_bind_int(stmt, 1, level);
+  sqlite3_bind_int(stmt, 2, strength);
+  sqlite3_bind_int(stmt, 3, dexterity);
+  sqlite3_bind_int(stmt, 4, vitality);
+  sqlite3_bind_int(stmt, 5, energy);
+  sqlite3_bind_int(stmt, 6, life);
+  sqlite3_bind_int(stmt, 7, maxLife);
+  sqlite3_bind_int(stmt, 8, mana);
+  sqlite3_bind_int(stmt, 9, maxMana);
+  sqlite3_bind_int(stmt, 10, levelUpPoints);
+  sqlite3_bind_int64(stmt, 11, static_cast<int64_t>(experience));
+  sqlite3_bind_int(stmt, 12, static_cast<int>(money));
+  sqlite3_bind_int(stmt, 13, posX);
+  sqlite3_bind_int(stmt, 14, posY);
+  sqlite3_bind_int(stmt, 15, quickSlotDefIndex);
+  sqlite3_bind_int(stmt, 16, charId);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+}
+
 void Database::UpdatePosition(int charId, uint8_t x, uint8_t y) {
   sqlite3_stmt *stmt = nullptr;
   const char *sql = "UPDATE characters SET pos_x=?, pos_y=? WHERE id=?";
@@ -414,6 +455,10 @@ void Database::SeedNpcSpawns() {
   }
 
   // Lorencia (map 0) NPCs from MonsterSetBase.txt + OpenMU Lorencia.cs
+  // Direction convention: DB stores MonsterSetBase values + 1.
+  // Client formula: facing = (dir - 2) * PI/4
+  //   dir=2→West(0°), 3→SW(45°), 4→South(90°), 5→SE(135°),
+  //   6→East(180°), 7→NE(225°), 8→North(270°), 1→NW(315°)
   const char *sql = R"(
         INSERT INTO npc_spawns (type, map_id, pos_x, pos_y, direction, name) VALUES
             (253, 0, 127, 86,  3, 'Potion Girl Amy'),
@@ -423,19 +468,18 @@ void Database::SeedNpcSpawns() {
             (255, 0, 123, 135, 2, 'Lumen the Barmaid'),
             (240, 0, 146, 110, 4, 'Safety Guardian'),
             (240, 0, 147, 145, 2, 'Safety Guardian'),
-            (249, 0, 131, 88,  2, 'Guard'),
-            (249, 0, 173, 125, 4, 'Guard'),
-            (249, 0, 94,  125, 8, 'Guard'),
-            (249, 0, 94,  130, 8, 'Guard'),
-            (249, 0, 131, 148, 2, 'Guard'),
-            (247, 0, 114, 125, 4, 'Guard');
+            (249, 0, 131, 88,  4, 'Guard'),
+            (249, 0, 173, 125, 2, 'Guard'),
+            (249, 0, 94,  125, 2, 'Guard'),
+            (249, 0, 94,  130, 2, 'Guard'),
+            (249, 0, 131, 148, 8, 'Guard');
     )";
   char *err = nullptr;
   if (sqlite3_exec(m_db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
     printf("[DB] SeedNpcSpawns error: %s\n", err);
     sqlite3_free(err);
   } else {
-    printf("[DB] Seeded 13 Lorencia NPC spawns (7 vendors + 6 guards)\n");
+    printf("[DB] Seeded 12 Lorencia NPC spawns (7 vendors + 5 guards)\n");
   }
 }
 
@@ -575,91 +619,91 @@ void Database::SeedItemDefinitions() {
             (6, 13, 'Dragon Shield', 'Shield14.bmd', 60, 0, 0, 60, 0, 0, 2, 2, 120, 40, 0, 0, 2),
             (6, 14, 'Legendary Shield', 'Shield15.bmd', 48, 0, 0, 48, 0, 0, 2, 3, 90, 25, 0, 0, 5),
 
-            -- Category 7-11: Armors (OpenMU v0.75 - Pad, Leather, Bronze, etc.)
-            -- Helmets (7)
-            (7, 0, 'Bronze Helm', 'HelmMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
-            (7, 1, 'Dragon Helm', 'HelmMale02.bmd', 57, 0, 0, 68, 0, 0, 2, 2, 120, 30, 0, 0, 2),
-            (7, 2, 'Pad Helm', 'HelmClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
-            (7, 3, 'Legendary Helm', 'HelmClass02.bmd', 50, 0, 0, 42, 0, 0, 2, 2, 30, 0, 0, 0, 1),
-            (7, 4, 'Bone Helm', 'HelmClass03.bmd', 18, 0, 0, 30, 0, 0, 2, 2, 30, 0, 0, 0, 1),
-            (7, 5, 'Leather Helm', 'HelmMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 2),
-            (7, 6, 'Scale Helm', 'HelmMale07.bmd', 26, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
-            (7, 7, 'Sphinx Mask', 'HelmClass04.bmd', 32, 0, 0, 36, 0, 0, 2, 2, 30, 0, 0, 0, 1),
-            (7, 8, 'Brass Helm', 'HelmMale09.bmd', 36, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
-            (7, 9, 'Plate Helm', 'HelmMale10.bmd', 46, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
-            (7, 10, 'Vine Helm', 'HelmClass05.bmd', 6, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (7, 11, 'Silk Helm', 'HelmClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
-            (7, 12, 'Wind Helm', 'HelmClass07.bmd', 28, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
-            (7, 13, 'Spirit Helm', 'HelmClass08.bmd', 40, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
-            (7, 14, 'Guardian Helm', 'HelmClass09.bmd', 53, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            -- Category 7-11: Armors (OpenMU v0.75 Armors.cs - defense values corrected)
+            -- Helmets (7) - defense from OpenMU CreateArmor(num,slot,w,h,name,dropLvl,DEFENSE,dur,...)
+            (7, 0, 'Bronze Helm', 'HelmMale01.bmd', 1, 0, 0, 9, 0, 0, 2, 2, 25, 20, 0, 0, 2),
+            (7, 1, 'Dragon Helm', 'HelmMale02.bmd', 57, 0, 0, 24, 0, 0, 2, 2, 120, 30, 0, 0, 2),
+            (7, 2, 'Pad Helm', 'HelmClass01.bmd', 1, 0, 0, 4, 0, 0, 2, 2, 0, 0, 0, 20, 1),
+            (7, 3, 'Legendary Helm', 'HelmClass02.bmd', 50, 0, 0, 18, 0, 0, 2, 2, 30, 0, 0, 0, 1),
+            (7, 4, 'Bone Helm', 'HelmClass03.bmd', 18, 0, 0, 9, 0, 0, 2, 2, 30, 0, 0, 0, 1),
+            (7, 5, 'Leather Helm', 'HelmMale06.bmd', 1, 0, 0, 5, 0, 0, 2, 2, 20, 0, 0, 0, 2),
+            (7, 6, 'Scale Helm', 'HelmMale07.bmd', 26, 0, 0, 12, 0, 0, 2, 2, 110, 0, 0, 0, 2),
+            (7, 7, 'Sphinx Mask', 'HelmClass04.bmd', 32, 0, 0, 13, 0, 0, 2, 2, 30, 0, 0, 0, 1),
+            (7, 8, 'Brass Helm', 'HelmMale09.bmd', 36, 0, 0, 17, 0, 0, 2, 2, 100, 30, 0, 0, 2),
+            (7, 9, 'Plate Helm', 'HelmMale10.bmd', 46, 0, 0, 20, 0, 0, 2, 2, 130, 0, 0, 0, 2),
+            (7, 10, 'Vine Helm', 'HelmClass05.bmd', 6, 0, 0, 4, 0, 0, 2, 2, 30, 60, 0, 0, 4),
+            (7, 11, 'Silk Helm', 'HelmClass06.bmd', 1, 0, 0, 8, 0, 0, 2, 2, 0, 0, 0, 20, 4),
+            (7, 12, 'Wind Helm', 'HelmClass07.bmd', 28, 0, 0, 12, 0, 0, 2, 2, 30, 80, 0, 0, 4),
+            (7, 13, 'Spirit Helm', 'HelmClass08.bmd', 40, 0, 0, 16, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            (7, 14, 'Guardian Helm', 'HelmClass09.bmd', 53, 0, 0, 23, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
             -- Armors (8)
-            (8, 0, 'Bronze Armor', 'ArmorMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
-            (8, 1, 'Dragon Armor', 'ArmorMale02.bmd', 59, 0, 0, 68, 0, 0, 2, 3, 120, 30, 0, 0, 2),
-            (8, 2, 'Pad Armor', 'ArmorClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
-            (8, 3, 'Legendary Armor', 'ArmorClass02.bmd', 56, 0, 0, 42, 0, 0, 2, 2, 40, 0, 0, 0, 1),
-            (8, 4, 'Bone Armor', 'ArmorClass03.bmd', 22, 0, 0, 30, 0, 0, 2, 2, 40, 0, 0, 0, 1),
-            (8, 5, 'Leather Armor', 'ArmorMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 3, 20, 0, 0, 0, 2),
-            (8, 6, 'Scale Armor', 'ArmorMale07.bmd', 28, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
-            (8, 7, 'Sphinx Armor', 'ArmorClass04.bmd', 38, 0, 0, 36, 0, 0, 2, 3, 40, 0, 0, 0, 1),
-            (8, 8, 'Brass Armor', 'ArmorMale09.bmd', 38, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
-            (8, 9, 'Plate Armor', 'ArmorMale10.bmd', 48, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
-            (8, 10, 'Vine Armor', 'ArmorClass05.bmd', 10, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (8, 11, 'Silk Armor', 'ArmorClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
-            (8, 12, 'Wind Armor', 'ArmorClass07.bmd', 32, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
-            (8, 13, 'Spirit Armor', 'ArmorClass08.bmd', 44, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
-            (8, 14, 'Guardian Armor', 'ArmorClass09.bmd', 57, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            (8, 0, 'Bronze Armor', 'ArmorMale01.bmd', 1, 0, 0, 14, 0, 0, 2, 2, 25, 20, 0, 0, 2),
+            (8, 1, 'Dragon Armor', 'ArmorMale02.bmd', 59, 0, 0, 37, 0, 0, 2, 3, 120, 30, 0, 0, 2),
+            (8, 2, 'Pad Armor', 'ArmorClass01.bmd', 1, 0, 0, 7, 0, 0, 2, 2, 0, 0, 0, 20, 1),
+            (8, 3, 'Legendary Armor', 'ArmorClass02.bmd', 56, 0, 0, 22, 0, 0, 2, 2, 40, 0, 0, 0, 1),
+            (8, 4, 'Bone Armor', 'ArmorClass03.bmd', 22, 0, 0, 13, 0, 0, 2, 2, 40, 0, 0, 0, 1),
+            (8, 5, 'Leather Armor', 'ArmorMale06.bmd', 1, 0, 0, 10, 0, 0, 2, 3, 20, 0, 0, 0, 2),
+            (8, 6, 'Scale Armor', 'ArmorMale07.bmd', 28, 0, 0, 18, 0, 0, 2, 2, 110, 0, 0, 0, 2),
+            (8, 7, 'Sphinx Armor', 'ArmorClass04.bmd', 38, 0, 0, 17, 0, 0, 2, 3, 40, 0, 0, 0, 1),
+            (8, 8, 'Brass Armor', 'ArmorMale09.bmd', 38, 0, 0, 22, 0, 0, 2, 2, 100, 30, 0, 0, 2),
+            (8, 9, 'Plate Armor', 'ArmorMale10.bmd', 48, 0, 0, 30, 0, 0, 2, 2, 130, 0, 0, 0, 2),
+            (8, 10, 'Vine Armor', 'ArmorClass05.bmd', 10, 0, 0, 8, 0, 0, 2, 2, 30, 60, 0, 0, 4),
+            (8, 11, 'Silk Armor', 'ArmorClass06.bmd', 1, 0, 0, 12, 0, 0, 2, 2, 0, 0, 0, 20, 4),
+            (8, 12, 'Wind Armor', 'ArmorClass07.bmd', 32, 0, 0, 16, 0, 0, 2, 2, 30, 80, 0, 0, 4),
+            (8, 13, 'Spirit Armor', 'ArmorClass08.bmd', 44, 0, 0, 21, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            (8, 14, 'Guardian Armor', 'ArmorClass09.bmd', 57, 0, 0, 29, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
             -- Pants (9)
-            (9, 0, 'Bronze Pants', 'PantMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
-            (9, 1, 'Dragon Pants', 'PantMale02.bmd', 55, 0, 0, 68, 0, 0, 2, 2, 120, 30, 0, 0, 2),
-            (9, 2, 'Pad Pants', 'PantClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
-            (9, 3, 'Legendary Pants', 'PantClass02.bmd', 53, 0, 0, 42, 0, 0, 2, 2, 40, 0, 0, 0, 1),
-            (9, 4, 'Bone Pants', 'PantClass03.bmd', 20, 0, 0, 30, 0, 0, 2, 2, 40, 0, 0, 0, 1),
-            (9, 5, 'Leather Pants', 'PantMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 2),
-            (9, 6, 'Scale Pants', 'PantMale07.bmd', 25, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
-            (9, 7, 'Sphinx Pants', 'PantClass04.bmd', 34, 0, 0, 36, 0, 0, 2, 2, 40, 0, 0, 0, 1),
-            (9, 8, 'Brass Pants', 'PantMale09.bmd', 35, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
-            (9, 9, 'Plate Pants', 'PantMale10.bmd', 45, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
-            (9, 10, 'Vine Pants', 'PantClass05.bmd', 8, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (9, 11, 'Silk Pants', 'PantClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
-            (9, 12, 'Wind Pants', 'PantClass07.bmd', 30, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
-            (9, 13, 'Spirit Pants', 'PantClass08.bmd', 42, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
-            (9, 14, 'Guardian Pants', 'PantClass09.bmd', 54, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            (9, 0, 'Bronze Pants', 'PantMale01.bmd', 1, 0, 0, 10, 0, 0, 2, 2, 25, 20, 0, 0, 2),
+            (9, 1, 'Dragon Pants', 'PantMale02.bmd', 55, 0, 0, 26, 0, 0, 2, 2, 120, 30, 0, 0, 2),
+            (9, 2, 'Pad Pants', 'PantClass01.bmd', 1, 0, 0, 5, 0, 0, 2, 2, 0, 0, 0, 20, 1),
+            (9, 3, 'Legendary Pants', 'PantClass02.bmd', 53, 0, 0, 20, 0, 0, 2, 2, 40, 0, 0, 0, 1),
+            (9, 4, 'Bone Pants', 'PantClass03.bmd', 20, 0, 0, 10, 0, 0, 2, 2, 40, 0, 0, 0, 1),
+            (9, 5, 'Leather Pants', 'PantMale06.bmd', 1, 0, 0, 7, 0, 0, 2, 2, 20, 0, 0, 0, 2),
+            (9, 6, 'Scale Pants', 'PantMale07.bmd', 25, 0, 0, 14, 0, 0, 2, 2, 110, 0, 0, 0, 2),
+            (9, 7, 'Sphinx Pants', 'PantClass04.bmd', 34, 0, 0, 15, 0, 0, 2, 2, 40, 0, 0, 0, 1),
+            (9, 8, 'Brass Pants', 'PantMale09.bmd', 35, 0, 0, 18, 0, 0, 2, 2, 100, 30, 0, 0, 2),
+            (9, 9, 'Plate Pants', 'PantMale10.bmd', 45, 0, 0, 22, 0, 0, 2, 2, 130, 0, 0, 0, 2),
+            (9, 10, 'Vine Pants', 'PantClass05.bmd', 8, 0, 0, 6, 0, 0, 2, 2, 30, 60, 0, 0, 4),
+            (9, 11, 'Silk Pants', 'PantClass06.bmd', 1, 0, 0, 10, 0, 0, 2, 2, 0, 0, 0, 20, 4),
+            (9, 12, 'Wind Pants', 'PantClass07.bmd', 30, 0, 0, 14, 0, 0, 2, 2, 30, 80, 0, 0, 4),
+            (9, 13, 'Spirit Pants', 'PantClass08.bmd', 42, 0, 0, 18, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            (9, 14, 'Guardian Pants', 'PantClass09.bmd', 54, 0, 0, 25, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
-            -- Gloves (10)
-            (10, 0, 'Bronze Gloves', 'GloveMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
-            (10, 1, 'Dragon Gloves', 'GloveMale02.bmd', 52, 0, 0, 68, 0, 0, 2, 2, 120, 30, 0, 0, 2),
-            (10, 2, 'Pad Gloves', 'GloveClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
-            (10, 3, 'Legendary Gloves', 'GloveClass02.bmd', 44, 0, 0, 42, 0, 0, 2, 2, 20, 0, 0, 0, 1),
-            (10, 4, 'Bone Gloves', 'GloveClass03.bmd', 14, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 1),
-            (10, 5, 'Leather Gloves', 'GloveMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 2),
-            (10, 6, 'Scale Gloves', 'GloveMale07.bmd', 22, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
-            (10, 7, 'Sphinx Gloves', 'GloveClass04.bmd', 28, 0, 0, 36, 0, 0, 2, 2, 20, 0, 0, 0, 1),
-            (10, 8, 'Brass Gloves', 'GloveMale09.bmd', 32, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
-            (10, 9, 'Plate Gloves', 'GloveMale10.bmd', 42, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
-            (10, 10, 'Vine Gloves', 'GloveClass05.bmd', 4, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (10, 11, 'Silk Gloves', 'GloveClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
-            (10, 12, 'Wind Gloves', 'GloveClass07.bmd', 26, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
-            (10, 13, 'Spirit Gloves', 'GloveClass08.bmd', 38, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
-            (10, 14, 'Guardian Gloves', 'GloveClass09.bmd', 50, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            -- Gloves (10) - defense from OpenMU CreateGloves(num,name,dropLvl,DEFENSE,atkSpd,dur,...)
+            (10, 0, 'Bronze Gloves', 'GloveMale01.bmd', 1, 0, 0, 4, 0, 0, 2, 2, 25, 20, 0, 0, 2),
+            (10, 1, 'Dragon Gloves', 'GloveMale02.bmd', 52, 0, 0, 14, 0, 0, 2, 2, 120, 30, 0, 0, 2),
+            (10, 2, 'Pad Gloves', 'GloveClass01.bmd', 1, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 20, 1),
+            (10, 3, 'Legendary Gloves', 'GloveClass02.bmd', 44, 0, 0, 11, 0, 0, 2, 2, 20, 0, 0, 0, 1),
+            (10, 4, 'Bone Gloves', 'GloveClass03.bmd', 14, 0, 0, 5, 0, 0, 2, 2, 20, 0, 0, 0, 1),
+            (10, 5, 'Leather Gloves', 'GloveMale06.bmd', 1, 0, 0, 2, 0, 0, 2, 2, 20, 0, 0, 0, 2),
+            (10, 6, 'Scale Gloves', 'GloveMale07.bmd', 22, 0, 0, 7, 0, 0, 2, 2, 110, 0, 0, 0, 2),
+            (10, 7, 'Sphinx Gloves', 'GloveClass04.bmd', 28, 0, 0, 8, 0, 0, 2, 2, 20, 0, 0, 0, 1),
+            (10, 8, 'Brass Gloves', 'GloveMale09.bmd', 32, 0, 0, 9, 0, 0, 2, 2, 100, 30, 0, 0, 2),
+            (10, 9, 'Plate Gloves', 'GloveMale10.bmd', 42, 0, 0, 12, 0, 0, 2, 2, 130, 0, 0, 0, 2),
+            (10, 10, 'Vine Gloves', 'GloveClass05.bmd', 4, 0, 0, 2, 0, 0, 2, 2, 30, 60, 0, 0, 4),
+            (10, 11, 'Silk Gloves', 'GloveClass06.bmd', 1, 0, 0, 4, 0, 0, 2, 2, 0, 0, 0, 20, 4),
+            (10, 12, 'Wind Gloves', 'GloveClass07.bmd', 26, 0, 0, 6, 0, 0, 2, 2, 30, 80, 0, 0, 4),
+            (10, 13, 'Spirit Gloves', 'GloveClass08.bmd', 38, 0, 0, 9, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            (10, 14, 'Guardian Gloves', 'GloveClass09.bmd', 50, 0, 0, 15, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
-            -- Boots (11)
-            (11, 0, 'Bronze Boots', 'BootMale01.bmd', 1, 0, 0, 34, 0, 0, 2, 2, 25, 20, 0, 0, 2),
-            (11, 1, 'Dragon Boots', 'BootMale02.bmd', 54, 0, 0, 68, 0, 0, 2, 2, 120, 30, 0, 0, 2),
-            (11, 2, 'Pad Boots', 'BootClass01.bmd', 1, 0, 0, 28, 0, 0, 2, 2, 0, 0, 0, 20, 1),
-            (11, 3, 'Legendary Boots', 'BootClass02.bmd', 46, 0, 0, 42, 0, 0, 2, 2, 30, 0, 0, 0, 1),
-            (11, 4, 'Bone Boots', 'BootClass03.bmd', 16, 0, 0, 30, 0, 0, 2, 2, 30, 0, 0, 0, 1),
-            (11, 5, 'Leather Boots', 'BootMale06.bmd', 1, 0, 0, 30, 0, 0, 2, 2, 20, 0, 0, 0, 2),
-            (11, 6, 'Scale Boots', 'BootMale07.bmd', 22, 0, 0, 40, 0, 0, 2, 2, 110, 0, 0, 0, 2),
-            (11, 7, 'Sphinx Boots', 'BootClass04.bmd', 30, 0, 0, 36, 0, 0, 2, 2, 30, 0, 0, 0, 1),
-            (11, 8, 'Brass Boots', 'BootMale09.bmd', 32, 0, 0, 44, 0, 0, 2, 2, 100, 30, 0, 0, 2),
-            (11, 9, 'Plate Boots', 'BootMale10.bmd', 42, 0, 0, 50, 0, 0, 2, 2, 130, 0, 0, 0, 2),
-            (11, 10, 'Vine Boots', 'BootClass05.bmd', 5, 0, 0, 22, 0, 0, 2, 2, 30, 60, 0, 0, 4),
-            (11, 11, 'Silk Boots', 'BootClass06.bmd', 1, 0, 0, 26, 0, 0, 2, 2, 0, 0, 0, 20, 4),
-            (11, 12, 'Wind Boots', 'BootClass07.bmd', 27, 0, 0, 32, 0, 0, 2, 2, 30, 80, 0, 0, 4),
-            (11, 13, 'Spirit Boots', 'BootClass08.bmd', 40, 0, 0, 38, 0, 0, 2, 2, 40, 80, 0, 0, 4),
-            (11, 14, 'Guardian Boots', 'BootClass09.bmd', 52, 0, 0, 45, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            -- Boots (11) - defense from OpenMU CreateBoots(num,slot,w,h,name,dropLvl,DEFENSE,walkSpd,dur,...)
+            (11, 0, 'Bronze Boots', 'BootMale01.bmd', 1, 0, 0, 4, 0, 0, 2, 2, 25, 20, 0, 0, 2),
+            (11, 1, 'Dragon Boots', 'BootMale02.bmd', 54, 0, 0, 15, 0, 0, 2, 2, 120, 30, 0, 0, 2),
+            (11, 2, 'Pad Boots', 'BootClass01.bmd', 1, 0, 0, 3, 0, 0, 2, 2, 0, 0, 0, 20, 1),
+            (11, 3, 'Legendary Boots', 'BootClass02.bmd', 46, 0, 0, 12, 0, 0, 2, 2, 30, 0, 0, 0, 1),
+            (11, 4, 'Bone Boots', 'BootClass03.bmd', 16, 0, 0, 6, 0, 0, 2, 2, 30, 0, 0, 0, 1),
+            (11, 5, 'Leather Boots', 'BootMale06.bmd', 1, 0, 0, 2, 0, 0, 2, 2, 20, 0, 0, 0, 2),
+            (11, 6, 'Scale Boots', 'BootMale07.bmd', 22, 0, 0, 8, 0, 0, 2, 2, 110, 0, 0, 0, 2),
+            (11, 7, 'Sphinx Boots', 'BootClass04.bmd', 30, 0, 0, 9, 0, 0, 2, 2, 30, 0, 0, 0, 1),
+            (11, 8, 'Brass Boots', 'BootMale09.bmd', 32, 0, 0, 10, 0, 0, 2, 2, 100, 30, 0, 0, 2),
+            (11, 9, 'Plate Boots', 'BootMale10.bmd', 42, 0, 0, 12, 0, 0, 2, 2, 130, 0, 0, 0, 2),
+            (11, 10, 'Vine Boots', 'BootClass05.bmd', 5, 0, 0, 2, 0, 0, 2, 2, 30, 60, 0, 0, 4),
+            (11, 11, 'Silk Boots', 'BootClass06.bmd', 1, 0, 0, 4, 0, 0, 2, 2, 0, 0, 0, 20, 4),
+            (11, 12, 'Wind Boots', 'BootClass07.bmd', 27, 0, 0, 7, 0, 0, 2, 2, 30, 80, 0, 0, 4),
+            (11, 13, 'Spirit Boots', 'BootClass08.bmd', 40, 0, 0, 10, 0, 0, 2, 2, 40, 80, 0, 0, 4),
+            (11, 14, 'Guardian Boots', 'BootClass09.bmd', 52, 0, 0, 16, 0, 0, 2, 2, 40, 80, 0, 0, 4),
 
             -- Category 12: Wings/Orbs/Jewels (Group 12 — OpenMU 0.95d)
             -- Wings (Level 1 only in 0.95d)
@@ -1147,6 +1191,51 @@ void Database::SeedDefaultEquipment(int characterId) {
          characterId);
 }
 
+void Database::SeedVeteranCharacter(int accountId) {
+  sqlite3_stmt *stmt = nullptr;
+  sqlite3_prepare_v2(m_db,
+                     "SELECT id, level FROM characters WHERE name='VeteranDK'",
+                     -1, &stmt, nullptr);
+  int charId = 0;
+  int level = 0;
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    charId = sqlite3_column_int(stmt, 0);
+    level = sqlite3_column_int(stmt, 1);
+  }
+  sqlite3_finalize(stmt);
+
+  if (charId == 0) {
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO characters (account_id, slot, name, class, level, "
+             "strength, dexterity, vitality, energy, life, max_life, mana, "
+             "max_mana, level_up_points) "
+             "VALUES (%d, 1, 'VeteranDK', 16, 20, 100, 60, 50, 20, 250, 250, "
+             "80, 80, 0)",
+             accountId);
+    sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+    charId = static_cast<int>(sqlite3_last_insert_rowid(m_db));
+    printf("[DB] Created VeteranDK character for account %d\n", accountId);
+  } else if (level < 20) {
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "UPDATE characters SET level=20, strength=100, dexterity=60, "
+             "vitality=50, energy=20, life=250, max_life=250, mana=80, "
+             "max_mana=80 WHERE id=%d",
+             charId);
+    sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+    printf("[DB] Upgraded VeteranDK to Level 20\n");
+  }
+
+  // Seed equipment for VeteranDK (Leather Set + Rapier)
+  UpdateEquipment(charId, EQUIP_RIGHT_HAND, 0, 2, 0); // Rapier
+  UpdateEquipment(charId, EQUIP_HELM, 7, 5, 0);       // Leather Helm
+  UpdateEquipment(charId, EQUIP_ARMOR, 8, 5, 0);      // Leather Armor
+  UpdateEquipment(charId, EQUIP_PANTS, 9, 5, 0);      // Leather Pants
+  UpdateEquipment(charId, EQUIP_GLOVES, 10, 5, 0);    // Leather Gloves
+  UpdateEquipment(charId, EQUIP_BOOTS, 11, 5, 0);     // Leather Boots
+}
+
 void Database::UpdateEquipment(int characterId, uint8_t slot, uint8_t category,
                                uint8_t itemIndex, uint8_t itemLevel) {
   sqlite3_stmt *stmt = nullptr;
@@ -1226,6 +1315,16 @@ void Database::DeleteCharacterInventoryItem(int characterId, uint8_t slot) {
   sqlite3_finalize(stmt);
 }
 
+void Database::DeleteCharacterInventoryAll(int characterId) {
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql = "DELETE FROM character_inventory WHERE character_id=?";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return;
+  sqlite3_bind_int(stmt, 1, characterId);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+}
+
 void Database::UpdateCharacterMoney(int characterId, uint32_t money) {
   sqlite3_stmt *stmt = nullptr;
   const char *sql = "UPDATE characters SET money=? WHERE id=?";
@@ -1262,7 +1361,7 @@ std::vector<uint8_t> Database::GetCharacterSkills(int characterId) {
 void Database::LearnSkill(int characterId, uint8_t skillId) {
   sqlite3_stmt *stmt = nullptr;
   const char *sql = "INSERT OR IGNORE INTO character_skills (character_id, "
-                     "skill_id) VALUES (?, ?)";
+                    "skill_id) VALUES (?, ?)";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return;
   sqlite3_bind_int(stmt, 1, characterId);
@@ -1275,7 +1374,7 @@ void Database::LearnSkill(int characterId, uint8_t skillId) {
 bool Database::HasSkill(int characterId, uint8_t skillId) {
   sqlite3_stmt *stmt = nullptr;
   const char *sql = "SELECT 1 FROM character_skills WHERE character_id=? AND "
-                     "skill_id=?";
+                    "skill_id=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return false;
   sqlite3_bind_int(stmt, 1, characterId);

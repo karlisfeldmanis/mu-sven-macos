@@ -111,8 +111,11 @@ void NetworkClient::Poll() {
       continue;
     }
 
-    if (pktSize < 2)
-      break;
+    if (pktSize < 2) {
+      // Invalid packet size — skip byte
+      m_recvBuf.erase(m_recvBuf.begin());
+      continue;
+    }
     if ((int)m_recvBuf.size() < pktSize)
       break; // Incomplete packet, wait for more data
 

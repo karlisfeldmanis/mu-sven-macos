@@ -232,6 +232,13 @@ void HandlePickup(Session &session, const std::vector<uint8_t> &packet,
             result.success = 1;
             session.Send(&result, sizeof(result));
             SendInventorySync(session);
+
+            // Remove the drop from world and notify all clients
+            world.RemoveDrop(pick->dropIndex);
+            PMSG_DROP_REMOVE_SEND rmPkt{};
+            rmPkt.h = MakeC1Header(sizeof(rmPkt), Opcode::DROP_REMOVE);
+            rmPkt.dropIndex = pick->dropIndex;
+            server.Broadcast(&rmPkt, sizeof(rmPkt));
             return;
           }
         }
@@ -297,11 +304,14 @@ void HandlePickup(Session &session, const std::vector<uint8_t> &packet,
            pick->dropIndex, session.GetFd(), drop->defIndex, drop->quantity,
            drop->itemLevel);
 
-    world.RemoveDrop(pick->dropIndex);
-    PMSG_DROP_REMOVE_SEND rmPkt{};
-    rmPkt.h = MakeC1Header(sizeof(rmPkt), Opcode::DROP_REMOVE);
-    rmPkt.dropIndex = pick->dropIndex;
-    server.Broadcast(&rmPkt, sizeof(rmPkt));
+    // Only remove drop from world if pickup succeeded
+    if (result.success) {
+      world.RemoveDrop(pick->dropIndex);
+      PMSG_DROP_REMOVE_SEND rmPkt{};
+      rmPkt.h = MakeC1Header(sizeof(rmPkt), Opcode::DROP_REMOVE);
+      rmPkt.dropIndex = pick->dropIndex;
+      server.Broadcast(&rmPkt, sizeof(rmPkt));
+    }
   } else {
     result.success = 0;
     result.defIndex = 0;
@@ -441,12 +451,19 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
       CharacterHandler::SendCharStats(session);
       SendInventorySync(session);
 
-      db.UpdateCharacterStats(
-          session.characterId, session.level, session.strength,
-          session.dexterity, session.vitality, session.energy,
-          static_cast<uint16_t>(session.hp),
-          static_cast<uint16_t>(session.maxHp), session.levelUpPoints,
-          session.experience, session.quickSlotDefIndex);
+      {
+        uint8_t posX = static_cast<uint8_t>(session.worldZ / 100.0f);
+        uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
+        db.SaveCharacterFull(
+            session.characterId, session.level, session.strength,
+            session.dexterity, session.vitality, session.energy,
+            static_cast<uint16_t>(session.hp),
+            static_cast<uint16_t>(session.maxHp),
+            static_cast<uint16_t>(std::max(session.mana, 0)),
+            static_cast<uint16_t>(session.maxMana), session.levelUpPoints,
+            session.experience, session.zen, posX, posY,
+            session.quickSlotDefIndex);
+      }
     }
   }
 }

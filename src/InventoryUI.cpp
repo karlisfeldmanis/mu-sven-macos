@@ -871,7 +871,7 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   float px = GetCharInfoPanelX(), py = PANEL_Y;
   float pw = PANEL_W,
         ph = PANEL_H +
-             25.0f * g_uiPanelScale; // Extend by 25 pixels to fit combat stats
+             60.0f * g_uiPanelScale; // Extend to fit combat stats + atk speed
 
   // Colors
   const ImU32 colBg = IM_COL32(15, 15, 25, 240);
@@ -993,6 +993,16 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   snprintf(buf, sizeof(buf), "Exc: 1%%");
   DrawPanelText(dl, c, px, py, 100, 345, buf, IM_COL32(100, 255, 100, 255));
 
+  // Attack Speed (DEX/15 for DK)
+  snprintf(buf, sizeof(buf), "Atk Speed: %d", *s_ctx->serverAttackSpeed);
+  DrawPanelText(dl, c, px, py, 15, 360, buf, colValue);
+
+  // Attack Rate / Hit Chance (Level*5 + DEX*3/2 + STR/4)
+  int atkRate = *s_ctx->serverLevel * 5 + (*s_ctx->serverDex * 3) / 2 +
+                *s_ctx->serverStr / 4;
+  snprintf(buf, sizeof(buf), "Atk Rate: %d", atkRate);
+  DrawPanelText(dl, c, px, py, 15, 375, buf, colValue);
+
   // HP / MP Bars
   int curHP = s_ctx->hero->GetHP();
   int maxHP = s_ctx->hero->GetMaxHP();
@@ -1002,7 +1012,7 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   float hpFrac = (maxHP > 0) ? (float)curHP / maxHP : 0.0f;
   float mpFrac = (maxMP > 0) ? (float)curMP / maxMP : 0.0f;
 
-  float hbarX = 50, hbarY = 385, hbarW = 100, hbarH = 8;
+  float hbarX = 50, hbarY = 415, hbarW = 100, hbarH = 8;
   DrawPanelText(dl, c, px, py, 15, hbarY - 2, "HP", colLabel);
   dl->AddRectFilled(ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
                            c.ToScreenY(py + hbarY * g_uiPanelScale)),
@@ -1020,7 +1030,7 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   snprintf(buf, sizeof(buf), "%d / %d", curHP, maxHP);
   DrawPanelTextRight(dl, c, px, py, hbarX, hbarY - 3, hbarW, buf, colValue);
 
-  float mbarY = 405;
+  float mbarY = 435;
   // DK uses AG (Ability Gauge) instead of MP
   const char *manaLabel = (s_ctx->hero->GetClass() == 16) ? "AG" : "MP";
   DrawPanelText(dl, c, px, py, 15, mbarY - 2, manaLabel, colLabel);
@@ -2095,8 +2105,15 @@ void LoadSlotBackgrounds(const std::string &dataPath) {
 
   // Skill icon sprite sheet (25 icons per row, 20x28px each on 512x512)
   g_texSkillIcons = TextureLoader::LoadOZJ(dataPath + "/Interface/Skill.OZJ");
-  if (g_texSkillIcons)
+  if (g_texSkillIcons) {
+    // LINEAR for smooth upscaling, CLAMP_TO_EDGE to reduce edge bleed
+    glBindTexture(GL_TEXTURE_2D, g_texSkillIcons);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     printf("[UI] Loaded Skill.OZJ icon sheet (tex=%u)\n", g_texSkillIcons);
+  }
 }
 
 float GetCharInfoPanelX() { return PANEL_X_RIGHT; }
@@ -2145,12 +2162,22 @@ static constexpr float SKILL_ICON_H = 28.0f;
 static constexpr float SKILL_TEX_SIZE = 512.0f;
 
 void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
-  // Position: left of char info panel
-  float px = *s_ctx->showCharInfo ? PANEL_X_RIGHT - PANEL_W - 5.0f
-                                  : PANEL_X_RIGHT;
-  float py = PANEL_Y;
-  float pw = PANEL_W;
-  float ph = 360.0f * g_uiPanelScale;
+  // Grid layout: 4 columns x 2 rows of skill cells
+  static constexpr int GRID_COLS = 4;
+  static constexpr int GRID_ROWS = 2;
+  static constexpr float CELL_W = 110.0f;
+  static constexpr float CELL_H = 105.0f;
+  static constexpr float CELL_PAD = 10.0f;
+  static constexpr float TITLE_H = 32.0f;
+  static constexpr float FOOTER_H = 24.0f;
+  static constexpr float MARGIN = 16.0f;
+
+  float pw = MARGIN * 2 + GRID_COLS * CELL_W + (GRID_COLS - 1) * CELL_PAD;
+  float ph = TITLE_H + MARGIN + GRID_ROWS * CELL_H + (GRID_ROWS - 1) * CELL_PAD + FOOTER_H + MARGIN;
+
+  // Center on screen
+  float px = (UICoords::VIRTUAL_W - pw) * 0.5f;
+  float py = (UICoords::VIRTUAL_H - ph) * 0.5f;
 
   // Colors
   const ImU32 colBg = IM_COL32(15, 15, 25, 240);
@@ -2160,30 +2187,34 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
   const ImU32 colValue = IM_COL32(255, 255, 255, 255);
   const ImU32 colGreen = IM_COL32(100, 255, 100, 255);
   const ImU32 colRed = IM_COL32(255, 80, 80, 255);
-  const ImU32 colDim = IM_COL32(255, 255, 255, 100); // 40% opacity
+  const ImU32 colDim = IM_COL32(255, 255, 255, 100);
   char buf[256];
 
   // Background
   dl->AddRectFilled(ImVec2(c.ToScreenX(px), c.ToScreenY(py)),
                     ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBg,
-                    5.0f);
+                    6.0f);
   dl->AddRect(ImVec2(c.ToScreenX(px), c.ToScreenY(py)),
-              ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBr, 5.0f,
+              ImVec2(c.ToScreenX(px + pw), c.ToScreenY(py + ph)), colBr, 6.0f,
               0, 1.5f);
 
-  // Title
-  DrawPanelTextCentered(dl, c, px, py, 0, 11, BASE_PANEL_W, "Skills",
-                        colTitle, s_ctx->fontDefault);
-
-  // Close button
+  // Title — centered
   {
-    float bx = BASE_PANEL_W - 24;
-    float by = 6;
-    float bw = 16, bh = 14;
-    ImVec2 bMin(c.ToScreenX(px + bx * g_uiPanelScale),
-                c.ToScreenY(py + by * g_uiPanelScale));
-    ImVec2 bMax(c.ToScreenX(px + (bx + bw) * g_uiPanelScale),
-                c.ToScreenY(py + (by + bh) * g_uiPanelScale));
+    const char *title = "Skills";
+    ImVec2 tsz = ImGui::CalcTextSize(title);
+    float tx = c.ToScreenX(px + pw * 0.5f) - tsz.x * 0.5f;
+    float ty = c.ToScreenY(py + 10.0f);
+    dl->AddText(ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 180), title);
+    dl->AddText(ImVec2(tx, ty), colTitle, title);
+  }
+
+  // Close button (top-right)
+  {
+    float bx = px + pw - 24.0f;
+    float by = py + 8.0f;
+    float bw = 16.0f, bh = 16.0f;
+    ImVec2 bMin(c.ToScreenX(bx), c.ToScreenY(by));
+    ImVec2 bMax(c.ToScreenX(bx + bw), c.ToScreenY(by + bh));
     ImVec2 mp = ImGui::GetIO().MousePos;
     bool hovered =
         mp.x >= bMin.x && mp.x < bMax.x && mp.y >= bMin.y && mp.y < bMax.y;
@@ -2196,7 +2227,6 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
     ImVec2 xPos(bMin.x + (bMax.x - bMin.x) * 0.5f - xSize.x * 0.5f,
                 bMin.y + (bMax.y - bMin.y) * 0.5f - xSize.y * 0.5f);
     dl->AddText(xPos, IM_COL32(255, 255, 255, 255), "X");
-
     if (hovered && ImGui::IsMouseClicked(0))
       *s_ctx->showSkillWindow = false;
   }
@@ -2212,56 +2242,53 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
     return false;
   };
 
-  // Render skill rows
-  float startY = 40.0f;
-  float rowH = 38.0f;
-  float iconDisplayW = 28.0f; // Display size (scaled from 20x28)
-  float iconDisplayH = 38.0f;
-
   ImVec2 mousePos = ImGui::GetIO().MousePos;
+
+  // Icon display size (preserve 20:28 aspect ratio = 5:7)
+  static constexpr float ICON_DISP_W = 46.0f;
+  static constexpr float ICON_DISP_H = 64.0f; // 46 * 28/20 = 64.4
+
+  float gridStartY = py + TITLE_H;
 
   for (int i = 0; i < NUM_DK_SKILLS; i++) {
     const auto &skill = g_dkSkills[i];
     bool learned = isLearned(skill.skillId);
-    float ry = startY + i * rowH;
 
-    // Row background (alternating)
-    ImU32 rowBg = (i % 2 == 0) ? IM_COL32(25, 28, 40, 200)
-                                : IM_COL32(20, 22, 35, 200);
+    int col = i % GRID_COLS;
+    int row = i / GRID_COLS;
+    float cx = px + MARGIN + col * (CELL_W + CELL_PAD);
+    float cy = gridStartY + row * (CELL_H + CELL_PAD);
 
-    float rowMinX = px + 8 * g_uiPanelScale;
-    float rowMinY = py + ry * g_uiPanelScale;
-    float rowMaxX = px + (BASE_PANEL_W - 8) * g_uiPanelScale;
-    float rowMaxY = py + (ry + rowH - 2) * g_uiPanelScale;
+    // Cell background
+    ImVec2 cMin(c.ToScreenX(cx), c.ToScreenY(cy));
+    ImVec2 cMax(c.ToScreenX(cx + CELL_W), c.ToScreenY(cy + CELL_H));
 
-    ImVec2 rMin(c.ToScreenX(rowMinX), c.ToScreenY(rowMinY));
-    ImVec2 rMax(c.ToScreenX(rowMaxX), c.ToScreenY(rowMaxY));
+    bool cellHovered = mousePos.x >= cMin.x && mousePos.x < cMax.x &&
+                       mousePos.y >= cMin.y && mousePos.y < cMax.y;
 
-    bool rowHovered = mousePos.x >= rMin.x && mousePos.x < rMax.x &&
-                      mousePos.y >= rMin.y && mousePos.y < rMax.y;
+    ImU32 cellBg = cellHovered ? IM_COL32(40, 45, 65, 220)
+                               : IM_COL32(25, 28, 40, 200);
+    dl->AddRectFilled(cMin, cMax, cellBg, 4.0f);
+    dl->AddRect(cMin, cMax, IM_COL32(50, 55, 75, 150), 4.0f);
 
-    if (rowHovered)
-      rowBg = IM_COL32(40, 45, 65, 220);
-
-    dl->AddRectFilled(rMin, rMax, rowBg, 3.0f);
-
-    // Skill icon from Skill.OZJ sprite sheet
+    // Icon centered at top of cell
     if (g_texSkillIcons != 0) {
       int iconIdx = skill.skillId;
-      int col = iconIdx % SKILL_ICON_COLS;
-      int row = iconIdx / SKILL_ICON_COLS;
-      float u0 = (SKILL_ICON_W * col) / SKILL_TEX_SIZE;
-      float v0 = (SKILL_ICON_H * row) / SKILL_TEX_SIZE;
-      float u1 = u0 + SKILL_ICON_W / SKILL_TEX_SIZE;
-      float v1 = v0 + SKILL_ICON_H / SKILL_TEX_SIZE;
+      int ic = iconIdx % SKILL_ICON_COLS;
+      int ir = iconIdx / SKILL_ICON_COLS;
+      // Tiny inset (0.1 texels) prevents bilinear bleed from neighbors
+      static constexpr float UV_INSET = 0.1f / SKILL_TEX_SIZE;
+      float u0 = (SKILL_ICON_W * ic) / SKILL_TEX_SIZE + UV_INSET;
+      float v0 = (SKILL_ICON_H * ir) / SKILL_TEX_SIZE + UV_INSET;
+      float u1 = (SKILL_ICON_W * (ic + 1)) / SKILL_TEX_SIZE - UV_INSET;
+      float v1 = (SKILL_ICON_H * (ir + 1)) / SKILL_TEX_SIZE - UV_INSET;
 
-      float iconX = px + 12 * g_uiPanelScale;
-      float iconY = py + (ry + 1) * g_uiPanelScale;
-      float iconW = iconDisplayW * g_uiPanelScale;
-      float iconH = iconDisplayH * g_uiPanelScale;
+      float iconX = cx + (CELL_W - ICON_DISP_W) * 0.5f;
+      float iconY = cy + 6.0f;
 
       ImVec2 iMin(c.ToScreenX(iconX), c.ToScreenY(iconY));
-      ImVec2 iMax(c.ToScreenX(iconX + iconW), c.ToScreenY(iconY + iconH));
+      ImVec2 iMax(c.ToScreenX(iconX + ICON_DISP_W),
+                  c.ToScreenY(iconY + ICON_DISP_H));
 
       ImU32 iconTint = learned ? IM_COL32(255, 255, 255, 255)
                                : IM_COL32(255, 255, 255, 100);
@@ -2269,28 +2296,36 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
                    ImVec2(u0, v0), ImVec2(u1, v1), iconTint);
     }
 
-    // Skill name
-    ImU32 nameCol = learned ? colValue : colDim;
-    DrawPanelText(dl, c, px, py, 42, ry + 4, skill.name, nameCol);
+    // Skill name centered below icon
+    {
+      ImU32 nameCol = learned ? colValue : colDim;
+      ImVec2 nsz = ImGui::CalcTextSize(skill.name);
+      float nameY = cy + 6.0f + ICON_DISP_H + 4.0f;
+      // Clamp text to cell width
+      float nx = c.ToScreenX(cx + CELL_W * 0.5f) - nsz.x * 0.5f;
+      float cellLeft = c.ToScreenX(cx + 2.0f);
+      if (nx < cellLeft) nx = cellLeft;
+      float ny = c.ToScreenY(nameY);
+      dl->AddText(ImVec2(nx + 1, ny + 1), IM_COL32(0, 0, 0, 180), skill.name);
+      dl->AddText(ImVec2(nx, ny), nameCol, skill.name);
+    }
 
-    // AG cost
-    snprintf(buf, sizeof(buf), "AG: %d", skill.agCost);
-    ImU32 agCol = learned ? IM_COL32(100, 180, 255, 255)
-                          : IM_COL32(100, 180, 255, 100);
-    DrawPanelText(dl, c, px, py, 42, ry + 20, buf, agCol);
-
-    // Level requirement (right side)
+    // Level req badge (bottom-right corner of cell, only if > 1)
     if (skill.levelReq > 1) {
-      snprintf(buf, sizeof(buf), "Lv.%d", skill.levelReq);
+      snprintf(buf, sizeof(buf), "Lv%d", skill.levelReq);
       bool meetsReq = *s_ctx->serverLevel >= skill.levelReq;
       ImU32 reqCol = meetsReq ? colGreen : colRed;
       if (!learned)
-        reqCol = (reqCol & 0x00FFFFFF) | 0x64000000; // 40% alpha
-      DrawPanelTextRight(dl, c, px, py, 20, ry + 4, 150, buf, reqCol);
+        reqCol = (reqCol & 0x00FFFFFF) | 0x64000000;
+      ImVec2 rsz = ImGui::CalcTextSize(buf);
+      float rx = c.ToScreenX(cx + CELL_W - 3.0f) - rsz.x;
+      float ry = c.ToScreenY(cy + CELL_H - 16.0f);
+      dl->AddText(ImVec2(rx + 1, ry + 1), IM_COL32(0, 0, 0, 180), buf);
+      dl->AddText(ImVec2(rx, ry), reqCol, buf);
     }
 
     // Tooltip on hover
-    if (rowHovered) {
+    if (cellHovered) {
       float tw = 200;
       float lineH = 18;
       int numLines = 5;
@@ -2317,11 +2352,16 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
     }
   }
 
-  // Footer
+  // Footer — centered
   int learnedCount = s_ctx->learnedSkills ? (int)s_ctx->learnedSkills->size() : 0;
   snprintf(buf, sizeof(buf), "Learned: %d / %d", learnedCount, NUM_DK_SKILLS);
-  DrawPanelText(dl, c, px, py, 15, startY + NUM_DK_SKILLS * rowH + 5, buf,
-                colLabel);
+  {
+    ImVec2 fsz = ImGui::CalcTextSize(buf);
+    float fx = c.ToScreenX(px + pw * 0.5f) - fsz.x * 0.5f;
+    float fy = c.ToScreenY(py + ph - FOOTER_H);
+    dl->AddText(ImVec2(fx + 1, fy + 1), IM_COL32(0, 0, 0, 180), buf);
+    dl->AddText(ImVec2(fx, fy), colLabel, buf);
+  }
 }
 
 } // namespace InventoryUI

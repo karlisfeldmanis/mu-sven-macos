@@ -13,6 +13,7 @@ endif()
 find_package(SQLite3 REQUIRED)
 
 include_directories(include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include)
 
 add_executable(MuServer
     src/main.cpp
@@ -27,6 +28,7 @@ add_executable(MuServer
     src/handlers/InventoryHandler.cpp
     src/handlers/WorldHandler.cpp
     src/handlers/ShopHandler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/PathFinder.cpp
 )
 
 target_link_libraries(MuServer PRIVATE SQLite::SQLite3)

@@ -29,8 +29,8 @@ void HeroCharacter::RecalcStats() {
   // DK uses AG (Ability Gauge): ENE*1.0 + VIT*0.3 + DEX*0.2 + STR*0.15
   // Other classes use Mana: 20 + (Level-1)*0.5 + (Energy-10)*1
   if (m_class == 16) { // CLASS_DK
-    m_maxMana = (int)(m_energy * 1.0f + m_vitality * 0.3f +
-                      m_dexterity * 0.2f + m_strength * 0.15f);
+    m_maxMana = (int)(m_energy * 1.0f + m_vitality * 0.3f + m_dexterity * 0.2f +
+                      m_strength * 0.15f);
   } else {
     m_maxMana = (int)(20 + (m_level - 1) * 0.5f + (m_energy - 10) * 1);
   }
@@ -159,7 +159,8 @@ DamageResult HeroCharacter::RollAttack(int targetDefense,
   } else {
     hitChance = 5;
   }
-  if (hitChance < 5) hitChance = 5;
+  if (hitChance < 5)
+    hitChance = 5;
   if (rand() % 100 >= hitChance)
     return {0, DamageType::MISS};
 
@@ -454,7 +455,10 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     // Don't loop die animation — clamp to last frame when dying/dead
     bool clampAnim =
         (m_heroState == HeroState::DYING || m_heroState == HeroState::DEAD);
-    m_animFrame += ANIM_SPEED * deltaTime;
+    // Scale attack animations faster with agility (OpenMU: DEX/15 for DK)
+    bool isAttacking = (m_action >= 38 && m_action <= 51);
+    float speed = isAttacking ? ANIM_SPEED * attackSpeedMultiplier() : ANIM_SPEED;
+    m_animFrame += speed * deltaTime;
     if (clampAnim) {
       if (m_animFrame >= (float)(numKeys - 1))
         m_animFrame = (float)(numKeys - 1);
@@ -633,12 +637,12 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
   if (m_weaponBmd && !m_weaponMeshBuffers.empty() &&
       attachBone < (int)bones.size()) {
 
-    // SafeZone: back rotation (70,0,90) + offset (-20,5,55)
+    // SafeZone: back rotation (70,0,90) + offset (-20,5,40) (Main 5.2 line 6693)
     // Combat: identity (weapon BMD's own bone handles orientation)
     BoneWorldMatrix weaponOffsetMat =
         m_inSafeZone
             ? MuMath::BuildWeaponOffsetMatrix(glm::vec3(70.f, 0.f, 90.f),
-                                              glm::vec3(-20.f, 5.f, 55.f))
+                                              glm::vec3(-20.f, 5.f, 40.f))
             : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
                                               glm::vec3(0, 0, 0));
 
@@ -721,12 +725,19 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
   if (m_shieldBmd && !m_shieldMeshBuffers.empty() &&
       shieldBone < (int)bones.size()) {
 
-    // SafeZone: back rotation for shield — slightly different offset
-    // Original: shield gets (-10, 0, 0) offset on back
+    // SafeZone back rendering (Main 5.2 RenderLinkObject line 6710-6731):
+    // Shield: rotation (70,0,90) + offset (-10,0,0)
+    // Dual-wield left weapon: rotation (-110,180,90) + offset (20,15,40)
+    //   (mirrors to opposite side of back — Kayito WeaponView.cpp)
+    bool dualWieldLeft = m_inSafeZone && isDualWielding();
     BoneWorldMatrix shieldOffsetMat =
         m_inSafeZone
-            ? MuMath::BuildWeaponOffsetMatrix(glm::vec3(70.f, 0.f, 90.f),
-                                              glm::vec3(-10.f, 0.f, 0.f))
+            ? (dualWieldLeft
+                   ? MuMath::BuildWeaponOffsetMatrix(
+                         glm::vec3(-110.f, 180.f, 90.f),
+                         glm::vec3(20.f, 15.f, 40.f))
+                   : MuMath::BuildWeaponOffsetMatrix(glm::vec3(70.f, 0.f, 90.f),
+                                                     glm::vec3(-10.f, 0.f, 0.f)))
             : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
                                               glm::vec3(0, 0, 0));
 
@@ -1367,13 +1378,14 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
     if (m_action >= 0 && m_action < (int)m_skeleton->Actions.size())
       numKeys = m_skeleton->Actions[m_action].NumAnimationKeys;
 
-    float animDuration = (numKeys > 1) ? (float)numKeys / ANIM_SPEED : 0.5f;
+    float atkAnimSpeed = ANIM_SPEED * attackSpeedMultiplier();
+    float animDuration = (numKeys > 1) ? (float)numKeys / atkAnimSpeed : 0.5f;
     m_attackAnimTimer += deltaTime;
 
     if (m_attackAnimTimer >= animDuration) {
-      // Swing finished — go to cooldown
+      // Swing finished — go to cooldown (also scaled by attack speed)
       m_attackState = AttackState::COOLDOWN;
-      m_attackCooldown = ATTACK_COOLDOWN_TIME;
+      m_attackCooldown = ATTACK_COOLDOWN_TIME / attackSpeedMultiplier();
 
       // Return to combat idle (weapon stance or unarmed)
       SetAction(m_weaponBmd ? weaponIdleAction() : ACTION_STOP_MALE);
@@ -1411,7 +1423,8 @@ bool HeroCharacter::CheckAttackHit() {
   if (m_action >= 0 && m_action < (int)m_skeleton->Actions.size())
     numKeys = m_skeleton->Actions[m_action].NumAnimationKeys;
 
-  float animDuration = (numKeys > 1) ? (float)numKeys / ANIM_SPEED : 0.5f;
+  float atkAnimSpeed = ANIM_SPEED * attackSpeedMultiplier();
+  float animDuration = (numKeys > 1) ? (float)numKeys / atkAnimSpeed : 0.5f;
   float hitTime = animDuration * ATTACK_HIT_FRACTION;
 
   if (m_attackAnimTimer >= hitTime) {
@@ -1579,8 +1592,10 @@ void HeroCharacter::SetAction(int newAction) {
   if (m_action == newAction)
     return;
 
-  // Seed cross-fade blending ONLY for fist fighting transitions
-  // OR when stopping (walking -> idle) as requested by user.
+  // Cross-fade blending for smooth transitions:
+  // - Fist attack transitions
+  // - Walk -> idle (stopping)
+  // - Attack -> combat idle (weapon attacks finishing)
   bool involvesFists =
       (m_action == ACTION_ATTACK_FIST || newAction == ACTION_ATTACK_FIST);
 
@@ -1589,7 +1604,11 @@ void HeroCharacter::SetAction(int newAction) {
   bool isStopAction = (newAction >= 0 && newAction <= 10);
   bool isStopping = (isWalkingAction && isStopAction);
 
-  if (involvesFists || isStopping) {
+  // Attack -> combat idle blend (all weapon types)
+  bool isAttackAction = (m_action >= 38 && m_action <= 51);
+  bool isAttackToIdle = (isAttackAction && isStopAction);
+
+  if (involvesFists || isStopping || isAttackToIdle) {
     m_priorAction = m_action;
     m_priorAnimFrame = m_animFrame;
     m_isBlending = true;

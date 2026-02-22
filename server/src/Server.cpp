@@ -32,18 +32,24 @@ bool Server::Start(uint16_t port) {
   m_db.SeedItemDefinitions();
 
   // Seed default equipment for the test character (dynamic lookup)
-  CharacterData c = m_db.GetCharacter("TestDK");
+  CharacterData c = m_db.GetCharacter("VeteranDK");
+  if (c.id <= 0)
+    c = m_db.GetCharacter("TestDK");
+  if (c.id <= 0)
+    c = m_db.GetCharacter("TestPlayer");
   if (c.id > 0) {
     // m_db.SeedDefaultEquipment(c.id); // DISABLED: Don't reset on every
     // restart
   } else {
-    printf("[Server] WARNING: Could not seed equipment, 'TestDK' not found.\n");
+    printf("[Server] WARNING: Could not seed equipment, no character found.\n");
   }
 
   // Load terrain attributes for walkability checks (monster AI)
-  // Try both relative to root and relative to server dir
-  if (!m_world.LoadTerrainAttributes("Data/World1/EncTerrain1.att")) {
-    m_world.LoadTerrainAttributes("../Data/World1/EncTerrain1.att");
+  // Server binary is in server_build/, data is in build/Data/
+  if (!m_world.LoadTerrainAttributes("../build/Data/World1/EncTerrain1.att")) {
+    if (!m_world.LoadTerrainAttributes("Data/World1/EncTerrain1.att")) {
+      m_world.LoadTerrainAttributes("../Data/World1/EncTerrain1.att");
+    }
   }
 
   // Load NPC and monster data from database
@@ -93,6 +99,8 @@ void Server::Run() {
   srand(static_cast<unsigned int>(time(NULL)));
 
   auto lastTick = std::chrono::steady_clock::now();
+  float autosaveTimer = 0.0f;
+  static constexpr float AUTOSAVE_INTERVAL = 60.0f; // Save all characters every 60s
 
   while (m_running && !g_sigint) {
     // Calculate delta time
@@ -112,7 +120,16 @@ void Server::Run() {
           pkt.dropIndex = dropIndex;
           Broadcast(&pkt, sizeof(pkt));
         },
-        &wanderMoves, &npcMoves);
+        &wanderMoves, &npcMoves,
+        [this](uint16_t monsterIndex) {
+          // Guard killed a monster — broadcast death (no XP reward)
+          PMSG_MONSTER_DEATH_SEND deathPkt{};
+          deathPkt.h = MakeC1Header(sizeof(deathPkt), Opcode::MON_DEATH);
+          deathPkt.monsterIndex = monsterIndex;
+          deathPkt.killerCharId = 0; // Guard kill, no player credit
+          deathPkt.xpReward = 0;
+          Broadcast(&deathPkt, sizeof(deathPkt));
+        });
 
     // Broadcast wander moves to all clients
     for (auto &mv : wanderMoves) {
@@ -160,9 +177,13 @@ void Server::Run() {
         pt.fd = s->GetFd();
         pt.worldX = s->worldX;
         pt.worldZ = s->worldZ;
+        pt.gridX = static_cast<uint8_t>(s->worldZ / 100.0f);
+        pt.gridY = static_cast<uint8_t>(s->worldX / 100.0f);
         CharacterClass cls = static_cast<CharacterClass>(s->classCode);
-        pt.defense = StatCalculator::CalculateDefense(cls, s->dexterity) + s->totalDefense;
-        pt.defenseRate = StatCalculator::CalculateDefenseRate(cls, s->dexterity);
+        pt.defense = StatCalculator::CalculateDefense(cls, s->dexterity) +
+                     s->totalDefense;
+        pt.defenseRate =
+            StatCalculator::CalculateDefenseRate(cls, s->dexterity);
         pt.life = s->hp;
         pt.dead = s->dead;
         targets.push_back(pt);
@@ -195,8 +216,9 @@ void Server::Run() {
               if (mon) {
                 mon->hp = mon->maxHp;
                 mon->aggroTargetFd = -1;
-                mon->isChasing = false;
-                mon->isReturning = true;
+                mon->aiState = MonsterInstance::AIState::RETURNING;
+                mon->currentPath.clear();
+                mon->pathStep = 0;
                 printf("[Combat] Mon %d killed player fd=%d. Resetting mon HP "
                        "to %d\n",
                        mon->index, s->GetFd(), mon->maxHp);
@@ -214,6 +236,21 @@ void Server::Run() {
           }
         }
       }
+    }
+
+    // Periodic autosave (every 60 seconds)
+    autosaveTimer += dt;
+    if (autosaveTimer >= AUTOSAVE_INTERVAL) {
+      autosaveTimer = 0.0f;
+      int saved = 0;
+      for (auto &s : m_sessions) {
+        if (s->IsAlive() && s->inWorld) {
+          SaveSession(*s);
+          saved++;
+        }
+      }
+      if (saved > 0)
+        printf("[Server] Autosave: saved %d character(s)\n", saved);
     }
 
     // Build poll fd array: listen socket + all sessions
@@ -264,13 +301,8 @@ void Server::Run() {
                    session->GetFd(), gain, session->hp, session->maxHp);
             // Sync updated HP to client (session-only, don't reload from DB!)
             CharacterHandler::SendCharStats(*session);
-            // Persist new HP to DB
-            m_db.UpdateCharacterStats(
-                session->characterId, session->level, session->strength,
-                session->dexterity, session->vitality, session->energy,
-                static_cast<uint16_t>(session->hp),
-                static_cast<uint16_t>(session->maxHp), session->levelUpPoints,
-                session->experience, session->quickSlotDefIndex);
+            // Persist to DB
+            SaveSession(*session);
           }
         } else {
           session->hpRemainder = 0.0f;
@@ -309,11 +341,13 @@ void Server::Run() {
       }
     }
 
-    // Remove dead sessions
+    // Remove dead sessions (save before removing)
     m_sessions.erase(
         std::remove_if(m_sessions.begin(), m_sessions.end(),
-                       [](const auto &s) {
+                       [this](const auto &s) {
                          if (!s->IsAlive()) {
+                           if (s->inWorld)
+                             SaveSession(*s);
                            printf("[Server] Client fd=%d disconnected\n",
                                   s->GetFd());
                            return true;
@@ -323,7 +357,52 @@ void Server::Run() {
         m_sessions.end());
   }
 
+  // Save all sessions before shutdown
+  for (auto &s : m_sessions) {
+    if (s->IsAlive() && s->inWorld)
+      SaveSession(*s);
+  }
   printf("[Server] Shutting down...\n");
+}
+
+void Server::SaveSession(Session &session) {
+  if (session.characterId <= 0)
+    return;
+
+  // Convert world position back to grid coordinates
+  uint8_t posX = static_cast<uint8_t>(session.worldZ / 100.0f);
+  uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
+
+  // Save stats, HP, mana, position, money
+  m_db.SaveCharacterFull(
+      session.characterId, session.level, session.strength, session.dexterity,
+      session.vitality, session.energy,
+      static_cast<uint16_t>(std::max(session.hp, 0)),
+      static_cast<uint16_t>(session.maxHp),
+      static_cast<uint16_t>(std::max(session.mana, 0)),
+      static_cast<uint16_t>(session.maxMana),
+      session.levelUpPoints, session.experience, session.zen,
+      posX, posY, session.quickSlotDefIndex);
+
+  // Save full inventory (clear + rewrite all occupied slots)
+  m_db.DeleteCharacterInventoryAll(session.characterId);
+  for (int i = 0; i < 64; i++) {
+    auto &item = session.bag[i];
+    if (item.primary && item.defIndex >= 0) {
+      m_db.SaveCharacterInventory(session.characterId, item.defIndex,
+                                  item.quantity, item.itemLevel,
+                                  static_cast<uint8_t>(i));
+    }
+  }
+
+  // Save only occupied equipment slots (skip empty 0xFF to reduce DB writes)
+  for (int i = 0; i < Session::NUM_EQUIP_SLOTS; i++) {
+    auto &eq = session.equipment[i];
+    if (eq.category != 0xFF) {
+      m_db.UpdateEquipment(session.characterId, static_cast<uint8_t>(i),
+                           eq.category, eq.itemIndex, eq.itemLevel);
+    }
+  }
 }
 
 void Server::Stop() {
@@ -382,11 +461,28 @@ void Server::OnClientConnected(Session &session) {
   if (!v2pkt.empty())
     session.Send(v2pkt.data(), v2pkt.size());
 
-  // Find the default character for our simplified flow
-  CharacterData c = m_db.GetCharacter("TestDK");
+  // Find the default character for our simplified flow (prefer level 20
+  // VeteranDK)
+  CharacterData c = m_db.GetCharacter("VeteranDK");
+  if (c.id <= 0) {
+    c = m_db.GetCharacter("TestDK");
+  }
+  if (c.id <= 0) {
+    c = m_db.GetCharacter("TestPlayer");
+  }
   if (c.id > 0) {
     session.characterId = c.id;
-    // Send character equipment from database
+    // Load equipment into session cache and send to client
+    {
+      auto equip = m_db.GetCharacterEquipment(c.id);
+      for (auto &e : equip) {
+        if (e.slot < Session::NUM_EQUIP_SLOTS) {
+          session.equipment[e.slot].category = e.category;
+          session.equipment[e.slot].itemIndex = e.itemIndex;
+          session.equipment[e.slot].itemLevel = e.itemLevel;
+        }
+      }
+    }
     CharacterHandler::SendEquipment(session, m_db, c.id);
     // Send character stats (level, STR/DEX/VIT/ENE, XP, stat points)
     CharacterHandler::SendCharStats(session, m_db, c.id);
@@ -396,8 +492,13 @@ void Server::OnClientConnected(Session &session) {
     InventoryHandler::LoadInventory(session, m_db, c.id);
     InventoryHandler::SendInventorySync(session);
 
-    printf("[Server] FD=%d initialized with character '%s' (ID:%d)\n",
-           session.GetFd(), c.name.c_str(), c.id);
+    // Load and send learned skills
+    session.learnedSkills = m_db.GetCharacterSkills(c.id);
+    CharacterHandler::SendSkillList(session);
+
+    printf(
+        "[Server] FD=%d initialized with character '%s' (ID:%d, %zu skills)\n",
+        session.GetFd(), c.name.c_str(), c.id, session.learnedSkills.size());
   } else {
     printf("[Server] WARNING: Default character 'TestDK' not found for FD=%d\n",
            session.GetFd());

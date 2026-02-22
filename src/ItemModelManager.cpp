@@ -5,15 +5,23 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 
 std::map<std::string, LoadedItemModel> ItemModelManager::s_cache;
 Shader *ItemModelManager::s_shader = nullptr;
+std::unique_ptr<Shader> ItemModelManager::s_shadowShader;
 std::string ItemModelManager::s_dataPath;
 
 void ItemModelManager::Init(Shader *shader, const std::string &dataPath) {
   s_shader = shader;
   s_dataPath = dataPath;
+
+  // Load shadow shader (same as monsters/NPCs/hero)
+  std::ifstream shaderTest("shaders/shadow.vert");
+  s_shadowShader = std::make_unique<Shader>(
+      shaderTest.good() ? "shaders/shadow.vert" : "../shaders/shadow.vert",
+      shaderTest.good() ? "shaders/shadow.frag" : "../shaders/shadow.frag");
 }
 
 static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
@@ -213,6 +221,31 @@ LoadedItemModel *ItemModelManager::Get(const std::string &filename) {
   }
   model.transformedMin = tMin;
   model.transformedMax = tMax;
+
+  // Create shadow mesh buffers (dynamic, position-only) for each mesh
+  for (const auto &mesh : model.bmd->Meshes) {
+    ItemShadowMesh sm;
+    int shadowVertCount = 0;
+    for (int t = 0; t < mesh.NumTriangles; ++t) {
+      shadowVertCount += (mesh.Triangles[t].Polygon == 4) ? 6 : 3;
+    }
+    sm.vertexCount = shadowVertCount;
+    if (sm.vertexCount == 0) {
+      model.shadowMeshes.push_back(sm);
+      continue;
+    }
+    glGenVertexArrays(1, &sm.vao);
+    glGenBuffers(1, &sm.vbo);
+    glBindVertexArray(sm.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+    glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3), nullptr,
+                 GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                          (void *)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+    model.shadowMeshes.push_back(sm);
+  }
 
   s_cache[filename] = std::move(model);
   return &s_cache[filename];
@@ -433,4 +466,107 @@ void ItemModelManager::RenderItemWorld(const std::string &filename,
   }
   glBindVertexArray(0);
   glDisable(GL_BLEND);
+}
+
+void ItemModelManager::RenderItemWorldShadow(const std::string &filename,
+                                              const glm::vec3 &pos,
+                                              const glm::mat4 &view,
+                                              const glm::mat4 &proj,
+                                              float scale,
+                                              glm::vec3 rotation) {
+  if (!s_shadowShader)
+    return;
+  LoadedItemModel *model = Get(filename);
+  if (!model || !model->bmd)
+    return;
+
+  // Shadow model matrix: translate + MU coordinate basis (no item rotation --
+  // rotation is baked into vertices before shadow projection, same as hero
+  // facing)
+  glm::mat4 mod = glm::translate(glm::mat4(1.0f), pos);
+  mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+  mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+
+  s_shadowShader->use();
+  s_shadowShader->setMat4("projection", proj);
+  s_shadowShader->setMat4("view", view);
+  s_shadowShader->setMat4("model", mod);
+
+  // Build rotation matrix for item resting angle (applied to vertices in
+  // MU-local space before shadow projection, same as facing is applied for
+  // characters)
+  glm::vec3 tCenter = (model->transformedMin + model->transformedMax) * 0.5f;
+  glm::mat4 rotMat(1.0f);
+  if (rotation.x != 0)
+    rotMat = glm::rotate(rotMat, glm::radians(rotation.x), glm::vec3(1, 0, 0));
+  if (rotation.y != 0)
+    rotMat = glm::rotate(rotMat, glm::radians(rotation.y), glm::vec3(0, 1, 0));
+  if (rotation.z != 0)
+    rotMat = glm::rotate(rotMat, glm::radians(rotation.z), glm::vec3(0, 0, 1));
+  glm::mat4 scaleMat = glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+
+  // Shadow projection constants (from ZzzBMD.cpp RenderBodyShadow)
+  const float sx = 2000.0f;
+  const float sy = 4000.0f;
+
+  // Compute bone matrices once (static bind pose)
+  auto bones = ComputeBoneMatrices(model->bmd.get(), 0, 0);
+
+  for (int mi = 0; mi < (int)model->bmd->Meshes.size() &&
+                    mi < (int)model->shadowMeshes.size();
+       ++mi) {
+    auto &sm = model->shadowMeshes[mi];
+    if (sm.vertexCount == 0 || sm.vao == 0)
+      continue;
+
+    auto &mesh = model->bmd->Meshes[mi];
+    std::vector<glm::vec3> shadowVerts;
+    shadowVerts.reserve(sm.vertexCount);
+
+    auto projectVertex = [&](int vertIdx) {
+      auto &srcVert = mesh.Vertices[vertIdx];
+      glm::vec3 pos = srcVert.Position;
+
+      // Apply bone transform (bind pose)
+      int boneIdx = srcVert.Node;
+      if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
+        pos = MuMath::TransformPoint(
+            (const float(*)[4])bones[boneIdx].data(), pos);
+      }
+
+      // Center, scale, then apply resting rotation (in MU-local space)
+      pos -= tCenter;
+      pos = glm::vec3(scaleMat * glm::vec4(pos, 1.0f));
+      pos = glm::vec3(rotMat * glm::vec4(pos, 1.0f));
+
+      // Flatten shadow to ground (items lie flat, so simple projection
+      // avoids perspective distortion from extreme rotation angles)
+      pos.z = 5.0f;
+      shadowVerts.push_back(pos);
+    };
+
+    for (int i = 0; i < mesh.NumTriangles; ++i) {
+      auto &tri = mesh.Triangles[i];
+      int steps = (tri.Polygon == 3) ? 3 : 4;
+
+      // First triangle (0,1,2)
+      for (int v = 0; v < 3; ++v)
+        projectVertex(tri.VertexIndex[v]);
+
+      // Second triangle for quads (0,2,3)
+      if (steps == 4) {
+        int quadIndices[3] = {0, 2, 3};
+        for (int v : quadIndices)
+          projectVertex(tri.VertexIndex[v]);
+      }
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0,
+                    shadowVerts.size() * sizeof(glm::vec3),
+                    shadowVerts.data());
+    glBindVertexArray(sm.vao);
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)shadowVerts.size());
+  }
+  glBindVertexArray(0);
 }

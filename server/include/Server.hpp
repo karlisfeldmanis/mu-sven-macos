@@ -21,6 +21,9 @@ public:
     void Broadcast(const void *data, size_t len);
     void BroadcastExcept(int excludeFd, const void *data, size_t len);
 
+    // Save all session data to database (stats, inventory, equipment, position)
+    void SaveSession(Session &session);
+
 private:
     void AcceptNewClients();
     void ProcessSessions();

@@ -18,6 +18,11 @@ static void ApplyEquipToHero(uint8_t slot, const WeaponEquipInfo &weapon) {
     g_state->hero->EquipWeapon(weapon);
   } else if (slot == 1) {
     g_state->hero->EquipShield(weapon);
+  } else if (weapon.category == 0xFF) {
+    // Unequipped: revert to default naked body part (slots 2-6 → parts 0-4)
+    int bodyPart = (int)slot - 2;
+    if (bodyPart >= 0 && bodyPart <= 4)
+      g_state->hero->EquipBodyPart(bodyPart, ""); // empty = default DK Class02
   } else if (g_state->getBodyPartIndex) {
     int bodyPart = g_state->getBodyPartIndex(weapon.category);
     if (bodyPart >= 0 && g_state->getBodyPartModelFile) {
@@ -65,6 +70,9 @@ static void SyncCharStats(const PMSG_CHARSTATS_SEND *stats) {
   *g_state->serverDefense = stats->defense;
   *g_state->serverAttackSpeed = stats->attackSpeed;
   *g_state->serverMagicSpeed = stats->magicSpeed;
+  // Pass attack speed to hero for agility-based animation scaling
+  if (g_state->hero)
+    g_state->hero->SetAttackSpeed(stats->attackSpeed);
   if (g_state->heroCharacterId) {
     *g_state->heroCharacterId = stats->characterId;
   }
@@ -324,8 +332,8 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
     if (headcode == Opcode::NPC_MOVE &&
         pktSize >= (int)sizeof(PMSG_NPC_MOVE_SEND)) {
       auto *p = reinterpret_cast<const PMSG_NPC_MOVE_SEND *>(pkt);
-      float worldX = (float)p->targetY * 100.0f;
-      float worldZ = (float)p->targetX * 100.0f;
+      float worldX = ((float)p->targetY + 0.5f) * 100.0f;
+      float worldZ = ((float)p->targetX + 0.5f) * 100.0f;
       if (g_state->npcManager)
         g_state->npcManager->SetNpcMoveTarget(p->npcIndex, worldX, worldZ);
     }

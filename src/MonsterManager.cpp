@@ -61,6 +61,50 @@ float MonsterManager::snapToTerrain(float worldX, float worldZ) {
          h11 * xd * zd;
 }
 
+
+// ─── Catmull-Rom spline evaluation ───────────────────────────────────────────
+
+static glm::vec3 evalCatmullRom(const std::vector<glm::vec3> &pts, float t) {
+  if (pts.empty())
+    return glm::vec3(0);
+  if (pts.size() == 1)
+    return pts[0];
+
+  int n = (int)pts.size();
+  int i = std::max(0, std::min((int)t, n - 2));
+  float f = std::clamp(t - (float)i, 0.0f, 1.0f);
+
+  const glm::vec3 &p0 = pts[std::max(0, i - 1)];
+  const glm::vec3 &p1 = pts[i];
+  const glm::vec3 &p2 = pts[std::min(n - 1, i + 1)];
+  const glm::vec3 &p3 = pts[std::min(n - 1, i + 2)];
+
+  float f2 = f * f, f3 = f2 * f;
+  return 0.5f * ((2.0f * p1) + (-p0 + p2) * f +
+                 (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * f2 +
+                 (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * f3);
+}
+
+static glm::vec3 evalCatmullRomTangent(const std::vector<glm::vec3> &pts,
+                                       float t) {
+  if (pts.size() < 2)
+    return glm::vec3(0, 0, 1);
+
+  int n = (int)pts.size();
+  int i = std::max(0, std::min((int)t, n - 2));
+  float f = std::clamp(t - (float)i, 0.0f, 1.0f);
+
+  const glm::vec3 &p0 = pts[std::max(0, i - 1)];
+  const glm::vec3 &p1 = pts[i];
+  const glm::vec3 &p2 = pts[std::min(n - 1, i + 1)];
+  const glm::vec3 &p3 = pts[std::min(n - 1, i + 2)];
+
+  float f2 = f * f;
+  return 0.5f * ((-p0 + p2) +
+                 2.0f * (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * f +
+                 3.0f * (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * f2);
+}
+
 int MonsterManager::loadMonsterModel(const std::string &bmdFile,
                                      const std::string &name, float scale,
                                      float radius, float height,
@@ -222,9 +266,10 @@ void MonsterManager::InitModels(const std::string &dataPath) {
     }
     eliteBullIdx = (int)m_models.size();
     m_models.push_back(std::move(eliteBull));
-    std::cout << "[Monster] Created Elite Bull Fighter model (separate from Bull "
-                 "Fighter for weapon support)"
-              << std::endl;
+    std::cout
+        << "[Monster] Created Elite Bull Fighter model (separate from Bull "
+           "Fighter for weapon support)"
+        << std::endl;
   }
   m_typeToModel[4] = eliteBullIdx;
 
@@ -236,7 +281,7 @@ void MonsterManager::InitModels(const std::string &dataPath) {
     lich.defense = 14;     // OpenMU: Defense=14
     lich.defenseRate = 14; // OpenMU: DefRate=14
     lich.attackRate = 62;  // OpenMU: AtkRate=62
-    lich.blendMesh = 0;    // Main 5.2: BlendMesh=0, BlendMeshLight=1.0
+    lich.blendMesh = -1;   // Disable additive gloves — fire VFX on staff tip
   }
   m_typeToModel[6] = lichIdx;
 
@@ -656,9 +701,6 @@ static float facingFromDir(const glm::vec3 &dir) {
 void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
   auto &mdl = m_models[mon.modelIdx];
 
-  // Original MU arrival threshold: 20 world units (0.2 grid cells)
-  static constexpr float ARRIVAL_DIST = 20.0f;
-
   switch (mon.state) {
   case MonsterState::IDLE: {
     // If we just entered IDLE or finished an idle cycle, pick a new action and
@@ -683,87 +725,81 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
   }
 
   case MonsterState::WALKING: {
-    setAction(mon, ACTION_WALK);
-
-    glm::vec3 dir = mon.wanderTarget - mon.position;
-    dir.y = 0.0f;
-    float dist = glm::length(dir);
-
-    if (dist < ARRIVAL_DIST || mon.stateTimer <= 0.0f) {
+    float maxT = std::max(0.0f, (float)mon.splinePoints.size() - 1.0f);
+    if (mon.splinePoints.size() < 2 || mon.splineT >= maxT) {
+      // Path exhausted — idle
       mon.state = MonsterState::IDLE;
-      mon.stateTimer = 0.0f; // Reset to pick new idle action immediately
+      mon.stateTimer = 0.0f;
+      mon.splinePoints.clear();
+      mon.splineT = 0.0f;
     } else {
-      glm::vec3 moveDir = glm::normalize(dir);
-      float step = WANDER_SPEED * dt;
-      if (step > dist)
-        step = dist;
-      mon.position += moveDir * step;
-      float tY = snapToTerrain(mon.position.x, mon.position.z);
-      mon.position.y = tY + mdl.bodyOffset;
-      mon.facing = smoothFacing(mon.facing, facingFromDir(moveDir), dt);
+      setAction(mon, ACTION_WALK);
+      mon.splineT = std::min(mon.splineT + mon.splineRate * dt, maxT);
+      glm::vec3 p = evalCatmullRom(mon.splinePoints, mon.splineT);
+      mon.position.x = p.x;
+      mon.position.z = p.z;
+      // Face along spline tangent
+      glm::vec3 tang = evalCatmullRomTangent(mon.splinePoints, mon.splineT);
+      tang.y = 0.0f;
+      if (glm::length(tang) > 0.01f)
+        mon.facing =
+            smoothFacing(mon.facing, facingFromDir(glm::normalize(tang)), dt);
     }
+    mon.position.y =
+        snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
     if (mon.monsterType == 2) {
       mon.bobTimer += dt * 3.75f;
       mon.position.y += (-std::abs(std::sin(mon.bobTimer)) * 30.0f + 30.0f);
     }
-    mon.stateTimer -= dt;
     break;
   }
 
   case MonsterState::CHASING: {
-    mon.serverPosAge += dt;
+    // Melee idle hysteresis: server attackRange=1 cell (100 units)
+    // Use 120 to account for diagonal (141) + position rounding
+    static constexpr float MELEE_IDLE_RANGE = 120.0f;
+    static constexpr float MELEE_RESUME_RANGE = 160.0f;
 
-    if (mon.serverPosAge > 15.0f) {
-      // Safety timeout — no server update in 15s, return to spawn
-      mon.serverChasing = false;
-      mon.state = MonsterState::WALKING;
-      mon.wanderTarget = mon.spawnPosition;
-      mon.stateTimer = 15.0f;
-      setAction(mon, ACTION_WALK);
-      break;
-    }
+    glm::vec3 toPlayer = m_playerPos - mon.position;
+    toPlayer.y = 0.0f;
+    float distToPlayer = glm::length(toPlayer);
+    float effectiveRange =
+        mon.inMeleeIdle ? MELEE_RESUME_RANGE : MELEE_IDLE_RANGE;
 
-    // Chase toward actual player position (smooth) instead of quantized grid
-    // cell
-    glm::vec3 chaseTarget = m_playerDead ? mon.serverTargetPos : m_playerPos;
-    glm::vec3 toTarget = chaseTarget - mon.position;
-    toTarget.y = 0.0f;
-    float distToTarget = glm::length(toTarget);
+    float maxT = std::max(0.0f, (float)mon.splinePoints.size() - 1.0f);
+    bool pathExhausted =
+        mon.splinePoints.size() < 2 || mon.splineT >= maxT;
 
-    // Within melee range — stand and face player (idle), waiting for next
-    // attack
-    static constexpr float MELEE_IDLE_RANGE = 200.0f;
-    if (distToTarget <= MELEE_IDLE_RANGE) {
+    if (!m_playerDead && distToPlayer <= effectiveRange) {
+      // Within melee range — face player, wait for attack packet
+      mon.inMeleeIdle = true;
       setAction(mon, ACTION_STOP1);
-      if (!m_playerDead) {
-        glm::vec3 toPlayer = m_playerPos - mon.position;
-        toPlayer.y = 0.0f;
-        if (glm::length(toPlayer) > 1.0f) {
-          glm::vec3 fdir = glm::normalize(toPlayer);
-          mon.facing = smoothFacing(mon.facing, facingFromDir(fdir), dt);
-        }
+      if (distToPlayer > 1.0f) {
+        glm::vec3 fdir = glm::normalize(toPlayer);
+        mon.facing = smoothFacing(mon.facing, facingFromDir(fdir), dt);
       }
-    } else if (distToTarget > ARRIVAL_DIST) {
+    } else if (!pathExhausted) {
+      // Follow A* spline toward server target
+      mon.inMeleeIdle = false;
       setAction(mon, ACTION_WALK);
-      glm::vec3 moveDir = glm::normalize(toTarget);
-      float step = CHASE_SPEED * dt;
-      if (step > distToTarget)
-        step = distToTarget;
-      mon.position += moveDir * step;
-      mon.facing = smoothFacing(mon.facing, facingFromDir(moveDir), dt);
+      mon.splineT = std::min(mon.splineT + mon.splineRate * dt, maxT);
+      glm::vec3 p = evalCatmullRom(mon.splinePoints, mon.splineT);
+      mon.position.x = p.x;
+      mon.position.z = p.z;
+      // Face along tangent
+      glm::vec3 tang = evalCatmullRomTangent(mon.splinePoints, mon.splineT);
+      tang.y = 0.0f;
+      if (glm::length(tang) > 0.01f)
+        mon.facing =
+            smoothFacing(mon.facing, facingFromDir(glm::normalize(tang)), dt);
     } else {
+      // Path exhausted — idle until next 0x35 packet
       setAction(mon, ACTION_STOP1);
-      // At target — face the player
-      if (!m_playerDead) {
-        glm::vec3 toPlayer = m_playerPos - mon.position;
-        toPlayer.y = 0.0f;
-        if (glm::length(toPlayer) > 1.0f) {
-          glm::vec3 fdir = glm::normalize(toPlayer);
-          mon.facing = smoothFacing(mon.facing, facingFromDir(fdir), dt);
-        }
+      if (!m_playerDead && distToPlayer > 1.0f) {
+        glm::vec3 fdir = glm::normalize(toPlayer);
+        mon.facing = smoothFacing(mon.facing, facingFromDir(fdir), dt);
       }
     }
-    // Always snap Y to terrain (fixes hover accumulation bug for Budge Dragon)
     mon.position.y =
         snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
     if (mon.monsterType == 2) {
@@ -783,7 +819,6 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
         mon.facing = smoothFacing(mon.facing, facingFromDir(dir), dt);
       }
     }
-    // Maintain Y position (terrain + bodyOffset + hover for flying types)
     mon.position.y =
         snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
     if (mon.monsterType == 2) {
@@ -795,9 +830,9 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
       if (mon.serverChasing) {
         mon.state = MonsterState::CHASING;
       } else {
-        // Resume walking if we have a wander target, else idle
-        float distToWander = glm::length(mon.wanderTarget - mon.position);
-        if (distToWander > ARRIVAL_DIST) {
+        // Resume walking if spline has remaining path, else idle
+        if (mon.splinePoints.size() >= 2 &&
+            mon.splineT < (float)(mon.splinePoints.size() - 1)) {
           mon.state = MonsterState::WALKING;
         } else {
           mon.state = MonsterState::IDLE;
@@ -885,57 +920,38 @@ void MonsterManager::Update(float deltaTime) {
       setAction(mon, ACTION_DIE);
     }
 
-    // Save position before update for stuck/stutter detection
-    glm::vec3 posBefore = mon.position;
-
     updateStateMachine(mon, deltaTime);
-
-    // Stuck + stutter detection for WALKING/CHASING monsters
-    if (mon.state == MonsterState::WALKING ||
-        mon.state == MonsterState::CHASING) {
-      glm::vec3 delta = mon.position - posBefore;
-      delta.y = 0.0f; // Ignore vertical (terrain snap)
-      float moveLen = glm::length(delta);
-
-      // Stuck detection: walking but not moving
-      if (moveLen < 0.01f) {
-        mon.stutterScore += deltaTime * 2.0f; // Accumulate stuck time
-      } else {
-        // Stutter detection: direction reversals
-        float prevLen = glm::length(mon.prevDelta);
-        if (moveLen > 0.1f && prevLen > 0.1f) {
-          float dot =
-              glm::dot(glm::normalize(delta), glm::normalize(mon.prevDelta));
-          if (dot < -0.5f) {
-            mon.stutterScore += 1.0f;
-          } else {
-            mon.stutterScore =
-                std::max(0.0f, mon.stutterScore - deltaTime * 2.0f);
-          }
-        }
-      }
-
-      mon.prevDelta = delta;
-      mon.prevPosition = posBefore;
-
-      // Log stuck/stutter warnings (throttled)
-      mon.stutterLogTimer -= deltaTime;
-      if (mon.stutterScore > 3.0f && mon.stutterLogTimer <= 0.0f) {
-        mon.stutterLogTimer = 2.0f;
-        std::cout << "[STUCK] Mon " << idx << " (" << mon.name
-                  << "): score=" << mon.stutterScore
-                  << " state=" << (int)mon.state << " hp=" << mon.hp << " pos=("
-                  << mon.position.x << "," << mon.position.z << ")"
-                  << " target=(" << mon.wanderTarget.x << ","
-                  << mon.wanderTarget.z << ")"
-                  << " serverAge=" << mon.serverPosAge << std::endl;
-      }
-    } else {
-      mon.stutterScore = 0.0f;
-      mon.prevDelta = glm::vec3(0.0f);
-    }
     idx++;
   }
+
+  // Monster separation: push overlapping monsters apart (O(n^2), n~50-100)
+  static constexpr float SEP_RADIUS = 80.0f;
+  static constexpr float SEP_RADIUS_SQ = SEP_RADIUS * SEP_RADIUS;
+  int n = (int)m_monsters.size();
+  for (int i = 0; i < n; ++i) {
+    auto &a = m_monsters[i];
+    if (a.state == MonsterState::DYING || a.state == MonsterState::DEAD)
+      continue;
+    for (int j = i + 1; j < n; ++j) {
+      auto &b = m_monsters[j];
+      if (b.state == MonsterState::DYING || b.state == MonsterState::DEAD)
+        continue;
+      float dx = b.position.x - a.position.x;
+      float dz = b.position.z - a.position.z;
+      float distSq = dx * dx + dz * dz;
+      if (distSq < SEP_RADIUS_SQ && distSq > 0.01f) {
+        float dist = std::sqrt(distSq);
+        float overlap = SEP_RADIUS - dist;
+        float push = overlap * 0.5f;
+        float nx = dx / dist, nz = dz / dist;
+        a.position.x -= nx * push;
+        a.position.z -= nz * push;
+        b.position.x += nx * push;
+        b.position.z += nz * push;
+      }
+    }
+  }
+
   updateDebris(deltaTime);
   updateArrows(deltaTime);
 }
@@ -994,11 +1010,15 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       float animSpeed = getAnimSpeed(mon.monsterType, mon.action);
 
       // Scale walk animation speed to match actual movement speed.
-      // Original MU MoveSpeed=400 for all Lorencia monsters — animation was
-      // tuned for that.
-      // For spiders (type 3), use a lower reference speed (200) to keep legs
-      // moving at a natural pace that matches stop animation.
-      float refMoveSpeed = (mon.monsterType == 3) ? 200.0f : 400.0f;
+      // refMoveSpeed = the speed the walk animation was designed for.
+      // Normal monsters: MoveSpeed=400 → 250 units/sec, but tuned at 400.
+      // Skeletons (14-16): use Player.bmd walk, designed for player speed 334.
+      // Spider (type 3): lower reference to keep legs natural.
+      float refMoveSpeed = 400.0f;
+      if (mon.monsterType == 3)
+        refMoveSpeed = 200.0f;
+      else if (mon.monsterType >= 14 && mon.monsterType <= 16)
+        refMoveSpeed = 334.0f;
 
       if (mon.action == ACTION_WALK) {
         if (mon.state == MonsterState::WALKING)
@@ -1147,45 +1167,122 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
         }
       }
 
-      // Lich (type 6): fire breath (Cursed Lich variation) on both hands during
-      // ATTACK1
-      if (mon.monsterType == 6 && mon.action == ACTION_ATTACK1 &&
-          mon.animFrame <= 4.0f) {
-        if (41 < (int)bones.size()) {
-          glm::mat4 modelRot = glm::mat4(1.0f);
-          modelRot =
-              glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-          modelRot =
-              glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-          modelRot = glm::rotate(modelRot, mon.facing, glm::vec3(0, 0, 1));
+      // Lich (type 6): fire VFX along entire staff (Staff03.bmd)
+      if (mon.monsterType == 6) {
+        bool wantAttackFire =
+            mon.action == ACTION_ATTACK1 && mon.animFrame <= 4.0f;
+        bool wantAmbientFire = mon.ambientVfxTimer >= 0.08f;
 
-          glm::vec3 localOff(0.0f, (float)(rand() % 32 + 32), 0.0f);
+        if (wantAttackFire || wantAmbientFire) {
+          // Find staff weapon def (bone 41)
+          const WeaponDef *staffDef = nullptr;
+          for (const auto &wd : mdl.weaponDefs) {
+            if (wd.attachBone == 41 && wd.bmd) {
+              staffDef = &wd;
+              break;
+            }
+          }
 
-          auto applyFireToBone = [&](int boneIdx) {
-            const auto &bm = bones[boneIdx];
-            glm::vec3 worldOff;
-            worldOff.x = bm[0][0] * localOff.x + bm[0][1] * localOff.y +
-                         bm[0][2] * localOff.z;
-            worldOff.y = bm[1][0] * localOff.x + bm[1][1] * localOff.y +
-                         bm[1][2] * localOff.z;
-            worldOff.z = bm[2][0] * localOff.x + bm[2][1] * localOff.y +
-                         bm[2][2] * localOff.z;
-            glm::vec3 bonePos(bm[0][3], bm[1][3], bm[2][3]);
-            glm::vec3 localPos = (bonePos + worldOff);
-            glm::vec3 worldPos =
-                glm::vec3(modelRot * glm::vec4(localPos, 1.0f));
-            glm::vec3 firePos = worldPos * mon.scale + mon.position;
-            m_vfxManager->SpawnBurst(ParticleType::FIRE, firePos, 1);
-          };
+          glm::vec3 staffTopLocal(0.0f), staffBottomLocal(0.0f);
+          bool haveStaff = false;
 
-          // Correct hand bones for Lich: 27=L Hand, 36=R Hand
-          // Tightened offset for palm-only effect
-          localOff = glm::vec3(0.0f, (float)(rand() % 16 + 8), 0.0f);
+          if (staffDef && staffDef->attachBone < (int)bones.size()) {
+            // Weapon transform chain (same as weapon rendering code)
+            const auto &parentBone = bones[staffDef->attachBone];
+            BoneWorldMatrix weaponLocal =
+                MuMath::BuildWeaponOffsetMatrix(staffDef->rot,
+                                                staffDef->offset);
+            BoneWorldMatrix parentMat;
+            MuMath::ConcatTransforms((const float(*)[4])parentBone.data(),
+                                     (const float(*)[4])weaponLocal.data(),
+                                     (float(*)[4])parentMat.data());
 
-          if (27 < (int)bones.size())
-            applyFireToBone(27); // Left palm
-          if (36 < (int)bones.size())
-            applyFireToBone(36); // Right palm
+            auto wLocalBones = ComputeBoneMatrices(staffDef->bmd);
+            std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
+            for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
+              MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
+                                       (const float(*)[4])wLocalBones[bi].data(),
+                                       (float(*)[4])wFinalBones[bi].data());
+            }
+
+            // Skin all staff vertices to model-local space
+            glm::vec3 handBonePos(bones[staffDef->attachBone][0][3],
+                                  bones[staffDef->attachBone][1][3],
+                                  bones[staffDef->attachBone][2][3]);
+            std::vector<glm::vec3> skinnedVerts;
+            for (const auto &mesh : staffDef->bmd->Meshes) {
+              for (const auto &vert : mesh.Vertices) {
+                int ni = std::clamp((int)vert.Node, 0,
+                                    (int)wFinalBones.size() - 1);
+                const auto &bm = wFinalBones[ni];
+                glm::vec3 vp;
+                vp.x = bm[0][0] * vert.Position[0] +
+                       bm[0][1] * vert.Position[1] +
+                       bm[0][2] * vert.Position[2] + bm[0][3];
+                vp.y = bm[1][0] * vert.Position[0] +
+                       bm[1][1] * vert.Position[1] +
+                       bm[1][2] * vert.Position[2] + bm[1][3];
+                vp.z = bm[2][0] * vert.Position[0] +
+                       bm[2][1] * vert.Position[1] +
+                       bm[2][2] * vert.Position[2] + bm[2][3];
+                skinnedVerts.push_back(vp);
+              }
+            }
+
+            // Find tip (farthest vertex from hand bone)
+            float maxDist = 0.0f;
+            staffTopLocal = handBonePos;
+            for (const auto &vp : skinnedVerts) {
+              float d = glm::length(vp - handBonePos);
+              if (d > maxDist) {
+                maxDist = d;
+                staffTopLocal = vp;
+              }
+            }
+            // Find bottom (farthest vertex from tip = opposite end)
+            float maxDist2 = 0.0f;
+            staffBottomLocal = staffTopLocal;
+            for (const auto &vp : skinnedVerts) {
+              float d = glm::length(vp - staffTopLocal);
+              if (d > maxDist2) {
+                maxDist2 = d;
+                staffBottomLocal = vp;
+              }
+            }
+            haveStaff = true;
+          }
+
+          if (haveStaff) {
+            glm::mat4 modelRot = glm::mat4(1.0f);
+            modelRot = glm::rotate(modelRot, glm::radians(-90.0f),
+                                   glm::vec3(0, 0, 1));
+            modelRot = glm::rotate(modelRot, glm::radians(-90.0f),
+                                   glm::vec3(0, 1, 0));
+            modelRot =
+                glm::rotate(modelRot, mon.facing, glm::vec3(0, 0, 1));
+
+            // Spawn fire along entire staff (bottom → top)
+            auto spawnFireAt = [&](float t) {
+              glm::vec3 p = glm::mix(staffBottomLocal, staffTopLocal, t);
+              glm::vec3 scatter((float)(rand() % 12 - 6),
+                                (float)(rand() % 12 - 6),
+                                (float)(rand() % 12 - 6));
+              glm::vec3 worldPos =
+                  glm::vec3(modelRot * glm::vec4(p + scatter, 1.0f));
+              glm::vec3 firePos = worldPos * mon.scale + mon.position;
+              m_vfxManager->SpawnBurst(ParticleType::FIRE, firePos, 1);
+            };
+
+            if (wantAttackFire) {
+              for (int i = 0; i < 5; ++i)
+                spawnFireAt((float)(rand() % 100) / 100.0f);
+            }
+            if (wantAmbientFire) {
+              for (int i = 0; i < 3; ++i)
+                spawnFireAt((float)(rand() % 100) / 100.0f);
+              mon.ambientVfxTimer = 0.0f;
+            }
+          }
         }
       }
 
@@ -1220,6 +1317,9 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
 
     // Terrain lightmap at monster position
     glm::vec3 tLight = sampleTerrainLightAt(mon.position);
+    // Elite Bull Fighter (type 4): darker skin tone (Main 5.2 visual reference)
+    if (mon.monsterType == 4)
+      tLight *= 0.45f;
     m_shader->setVec3("terrainLight", tLight);
 
     // Spawn fade-in (0→1 over 1 second)
@@ -1559,10 +1659,9 @@ void MonsterManager::TriggerAttackAnimation(int index) {
   // again
   // if (mon.state == MonsterState::HIT)
   //   return;
-  // Attack packet confirms monster is actively chasing — refresh timeout
+  // Attack packet confirms monster is actively chasing
   std::cout << "[Client] Mon " << index << " (" << mon.name
             << "): ATTACKING (was " << (int)mon.state << ")" << std::endl;
-  mon.serverPosAge = 0.0f;
   mon.serverChasing = true;
   mon.state = MonsterState::ATTACKING;
   // Attack animation duration based on action keys / speed
@@ -1652,7 +1751,12 @@ void MonsterManager::RespawnMonster(int index, uint8_t gridX, uint8_t gridY,
   mon.spawnAlpha = 0.0f; // Start invisible, fade in
   mon.state = MonsterState::IDLE;
   mon.serverChasing = false;
-  mon.serverPosAge = 999.0f;
+  mon.serverTargetPos = mon.position;
+  mon.splinePoints.clear();
+  mon.splineT = 0.0f;
+  mon.splineRate = 0.0f;
+  mon.inMeleeIdle = false;
+  mon.deathSmokeDone = false;
   // Play APPEAR animation (action 7) if available, else STOP1
   // Skeleton types use Player.bmd — no monster APPEAR action, just idle
   if (!mdl.animBmd && 7 < (int)mdl.bmd->Actions.size() &&
@@ -1669,37 +1773,102 @@ void MonsterManager::SetMonsterServerPosition(int index, float worldX,
   auto &mon = m_monsters[index];
   if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD)
     return;
-  std::cout << "[Client] Mon " << index << " (" << mon.name
-            << "): 0x35 move to (" << worldX << "," << worldZ
-            << ") chasing=" << chasing << " state=" << (int)mon.state
-            << std::endl;
 
-  auto &mdl = m_models[mon.modelIdx];
-  float terrainY =
-      snapToTerrain(worldX + 50.0f, worldZ + 50.0f) + mdl.bodyOffset;
-  mon.serverTargetPos = glm::vec3(worldX + 50.0f, terrainY, worldZ + 50.0f);
+  // Target world position (center of grid cell)
+  glm::vec3 newTarget(worldX + 50.0f, 0.0f, worldZ + 50.0f);
+  newTarget.y = snapToTerrain(newTarget.x, newTarget.z);
+  mon.serverTargetPos = newTarget;
   mon.serverChasing = chasing;
-  mon.serverPosAge = 0.0f;
 
-  // Transition to CHASING if server says monster is chasing
-  if (chasing && mon.state != MonsterState::ATTACKING &&
-      mon.state != MonsterState::HIT) {
-    mon.state = MonsterState::CHASING;
+  // Don't interrupt attack or hit stun animations
+  if (mon.state == MonsterState::ATTACKING || mon.state == MonsterState::HIT)
+    return;
+
+  // If monster is still fading in from respawn, snap to position instantly
+  // instead of building a visible movement spline
+  if (mon.spawnAlpha < 1.0f) {
+    auto &mdl = m_models[mon.modelIdx];
+    mon.position = newTarget;
+    mon.position.y = snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
+    mon.splinePoints.clear();
+    mon.splineT = 0.0f;
+    mon.splineRate = 0.0f;
+    mon.state = chasing ? MonsterState::CHASING : MonsterState::IDLE;
+    return;
   }
-  // If server says no longer chasing, walk to the given position then idle
-  // Also update wanderTarget when already WALKING (prevents idle gaps between
-  // wander moves)
-  if (!chasing &&
-      (mon.state == MonsterState::CHASING || mon.state == MonsterState::IDLE ||
-       mon.state == MonsterState::WALKING)) {
-    mon.state = MonsterState::WALKING;
-    mon.wanderTarget = mon.serverTargetPos;
-    // Compute a reasonable timeout based on distance to target
-    float dx = mon.serverTargetPos.x - mon.position.x;
-    float dz = mon.serverTargetPos.z - mon.position.z;
-    float dist = std::sqrt(dx * dx + dz * dz);
-    mon.stateTimer = std::max(2.0f, dist / WANDER_SPEED + 1.0f);
+
+  // Convert current position and target to grid coordinates
+  // MU mapping: gridX = worldZ / 100, gridY = worldX / 100
+  GridPoint curGrid;
+  curGrid.x = (uint8_t)std::clamp((int)(mon.position.z / 100.0f), 0, 255);
+  curGrid.y = (uint8_t)std::clamp((int)(mon.position.x / 100.0f), 0, 255);
+  GridPoint tgtGrid;
+  tgtGrid.x = (uint8_t)std::clamp((int)(worldZ / 100.0f), 0, 255);
+  tgtGrid.y = (uint8_t)std::clamp((int)(worldX / 100.0f), 0, 255);
+
+  // Dampening: if already walking/chasing to a target within 2 grid cells of
+  // the new target, skip re-pathfind to avoid jitter from frequent updates
+  if ((mon.state == MonsterState::WALKING ||
+       mon.state == MonsterState::CHASING) &&
+      !mon.splinePoints.empty()) {
+    // Get grid cell of current spline endpoint
+    const glm::vec3 &endPt = mon.splinePoints.back();
+    GridPoint endGrid;
+    endGrid.x = (uint8_t)std::clamp((int)(endPt.z / 100.0f), 0, 255);
+    endGrid.y = (uint8_t)std::clamp((int)(endPt.x / 100.0f), 0, 255);
+    if (PathFinder::ChebyshevDist(endGrid, tgtGrid) <= 2)
+      return; // Target hasn't moved significantly
   }
+
+  // Same cell — no movement needed
+  if (curGrid == tgtGrid) {
+    if (chasing)
+      mon.state = MonsterState::CHASING;
+    return;
+  }
+
+  // A* pathfind from current to target
+  std::vector<GridPoint> path;
+  if (m_terrainData && !m_terrainData->mapping.attributes.empty()) {
+    path = m_pathFinder.FindPath(curGrid, tgtGrid,
+                                 m_terrainData->mapping.attributes.data());
+  }
+
+  // Build Catmull-Rom spline control points from path
+  mon.splinePoints.clear();
+  mon.splineT = 0.0f;
+
+  // First control point = current position (ensures smooth transition)
+  mon.splinePoints.push_back(mon.position);
+
+  if (!path.empty()) {
+    // Convert each grid point to world position
+    for (auto &gp : path) {
+      float wx = (float)gp.y * 100.0f + 50.0f; // gridY → worldX
+      float wz = (float)gp.x * 100.0f + 50.0f; // gridX → worldZ
+      float wy = snapToTerrain(wx, wz);
+      mon.splinePoints.push_back(glm::vec3(wx, wy, wz));
+    }
+  } else {
+    // Pathfinding failed — fall back to direct line to target
+    mon.splinePoints.push_back(newTarget);
+  }
+
+  // Pre-compute spline rate: constant world-unit speed regardless of segment
+  // length. rate = speed * numSegments / totalXZDist
+  float speed = chasing ? CHASE_SPEED : WANDER_SPEED;
+  float numSegs = (float)(mon.splinePoints.size() - 1);
+  float totalDist = 0.0f;
+  for (size_t i = 1; i < mon.splinePoints.size(); ++i) {
+    glm::vec3 d = mon.splinePoints[i] - mon.splinePoints[i - 1];
+    d.y = 0.0f;
+    totalDist += glm::length(d);
+  }
+  mon.splineRate =
+      (numSegs > 0 && totalDist > 1.0f) ? speed * numSegs / totalDist : 2.5f;
+
+  // Set state
+  mon.state = chasing ? MonsterState::CHASING : MonsterState::WALKING;
 }
 
 int MonsterManager::CalcXPReward(int monsterIndex, int playerLevel) const {

@@ -1,6 +1,7 @@
 #include "handlers/CombatHandler.hpp"
 #include "GameWorld.hpp"
 #include "PacketDefs.hpp"
+#include "PathFinder.hpp"
 #include "Server.hpp"
 #include "StatCalculator.hpp"
 #include "handlers/CharacterHandler.hpp"
@@ -18,7 +19,8 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
   const auto *atk = reinterpret_cast<const PMSG_ATTACK_RECV *>(packet.data());
 
   auto *mon = world.FindMonster(atk->monsterIndex);
-  if (!mon || mon->state != MonsterInstance::ALIVE)
+  if (!mon || mon->aiState == MonsterInstance::AIState::DYING ||
+      mon->aiState == MonsterInstance::AIState::DEAD)
     return;
 
   CharacterClass charCls = static_cast<CharacterClass>(session.classCode);
@@ -44,16 +46,18 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       session.level, session.dexterity, session.strength);
   int defRate = mon->defenseRate;
 
-  // OpenMU hit chance: if attacker stronger, chance = 1 - defRate/atkRate
-  // If defender stronger, flat 3% (min 5% floor)
+  // OpenMU hit chance: hitChance = 1 - defRate/atkRate (min 3%)
+  // Reference: AttackableExtensions.cs GetHitChanceTo()
   int hitChance;
   if (attackRate > 0 && defRate < attackRate) {
     hitChance = 100 - (defRate * 100) / attackRate;
   } else {
-    hitChance = 5; // Minimum 5% hit chance
+    hitChance = 3; // 3% minimum (OpenMU)
   }
-  if (hitChance < 5) hitChance = 5;
-  if (hitChance > 100) hitChance = 100;
+  if (hitChance < 3)
+    hitChance = 3;
+  if (hitChance > 100)
+    hitChance = 100;
 
   if (rand() % 100 >= hitChance) {
     missed = true;
@@ -79,43 +83,49 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
     // Aggro logic
     if (mon->aggroTargetFd != session.GetFd()) {
       mon->aggroTargetFd = session.GetFd();
-      mon->aggroTimer = 15.0f;
-      mon->isChasing = true;
-      mon->isReturning = false;
-      mon->isWandering = false;
-      mon->attackCooldown = 0.0f; // Attack back immediately
-      printf("[AI] Mon %d (type %d): AGGRO on attacker fd=%d (dmg=%d)\n",
+      printf("[AI] Mon %d (type %d): NEW AGGRO on attacker fd=%d (dmg=%d)\n",
              mon->index, mon->type, session.GetFd(), damage);
-    } else {
-      mon->aggroTimer = 15.0f;
     }
+    mon->aggroTimer = 15.0f;
+    mon->aiState = MonsterInstance::AIState::CHASING;
+    mon->currentPath.clear();
+    mon->pathStep = 0;
+    mon->repathTimer = 0.0f;
+    mon->moveTimer = mon->moveDelay; // First chase step happens immediately
+    mon->attackCooldown = 0.0f;      // Attack back immediately
 
-    // Pack assist
+    // Pack assist (same-type monsters within viewRange join aggro)
     if (mon->aggressive) {
-      static constexpr float ASSIST_RANGE = 600.0f;
       for (auto &ally : world.GetMonsterInstancesMut()) {
         if (ally.index == mon->index)
           continue;
         if (ally.type != mon->type)
           continue;
-        if (ally.state != MonsterInstance::ALIVE)
+        if (ally.aiState == MonsterInstance::AIState::DYING ||
+            ally.aiState == MonsterInstance::AIState::DEAD)
           continue;
-        if (ally.isChasing || ally.isReturning)
+        if (ally.aiState == MonsterInstance::AIState::CHASING ||
+            ally.aiState == MonsterInstance::AIState::ATTACKING ||
+            ally.aiState == MonsterInstance::AIState::RETURNING)
           continue;
         if (ally.aggroTimer < 0.0f)
           continue;
-        float dx = ally.worldX - mon->worldX;
-        float dz = ally.worldZ - mon->worldZ;
-        float dist = std::sqrt(dx * dx + dz * dz);
-        if (dist < ASSIST_RANGE) {
+        // Skip monsters that recently failed to pathfind (avoid aggro loop)
+        if (ally.chaseFailCount >= 5)
+          continue;
+        int dist = PathFinder::ChebyshevDist(ally.gridX, ally.gridY,
+                                             mon->gridX, mon->gridY);
+        if (dist <= ally.viewRange) {
           ally.aggroTargetFd = session.GetFd();
           ally.aggroTimer = 15.0f;
-          ally.isChasing = true;
-          ally.isReturning = false;
-          ally.isWandering = false;
-          ally.attackCooldown = 0.0f; // Attack back immediately (pack assist)
+          ally.aiState = MonsterInstance::AIState::CHASING;
+          ally.currentPath.clear();
+          ally.pathStep = 0;
+          ally.repathTimer = 0.0f;
+          ally.moveTimer = ally.moveDelay; // First step immediately
+          ally.attackCooldown = 0.0f;
           printf("[AI] Mon %d (type %d): PACK ASSIST on attacker fd=%d "
-                 "(dist=%.0f from attacked)\n",
+                 "(dist=%d cells from attacked)\n",
                  ally.index, ally.type, session.GetFd(), dist);
         }
       }
@@ -126,7 +136,7 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       mon->hp = 0;
 
     if (killed) {
-      mon->state = MonsterInstance::DYING;
+      mon->aiState = MonsterInstance::AIState::DYING;
       mon->stateTimer = 0.0f;
 
       // OpenMU XP formula: (targetLevel + 25) * targetLevel / 3.0 * 1.25
@@ -177,12 +187,6 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       }
 
       if (leveledUp || xp > 0) {
-        server.GetDB().UpdateCharacterStats(
-            session.characterId, session.level, session.strength,
-            session.dexterity, session.vitality, session.energy,
-            (uint16_t)session.hp, (uint16_t)session.maxHp,
-            session.levelUpPoints, session.experience,
-            session.quickSlotDefIndex);
         CharacterHandler::SendCharStats(session);
       }
 

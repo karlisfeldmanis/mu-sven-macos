@@ -91,11 +91,20 @@ int NpcManager::loadModel(const std::string &npcPath,
     m_ownedBmds.push_back(std::move(part));
   }
 
+  // Find root bone (Parent == -1) for LockPositions handling
+  for (int i = 0; i < (int)model.skeleton->Bones.size(); ++i) {
+    if (!model.skeleton->Bones[i].Dummy && model.skeleton->Bones[i].Parent == -1) {
+      model.rootBone = i;
+      break;
+    }
+  }
+
   int idx = (int)m_models.size();
   m_models.push_back(std::move(model));
   std::cout << "[NPC] Loaded model '" << modelName << "' ("
             << m_models[idx].skeleton->Bones.size() << " bones, "
-            << m_models[idx].parts.size() << " parts)" << std::endl;
+            << m_models[idx].parts.size() << " parts, rootBone="
+            << m_models[idx].rootBone << ")" << std::endl;
   return idx;
 }
 
@@ -110,17 +119,17 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
   npc.action = m_models[modelIdx].defaultAction; // 0 for NPCs, 4/12 for guards
   npc.npcType = 0; // Set by AddNpcByType or Init caller
 
-  // Grid to world: WorldX = gridY * 100, WorldZ = gridX * 100
-  float worldX = (float)gridY * 100.0f;
-  float worldZ = (float)gridX * 100.0f;
+  // Grid to world: center of cell (Main 5.2 WSclient.cpp:1790-1791)
+  // Position = (gridPos + 0.5f) * TERRAIN_SCALE
+  float worldX = ((float)gridY + 0.5f) * 100.0f;
+  float worldZ = ((float)gridX + 0.5f) * 100.0f;
   float worldY = snapToTerrain(worldX, worldZ);
   npc.position = glm::vec3(worldX, worldY, worldZ);
 
-  // Direction to facing angle from original MU source (WSclient.cpp:2564):
-  //   Angle[2] = (Direction - 1) * 45.0f
-  // dir: 0=-45°(SW), 1=0°(S), 2=45°(SE), 3=90°(E), 4=135°(NE), 5=180°(N),
-  // 6=225°(NW), 7=270°(W)
-  npc.facing = (float)(dir - 1) * (float)M_PI / 4.0f;
+  // Direction to facing angle (Main 5.2 WSclient.cpp:796):
+  //   Angle[2] = ((float)Data->Angle - 1.f) * 45.f
+  // DB stores OpenMU 1-8 = protocol 0-7 + 1, so subtract 2:
+  npc.facing = (float)(dir - 2) * (float)M_PI / 4.0f;
 
   // Random animation offset so NPCs don't all sync
   npc.animFrame = (float)(m_npcs.size() * 3.7f);
@@ -272,34 +281,36 @@ void NpcManager::InitModels(const std::string &dataPath) {
   std::string itemPath = dataPath + "/Item/";
 
   // Type 249: Berdysh Guard (spear, right hand bone 33)
+  // Plate Armor = item index 9 → Male10 BMD files (Main 5.2: fileNum = index+1)
   int berdyshIdx =
       loadModel(playerPath, "player.bmd",
-                {"HelmMale09.bmd", "ArmorMale09.bmd", "PantMale09.bmd",
-                 "GloveMale09.bmd", "BootMale09.bmd"},
+                {"HelmMale10.bmd", "ArmorMale10.bmd", "PantMale10.bmd",
+                 "GloveMale10.bmd", "BootMale10.bmd"},
                 "BerdyshGuard");
   if (berdyshIdx >= 0) {
-    auto spearBmd = BMDParser::Parse(itemPath + "Spear07.bmd");
+    auto spearBmd = BMDParser::Parse(itemPath + "Spear08.bmd");
     if (spearBmd) {
       m_models[berdyshIdx].weaponBmd = spearBmd.get();
       m_models[berdyshIdx].weaponAttachBone = 33; // Right hand
-      m_models[berdyshIdx].defaultAction = 4;     // PLAYER_STOP_SWORD
+      m_models[berdyshIdx].defaultAction = 1;     // PLAYER_STOP_MALE (weapon on back)
       m_ownedBmds.push_back(std::move(spearBmd));
     }
     m_typeToModel[249] = berdyshIdx;
   }
 
   // Type 247: Crossbow Guard (bow, left hand bone 42)
+  // Plate Armor = item index 9 → Male10 BMD files (Main 5.2: fileNum = index+1)
   int crossbowIdx =
       loadModel(playerPath, "player.bmd",
-                {"HelmMale09.bmd", "ArmorMale09.bmd", "PantMale09.bmd",
-                 "GloveMale09.bmd", "BootMale09.bmd"},
+                {"HelmMale10.bmd", "ArmorMale10.bmd", "PantMale10.bmd",
+                 "GloveMale10.bmd", "BootMale10.bmd"},
                 "CrossbowGuard");
   if (crossbowIdx >= 0) {
     auto bowBmd = BMDParser::Parse(itemPath + "Bow07.bmd");
     if (bowBmd) {
       m_models[crossbowIdx].weaponBmd = bowBmd.get();
       m_models[crossbowIdx].weaponAttachBone = 42; // Left hand
-      m_models[crossbowIdx].defaultAction = 12;    // PLAYER_STOP_CROSSBOW
+      m_models[crossbowIdx].defaultAction = 1;     // PLAYER_STOP_MALE (weapon on back)
       m_ownedBmds.push_back(std::move(bowBmd));
     }
     m_typeToModel[247] = crossbowIdx;
@@ -333,14 +344,10 @@ void NpcManager::AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY,
   if (nameIt != s_npcNames.end())
     added.name = nameIt->second;
 
-  // Guard walk actions (Player.bmd action indices from _enum.h)
-  // Type 249 (Berdysh): idle=4 (PLAYER_STOP_SWORD), walk=5 (PLAYER_WALK_SWORD)
-  // Type 247 (Crossbow): idle=12 (PLAYER_STOP_CROSSBOW), walk=13
-  // (PLAYER_WALK_CROSSBOW)
-  if (npcType == 249)
-    added.walkAction = 5;
-  else if (npcType == 247)
-    added.walkAction = 13;
+  // Guard walk actions — weapons on back, use non-weapon animations
+  // PLAYER_WALK_MALE = 15 (neutral walk, no weapon in hand)
+  if (npcType == 249 || npcType == 247)
+    added.walkAction = 15;
 
   std::cout << "[NPC] Server-spawned NPC type=" << npcType
             << " idx=" << serverIndex << " at grid (" << (int)gridX << ","
@@ -351,28 +358,8 @@ void NpcManager::Init(const std::string &dataPath) {
   // Load models if not already loaded
   InitModels(dataPath);
 
-  // Hardcoded fallback: place Lorencia NPCs from MonsterSetBase.txt
-  struct HardcodedNpc {
-    uint16_t type;
-    int gx, gy, dir;
-    float scale;
-  };
-  HardcodedNpc hardcoded[] = {
-      {253, 127, 86, 2, 1.0f},   {250, 183, 137, 2, 1.0f},
-      {251, 116, 141, 3, 0.95f}, {254, 118, 113, 3, 1.0f},
-      {255, 123, 135, 1, 1.0f},  {240, 146, 110, 3, 1.0f},
-      {240, 147, 145, 1, 1.0f}};
-  for (auto &h : hardcoded) {
-    addNpc(m_typeToModel[h.type], h.gx, h.gy, h.dir, h.scale);
-    auto &added = m_npcs.back();
-    added.npcType = h.type;
-    auto nameIt = s_npcNames.find(h.type);
-    if (nameIt != s_npcNames.end())
-      added.name = nameIt->second;
-  }
-
-  std::cout << "[NPC] Initialized " << m_npcs.size()
-            << " NPCs in Lorencia (hardcoded fallback)" << std::endl;
+  // NPCs are now spawned entirely by the server via AddNpcByType()
+  std::cout << "[NPC] Models loaded, waiting for server NPC spawns" << std::endl;
 }
 
 void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
@@ -409,14 +396,23 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
 
     // Advance idle animation
     int numKeys = 1;
-    if (npc.action >= 0 && npc.action < (int)mdl.skeleton->Actions.size())
+    bool lockPos = false;
+    if (npc.action >= 0 && npc.action < (int)mdl.skeleton->Actions.size()) {
       numKeys = mdl.skeleton->Actions[npc.action].NumAnimationKeys;
+      lockPos = mdl.skeleton->Actions[npc.action].LockPositions;
+    }
     if (numKeys > 1) {
-      // Guards use Player.bmd which has faster PlaySpeed (0.30*25=7.5 fps)
-      float speed = (npc.walkAction > 0) ? 7.5f : ANIM_SPEED;
+      // Guard uses same Player.bmd as character — exact same walk animation speed
+      static constexpr float CHAR_ANIM_SPEED = 8.25f;
+      float speed = (npc.walkAction > 0 && npc.isMoving) ? CHAR_ANIM_SPEED
+                    : (npc.walkAction > 0)                ? 7.5f
+                                                          : ANIM_SPEED;
       npc.animFrame += speed * deltaTime;
-      if (npc.animFrame >= (float)numKeys) {
-        npc.animFrame = std::fmod(npc.animFrame, (float)numKeys);
+      // LockPositions actions wrap at numKeys-1 (last frame == first frame)
+      int wrapKeys = lockPos ? (numKeys - 1) : numKeys;
+      if (wrapKeys < 1) wrapKeys = 1;
+      if (npc.animFrame >= (float)wrapKeys) {
+        npc.animFrame = std::fmod(npc.animFrame, (float)wrapKeys);
         // NPC action switching (Main 5.2: ZzzCharacter.cpp:3352-3358)
         // Blacksmith: 75% action 0 (hammering), 25% action 1-2
         if (npc.npcType == 251) {
@@ -436,8 +432,8 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       glm::vec3 diff = npc.moveTarget - npc.position;
       diff.y = 0.0f; // Only move in XZ plane
       float dist = glm::length(diff);
-      // Server uses GUARD_WANDER_SPEED = 150 units/sec
-      float step = 150.0f * deltaTime;
+      // Guard patrol speed: same as character (334 u/s)
+      float step = 334.0f * deltaTime;
       if (dist <= step || dist < 1.0f) {
         // Arrived at target
         npc.position.x = npc.moveTarget.x;
@@ -473,8 +469,8 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
           npc.position.x = nextX;
           npc.position.z = nextZ;
           npc.position.y = snapToTerrain(npc.position.x, npc.position.z);
-          // Update facing toward movement direction
-          npc.facing = std::atan2(dir.x, dir.z);
+          // Update facing toward movement direction (same formula as monsters)
+          npc.facing = atan2f(dir.z, -dir.x);
         }
       }
     }
@@ -482,37 +478,51 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     // Compute bone matrices
     auto bones = ComputeBoneMatricesInterpolated(mdl.skeleton, npc.action,
                                                  npc.animFrame);
+
+    // LockPositions: cancel root bone X/Y displacement to prevent walk
+    // animation from physically moving the model (same as MonsterManager)
+    if (mdl.rootBone >= 0 && npc.action >= 0 &&
+        npc.action < (int)mdl.skeleton->Actions.size() &&
+        mdl.skeleton->Actions[npc.action].LockPositions) {
+      int rb = mdl.rootBone;
+      auto &bm = mdl.skeleton->Bones[rb].BoneMatrixes[npc.action];
+      if (!bm.Position.empty()) {
+        float dx = bones[rb][0][3] - bm.Position[0].x;
+        float dy = bones[rb][1][3] - bm.Position[0].y;
+        if (dx != 0.0f || dy != 0.0f) {
+          for (int b = 0; b < (int)bones.size(); ++b) {
+            bones[b][0][3] -= dx;
+            bones[b][1][3] -= dy;
+          }
+        }
+      }
+    }
+
     npc.cachedBones = bones;
 
     // ── Blacksmith VFX (Main 5.2: ZzzCharacter.cpp:5917-5939) ──
     // MODEL_SMITH (NPC type 251): sparks from bone 17 during hammer frames 5-6
+    // Sparks at weapon contact point (sword on anvil), not hammer grip
     if (npc.npcType == 251 && m_vfxManager && npc.action == 0 &&
         npc.animFrame >= 5.0f && npc.animFrame <= 6.0f) {
-      // Get bone 17 (hammer hand) position in model-local space
       const int HAMMER_BONE = 17;
       if (HAMMER_BONE < (int)bones.size()) {
-        // Bone position is the translation column of the 3x4 matrix
+        // Bone position in model-local space
         glm::vec3 boneLocal(bones[HAMMER_BONE][0][3], bones[HAMMER_BONE][1][3],
                             bones[HAMMER_BONE][2][3]);
+        // Offset from hand grip to hammer tip / weapon contact point
+        // In BMD-local space: extend along hammer axis toward the anvil strike
+        boneLocal += glm::vec3(0.0f, -30.0f, -15.0f);
 
-        // Transform from BMD-local to world space:
-        // Apply model rotation: rotate(-90°Z) * rotate(-90°Y) * rotate(facing)
-        float c1 = std::cos(glm::radians(-90.0f));
-        float s1 = std::sin(glm::radians(-90.0f));
-        // rotate(-90°Z): (x,y,z) -> (y, -x, z)
+        // Transform from BMD-local to world space
         glm::vec3 r1(boneLocal.y, -boneLocal.x, boneLocal.z);
-        // rotate(-90°Y): (x,y,z) -> (z, y, -x)
         glm::vec3 r2(r1.z, r1.y, -r1.x);
-
-        // Fix: Adjust facing for guards (-90 degrees to align correctly)
-        float adjustedFacing = npc.facing - glm::radians(90.0f);
+        float adjustedFacing = npc.facing;
         float cf = std::cos(adjustedFacing);
         float sf = std::sin(adjustedFacing);
         glm::vec3 r3(r2.x * cf - r2.y * sf, r2.x * sf + r2.y * cf, r2.z);
-        // Apply scale and translate to world
         glm::vec3 sparkPos = npc.position + r3 * npc.scale;
 
-        // Spawn 4 spark particles (Main 5.2: CreateJoint + CreateParticle x4)
         m_vfxManager->SpawnBurst(ParticleType::HIT_SPARK, sparkPos, 4);
       }
     }
@@ -533,8 +543,7 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     // Fix: Rotate -90 degrees around Z to align guards correctly
     model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
     model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-    model = glm::rotate(model, npc.facing - glm::radians(90.0f),
-                        glm::vec3(0, 0, 1));
+    model = glm::rotate(model, npc.facing, glm::vec3(0, 0, 1));
     if (npc.scale != 1.0f)
       model = glm::scale(model, glm::vec3(npc.scale));
 
@@ -594,15 +603,22 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     if (mdl.weaponBmd && mdl.weaponAttachBone >= 0 &&
         !npc.weaponMeshBuffers.empty() &&
         mdl.weaponAttachBone < (int)bones.size()) {
-      // Guard weapon attachment: same as HeroCharacter — parentMat = bone *
-      // identity offset. The correct idle animation (PLAYER_STOP_SWORD /
-      // PLAYER_STOP_CROSSBOW) positions the hands for weapon hold.
-      BoneWorldMatrix offsetMat = MuMath::BuildWeaponOffsetMatrix(
-          glm::vec3(0.0f), glm::vec3(0.0f));
+      // Guard weapon on back (bone 47) — guards are always in safe zones
+      // Same pattern as HeroCharacter::Draw back-carry (line 625-649)
+      static constexpr int BONE_BACK = 47;
+      int attachBone = (BONE_BACK < (int)bones.size())
+                           ? BONE_BACK
+                           : mdl.weaponAttachBone;
+
+      // Back rotation (70,0,90) + offset (-20,5,55) for back carry
+      BoneWorldMatrix offsetMat = (attachBone == BONE_BACK)
+          ? MuMath::BuildWeaponOffsetMatrix(glm::vec3(70.f, 0.f, 90.f),
+                                            glm::vec3(-20.f, 5.f, 55.f))
+          : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0.0f), glm::vec3(0.0f));
 
       BoneWorldMatrix parentMat;
       MuMath::ConcatTransforms(
-          (const float(*)[4])bones[mdl.weaponAttachBone].data(),
+          (const float(*)[4])bones[attachBone].data(),
           (const float(*)[4])offsetMat.data(), (float(*)[4])parentMat.data());
 
       // Compute weapon bone matrices with parentMat as root

@@ -154,6 +154,7 @@ public:
   int GetDefense() const { return m_defense; }
   int GetAttackSuccessRate() const { return m_attackSuccessRate; }
   int GetDefenseSuccessRate() const { return m_defenseSuccessRate; }
+  void SetAttackSpeed(int speed) { m_serverAttackSpeed = speed; }
   bool LeveledUpThisFrame() const { return m_leveledUpThisFrame; }
   void ClearLevelUpFlag() { m_leveledUpThisFrame = false; }
 
@@ -326,6 +327,11 @@ private:
   }
   static constexpr float ATTACK_COOLDOWN_TIME = 0.6f;
   static constexpr float ATTACK_HIT_FRACTION = 0.4f;
+  int m_serverAttackSpeed = 0; // From server (DEX/15 for DK)
+  // Agility-based attack speed multiplier: 3% faster per attack speed point
+  float attackSpeedMultiplier() const {
+    return 1.0f + m_serverAttackSpeed * 0.03f;
+  }
 
   // ── Weapon animation selection (Main 5.2 ZzzCharacter.cpp) ──
   // These resolve the correct action based on weapon category, twoHanded flag,

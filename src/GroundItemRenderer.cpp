@@ -2,6 +2,7 @@
 #include "ItemDatabase.hpp"
 #include "ItemModelManager.hpp"
 #include "imgui.h"
+#include <GL/glew.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -335,6 +336,43 @@ void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
       }
     }
   }
+}
+
+void RenderShadows(GroundItem *items, int maxItems, const glm::mat4 &view,
+                   const glm::mat4 &proj) {
+  // GL state for shadow pass (same as monsters/NPCs/hero)
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glDepthMask(GL_FALSE);
+  glEnable(GL_POLYGON_OFFSET_FILL);
+  glPolygonOffset(-1.0f, -1.0f);
+  glDisable(GL_CULL_FACE);
+  glEnable(GL_STENCIL_TEST);
+
+  for (int i = 0; i < maxItems; ++i) {
+    auto &gi = items[i];
+    if (!gi.active)
+      continue;
+
+    const char *modelFile = ItemDatabase::GetDropModelName(gi.defIndex);
+    if (!modelFile)
+      continue; // Skip Zen piles (no shadow needed for scattered coins)
+
+    // Stencil: prevent overlap darkening per item
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilFunc(GL_EQUAL, 0, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
+
+    ItemModelManager::RenderItemWorldShadow(modelFile, gi.position, view, proj,
+                                            gi.scale, gi.angle);
+  }
+
+  // Restore GL state
+  glBindVertexArray(0);
+  glDisable(GL_STENCIL_TEST);
+  glDisable(GL_POLYGON_OFFSET_FILL);
+  glDepthMask(GL_TRUE);
+  glEnable(GL_CULL_FACE);
 }
 
 } // namespace GroundItemRenderer
