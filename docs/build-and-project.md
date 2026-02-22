@@ -3,8 +3,10 @@
 ## Build
 
 ```bash
-cd build && cmake .. && make -j$(sysctl -n hw.ncpu)
+cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$(sysctl -n hw.ncpu)
 ```
+
+**Always use Release builds** (`-DCMAKE_BUILD_TYPE=Release`) for the client — Debug builds have significant performance issues due to unoptimized rendering code.
 
 Five targets: `MuRemaster` (game client), `MuServer` (game server), `ModelViewer` (BMD object browser), `CharViewer` (character animation browser), and `MonsterViewer` (combat simulator).
 Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui, giflib, SQLite3 (server only).
@@ -13,6 +15,10 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 ```bash
 cd server_build && cmake ../server && make -j$(sysctl -n hw.ncpu)
 ```
+
+### Data Directory
+
+`build/Data/` is the sole data directory. Base assets from Kayito 0.97k (complete client with terrain, models, textures), with `Player.bmd` from Main 5.2 (247 actions). No root `Data` symlink — the client runs from `build/` and accesses `Data/` relative to CWD. Server runs from `server_build/` and accesses `../build/Data/`.
 
 ### macOS Specifics
 - **Window Activation**: Uses `activateMacOSApp()` (Objective-C runtime) to force the GLFW window to the foreground on launch.
@@ -143,7 +149,8 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `server/src/Session.cpp` | Per-client session state. |
 | `server/src/PacketHandler.cpp` | Server packet routing to handlers. |
 | `server/src/Database.cpp` | SQLite database: characters, items, NPCs, monsters. |
-| `server/src/GameWorld.cpp` | Game world: terrain attributes, safe zones, spawn management. |
+| `server/src/GameWorld.cpp` | Game world: terrain attributes, safe zones, monster AI state machine, pathfinding. |
+| `src/PathFinder.cpp` | A* pathfinding on 256x256 terrain grid (shared between server and client). |
 | `server/src/StatCalculator.cpp` | DK stat formulas: HP, damage, defense, XP. |
 | `server/src/handlers/CharacterHandler.cpp` | Character creation, stat allocation, save/load. |
 | `server/src/handlers/CombatHandler.cpp` | Attack resolution, damage calculation, death/XP. |

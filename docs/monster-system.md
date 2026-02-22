@@ -121,6 +121,51 @@ TYPE 201-259: KIND_NPC
 TYPE 260+:    KIND_MONSTER
 ```
 
+## Server-Side Monster AI (GameWorld.cpp)
+
+Monster AI runs entirely on the server. The client only receives target positions and pathfinds visually.
+
+### AI State Machine
+
+```
+IDLE → WANDERING → IDLE (cycle every 2-6 seconds)
+IDLE → CHASING → ATTACKING → CHASING (aggro on player)
+CHASING → RETURNING → IDLE (leash/de-aggro/path fail)
+DYING → DEAD → IDLE (death + respawn after 10s)
+```
+
+### State Details
+
+| State | Behavior |
+|-------|----------|
+| **IDLE** | Wait 2-6s, pick random walkable cell within moveRange, pathfind there |
+| **WANDERING** | Walk along path, interrupt if player enters viewRange. Emit target on state entry. |
+| **CHASING** | A* pathfind toward aggro target every 1s. Give up after 5 consecutive path failures. |
+| **ATTACKING** | Deal damage every attackCooldown. Return to CHASING if target leaves attackRange. |
+| **RETURNING** | Pathfind back to spawn. Teleport if no path. Restore full HP on arrival. |
+| **DYING** | 3s death animation timer. |
+| **DEAD** | Wait RESPAWN_DELAY (10s), then respawn at original spawn with full HP. |
+
+### PathFinder (A*)
+
+Server uses `PathFinder::FindPath()` — A* on the 256x256 terrain grid.
+- Max path length: 16 steps (monsters re-pathfind periodically for longer chases)
+- Max iterations: 500 (prevent stalls)
+- Checks terrain walkability (`TW_NOMOVE`) and monster occupancy grid
+- Monsters temporarily clear their own cell before pathfinding
+
+### Pack Assist
+
+When an aggressive monster is attacked, same-type allies within viewRange join the chase.
+- Skips monsters already CHASING/ATTACKING/RETURNING
+- Skips monsters with chaseFailCount >= 5 (prevents infinite aggro loop)
+- Resets on return to spawn or respawn
+
+### Wander Emission
+
+When transitioning IDLE→WANDERING, the server emits `MON_MOVE` with the wander target immediately.
+Without this emit, the client never sees the monster start walking.
+
 ## Reference Code
 
 - `ZzzCharacter.cpp:CreateMonster()` (line 12577) -- Type-to-model mapping + scale
@@ -131,3 +176,5 @@ TYPE 260+:    KIND_MONSTER
 - `Monster.txt` -- Stats table
 - `MonsterSetBase.txt` -- Spawn positions
 - `_define.h:483` -- Action constants
+- `server/src/GameWorld.cpp` -- Server-side AI state machine, pathfinding, terrain attributes
+- `src/PathFinder.cpp` -- A* pathfinding implementation

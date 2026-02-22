@@ -7,9 +7,11 @@ Server-side balance reference: **OpenMU Version075** (`references/OpenMU/`) -- u
 ## Build
 
 ```bash
-cd build && cmake .. && make -j$(sysctl -n hw.ncpu)
+cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$(sysctl -n hw.ncpu)
 cd server_build && cmake ../server && make -j$(sysctl -n hw.ncpu)
 ```
+
+**Always use Release builds** for the client (`-DCMAKE_BUILD_TYPE=Release`) — Debug builds have significant performance issues.
 
 ## Architecture Overview
 
@@ -111,3 +113,10 @@ Skills are server-authoritative. Stored in `character_skills` table. DK starts w
 - **Giant (type 7) has no blood**: Main 5.2 excludes MODEL_MONSTER01+7 from blood particle spawning.
 - **NPC direction values**: DB stores OpenMU-style 1-8 (West=1, SouthWest=2, South=3, SouthEast=4, East=5, NE=6, North=7, NW=8). Main 5.2 MonsterSetBase uses raw protocol 0-7 (add +1 for our DB). Client formula: `facing = (dir-1) * PI/4`.
 - **NPC coordinates are version-stable**: Lorencia NPC positions (grid x/y) are identical across Version075, 095d, Season 6, and Main 5.2. Season 6 inherits from 095d which inherits from 075.
+- **Player.bmd version matters**: Must use Main 5.2 Player.bmd (247 actions, 3.0 MB), NOT Kayito 0.97k (141 actions, 1.47 MB). Our code uses Main 5.2 `_enum.h` action indices which map to wrong animations in Kayito's version. Guards also use Player.bmd skeleton.
+- **Data directory**: `build/Data/` is the sole data directory. Base assets from Kayito 0.97k (complete client with EncTerrain1.obj, models, textures), Player.bmd from Main 5.2. No root `Data` symlink.
+- **Server terrain path**: Server runs from `server_build/`, so terrain files are at `../build/Data/World1/`. Not `Data/` or `../Data/`.
+- **Safe zone attribute**: Only `TW_SAFEZONE` (0x01). Do NOT include `TW_NOGROUND` (0x08) in safe zone checks — that flag is for bridge/void cells.
+- **Monster pathfinding chase fail**: Monsters that fail pathfinding 5+ times transition to RETURNING. Pack assist must skip these monsters (chaseFailCount >= 5) or they enter an infinite aggro-give up-re-aggro loop. Reset chaseFailCount on return to spawn and respawn.
+- **Autosave optimization**: Skip empty equipment slots (category 0xFF) during autosave. Don't call SaveSession on every kill — rely on periodic 60s autosave.
+- **Guard NPC type 249**: Guards don't have shops. ShopHandler silently ignores non-shop NPC types.
