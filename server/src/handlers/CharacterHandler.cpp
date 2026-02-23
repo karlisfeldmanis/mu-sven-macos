@@ -24,7 +24,8 @@ void SendCharStats(Session &session, Database &db, int characterId) {
   for (auto &slot : equip) {
     auto itemDef = db.GetItemDefinition(slot.category, slot.itemIndex);
     if (itemDef.id > 0) {
-      session.totalDefense += itemDef.defense + GetDefenseLevelBonus(slot.category, slot.itemLevel);
+      session.totalDefense +=
+          itemDef.defense + GetDefenseLevelBonus(slot.category, slot.itemLevel);
     }
   }
 
@@ -32,6 +33,7 @@ void SendCharStats(Session &session, Database &db, int characterId) {
   session.characterId = c.id;
   session.characterName = c.name;
   session.charClass = c.charClass;
+  session.classCode = c.charClass;
   session.levelUpPoints = c.levelUpPoints;
   session.level = c.level;
   session.strength = c.strength;
@@ -44,17 +46,28 @@ void SendCharStats(Session &session, Database &db, int characterId) {
 
   session.maxHp = StatCalculator::CalculateMaxHP(charCls, c.level, c.vitality);
   session.hp = std::min(static_cast<int>(c.life), session.maxHp);
-  session.maxMana = StatCalculator::CalculateMaxManaOrAG(
-      charCls, c.level, c.strength, c.dexterity, c.vitality, c.energy);
+  session.maxMana = StatCalculator::CalculateMaxMP(charCls, c.level, c.energy);
   session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
 
+  session.maxAg = StatCalculator::CalculateMaxAG(c.strength, c.dexterity,
+                                                 c.vitality, c.energy);
+  session.ag = std::min(static_cast<int>(c.ag), session.maxAg);
+
   session.experience = c.experience;
-  session.quickSlotDefIndex = c.quickSlotDefIndex;
+  memcpy(session.skillBar, c.skillBar, 10);
+  memcpy(session.potionBar, c.potionBar, 8);
+  session.rmcSkillId = c.rmcSkillId;
 
   PMSG_CHARSTATS_SEND pkt{};
   pkt.h = MakeC1Header(sizeof(pkt), Opcode::CHARSTATS);
   pkt.characterId = static_cast<uint16_t>(c.id);
+  strncpy(pkt.name, c.name.c_str(), sizeof(pkt.name));
+  pkt.name[sizeof(pkt.name) - 1] = '\0';
   pkt.level = c.level;
+  printf(
+      "[Character] Sending stats for '%s': Level=%d STR=%d HP=%d/%d AG=%d/%d\n",
+      c.name.c_str(), (int)pkt.level, (int)pkt.strength, (int)pkt.life,
+      (int)pkt.maxLife, (int)pkt.ag, (int)pkt.maxAg);
   pkt.strength = c.strength;
   pkt.dexterity = c.dexterity;
   pkt.vitality = c.vitality;
@@ -63,15 +76,28 @@ void SendCharStats(Session &session, Database &db, int characterId) {
   pkt.maxLife = static_cast<uint16_t>(session.maxHp);
   pkt.mana = static_cast<uint16_t>(session.mana);
   pkt.maxMana = static_cast<uint16_t>(session.maxMana);
+  pkt.ag = static_cast<uint16_t>(session.ag);
+  pkt.maxAg = static_cast<uint16_t>(session.maxAg);
   pkt.levelUpPoints = c.levelUpPoints;
   pkt.experienceLo = static_cast<uint32_t>(c.experience & 0xFFFFFFFF);
   pkt.experienceHi = static_cast<uint32_t>(c.experience >> 32);
   pkt.charClass = c.charClass;
-  pkt.quickSlotDefIndex = c.quickSlotDefIndex;
+  memcpy(pkt.skillBar, c.skillBar, 10);
+  memcpy(pkt.potionBar, c.potionBar, 8);
+  pkt.rmcSkillId = c.rmcSkillId; // New: Populate rmcSkillId
 
-  bool hasBow = false;
-  pkt.attackSpeed = static_cast<uint16_t>(
-      StatCalculator::CalculateAttackSpeed(charCls, session.dexterity, hasBow));
+  session.hasBow = false;
+  for (auto &slot : equip) {
+    auto itemDef = db.GetItemDefinition(slot.category, slot.itemIndex);
+    if (itemDef.id > 0 && slot.category == 4) {
+      session.hasBow = true;
+      break;
+    }
+  }
+
+  bool hasBowLocal = session.hasBow;
+  pkt.attackSpeed = static_cast<uint16_t>(StatCalculator::CalculateAttackSpeed(
+      charCls, session.dexterity, hasBowLocal));
   pkt.magicSpeed = static_cast<uint16_t>(
       StatCalculator::CalculateMagicSpeed(charCls, session.dexterity));
   pkt.defense = static_cast<uint16_t>(
@@ -80,16 +106,18 @@ void SendCharStats(Session &session, Database &db, int characterId) {
 
   session.Send(&pkt, sizeof(pkt));
   printf("[Character] Sent char stats to fd=%d: Lv%d STR=%d DEX=%d VIT=%d "
-         "ENE=%d HP=%d/%d XP=%llu pts=%d DEF=%d SPD=%d\n",
+         "ENE=%d HP=%d/%d XP=%llu pts=%d RMC=%d\n",
          session.GetFd(), c.level, c.strength, c.dexterity, c.vitality,
          c.energy, session.hp, session.maxHp, (unsigned long long)c.experience,
-         c.levelUpPoints, pkt.defense, pkt.attackSpeed);
+         c.levelUpPoints, pkt.defense, pkt.attackSpeed, c.rmcSkillId);
 }
 
 void SendCharStats(Session &session) {
   PMSG_CHARSTATS_SEND pkt{};
   pkt.h = MakeC1Header(sizeof(pkt), Opcode::CHARSTATS);
   pkt.characterId = static_cast<uint16_t>(session.characterId);
+  strncpy(pkt.name, session.characterName.c_str(), sizeof(pkt.name));
+  pkt.name[sizeof(pkt.name) - 1] = '\0';
   pkt.level = session.level;
   pkt.strength = session.strength;
   pkt.dexterity = session.dexterity;
@@ -99,11 +127,12 @@ void SendCharStats(Session &session) {
   pkt.maxLife = static_cast<uint16_t>(session.maxHp);
   pkt.mana = static_cast<uint16_t>(session.mana);
   pkt.maxMana = static_cast<uint16_t>(session.maxMana);
+  pkt.ag = static_cast<uint16_t>(session.ag);
+  pkt.maxAg = static_cast<uint16_t>(session.maxAg);
   pkt.levelUpPoints = session.levelUpPoints;
   CharacterClass charCls = static_cast<CharacterClass>(session.charClass);
-  bool hasBow = false;
-  pkt.attackSpeed = static_cast<uint16_t>(
-      StatCalculator::CalculateAttackSpeed(charCls, session.dexterity, hasBow));
+  pkt.attackSpeed = static_cast<uint16_t>(StatCalculator::CalculateAttackSpeed(
+      charCls, session.dexterity, session.hasBow));
   pkt.magicSpeed = static_cast<uint16_t>(
       StatCalculator::CalculateMagicSpeed(charCls, session.dexterity));
   pkt.defense = static_cast<uint16_t>(
@@ -112,7 +141,9 @@ void SendCharStats(Session &session) {
   pkt.experienceLo = static_cast<uint32_t>(session.experience & 0xFFFFFFFF);
   pkt.experienceHi = static_cast<uint32_t>(session.experience >> 32);
   pkt.charClass = session.charClass;
-  pkt.quickSlotDefIndex = session.quickSlotDefIndex;
+  memcpy(pkt.skillBar, session.skillBar, 10);
+  memcpy(pkt.potionBar, session.potionBar, 8);
+  pkt.rmcSkillId = session.rmcSkillId; // New: Populate rmcSkillId
 
   session.Send(&pkt, sizeof(pkt));
 }
@@ -152,19 +183,25 @@ void SendEquipment(Session &session, Database &db, int characterId) {
 }
 
 // OpenMU weapon damage bonus per item level (+0 to +15)
-static const int kWeaponDmgBonus[] = {0,3,6,9,12,15,18,21,24,27,31,36,42,49,57,66};
+static const int kWeaponDmgBonus[] = {0,  3,  6,  9,  12, 15, 18, 21,
+                                      24, 27, 31, 36, 42, 49, 57, 66};
 // OpenMU armor defense bonus per item level
-static const int kArmorDefBonus[]  = {0,3,6,9,12,15,18,21,24,27,31,36,42,49,57,66};
+static const int kArmorDefBonus[] = {0,  3,  6,  9,  12, 15, 18, 21,
+                                     24, 27, 31, 36, 42, 49, 57, 66};
 // Shields: +1 per level
-static const int kShieldDefBonus[] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+static const int kShieldDefBonus[] = {0, 1, 2,  3,  4,  5,  6,  7,
+                                      8, 9, 10, 11, 12, 13, 14, 15};
 
 static int GetWeaponLevelBonus(int itemLevel) {
-  if (itemLevel < 0) return 0;
-  if (itemLevel < 16) return kWeaponDmgBonus[itemLevel];
+  if (itemLevel < 0)
+    return 0;
+  if (itemLevel < 16)
+    return kWeaponDmgBonus[itemLevel];
   return 66 + (itemLevel - 15) * 8;
 }
 static int GetDefenseLevelBonus(int category, int itemLevel) {
-  if (itemLevel < 0) return 0;
+  if (itemLevel < 0)
+    return 0;
   if (category == 6) { // Shield
     return itemLevel < 16 ? kShieldDefBonus[itemLevel] : itemLevel;
   }
@@ -176,6 +213,8 @@ void RefreshCombatStats(Session &session, Database &db, int characterId) {
   session.weaponDamageMin = 0;
   session.weaponDamageMax = 0;
   session.totalDefense = 0;
+  session.hasBow = false;
+  session.hasTwoHandedWeapon = false;
 
   // Track per-hand weapon damage for dual-wield calculation
   int rightDmgMin = 0, rightDmgMax = 0;
@@ -185,6 +224,13 @@ void RefreshCombatStats(Session &session, Database &db, int characterId) {
   for (auto &slot : equip) {
     auto itemDef = db.GetItemDefinition(slot.category, slot.itemIndex);
     if (itemDef.id > 0) {
+      if (itemDef.twoHanded) {
+        session.hasTwoHandedWeapon = true;
+      }
+      if (slot.category == 4) { // 4=Bow (OpenMU category 4)
+        session.hasBow = true;
+      }
+
       int wpnBonus = GetWeaponLevelBonus(slot.itemLevel);
       if (slot.slot == 0 && slot.category <= 5) { // R.Hand weapon
         rightDmgMin = itemDef.damageMin + wpnBonus;
@@ -196,7 +242,8 @@ void RefreshCombatStats(Session &session, Database &db, int characterId) {
         leftDmgMax = itemDef.damageMax + wpnBonus;
         hasLeftWeapon = true;
       }
-      session.totalDefense += itemDef.defense + GetDefenseLevelBonus(slot.category, slot.itemLevel);
+      session.totalDefense +=
+          itemDef.defense + GetDefenseLevelBonus(slot.category, slot.itemLevel);
 
       if (slot.slot == 7) { // Wings
         rightDmgMin += 15;
@@ -234,7 +281,9 @@ void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
   if (charId <= 0)
     charId = 1;
 
-  session.quickSlotDefIndex = save->quickSlotDefIndex;
+  memcpy(session.skillBar, save->skillBar, 10);
+  memcpy(session.potionBar, save->potionBar, 8);
+  session.rmcSkillId = save->rmcSkillId; // New: Save rmcSkillId to session
 
   uint8_t posX = static_cast<uint8_t>(session.worldZ / 100.0f);
   uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
@@ -242,8 +291,12 @@ void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
       charId, session.level, session.strength, session.dexterity,
       session.vitality, session.energy, save->life, save->maxLife,
       static_cast<uint16_t>(std::max(session.mana, 0)),
-      static_cast<uint16_t>(session.maxMana), session.levelUpPoints,
-      session.experience, session.zen, posX, posY, session.quickSlotDefIndex);
+      static_cast<uint16_t>(session.maxMana),
+      static_cast<uint16_t>(std::max(session.ag, 0)),
+      static_cast<uint16_t>(session.maxAg), session.levelUpPoints,
+      save->experienceLo | (static_cast<uint64_t>(save->experienceHi) << 32),
+      session.zen, posX, posY, session.skillBar, session.potionBar,
+      save->rmcSkillId);
 
   if (session.dead && save->life > 0) {
     // Respawn: enforce full HP and AG/mana server-side
@@ -287,6 +340,7 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
             itemDef.level, (int)session.strength, itemDef.reqStrength,
             (int)session.dexterity, itemDef.reqDexterity);
         SendEquipment(session, db, charId);
+        InventoryHandler::SendInventorySync(session);
         return;
       }
       int bitIndex = session.charClass >> 4;
@@ -296,22 +350,36 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
                charId, eq->category, eq->itemIndex, (int)session.charClass,
                bitIndex, itemDef.classFlags);
         SendEquipment(session, db, charId);
+        InventoryHandler::SendInventorySync(session);
         return;
       }
 
       // Slot 1 (left hand) constraint logic
       if (eq->slot == 1) {
-        // If equipping a weapon (categories 0-5) in the left hand
-        if (eq->category <= 5) {
-          // 1. Must not be a two-handed weapon
+        auto equip = db.GetCharacterEquipment(charId);
+        for (auto &e : equip) {
+          if (e.slot == 0 && e.category != 0xFF) {
+            auto s0Def = db.GetItemDefinition(e.category, e.itemIndex);
+            if (s0Def.twoHanded) {
+              printf("[Character] Rejecting equip char=%d slot=1: cannot equip "
+                     "with 2-handed weapon in slot 0\n",
+                     charId);
+              SendEquipment(session, db, charId);
+              InventoryHandler::SendInventorySync(session);
+              return;
+            }
+          }
+        }
+
+        if (eq->category <= 5) { // Weapon
           if (itemDef.twoHanded) {
             printf("[Character] Rejecting equip char=%d cat=%d: cannot dual "
                    "wield two-handed weapon\n",
                    charId, eq->category);
             SendEquipment(session, db, charId);
+            InventoryHandler::SendInventorySync(session);
             return;
           }
-          // 2. Must be DK (class 1) or MG (class 3) to dual wield
           CharacterClass charCls =
               static_cast<CharacterClass>(session.classCode);
           if (charCls != CharacterClass::CLASS_DK &&
@@ -320,6 +388,7 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
                    "dual wield\n",
                    charId, eq->category);
             SendEquipment(session, db, charId);
+            InventoryHandler::SendInventorySync(session);
             return;
           }
         } else if (eq->category != 6) { // Not a shield either
@@ -327,20 +396,41 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
                  "left hand\n",
                  charId, eq->category);
           SendEquipment(session, db, charId);
+          InventoryHandler::SendInventorySync(session);
           return;
         }
       }
 
-      // Two-handed weapon logic (Slot 0 only)
+      // Two-handed weapon logic (Slot 0 only): auto-unequip left hand
       if (eq->slot == 0 && itemDef.twoHanded) {
         auto equip = db.GetCharacterEquipment(charId);
         for (auto &slot : equip) {
           if (slot.slot == 1 && slot.category != 0xFF) {
-            printf("[Character] Rejecting equip char=%d cat=%d: left hand not "
-                   "empty for two-handed weapon\n",
-                   charId, eq->category);
-            SendEquipment(session, db, charId);
-            return;
+            int16_t lhDef =
+                (int16_t)((int)slot.category * 32 + (int)slot.itemIndex);
+            auto lhItemDef = db.GetItemDefinition(lhDef);
+            int lhW = lhItemDef.width > 0 ? lhItemDef.width : 1;
+            int lhH = lhItemDef.height > 0 ? lhItemDef.height : 1;
+            bool hasSpace = false;
+            for (int r = 0; r <= 8 - lhH && !hasSpace; r++) {
+              for (int c2 = 0; c2 <= 8 - lhW && !hasSpace; c2++) {
+                bool fits = true;
+                for (int hh = 0; hh < lhH && fits; hh++)
+                  for (int ww = 0; ww < lhW && fits; ww++)
+                    if (session.bag[(r + hh) * 8 + (c2 + ww)].occupied)
+                      fits = false;
+                if (fits)
+                  hasSpace = true;
+              }
+            }
+            if (!hasSpace) {
+              printf("[Character] Rejecting equip char=%d cat=%d: no space in "
+                     "bag for left-hand item\n",
+                     charId, eq->category);
+              SendEquipment(session, db, charId);
+              InventoryHandler::SendInventorySync(session);
+              return;
+            }
           }
         }
       }
@@ -359,18 +449,136 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
     }
   }
 
+  // PRE-CHECK BAG SPACE for unequip/swap case
+  if (oldCat != 0xFF) {
+    int16_t oldDef = (int16_t)((int)oldCat * 32 + (int)oldIdx);
+    auto itemDef = db.GetItemDefinition(oldDef);
+    int w = itemDef.width > 0 ? itemDef.width : 1;
+    int h = itemDef.height > 0 ? itemDef.height : 1;
+    bool hasSpace = false;
+    int bagSlotOfNewItem = -1;
+    if (eq->category != 0xFF) {
+      int16_t newDef = (int16_t)((int)eq->category * 32 + (int)eq->itemIndex);
+      for (int i = 0; i < 64; i++) {
+        if (session.bag[i].occupied && session.bag[i].primary &&
+            session.bag[i].defIndex == newDef) {
+          bagSlotOfNewItem = i;
+          break;
+        }
+      }
+    }
+    for (int r = 0; r <= 8 - h && !hasSpace; r++) {
+      for (int c2 = 0; c2 <= 8 - w && !hasSpace; c2++) {
+        bool fits = true;
+        for (int hh = 0; hh < h && fits; hh++) {
+          for (int ww = 0; ww < w && fits; ww++) {
+            int s = (r + hh) * 8 + (c2 + ww);
+            if (s >= 64) {
+              fits = false;
+              continue;
+            }
+            if (session.bag[s].occupied) {
+              if (bagSlotOfNewItem >= 0) {
+                int16_t nDef =
+                    (int16_t)((int)eq->category * 32 + (int)eq->itemIndex);
+                auto nDefI = db.GetItemDefinition(nDef);
+                int niW = nDefI.width > 0 ? nDefI.width : 1;
+                int niH = nDefI.height > 0 ? nDefI.height : 1;
+                int niR = bagSlotOfNewItem / 8, niC = bagSlotOfNewItem % 8;
+                int cR = s / 8, cC = s % 8;
+                if (cR >= niR && cR < niR + niH && cC >= niC &&
+                    cC < niC + niW) {
+                } else
+                  fits = false;
+              } else
+                fits = false;
+            }
+          }
+        }
+        if (fits)
+          hasSpace = true;
+      }
+    }
+    if (!hasSpace) {
+      printf("[Character] Rejecting unequip/swap char=%d slot=%d: no space in "
+             "bag\n",
+             charId, eq->slot);
+      SendEquipment(session, db, charId);
+      InventoryHandler::SendInventorySync(session);
+      return;
+    }
+  }
+
+  // NOW we can safely modify state because we know it will fit.
+  // 1. Remove left-hand item if equipping 2H to slot 0 (pre-verified space
+  // above)
+  ItemDefinition tempDef;
+  const ItemDefinition *idPtr = nullptr;
+  if (eq->category != 0xFF) {
+    tempDef = db.GetItemDefinition(eq->category, eq->itemIndex);
+    idPtr = &tempDef;
+  }
+
+  if (eq->slot == 0 && idPtr && idPtr->twoHanded) {
+    for (auto &slot : oldEquip) {
+      if (slot.slot == 1 && slot.category != 0xFF) {
+        // Move left-hand item to bag (same logic as before but now we know it
+        // fits)
+        int16_t lhDef =
+            (int16_t)((int)slot.category * 32 + (int)slot.itemIndex);
+        auto lDefI = db.GetItemDefinition(lhDef);
+        int lhW = lDefI.width > 0 ? lDefI.width : 1;
+        int lhH = lDefI.height > 0 ? lDefI.height : 1;
+        bool lhPlaced = false;
+        for (int r = 0; r <= 8 - lhH && !lhPlaced; r++) {
+          for (int c2 = 0; c2 <= 8 - lhW && !lhPlaced; c2++) {
+            bool fits = true;
+            for (int hh = 0; hh < lhH && fits; hh++)
+              for (int ww = 0; ww < lhW && fits; ww++)
+                if (session.bag[(r + hh) * 8 + (c2 + ww)].occupied)
+                  fits = false;
+            if (fits) {
+              for (int hh = 0; hh < lhH; hh++) {
+                for (int ww = 0; ww < lhW; ww++) {
+                  int s = (r + hh) * 8 + (c2 + ww);
+                  session.bag[s].occupied = true;
+                  session.bag[s].primary = (hh == 0 && ww == 0);
+                  session.bag[s].defIndex = lhDef;
+                  session.bag[s].category = slot.category;
+                  session.bag[s].itemIndex = slot.itemIndex;
+                  if (hh == 0 && ww == 0) {
+                    session.bag[s].quantity = 1;
+                    session.bag[s].itemLevel = slot.itemLevel;
+                  }
+                }
+              }
+              db.SaveCharacterInventory(charId, lhDef, 1, slot.itemLevel,
+                                        (uint8_t)(r * 8 + c2));
+              lhPlaced = true;
+            }
+          }
+        }
+        db.UpdateEquipment(charId, 1, 0xFF, 0, 0);
+        session.equipment[1].category = 0xFF;
+        printf("[Character] Auto-unequipped left hand (def=%d) for 2H weapon\n",
+               lhDef);
+        break;
+      }
+    }
+  }
+
   // When equipping (category != 0xFF), remove item from inventory bag
   // Track which slot was freed so we can prefer it for the old weapon
   int freedSlot = -1;
   if (eq->category != 0xFF) {
-    int16_t defIdx = (int16_t)((int)eq->category * 32 + (int)eq->itemIndex);
+    int16_t dIdx = (int16_t)((int)eq->category * 32 + (int)eq->itemIndex);
     for (int i = 0; i < 64; i++) {
       if (session.bag[i].occupied && session.bag[i].primary &&
-          session.bag[i].defIndex == defIdx) {
+          session.bag[i].defIndex == dIdx) {
         // Clear bag slot (including multi-cell)
-        auto itemDef = db.GetItemDefinition(defIdx);
-        int w = itemDef.width > 0 ? itemDef.width : 1;
-        int h = itemDef.height > 0 ? itemDef.height : 1;
+        auto dI = db.GetItemDefinition(dIdx);
+        int w = dI.width > 0 ? dI.width : 1;
+        int h = dI.height > 0 ? dI.height : 1;
         int r = i / 8, c = i % 8;
         for (int hh = 0; hh < h; hh++) {
           for (int ww = 0; ww < w; ww++) {
@@ -382,38 +590,36 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
         freedSlot = i;
         db.DeleteCharacterInventoryItem(charId, i);
         printf("[Character] Removed equipped item from bag slot %d (def=%d)\n",
-               i, defIdx);
+               i, dIdx);
         break;
       }
     }
   }
 
   // Move old equipped item back to inventory (both unequip AND swap cases)
-  // Note: must also handle same category+index but different itemLevel (e.g.
-  // equipping +0 sword over +5 sword — the +5 must go back to inventory)
-  if (oldCat != 0xFF &&
-      !(eq->category == oldCat && eq->itemIndex == oldIdx &&
-        eq->itemLevel == oldLvl)) {
-    int16_t oldDef = (int16_t)((int)oldCat * 32 + (int)oldIdx);
-    auto itemDef = db.GetItemDefinition(oldDef);
-    int w = itemDef.width > 0 ? itemDef.width : 1;
-    int h = itemDef.height > 0 ? itemDef.height : 1;
+  // Always place old item back — even if same type/level (player may have
+  // bought a second copy from shop)
+  if (oldCat != 0xFF) {
+    int16_t oDef = (int16_t)((int)oldCat * 32 + (int)oldIdx);
+    auto oDefI = db.GetItemDefinition(oDef);
+    int w = oDefI.width > 0 ? oDefI.width : 1;
+    int h = oDefI.height > 0 ? oDefI.height : 1;
 
     // Helper lambda: try to place old weapon at a specific slot
     auto tryPlace = [&](int startSlot) -> bool {
-      int r = startSlot / 8, c2 = startSlot % 8;
-      if (c2 + w > 8 || r + h > 8)
+      int r = startSlot / 8, c = startSlot % 8;
+      if (c + w > 8 || r + h > 8)
         return false;
       for (int hh = 0; hh < h; hh++)
         for (int ww = 0; ww < w; ww++)
-          if (session.bag[(r + hh) * 8 + (c2 + ww)].occupied)
+          if (session.bag[(r + hh) * 8 + (c + ww)].occupied)
             return false;
       for (int hh = 0; hh < h; hh++) {
         for (int ww = 0; ww < w; ww++) {
-          int s = (r + hh) * 8 + (c2 + ww);
+          int s = (r + hh) * 8 + (c + ww);
           session.bag[s].occupied = true;
           session.bag[s].primary = (hh == 0 && ww == 0);
-          session.bag[s].defIndex = oldDef;
+          session.bag[s].defIndex = oDef;
           session.bag[s].category = oldCat;
           session.bag[s].itemIndex = oldIdx;
           if (hh == 0 && ww == 0) {
@@ -422,10 +628,9 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
           }
         }
       }
-      db.SaveCharacterInventory(charId, oldDef, 1, oldLvl,
-                                static_cast<uint8_t>(startSlot));
+      db.SaveCharacterInventory(charId, oDef, 1, oldLvl, (uint8_t)startSlot);
       printf("[Character] Unequipped item saved to bag slot %d (def=%d)\n",
-             startSlot, oldDef);
+             startSlot, oDef);
       return true;
     };
 
@@ -446,7 +651,7 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
 
     if (!placed) {
       printf("[Character] WARNING: No bag space for unequipped item def=%d\n",
-             oldDef);
+             oDef);
     }
   }
 
@@ -519,6 +724,8 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
   resp.result = 1;
   resp.levelUpPoints = session.levelUpPoints;
   resp.maxLife = static_cast<uint16_t>(session.maxHp);
+  resp.ag = static_cast<uint16_t>(std::max(session.ag, 0));
+  resp.maxAg = static_cast<uint16_t>(session.maxAg);
   session.Send(&resp, sizeof(resp));
 
   SendCharStats(session);
@@ -531,8 +738,11 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
         session.vitality, session.energy, static_cast<uint16_t>(session.hp),
         static_cast<uint16_t>(session.maxHp),
         static_cast<uint16_t>(std::max(session.mana, 0)),
-        static_cast<uint16_t>(session.maxMana), session.levelUpPoints,
-        session.experience, session.zen, posX, posY, session.quickSlotDefIndex);
+        static_cast<uint16_t>(session.maxMana),
+        static_cast<uint16_t>(std::max(session.ag, 0)),
+        static_cast<uint16_t>(session.maxAg), session.levelUpPoints,
+        session.experience, session.zen, posX, posY, session.skillBar,
+        session.potionBar, session.rmcSkillId);
   }
 
   printf("[Character] Stat alloc: type=%d newVal=%d pts=%d maxHP=%d\n",

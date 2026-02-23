@@ -3,22 +3,22 @@
 ## Build
 
 ```bash
-cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$(sysctl -n hw.ncpu)
+# Client (always use Release)
+cd client/build && cmake -DCMAKE_BUILD_TYPE=Release .. && ninja
+
+# Server
+cd server/build && cmake .. && ninja
 ```
 
 **Always use Release builds** (`-DCMAKE_BUILD_TYPE=Release`) for the client — Debug builds have significant performance issues due to unoptimized rendering code.
 
-Five targets: `MuRemaster` (game client), `MuServer` (game server), `ModelViewer` (BMD object browser), `CharViewer` (character animation browser), and `MonsterViewer` (combat simulator).
+Client targets: `MuRemaster` (game client), `ModelViewer` (BMD object browser), `CharViewer` (character animation browser).
+Server target: `MuServer` (game server).
 Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui, giflib, SQLite3 (server only).
-
-### Server Build
-```bash
-cd server_build && cmake ../server && make -j$(sysctl -n hw.ncpu)
-```
 
 ### Data Directory
 
-`build/Data/` is the sole data directory. Base assets from Kayito 0.97k (complete client with terrain, models, textures), with `Player.bmd` from Main 5.2 (247 actions). No root `Data` symlink — the client runs from `build/` and accesses `Data/` relative to CWD. Server runs from `server_build/` and accesses `../build/Data/`.
+`client/Data/` is the canonical data directory (symlink to `references/MuMain/src/bin/Data`). CMake auto-creates `build/Data` symlinks in both client and server build directories. Base assets from Kayito 0.97k (complete client with terrain, models, textures), with `Player.bmd` from Main 5.2 (247 actions).
 
 ### macOS Specifics
 - **Window Activation**: Uses `activateMacOSApp()` (Objective-C runtime) to force the GLFW window to the foreground on launch.
@@ -138,22 +138,21 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `main.cpp` | Game client: init sequence, render loop (terrain/objects/entities/HUD/overlays), server connection, shutdown. ~1700 lines. |
 | `model_viewer_main.cpp` | Object browser: scans Object1/ for BMDs, orbit camera, ImGui. |
 | `char_viewer_main.cpp` | Character browser: Player.bmd skeleton + body part armor system. |
-| `monster_viewer_main.cpp` | Monster combat simulator: spawn all Lorencia types, weapon switching, ranged/melee combat, VFX testing. |
+| `diag_nearby_objects.cpp` | Diagnostic: lists objects near a terrain coordinate. |
 
 ### Server Sources (server/)
 
 | File | Purpose |
 |------|---------|
 | `server/src/main.cpp` | Server entry point. |
-| `server/src/Server.cpp` | TCP accept loop, session management. |
-| `server/src/Session.cpp` | Per-client session state. |
+| `server/src/Server.cpp` | TCP accept loop, session management, periodic autosave (60s). |
 | `server/src/PacketHandler.cpp` | Server packet routing to handlers. |
-| `server/src/Database.cpp` | SQLite database: characters, items, NPCs, monsters. |
-| `server/src/GameWorld.cpp` | Game world: terrain attributes, safe zones, monster AI state machine, pathfinding. |
-| `src/PathFinder.cpp` | A* pathfinding on 256x256 terrain grid (shared between server and client). |
+| `server/src/Database.cpp` | SQLite database: characters, items, NPCs, monsters, skill/potion bar persistence. |
+| `server/src/GameWorld.cpp` | Game world: terrain attributes, safe zones, monster AI state machine, A* pathfinding. |
+| `server/src/PathFinder.cpp` | A* pathfinding on 256x256 terrain grid. |
 | `server/src/StatCalculator.cpp` | DK stat formulas: HP, damage, defense, XP. |
-| `server/src/handlers/CharacterHandler.cpp` | Character creation, stat allocation, save/load. |
-| `server/src/handlers/CombatHandler.cpp` | Attack resolution, damage calculation, death/XP. |
+| `server/src/handlers/CharacterHandler.cpp` | Character creation, stat allocation, save/load, quickslot sync. |
+| `server/src/handlers/CombatHandler.cpp` | Attack resolution, skill damage, death/XP, monster aggro/pack assist. |
 | `server/src/handlers/InventoryHandler.cpp` | Item pickup, equip/unequip, inventory moves, consumption. |
 | `server/src/handlers/WorldHandler.cpp` | Position sync, monster AI, NPC viewport. |
 | `server/src/handlers/ShopHandler.cpp` | NPC shop: buy/sell with zen validation, inventory slot management. |
@@ -177,7 +176,7 @@ main.cpp (orchestrator: init, render loop, shutdown)
   - `Effect/` -- Effect textures (fire, thunder, etc.)
   - `NPC/` -- NPC BMD models + textures
   - `Item/` -- Item BMD models
-- Server database: `mu_server.db` (SQLite, auto-created)
+- Server database: `server/build/mu_server.db` (SQLite, auto-created on first run)
 
 ## Key Constants
 

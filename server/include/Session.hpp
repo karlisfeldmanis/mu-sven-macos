@@ -51,12 +51,16 @@ public:
   int defenseRate = 0;
 
   int totalDefense = 0;
+  bool hasBow = false;
+  bool hasTwoHandedWeapon = false;
 
   // Server-authoritative HP tracking (monsters stop attacking dead players)
   int hp = 0;
   int maxHp = 0;
   int mana = 0;
   int maxMana = 0;
+  int ag = 0;
+  int maxAg = 0;
   bool dead = false;
 
   // Full character stats (for stat allocation validation)
@@ -96,8 +100,14 @@ public:
   // Potion cooldown timer (seconds)
   float potionCooldown = 0.0f;
   float hpRemainder = 0.0f; // Fractional HP for safe zone regeneration
-  int16_t quickSlotDefIndex = -1;
+  int8_t skillBar[10];
+  int16_t potionBar[4];
+  int8_t rmcSkillId = -1;
   int shopNpcType = -1; // -1 means no shop is open
+
+  // AG logic timers
+  float agRegenTimer = 0.0f;
+  uint32_t lastAgUseTime = 0;
 
   // Learned skills (skill IDs)
   std::vector<uint8_t> learnedSkills;

@@ -46,7 +46,7 @@ struct NpcSpawn {
 
   // Waypoint patrol: guards cycle through patrol points
   std::vector<GridPoint> patrolWaypoints;
-  int patrolIndex = 0;           // Current waypoint target
+  int patrolIndex = 0; // Current waypoint target
 
   // A* path for current patrol segment (grid-step movement like monsters)
   std::vector<GridPoint> guardPath;
@@ -59,19 +59,19 @@ struct NpcSpawn {
 struct MonsterTypeDef {
   uint16_t type;
   int hp, defense, defenseRate, attackMin, attackMax, attackRate, level;
-  float atkCooldown;  // Seconds between attacks (AtkSpeed/1000)
-  float moveDelay;    // Seconds per grid step (MoveSpeed/1000)
-  uint8_t moveRange;  // Wander radius in grid cells (MvRange)
-  uint8_t viewRange;  // Aggro detection range in grid cells (ViewRange)
+  float atkCooldown;   // Seconds between attacks (AtkSpeed/1000)
+  float moveDelay;     // Seconds per grid step (MoveSpeed/1000)
+  uint8_t moveRange;   // Wander radius in grid cells (MvRange)
+  uint8_t viewRange;   // Aggro detection range in grid cells (ViewRange)
   uint8_t attackRange; // Attack range in grid cells (1=melee, 4=Lich ranged)
   bool aggressive;     // true=red (auto-aggro), false=yellow (passive)
 };
 
 // Live monster state (server-authoritative)
 struct MonsterInstance {
-  uint16_t index;       // Unique ID (2001+)
-  uint16_t type;        // Monster type (3=Spider)
-  uint8_t gridX, gridY; // Authoritative grid position
+  uint16_t index;                 // Unique ID (2001+)
+  uint16_t type;                  // Monster type (3=Spider)
+  uint8_t gridX, gridY;           // Authoritative grid position
   uint8_t spawnGridX, spawnGridY; // Spawn position for leash/respawn
   uint8_t dir;
   float worldX, worldZ; // Derived from grid: worldX=gridY*100, worldZ=gridX*100
@@ -85,13 +85,13 @@ struct MonsterInstance {
 
   // ── Proper AI state machine (replaces boolean flag soup) ──
   enum class AIState : uint8_t {
-    IDLE,       // Standing, decrementing idle timer
-    WANDERING,  // Following A* path to random wander point
-    CHASING,    // Following A* path toward player
-    ATTACKING,  // In attack range, executing attack cooldown
-    RETURNING,  // Following A* path back to spawn
-    DYING,      // Death animation (3s)
-    DEAD        // Respawn wait (10s)
+    IDLE,      // Standing, decrementing idle timer
+    WANDERING, // Following A* path to random wander point
+    CHASING,   // Following A* path toward player
+    ATTACKING, // In attack range, executing attack cooldown
+    RETURNING, // Following A* path back to spawn
+    DYING,     // Death animation (3s)
+    DEAD       // Respawn wait (10s)
   };
   AIState aiState = AIState::IDLE;
   float stateTimer = 0.0f;     // Time in current state / idle timer
@@ -101,7 +101,7 @@ struct MonsterInstance {
   // A* path following (grid-step movement)
   std::vector<GridPoint> currentPath; // A* result, consumed one step at a time
   int pathStep = 0;                   // Current step index in path
-  float moveTimer = 0.0f;            // Accumulator for moveDelay timing
+  float moveTimer = 0.0f;             // Accumulator for moveDelay timing
 
   // Per-type AI parameters (from MonsterTypeDef)
   float atkCooldownTime = 1.8f; // Seconds between attacks
@@ -186,7 +186,7 @@ public:
   // Process monster AI: aggro, pathfinding, attacks. Returns attacks to
   // broadcast. Also populates outMoves with movement updates.
   std::vector<MonsterAttackResult>
-  ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
+  ProcessMonsterAI(float dt, std::vector<PlayerTarget> &players,
                    std::vector<MonsterMoveUpdate> &outMoves);
 
   const std::vector<NpcSpawn> &GetNpcs() const { return m_npcs; }
@@ -222,7 +222,8 @@ public:
 
   // Guard patrol constants (OpenMU: GuardIntelligence.cs)
   static constexpr float GUARD_WANDER_SPEED = 150.0f;
-  static constexpr int GUARD_ATTACK_RANGE = 3; // Grid cells — guards kill nearby monsters
+  static constexpr int GUARD_ATTACK_RANGE =
+      3; // Grid cells — guards kill nearby monsters
 
   // Load terrain attributes (.att file) for walkability checks
   bool LoadTerrainAttributes(const std::string &attFilePath);
@@ -266,17 +267,17 @@ private:
 
   // AI state handlers
   void processIdle(MonsterInstance &mon, float dt,
-                   const std::vector<PlayerTarget> &players,
+                   std::vector<PlayerTarget> &players,
                    std::vector<MonsterMoveUpdate> &outMoves);
   void processWandering(MonsterInstance &mon, float dt,
-                        const std::vector<PlayerTarget> &players,
+                        std::vector<PlayerTarget> &players,
                         std::vector<MonsterMoveUpdate> &outMoves);
   void processChasing(MonsterInstance &mon, float dt,
-                      const std::vector<PlayerTarget> &players,
+                      std::vector<PlayerTarget> &players,
                       std::vector<MonsterMoveUpdate> &outMoves,
                       std::vector<MonsterAttackResult> &attacks);
   void processAttacking(MonsterInstance &mon, float dt,
-                        const std::vector<PlayerTarget> &players,
+                        std::vector<PlayerTarget> &players,
                         std::vector<MonsterMoveUpdate> &outMoves,
                         std::vector<MonsterAttackResult> &attacks);
   void processReturning(MonsterInstance &mon, float dt,
@@ -287,8 +288,8 @@ private:
                        std::vector<MonsterMoveUpdate> &outMoves, bool chasing);
 
   // Find closest valid target within viewRange
-  const PlayerTarget *findBestTarget(const MonsterInstance &mon,
-                                     const std::vector<PlayerTarget> &players) const;
+  PlayerTarget *findBestTarget(const MonsterInstance &mon,
+                               std::vector<PlayerTarget> &players) const;
 
   // Emit broadcast only when grid cell/state changes
   static void emitMoveIfChanged(MonsterInstance &mon, uint8_t targetX,

@@ -31,25 +31,12 @@ bool Server::Start(uint16_t port) {
   m_db.SeedMonsterSpawns();
   m_db.SeedItemDefinitions();
 
-  // Seed default equipment for the test character (dynamic lookup)
-  CharacterData c = m_db.GetCharacter("VeteranDK");
-  if (c.id <= 0)
-    c = m_db.GetCharacter("TestDK");
-  if (c.id <= 0)
-    c = m_db.GetCharacter("TestPlayer");
-  if (c.id > 0) {
-    // m_db.SeedDefaultEquipment(c.id); // DISABLED: Don't reset on every
-    // restart
-  } else {
-    printf("[Server] WARNING: Could not seed equipment, no character found.\n");
-  }
+  // No longer seeding default equipment by name; use DB status
 
   // Load terrain attributes for walkability checks (monster AI)
-  // Server binary is in server_build/, data is in build/Data/
-  if (!m_world.LoadTerrainAttributes("../build/Data/World1/EncTerrain1.att")) {
-    if (!m_world.LoadTerrainAttributes("Data/World1/EncTerrain1.att")) {
-      m_world.LoadTerrainAttributes("../Data/World1/EncTerrain1.att");
-    }
+  // CMake symlinks client/Data/ into server/build/Data/
+  if (!m_world.LoadTerrainAttributes("Data/World1/EncTerrain1.att")) {
+    printf("[Server] Failed to load terrain attributes\n");
   }
 
   // Load NPC and monster data from database
@@ -100,7 +87,8 @@ void Server::Run() {
 
   auto lastTick = std::chrono::steady_clock::now();
   float autosaveTimer = 0.0f;
-  static constexpr float AUTOSAVE_INTERVAL = 60.0f; // Save all characters every 60s
+  static constexpr float AUTOSAVE_INTERVAL =
+      60.0f; // Save all characters every 60s
 
   while (m_running && !g_sigint) {
     // Calculate delta time
@@ -211,17 +199,15 @@ void Server::Run() {
             if (s->hp <= 0) {
               s->hp = 0;
               s->dead = true;
-              // Player died: reset the monster that killed them (HP + aggro)
+              // Player died: drop aggro and return to spawn (keep current HP)
               auto *mon = m_world.FindMonster(atk.monsterIndex);
               if (mon) {
-                mon->hp = mon->maxHp;
                 mon->aggroTargetFd = -1;
                 mon->aiState = MonsterInstance::AIState::RETURNING;
                 mon->currentPath.clear();
                 mon->pathStep = 0;
-                printf("[Combat] Mon %d killed player fd=%d. Resetting mon HP "
-                       "to %d\n",
-                       mon->index, s->GetFd(), mon->maxHp);
+                printf("[Combat] Mon %d killed player fd=%d (mon HP=%d/%d)\n",
+                       mon->index, s->GetFd(), mon->hp, mon->maxHp);
               }
             }
 
@@ -309,16 +295,47 @@ void Server::Run() {
         }
       }
 
-      // AG/Mana recovery (5% per second for DK AG, 2% for others in safe zone)
-      if (session->inWorld && !session->dead &&
-          session->mana < session->maxMana) {
+      // AG/Mana recovery logic
+      if (session->inWorld && !session->dead) {
         bool isDK = session->classCode == 16;
-        // DK AG recovers everywhere; other classes only in safe zone
-        if (isDK || m_world.IsSafeZone(session->worldX, session->worldZ)) {
-          float rate = isDK ? 0.05f : 0.02f;
-          int gain = (int)(rate * session->maxMana * dt);
-          if (gain >= 1) {
-            session->mana = std::min(session->mana + gain, session->maxMana);
+
+        // Mana recovery (existing logic)
+        if (session->mana < session->maxMana) {
+          if (isDK || m_world.IsSafeZone(session->worldX, session->worldZ)) {
+            float rate = isDK ? 0.05f : 0.02f;
+            int gain = (int)(rate * session->maxMana * dt);
+            if (gain >= 1) {
+              session->mana = std::min(session->mana + gain, session->maxMana);
+              CharacterHandler::SendCharStats(*session);
+            }
+          }
+        }
+
+        // AG (Ability Gauge) recovery every 3 seconds
+        if (session->ag < session->maxAg) {
+          session->agRegenTimer += dt;
+          if (session->agRegenTimer >= 3.0f) {
+            session->agRegenTimer = 0.0f;
+
+            // TotalRate: Base (DK=5%, others=3%) + Idle Bonus (3% if idle >5s)
+            float totalRate = isDK ? 5.0f : 3.0f;
+            uint32_t nowMs = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+
+            if (nowMs - session->lastAgUseTime >= 5000) {
+              totalRate += 3.0f;
+            }
+
+            int gain = static_cast<int>((session->maxAg * totalRate) / 100.0f);
+            if (gain < 1)
+              gain = 1;
+
+            session->ag = std::min(session->ag + gain, session->maxAg);
+            printf("[Regen] FD=%d AG +%d (%d/%d) Rate: %.0f%%\n",
+                   session->GetFd(), gain, session->ag, session->maxAg,
+                   totalRate);
             CharacterHandler::SendCharStats(*session);
           }
         }
@@ -374,15 +391,17 @@ void Server::SaveSession(Session &session) {
   uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
 
   // Save stats, HP, mana, position, money
-  m_db.SaveCharacterFull(
-      session.characterId, session.level, session.strength, session.dexterity,
-      session.vitality, session.energy,
-      static_cast<uint16_t>(std::max(session.hp, 0)),
-      static_cast<uint16_t>(session.maxHp),
-      static_cast<uint16_t>(std::max(session.mana, 0)),
-      static_cast<uint16_t>(session.maxMana),
-      session.levelUpPoints, session.experience, session.zen,
-      posX, posY, session.quickSlotDefIndex);
+  m_db.SaveCharacterFull(session.characterId, session.level, session.strength,
+                         session.dexterity, session.vitality, session.energy,
+                         static_cast<uint16_t>(std::max(session.hp, 0)),
+                         static_cast<uint16_t>(session.maxHp),
+                         static_cast<uint16_t>(std::max(session.mana, 0)),
+                         static_cast<uint16_t>(session.maxMana),
+                         static_cast<uint16_t>(std::max(session.ag, 0)),
+                         static_cast<uint16_t>(session.maxAg),
+                         session.levelUpPoints, session.experience, session.zen,
+                         posX, posY, session.skillBar,
+                         session.potionBar, session.rmcSkillId);
 
   // Save full inventory (clear + rewrite all occupied slots)
   m_db.DeleteCharacterInventoryAll(session.characterId);
@@ -461,16 +480,13 @@ void Server::OnClientConnected(Session &session) {
   if (!v2pkt.empty())
     session.Send(v2pkt.data(), v2pkt.size());
 
-  // Find the default character for our simplified flow (prefer level 20
-  // VeteranDK)
-  CharacterData c = m_db.GetCharacter("VeteranDK");
-  if (c.id <= 0) {
-    c = m_db.GetCharacter("TestDK");
-  }
-  if (c.id <= 0) {
-    c = m_db.GetCharacter("TestPlayer");
-  }
-  if (c.id > 0) {
+  // Find the first character for our account
+  int accountId = 1; // Default for remaster
+  auto charList = m_db.GetCharacterList(accountId);
+  CharacterData c;
+  if (!charList.empty()) {
+    c = charList[0];
+
     session.characterId = c.id;
     // Load equipment into session cache and send to client
     {
@@ -496,11 +512,11 @@ void Server::OnClientConnected(Session &session) {
     session.learnedSkills = m_db.GetCharacterSkills(c.id);
     CharacterHandler::SendSkillList(session);
 
-    printf(
-        "[Server] FD=%d initialized with character '%s' (ID:%d, %zu skills)\n",
-        session.GetFd(), c.name.c_str(), c.id, session.learnedSkills.size());
+    printf("[Server] FD=%d initialized with character '%s' (ID:%d)\n",
+           session.GetFd(), c.name.c_str(), c.id);
   } else {
-    printf("[Server] WARNING: Default character 'TestDK' not found for FD=%d\n",
+    printf("[Server] WARNING: Default character 'RealPlayer' not found for "
+           "FD=%d\n",
            session.GetFd());
   }
 
@@ -510,6 +526,7 @@ void Server::OnClientConnected(Session &session) {
     session.inWorld = true;
     session.level = c.level;
     session.charClass = c.charClass;
+    session.classCode = c.charClass;
     session.vitality = c.vitality;
     session.energy = c.energy;
     session.strength = c.strength;
@@ -526,11 +543,19 @@ void Server::OnClientConnected(Session &session) {
     session.experience = c.experience;
     session.levelUpPoints = c.levelUpPoints;
     session.dead = false;
+    memcpy(session.skillBar, c.skillBar, 10);
+    memcpy(session.potionBar, c.potionBar, 8); // 4 × int16_t
+    session.rmcSkillId = c.rmcSkillId;
   }
   CharacterHandler::RefreshCombatStats(session, m_db, c.id);
-  printf("[Server] Default char combat stats: STR=%d weapon=%d-%d def=%d\n",
-         session.strength, session.weaponDamageMin, session.weaponDamageMax,
-         session.totalDefense);
+  {
+    CharacterClass cls = static_cast<CharacterClass>(session.classCode);
+    int baseDef = StatCalculator::CalculateDefense(cls, session.dexterity);
+    printf("[Server] Combat stats: STR=%d weapon=%d-%d baseDef=%d equipDef=%d "
+           "totalDef=%d\n",
+           session.strength, session.weaponDamageMin, session.weaponDamageMax,
+           baseDef, session.totalDefense, baseDef + session.totalDefense);
+  }
 
   // Send existing ground drops so late-joining clients see them
   for (auto &drop : m_world.GetDrops()) {

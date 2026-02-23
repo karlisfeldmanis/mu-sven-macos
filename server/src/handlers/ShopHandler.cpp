@@ -9,14 +9,7 @@ namespace ShopHandler {
 static std::map<uint16_t, std::vector<std::pair<uint8_t, uint8_t>>> s_shops = {
     // Amy (253) - Potions
     {253,
-     {{14, 0},
-      {14, 1},
-      {14, 2},
-      {14, 3},
-      {14, 4},
-      {14, 5},
-      {14, 6},
-      {14, 8}}},
+     {{14, 0}, {14, 1}, {14, 2}, {14, 3}, {14, 4}, {14, 5}, {14, 6}, {14, 8}}},
     // Harold (250) - DK Armor sets
     {250,
      {{7, 0},
@@ -35,26 +28,58 @@ static std::map<uint16_t, std::vector<std::pair<uint8_t, uint8_t>>> s_shops = {
       {10, 6},
       {11, 6}}},
     // Hanzo (251) - Weapons, Shields & Skill Orbs
-    {251, {{0, 0},  {0, 1},  {0, 2},  {0, 3},  {0, 4},  {0, 5},  {1, 0},
-           {1, 1},  {1, 2},  {2, 0},  {2, 1},  {3, 0},  {3, 1},  {4, 0},
-           {4, 1},  {4, 7},  {4, 15}, {6, 0},  {6, 1},  {6, 2},  {6, 3},
-           {12, 20}, {12, 21}, {12, 22}, {12, 23}, {12, 24},  // Basic DK orbs
-           {12, 7},  {12, 12}, {12, 19}}},                     // BK orbs
+    {251, {{0, 0},   {0, 1},   {0, 2},   {0, 3},   {0, 4},   {0, 5}, {1, 0},
+           {1, 1},   {1, 2},   {2, 0},   {2, 1},   {3, 0},   {3, 1}, {4, 0},
+           {4, 1},   {4, 7},   {4, 15},  {6, 0},   {6, 1},   {6, 2}, {6, 3},
+           {12, 20}, {12, 21}, {12, 22}, {12, 23}, {12, 24}, // Basic DK orbs
+           {12, 7},  {12, 12}, {12, 19}}},                   // BK orbs
     // Pasi (254) - DW Scrolls, Staves & Armor
     {254,
      {// Scrolls
-      {15, 0}, {15, 1}, {15, 2}, {15, 3}, {15, 4},
-      {15, 5}, {15, 6}, {15, 7}, {15, 8}, {15, 9}, {15, 10},
+      {15, 0},
+      {15, 1},
+      {15, 2},
+      {15, 3},
+      {15, 4},
+      {15, 5},
+      {15, 6},
+      {15, 7},
+      {15, 8},
+      {15, 9},
+      {15, 10},
       // Staves
-      {5, 0}, {5, 1}, {5, 2}, {5, 3}, {5, 4}, {5, 5}, {5, 6}, {5, 7},
+      {5, 0},
+      {5, 1},
+      {5, 2},
+      {5, 3},
+      {5, 4},
+      {5, 5},
+      {5, 6},
+      {5, 7},
       // Pad Set (beginner DW)
-      {7, 2}, {8, 2}, {9, 2}, {10, 2}, {11, 2},
+      {7, 2},
+      {8, 2},
+      {9, 2},
+      {10, 2},
+      {11, 2},
       // Bone Set (mid DW)
-      {7, 4}, {8, 4}, {9, 4}, {10, 4}, {11, 4},
+      {7, 4},
+      {8, 4},
+      {9, 4},
+      {10, 4},
+      {11, 4},
       // Sphinx Set (mid-high DW)
-      {7, 7}, {8, 7}, {9, 7}, {10, 7}, {11, 7},
+      {7, 7},
+      {8, 7},
+      {9, 7},
+      {10, 7},
+      {11, 7},
       // Legendary Set (high DW)
-      {7, 3}, {8, 3}, {9, 3}, {10, 3}, {11, 3}}},
+      {7, 3},
+      {8, 3},
+      {9, 3},
+      {10, 3},
+      {11, 3}}},
     // Lumen (255) - Barmaid
     {255, {{14, 9}, {14, 10}}}};
 
@@ -153,9 +178,13 @@ void HandleShopBuy(Session &session, const std::vector<uint8_t> &packet,
 
   uint32_t price = def.buyPrice * (recv->quantity > 0 ? recv->quantity : 1);
   if (session.zen < price) {
+    printf("[Shop] Buy failed: not enough Zen (need %u, have %u, defIdx=%d)\n",
+           price, session.zen, recv->defIndex);
     session.Send(&res, sizeof(res));
     return; // Not enough zen
   }
+
+  printf("[Shop] Buying item defIdx=%d (price=%u)\n", recv->defIndex, price);
 
   static constexpr uint8_t MAX_STACK = 20;
 
@@ -169,10 +198,9 @@ void HandleShopBuy(Session &session, const std::vector<uint8_t> &packet,
         session.zen -= price;
         db.UpdateCharacterMoney(session.characterId, session.zen);
         session.bag[i].quantity++;
-        db.SaveCharacterInventory(session.characterId, recv->defIndex,
-                                  session.bag[i].quantity,
-                                  session.bag[i].itemLevel,
-                                  static_cast<uint8_t>(i));
+        db.SaveCharacterInventory(
+            session.characterId, recv->defIndex, session.bag[i].quantity,
+            session.bag[i].itemLevel, static_cast<uint8_t>(i));
         res.result = 1;
         session.Send(&res, sizeof(res));
         InventoryHandler::SendInventorySync(session);
@@ -182,9 +210,39 @@ void HandleShopBuy(Session &session, const std::vector<uint8_t> &packet,
   }
 
   uint8_t slot = 0;
-  if (!FindEmptySpace(session, def.width, def.height, slot)) {
-    session.Send(&res, sizeof(res));
-    return; // Inventory full
+  bool slotFound = false;
+
+  if (recv->targetSlot != 0xFF && recv->targetSlot < 64) {
+    // Try specific slot
+    bool fits = true;
+    for (int y = 0; y < def.height; ++y) {
+      for (int x = 0; x < def.width; ++x) {
+        int r = recv->targetSlot / 8;
+        int c = recv->targetSlot % 8;
+        if (r + y >= 8 || c + x >= 8) {
+          fits = false;
+          break;
+        }
+        int s = (r + y) * 8 + (c + x);
+        if (session.bag[s].occupied) {
+          fits = false;
+          break;
+        }
+      }
+      if (!fits)
+        break;
+    }
+    if (fits) {
+      slot = recv->targetSlot;
+      slotFound = true;
+    }
+  }
+
+  if (!slotFound) {
+    if (!FindEmptySpace(session, def.width, def.height, slot)) {
+      session.Send(&res, sizeof(res));
+      return; // Inventory full
+    }
   }
 
   session.zen -= price;
@@ -194,11 +252,13 @@ void HandleShopBuy(Session &session, const std::vector<uint8_t> &packet,
     for (int x = 0; x < def.width; ++x) {
       int s = slot + y * 8 + x;
       session.bag[s].occupied = true;
-      session.bag[s].primary = false;
+      session.bag[s].primary = (y == 0 && x == 0);
+      session.bag[s].defIndex = recv->defIndex;
+      session.bag[s].category = cat;
+      session.bag[s].itemIndex = idx;
+      session.bag[s].itemLevel = recv->itemLevel;
     }
   }
-
-  session.bag[slot].primary = true;
   session.bag[slot].defIndex = recv->defIndex;
   session.bag[slot].quantity = recv->quantity > 0 ? recv->quantity : 1;
   session.bag[slot].itemLevel = recv->itemLevel;

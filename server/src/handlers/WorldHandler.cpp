@@ -103,8 +103,8 @@ void HandleCharListRequest(Session &session, Database &db) {
   std::vector<uint8_t> packet(totalSize, 0);
 
   auto *head = reinterpret_cast<PMSG_CHARLIST_HEAD *>(packet.data());
-  head->h = MakeC1SubHeader(static_cast<uint8_t>(totalSize),
-                            Opcode::CHARSELECT, Opcode::SUB_CHARLIST);
+  head->h = MakeC1SubHeader(static_cast<uint8_t>(totalSize), Opcode::CHARSELECT,
+                            Opcode::SUB_CHARLIST);
   head->classCode = 0;
   head->moveCnt = 0;
   head->count = static_cast<uint8_t>(chars.size());
@@ -152,8 +152,8 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
 
   // Send character info
   PMSG_CHARINFO_SEND info{};
-  info.h = MakeC1SubHeader(sizeof(info), Opcode::CHARSELECT,
-                           Opcode::SUB_CHARSELECT);
+  info.h =
+      MakeC1SubHeader(sizeof(info), Opcode::CHARSELECT, Opcode::SUB_CHARSELECT);
   info.x = c.posX;
   info.y = c.posY;
   info.map = c.mapId;
@@ -175,8 +175,8 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   info.maxMana = c.maxMana;
   info.shield = 0;
   info.maxShield = 0;
-  info.bp = 50;
-  info.maxBP = 50;
+  info.bp = c.ag;
+  info.maxBP = c.maxAg;
   info.money = c.money;
   info.pkLevel = 3;
   info.ctlCode = 0;
@@ -185,6 +185,7 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   info.leadership = 0;
   info.fruitSubPoint = 0;
   info.maxFruitSubPoint = 0;
+  info.rmcSkillId = c.rmcSkillId;
 
   session.Send(&info, sizeof(info));
   session.inWorld = true;
@@ -208,6 +209,16 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
       charCls, session.level, session.strength, session.dexterity,
       session.vitality, session.energy);
   session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
+
+  if (charCls == CharacterClass::CLASS_DK) {
+    session.maxAg = StatCalculator::CalculateMaxAG(c.strength, c.dexterity,
+                                                   c.vitality, c.energy);
+  } else {
+    session.maxAg = StatCalculator::CalculateMaxManaOrAG(
+        charCls, session.level, session.strength, session.dexterity,
+        session.vitality, session.energy);
+  }
+  session.ag = std::min(static_cast<int>(c.ag), session.maxAg);
 
   // Use shared RefreshCombatStats instead of duplicated code
   CharacterHandler::RefreshCombatStats(session, db, c.id);

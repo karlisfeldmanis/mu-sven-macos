@@ -1,34 +1,87 @@
 # Quick Start Guide
 
-## Building the Remaster
+## Prerequisites
 
-The project uses CMake for build management. 
+- macOS with Xcode command line tools (`xcode-select --install`)
+- CMake 3.15+ and Ninja build system (`brew install cmake ninja`)
+- Dependencies: `brew install glfw glew libjpeg-turbo giflib glm sqlite3`
+- Original MU Online client data — symlink or copy to `client/Data/`
 
-1. **Configure and Build**:
-   ```bash
-   mkdir -p build
-   cd build
-   cmake ..
-   make -j4
-   ```
+## Building
 
-2. **Run**:
-   ```bash
-   ./MuRemaster
-   ```
+### Server
 
-## Configuration
+```bash
+cd server/build
+cmake ..
+ninja
+```
 
-- **Data Path**: The application looks for original MU Data in `/Users/karlisfeldmanis/Desktop/mu_remaster/references/other/MuMain/src/bin/Data`.
-- **World Loading**: Currently defaults to World 1 (Lorencia). To change worlds, modify `main.cpp`.
-- **Camera State**: The camera position is saved to `camera_save.txt` on exit and restored on startup.
+### Client (always use Release)
 
-## Common Tasks
+```bash
+cd client/build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+ninja
+```
 
-- **Take Screenshot**: Press `F11` or let the diagnostic timers trigger a capture. Screenshots are saved to `build/screenshots/`.
-- **Debug View**: Toggle debug visualizations (Alpha, Lightmap, indices) via the ImGui overlay.
-- **Clean Build**: 
-  ```bash
-  rm -rf build/
-  mkdir build && cd build && cmake .. && make -j4
-  ```
+Debug builds have significant rendering performance issues — always use Release.
+
+## Running
+
+Start the server first, then the client:
+
+```bash
+# Terminal 1: Server
+cd server/build
+./MuServer
+
+# Terminal 2: Client
+cd client/build
+./MuRemaster
+```
+
+The server creates `mu_server.db` on first run with seeded data (items, NPCs, monsters). Delete this file to reset all progress.
+
+## Data Directory
+
+`client/Data/` is the canonical data directory. CMake auto-creates `build/Data` symlinks in both client and server build directories. Required assets:
+
+- Kayito 0.97k base client (terrain, models, textures)
+- Main 5.2 `Player.bmd` (247 actions) — must replace Kayito's version
+
+## Default Character
+
+New characters start as Dark Knight level 1 with:
+- 1,000,000 Zen
+- Short Sword equipped
+- Small Shield equipped
+- Default stats: STR 28, DEX 20, VIT 25, ENE 10
+
+## Controls
+
+| Key | Action |
+|-----|--------|
+| Left Click | Click-to-move, attack monster, talk to NPC, pick up items |
+| Right Click | Skill attack with RMC slot skill |
+| Q, W, E, R | Use potion from quick slot 1-4 |
+| 1, 2, 3, 4 | Assign skill to RMC slot |
+| C | Toggle character info / stat allocation |
+| I | Toggle inventory |
+| S | Toggle skill window |
+| Esc | Close open panels |
+| Mouse Wheel | Zoom camera in/out |
+
+## Skill Learning
+
+Buy skill orbs from the Potion Girl NPC shop, then right-click the orb in your inventory to learn the skill. Assign learned skills to the RMC slot using number keys 1-4.
+
+## Clean Build
+
+```bash
+# Server
+cd server/build && rm -rf * && cmake .. && ninja
+
+# Client
+cd client/build && rm -rf * && cmake -DCMAKE_BUILD_TYPE=Release .. && ninja
+```

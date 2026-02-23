@@ -19,14 +19,16 @@ GameWorld::~GameWorld() = default;
 static const MonsterTypeDef s_monsterDefs[] = {
     // type hp    def  defR atkMn atkMx atkR lvl  atkCD  mvDel mR vR aR aggro
     // All values from OpenMU Version075 Lorencia.cs (canonical reference)
-    {0, 100, 6, 6, 16, 20, 28, 6, 1.6f, 0.4f, 3, 5, 1, true},      // Bull Fighter
-    {1, 140, 9, 9, 22, 27, 39, 9, 1.6f, 0.4f, 3, 5, 1, true},       // Hound
-    {2, 60, 3, 3, 10, 13, 18, 4, 2.0f, 0.4f, 3, 4, 1, true},        // Budge Dragon
-    {3, 30, 1, 1, 4, 7, 8, 2, 1.8f, 0.4f, 2, 5, 1, true},           // Spider
-    {4, 190, 12, 12, 31, 36, 50, 12, 1.4f, 0.4f, 3, 4, 1, true},    // Elite Bull Fighter
-    {6, 255, 14, 14, 41, 46, 62, 14, 2.0f, 0.4f, 3, 7, 4, true},    // Lich
-    {7, 400, 18, 18, 57, 62, 80, 17, 2.2f, 0.4f, 2, 3, 2, true},    // Giant
-    {14, 525, 22, 22, 68, 74, 93, 19, 1.4f, 0.4f, 2, 4, 1, true},   // Skeleton Warrior
+    {0, 100, 6, 6, 16, 20, 28, 6, 1.6f, 0.4f, 3, 5, 1, true}, // Bull Fighter
+    {1, 140, 9, 9, 22, 27, 39, 9, 1.6f, 0.4f, 3, 5, 1, true}, // Hound
+    {2, 60, 3, 3, 10, 13, 18, 4, 2.0f, 0.4f, 3, 4, 1, true},  // Budge Dragon
+    {3, 30, 1, 1, 4, 7, 8, 2, 1.8f, 0.6f, 2, 5, 1, true},     // Spider (slower)
+    {4, 190, 12, 12, 31, 36, 50, 12, 1.4f, 0.4f, 3, 4, 1,
+     true}, // Elite Bull Fighter
+    {6, 255, 14, 14, 41, 46, 62, 14, 2.0f, 0.4f, 3, 7, 4, true}, // Lich
+    {7, 400, 18, 18, 57, 62, 80, 17, 2.2f, 0.4f, 2, 3, 2, true}, // Giant
+    {14, 525, 22, 22, 68, 74, 93, 19, 1.4f, 0.4f, 2, 4, 1,
+     true}, // Skeleton Warrior
 };
 static constexpr int NUM_MONSTER_DEFS =
     sizeof(s_monsterDefs) / sizeof(s_monsterDefs[0]);
@@ -258,24 +260,24 @@ void GameWorld::LoadNpcsFromDB(Database &db, uint8_t mapId) {
       // Patrol waypoint routes through the city (grid coordinates)
       if (npc.x == 131 && npc.y == 88) {
         // North gate guard: patrols north side toward center
-        npc.patrolWaypoints = {{131,95},{135,105},{140,115},{135,125},
-                               {131,115},{131,100},{131,88}};
+        npc.patrolWaypoints = {{131, 95},  {135, 105}, {140, 115}, {135, 125},
+                               {131, 115}, {131, 100}, {131, 88}};
       } else if (npc.x == 173 && npc.y == 125) {
         // East guard: patrols eastern approach into center
-        npc.patrolWaypoints = {{165,120},{155,115},{150,125},
-                               {155,135},{165,130},{173,125}};
+        npc.patrolWaypoints = {{165, 120}, {155, 115}, {150, 125},
+                               {155, 135}, {165, 130}, {173, 125}};
       } else if (npc.x == 94 && npc.y == 125) {
         // West guard 1: patrols western approach
-        npc.patrolWaypoints = {{100,120},{110,115},{118,125},
-                               {110,135},{100,130},{94,125}};
+        npc.patrolWaypoints = {{100, 120}, {110, 115}, {118, 125},
+                               {110, 135}, {100, 130}, {94, 125}};
       } else if (npc.x == 94 && npc.y == 130) {
         // West guard 2: different western route
-        npc.patrolWaypoints = {{105,130},{115,135},{122,140},
-                               {115,145},{105,140},{94,130}};
+        npc.patrolWaypoints = {{105, 130}, {115, 135}, {122, 140},
+                               {115, 145}, {105, 140}, {94, 130}};
       } else if (npc.x == 131 && npc.y == 148) {
         // South gate guard: patrols south side toward center
-        npc.patrolWaypoints = {{131,140},{135,135},{140,128},
-                               {135,120},{130,128},{130,140},{131,148}};
+        npc.patrolWaypoints = {{131, 140}, {135, 135}, {140, 128}, {135, 120},
+                               {130, 128}, {130, 140}, {131, 148}};
       }
       npc.patrolIndex = 0;
     }
@@ -425,18 +427,18 @@ bool GameWorld::advancePathStep(MonsterInstance &mon, float dt,
 
 // ─── Find best target within viewRange ───────────────────────────────────────
 
-const GameWorld::PlayerTarget *
+GameWorld::PlayerTarget *
 GameWorld::findBestTarget(const MonsterInstance &mon,
-                          const std::vector<PlayerTarget> &players) const {
-  const PlayerTarget *best = nullptr;
+                          std::vector<PlayerTarget> &players) const {
+  PlayerTarget *best = nullptr;
   int bestDist = 999;
 
   // Priority 1: explicit aggro target (always honored, even for passive mobs)
   if (mon.aggroTargetFd != -1) {
-    for (const auto &p : players) {
+    for (auto &p : players) {
       if (p.fd == mon.aggroTargetFd && !p.dead) {
-        int dist = PathFinder::ChebyshevDist(mon.gridX, mon.gridY, p.gridX,
-                                             p.gridY);
+        int dist =
+            PathFinder::ChebyshevDist(mon.gridX, mon.gridY, p.gridX, p.gridY);
         if (dist <= mon.viewRange * 3)
           return &p;
         break; // Found but too far
@@ -447,13 +449,13 @@ GameWorld::findBestTarget(const MonsterInstance &mon,
   // Priority 2: closest player in viewRange (aggressive monsters only)
   // Skip during respawn immunity (aggroTimer < 0)
   if (mon.aggressive && mon.aggroTimer >= 0.0f) {
-    for (const auto &p : players) {
+    for (auto &p : players) {
       if (p.dead)
         continue;
       if (IsSafeZoneGrid(p.gridX, p.gridY))
         continue;
-      int dist = PathFinder::ChebyshevDist(mon.gridX, mon.gridY, p.gridX,
-                                           p.gridY);
+      int dist =
+          PathFinder::ChebyshevDist(mon.gridX, mon.gridY, p.gridX, p.gridY);
       if (dist <= mon.viewRange && dist < bestDist) {
         bestDist = dist;
         best = &p;
@@ -467,7 +469,7 @@ GameWorld::findBestTarget(const MonsterInstance &mon,
 // ─── AI State Handlers ───────────────────────────────────────────────────────
 
 void GameWorld::processIdle(MonsterInstance &mon, float dt,
-                            const std::vector<PlayerTarget> &players,
+                            std::vector<PlayerTarget> &players,
                             std::vector<MonsterMoveUpdate> &outMoves) {
   mon.stateTimer -= dt;
 
@@ -496,10 +498,17 @@ void GameWorld::processIdle(MonsterInstance &mon, float dt,
       if (rx < 0 || ry < 0 || rx >= TERRAIN_SIZE || ry >= TERRAIN_SIZE)
         continue;
       uint8_t gx = (uint8_t)rx, gy = (uint8_t)ry;
-      if (!IsWalkableGrid(gx, gy))
+
+      bool walkable = IsWalkableGrid(gx, gy);
+      bool safezone = IsSafeZoneGrid(gx, gy);
+      if (!walkable) {
+        printf("[AI] Mon %d target (%d,%d) NOT walkable\n", mon.index, gx, gy);
         continue;
-      if (IsSafeZoneGrid(gx, gy))
+      }
+      if (safezone) {
+        printf("[AI] Mon %d target (%d,%d) is SAFEZONE\n", mon.index, gx, gy);
         continue;
+      }
       if (gx == mon.gridX && gy == mon.gridY)
         continue;
 
@@ -509,9 +518,8 @@ void GameWorld::processIdle(MonsterInstance &mon, float dt,
 
       // Temporarily clear own occupancy for pathfinding
       setOccupied(mon.gridX, mon.gridY, false);
-      auto path =
-          m_pathFinder->FindPath(start, end, m_terrainAttributes.data(), 16,
-                                500, false, m_monsterOccupancy);
+      auto path = m_pathFinder->FindPath(start, end, m_terrainAttributes.data(),
+                                         16, 500, false, m_monsterOccupancy);
       setOccupied(mon.gridX, mon.gridY, true);
 
       if (!path.empty()) {
@@ -532,7 +540,7 @@ void GameWorld::processIdle(MonsterInstance &mon, float dt,
 }
 
 void GameWorld::processWandering(MonsterInstance &mon, float dt,
-                                 const std::vector<PlayerTarget> &players,
+                                 std::vector<PlayerTarget> &players,
                                  std::vector<MonsterMoveUpdate> &outMoves) {
   // Check for target (interrupt wander to chase)
   const PlayerTarget *target = findBestTarget(mon, players);
@@ -561,12 +569,12 @@ void GameWorld::processWandering(MonsterInstance &mon, float dt,
 }
 
 void GameWorld::processChasing(MonsterInstance &mon, float dt,
-                               const std::vector<PlayerTarget> &players,
+                               std::vector<PlayerTarget> &players,
                                std::vector<MonsterMoveUpdate> &outMoves,
                                std::vector<MonsterAttackResult> &attacks) {
   // Find the aggro target
-  const PlayerTarget *target = nullptr;
-  for (const auto &p : players) {
+  PlayerTarget *target = nullptr;
+  for (auto &p : players) {
     if (p.fd == mon.aggroTargetFd && !p.dead) {
       target = &p;
       break;
@@ -618,15 +626,13 @@ void GameWorld::processChasing(MonsterInstance &mon, float dt,
 
   // Re-pathfind periodically or when path exhausted
   mon.repathTimer -= dt;
-  if (mon.currentPath.empty() ||
-      mon.pathStep >= (int)mon.currentPath.size() ||
+  if (mon.currentPath.empty() || mon.pathStep >= (int)mon.currentPath.size() ||
       mon.repathTimer <= 0.0f) {
     GridPoint start{mon.gridX, mon.gridY};
     GridPoint end{target->gridX, target->gridY};
     setOccupied(mon.gridX, mon.gridY, false);
-    auto path =
-        m_pathFinder->FindPath(start, end, m_terrainAttributes.data(), 16, 500,
-                               false, m_monsterOccupancy);
+    auto path = m_pathFinder->FindPath(start, end, m_terrainAttributes.data(),
+                                       16, 500, false, m_monsterOccupancy);
     setOccupied(mon.gridX, mon.gridY, true);
     if (!path.empty()) {
       mon.currentPath = std::move(path);
@@ -639,8 +645,8 @@ void GameWorld::processChasing(MonsterInstance &mon, float dt,
       mon.chaseFailCount++;
       if (mon.chaseFailCount >= 5) {
         // Give up after 5 consecutive path failures
-        printf("[AI] Mon %d: gave up chasing (no path %d times)\n",
-               mon.index, mon.chaseFailCount);
+        printf("[AI] Mon %d: gave up chasing (no path %d times)\n", mon.index,
+               mon.chaseFailCount);
         beginReturn();
         return;
       }
@@ -655,12 +661,12 @@ void GameWorld::processChasing(MonsterInstance &mon, float dt,
 }
 
 void GameWorld::processAttacking(MonsterInstance &mon, float dt,
-                                 const std::vector<PlayerTarget> &players,
+                                 std::vector<PlayerTarget> &players,
                                  std::vector<MonsterMoveUpdate> &outMoves,
                                  std::vector<MonsterAttackResult> &attacks) {
   // Find target
-  const PlayerTarget *target = nullptr;
-  for (const auto &p : players) {
+  PlayerTarget *target = nullptr;
+  for (auto &p : players) {
     if (p.fd == mon.aggroTargetFd && !p.dead) {
       target = &p;
       break;
@@ -719,17 +725,30 @@ void GameWorld::processAttacking(MonsterInstance &mon, float dt,
     dmg = 0;
   } else {
     dmg = std::max(0, dmg - target->defense);
+    // OpenMU "Overrate" penalty: if player defenseRate >= monster attackRate,
+    // damage is reduced to 30% (AttackableExtensions.cs line 188)
+    if (target->defenseRate >= mon.attackRate && dmg > 0) {
+      dmg = std::max(1, dmg * 3 / 10);
+    }
   }
 
-  printf("[AI] Mon %d (type %d): ATTACK dmg=%d%s\n", mon.index, mon.type, dmg,
+  printf("[AI] Mon %d (type %d) -> Player fd=%d: ATK %d - DEF %d (Rate %d/%d) "
+         "= %d%s\n",
+         mon.index, mon.type, target->fd,
+         dmg +
+             (missed ? 0 : target->defense), // Show raw damage before reduction
+         target->defense, target->defenseRate, mon.attackRate, dmg,
          missed ? " (MISS)" : "");
+
+  // Subtract damage from local target state for correct HP sync in packet
+  target->life -= dmg;
 
   MonsterAttackResult result;
   result.targetFd = target->fd;
   result.monsterIndex = mon.index;
   result.damage = static_cast<uint16_t>(dmg);
   result.damageType = missed ? (uint8_t)0 : (uint8_t)1;
-  result.remainingHp = static_cast<uint16_t>(target->life);
+  result.remainingHp = static_cast<uint16_t>(std::max(0, target->life));
   attacks.push_back(result);
 
   mon.attackCooldown = mon.atkCooldownTime;
@@ -739,11 +758,9 @@ void GameWorld::processAttacking(MonsterInstance &mon, float dt,
 void GameWorld::processReturning(MonsterInstance &mon, float dt,
                                  std::vector<MonsterMoveUpdate> &outMoves) {
   // Path exhausted — check if arrived or need to re-pathfind
-  if (mon.currentPath.empty() ||
-      mon.pathStep >= (int)mon.currentPath.size()) {
+  if (mon.currentPath.empty() || mon.pathStep >= (int)mon.currentPath.size()) {
     if (mon.gridX == mon.spawnGridX && mon.gridY == mon.spawnGridY) {
-      // Arrived at spawn
-      mon.hp = mon.maxHp;
+      // Arrived at spawn — keep current HP, idle regen handles recovery
       mon.aiState = MonsterInstance::AIState::IDLE;
       mon.stateTimer = 2.0f + (float)(rand() % 3000) / 1000.0f;
       mon.aggroTargetFd = -1;
@@ -758,9 +775,8 @@ void GameWorld::processReturning(MonsterInstance &mon, float dt,
     GridPoint start{mon.gridX, mon.gridY};
     GridPoint end{mon.spawnGridX, mon.spawnGridY};
     setOccupied(mon.gridX, mon.gridY, false);
-    auto path =
-        m_pathFinder->FindPath(start, end, m_terrainAttributes.data(), 16, 500,
-                               false, m_monsterOccupancy);
+    auto path = m_pathFinder->FindPath(start, end, m_terrainAttributes.data(),
+                                       16, 500, false, m_monsterOccupancy);
     setOccupied(mon.gridX, mon.gridY, true);
     if (!path.empty()) {
       mon.currentPath = std::move(path);
@@ -773,7 +789,7 @@ void GameWorld::processReturning(MonsterInstance &mon, float dt,
       mon.worldX = mon.spawnX;
       mon.worldZ = mon.spawnZ;
       setOccupied(mon.gridX, mon.gridY, true);
-      mon.hp = mon.maxHp;
+      // Keep current HP — idle regen handles recovery
       mon.aiState = MonsterInstance::AIState::IDLE;
       mon.stateTimer = 2.0f;
       mon.chaseFailCount = 0;
@@ -837,7 +853,8 @@ void GameWorld::Update(float dt,
       }
       break;
     default:
-      break; // IDLE/WANDERING/CHASING/ATTACKING/RETURNING handled in ProcessMonsterAI
+      break; // IDLE/WANDERING/CHASING/ATTACKING/RETURNING handled in
+             // ProcessMonsterAI
     }
   }
 
@@ -853,16 +870,17 @@ void GameWorld::Update(float dt,
       if (mon.aiState == MonsterInstance::AIState::DYING ||
           mon.aiState == MonsterInstance::AIState::DEAD)
         continue;
-      int dist = PathFinder::ChebyshevDist(guardGX, guardGY,
-                                           mon.gridX, mon.gridY);
+      int dist =
+          PathFinder::ChebyshevDist(guardGX, guardGY, mon.gridX, mon.gridY);
       if (dist <= GUARD_ATTACK_RANGE) {
         // Guard instakills the monster
         mon.hp = 0;
         mon.aiState = MonsterInstance::AIState::DYING;
         mon.stateTimer = 0.0f;
         mon.aggroTargetFd = -1;
-        printf("[Guard] Guard #%d killed monster %d (type %d) at grid (%d,%d)\n",
-               npc.index, mon.index, mon.type, mon.gridX, mon.gridY);
+        printf(
+            "[Guard] Guard #%d killed monster %d (type %d) at grid (%d,%d)\n",
+            npc.index, mon.index, mon.type, mon.gridX, mon.gridY);
         // Death broadcast handled by the caller (Server.cpp) when it
         // sees the monster transition to DYING
         if (guardKillCallback)
@@ -881,7 +899,8 @@ void GameWorld::Update(float dt,
 
           // Check walkability before stepping
           if (!m_terrainAttributes.empty() &&
-              !(m_terrainAttributes[step.y * TERRAIN_SIZE + step.x] & TW_NOMOVE)) {
+              !(m_terrainAttributes[step.y * TERRAIN_SIZE + step.x] &
+                TW_NOMOVE)) {
             npc.x = step.x;
             npc.y = step.y;
             npc.worldX = ((float)step.y + 0.5f) * 100.0f;
@@ -894,8 +913,8 @@ void GameWorld::Update(float dt,
         npc.isWandering = false;
         npc.wanderTimer = 1.5f + (float)(rand() % 2000) / 1000.0f;
         if (!npc.patrolWaypoints.empty()) {
-          npc.patrolIndex = (npc.patrolIndex + 1) %
-                            (int)npc.patrolWaypoints.size();
+          npc.patrolIndex =
+              (npc.patrolIndex + 1) % (int)npc.patrolWaypoints.size();
         }
       }
     } else {
@@ -907,8 +926,8 @@ void GameWorld::Update(float dt,
         GridPoint end{wp.x, wp.y};
 
         // A* pathfind to next waypoint (max 16 steps, no occupancy for guards)
-        auto path = m_pathFinder->FindPath(start, end, m_terrainAttributes.data(),
-                                           16, 500, true, nullptr);
+        auto path = m_pathFinder->FindPath(
+            start, end, m_terrainAttributes.data(), 16, 500, true, nullptr);
         if (!path.empty()) {
           npc.guardPath = std::move(path);
           npc.guardPathStep = 0;
@@ -931,8 +950,8 @@ void GameWorld::Update(float dt,
           }
         } else {
           // No path — skip to next waypoint
-          npc.patrolIndex = (npc.patrolIndex + 1) %
-                            (int)npc.patrolWaypoints.size();
+          npc.patrolIndex =
+              (npc.patrolIndex + 1) % (int)npc.patrolWaypoints.size();
           npc.wanderTimer = 1.0f;
         }
       }
@@ -955,7 +974,7 @@ void GameWorld::Update(float dt,
 // ─── Monster AI processing (state machine dispatch) ──────────────────────────
 
 std::vector<GameWorld::MonsterAttackResult>
-GameWorld::ProcessMonsterAI(float dt, const std::vector<PlayerTarget> &players,
+GameWorld::ProcessMonsterAI(float dt, std::vector<PlayerTarget> &players,
                             std::vector<MonsterMoveUpdate> &outMoves) {
   std::vector<MonsterAttackResult> attacks;
 

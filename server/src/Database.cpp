@@ -65,6 +65,9 @@ void Database::CreateTables() {
             money INTEGER DEFAULT 0,
             experience INTEGER DEFAULT 0,
             level_up_points INTEGER DEFAULT 0,
+            skill_bar BLOB,
+            potion_bar BLOB,
+            rmc_skill_id INTEGER DEFAULT -1,
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         );
         CREATE TABLE IF NOT EXISTS item_definitions (
@@ -135,6 +138,11 @@ void Database::CreateTables() {
   sqlite3_exec(
       m_db, "ALTER TABLE item_definitions ADD COLUMN defense INTEGER DEFAULT 0",
       nullptr, nullptr, nullptr);
+  sqlite3_exec(m_db, "ALTER TABLE characters ADD COLUMN ag INTEGER DEFAULT 50",
+               nullptr, nullptr, nullptr);
+  sqlite3_exec(m_db,
+               "ALTER TABLE characters ADD COLUMN max_ag INTEGER DEFAULT 50",
+               nullptr, nullptr, nullptr);
   sqlite3_exec(
       m_db, "ALTER TABLE item_definitions ADD COLUMN width INTEGER DEFAULT 1",
       nullptr, nullptr, nullptr);
@@ -169,6 +177,16 @@ void Database::CreateTables() {
       m_db,
       "ALTER TABLE item_definitions ADD COLUMN buy_price INTEGER DEFAULT 0",
       nullptr, nullptr, nullptr);
+
+  // Migration: add rmc_skill_id to characters (default -1)
+  sqlite3_exec(m_db,
+               "ALTER TABLE characters ADD COLUMN rmc_skill_id INTEGER "
+               "DEFAULT -1",
+               nullptr, nullptr, nullptr);
+  sqlite3_exec(m_db, "ALTER TABLE characters ADD COLUMN skill_bar BLOB",
+               nullptr, nullptr, nullptr);
+  sqlite3_exec(m_db, "ALTER TABLE characters ADD COLUMN potion_bar BLOB",
+               nullptr, nullptr, nullptr);
 
   // Character skills table (learned skills)
   const char *skillSql = R"(
@@ -208,9 +226,8 @@ void Database::CreateDefaultAccount() {
   }
 
   // Only seed default characters if account has none
-  sqlite3_prepare_v2(m_db,
-                     "SELECT COUNT(*) FROM characters WHERE account_id=?", -1,
-                     &stmt, nullptr);
+  sqlite3_prepare_v2(m_db, "SELECT COUNT(*) FROM characters WHERE account_id=?",
+                     -1, &stmt, nullptr);
   sqlite3_bind_int(stmt, 1, accountId);
   int charCount = 0;
   if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -223,12 +240,12 @@ void Database::CreateDefaultAccount() {
         sql, sizeof(sql),
         "INSERT INTO characters (account_id, slot, name, class, level, "
         "strength, dexterity, vitality, energy, life, max_life, mana, "
-        "max_mana, money, level_up_points) "
-        "VALUES (%d, 0, 'TestPlayer', 16, 1, 28, 20, 25, 10, 110, 110, 20, "
-        "20, 1000000, 0)",
+        "max_mana, money, level_up_points, skill_bar, potion_bar) "
+        "VALUES (%d, 0, 'RealPlayer', 16, 1, 28, 20, 25, 10, 110, 110, 20, "
+        "20, 1000000, 0, NULL, NULL)",
         accountId);
     sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
-    printf("[DB] Created TestPlayer character for account %d\n", accountId);
+    printf("[DB] Created RealPlayer character for account %d\n", accountId);
   }
 }
 
@@ -257,8 +274,13 @@ int Database::ValidateLogin(const std::string &username,
 std::vector<CharacterData> Database::GetCharacterList(int accountId) {
   std::vector<CharacterData> chars;
   sqlite3_stmt *stmt = nullptr;
-  const char *sql = "SELECT id, slot, name, class, level FROM characters WHERE "
-                    "account_id=? ORDER BY slot";
+  const char *sql =
+      "SELECT id, account_id, slot, name, class, level, map_id, "
+      "pos_x, pos_y, direction, strength, dexterity, vitality, "
+      "energy, life, max_life, mana, max_mana, ag, max_ag, money, "
+      "experience, level_up_points, skill_bar, potion_bar, "
+      "rmc_skill_id FROM characters WHERE account_id=? ORDER BY "
+      "slot";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return chars;
 
@@ -266,11 +288,43 @@ std::vector<CharacterData> Database::GetCharacterList(int accountId) {
   while (sqlite3_step(stmt) == SQLITE_ROW) {
     CharacterData c;
     c.id = sqlite3_column_int(stmt, 0);
-    c.accountId = accountId;
-    c.slot = sqlite3_column_int(stmt, 1);
-    c.name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 2));
-    c.charClass = static_cast<uint8_t>(sqlite3_column_int(stmt, 3));
-    c.level = static_cast<uint16_t>(sqlite3_column_int(stmt, 4));
+    c.accountId = sqlite3_column_int(stmt, 1);
+    c.slot = sqlite3_column_int(stmt, 2);
+    c.name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3));
+    c.charClass = static_cast<uint8_t>(sqlite3_column_int(stmt, 4));
+    c.level = static_cast<uint16_t>(sqlite3_column_int(stmt, 5));
+    c.mapId = static_cast<uint8_t>(sqlite3_column_int(stmt, 6));
+    c.posX = static_cast<uint8_t>(sqlite3_column_int(stmt, 7));
+    c.posY = static_cast<uint8_t>(sqlite3_column_int(stmt, 8));
+    c.direction = static_cast<uint8_t>(sqlite3_column_int(stmt, 9));
+    c.strength = static_cast<uint16_t>(sqlite3_column_int(stmt, 10));
+    c.dexterity = static_cast<uint16_t>(sqlite3_column_int(stmt, 11));
+    c.vitality = static_cast<uint16_t>(sqlite3_column_int(stmt, 12));
+    c.energy = static_cast<uint16_t>(sqlite3_column_int(stmt, 13));
+    c.life = static_cast<uint16_t>(sqlite3_column_int(stmt, 14));
+    c.maxLife = static_cast<uint16_t>(sqlite3_column_int(stmt, 15));
+    c.mana = static_cast<uint16_t>(sqlite3_column_int(stmt, 16));
+    c.maxMana = static_cast<uint16_t>(sqlite3_column_int(stmt, 17));
+    c.ag = static_cast<uint16_t>(sqlite3_column_int(stmt, 18));
+    c.maxAg = static_cast<uint16_t>(sqlite3_column_int(stmt, 19));
+    c.money = static_cast<uint32_t>(sqlite3_column_int(stmt, 20));
+    c.experience = static_cast<uint64_t>(sqlite3_column_int64(stmt, 21));
+    c.levelUpPoints = static_cast<uint16_t>(sqlite3_column_int(stmt, 22));
+
+    const void *skillBlob = sqlite3_column_blob(stmt, 23);
+    if (skillBlob && sqlite3_column_bytes(stmt, 23) == 10) {
+      memcpy(c.skillBar, skillBlob, 10);
+    } else {
+      memset(c.skillBar, -1, 10);
+    }
+    const void *potionBlob = sqlite3_column_blob(stmt, 24);
+    int potionBytes = sqlite3_column_bytes(stmt, 24);
+    memset(c.potionBar, -1, 8); // 4 × int16_t, default all empty
+    if (potionBlob && potionBytes >= 6) {
+      memcpy(c.potionBar, potionBlob, std::min(potionBytes, 8));
+    }
+
+    c.rmcSkillId = static_cast<int8_t>(sqlite3_column_int(stmt, 25));
     chars.push_back(c);
   }
   sqlite3_finalize(stmt);
@@ -282,10 +336,10 @@ CharacterData Database::GetCharacter(const std::string &name) {
   sqlite3_stmt *stmt = nullptr;
   const char *sql =
       "SELECT id, account_id, slot, name, class, level, map_id, "
-      "pos_x, pos_y, direction, "
-      "strength, dexterity, vitality, energy, life, max_life, "
-      "mana, max_mana, money, experience, "
-      "level_up_points, quick_slot_def_index FROM characters WHERE name=?";
+      "pos_x, pos_y, direction, strength, dexterity, vitality, "
+      "energy, life, max_life, mana, max_mana, ag, max_ag, money, "
+      "experience, level_up_points, skill_bar, potion_bar, "
+      "rmc_skill_id FROM characters WHERE name=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return c;
 
@@ -309,10 +363,26 @@ CharacterData Database::GetCharacter(const std::string &name) {
     c.maxLife = static_cast<uint16_t>(sqlite3_column_int(stmt, 15));
     c.mana = static_cast<uint16_t>(sqlite3_column_int(stmt, 16));
     c.maxMana = static_cast<uint16_t>(sqlite3_column_int(stmt, 17));
-    c.money = static_cast<uint32_t>(sqlite3_column_int(stmt, 18));
-    c.experience = static_cast<uint64_t>(sqlite3_column_int64(stmt, 19));
-    c.levelUpPoints = static_cast<uint16_t>(sqlite3_column_int(stmt, 20));
-    c.quickSlotDefIndex = static_cast<int16_t>(sqlite3_column_int(stmt, 21));
+    c.ag = static_cast<uint16_t>(sqlite3_column_int(stmt, 18));
+    c.maxAg = static_cast<uint16_t>(sqlite3_column_int(stmt, 19));
+    c.money = static_cast<uint32_t>(sqlite3_column_int(stmt, 20));
+    c.experience = static_cast<uint64_t>(sqlite3_column_int64(stmt, 21));
+    c.levelUpPoints = static_cast<uint16_t>(sqlite3_column_int(stmt, 22));
+
+    const void *skillBlob = sqlite3_column_blob(stmt, 23);
+    if (skillBlob && sqlite3_column_bytes(stmt, 23) == 10) {
+      memcpy(c.skillBar, skillBlob, 10);
+    } else {
+      memset(c.skillBar, -1, 10);
+    }
+    const void *potionBlob = sqlite3_column_blob(stmt, 24);
+    int potionBytes = sqlite3_column_bytes(stmt, 24);
+    memset(c.potionBar, -1, 8); // 4 × int16_t, default all empty
+    if (potionBlob && potionBytes >= 6) {
+      memcpy(c.potionBar, potionBlob, std::min(potionBytes, 8));
+    }
+
+    c.rmcSkillId = static_cast<int8_t>(sqlite3_column_int(stmt, 25));
   }
   sqlite3_finalize(stmt);
   return c;
@@ -323,10 +393,10 @@ CharacterData Database::GetCharacterById(int id) {
   sqlite3_stmt *stmt = nullptr;
   const char *sql =
       "SELECT id, account_id, slot, name, class, level, map_id, "
-      "pos_x, pos_y, direction, "
-      "strength, dexterity, vitality, energy, life, max_life, "
-      "mana, max_mana, money, experience, "
-      "level_up_points, quick_slot_def_index FROM characters WHERE id=?";
+      "pos_x, pos_y, direction, strength, dexterity, vitality, "
+      "energy, life, max_life, mana, max_mana, ag, max_ag, money, "
+      "experience, level_up_points, skill_bar, potion_bar, "
+      "rmc_skill_id FROM characters WHERE id=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return c;
 
@@ -350,62 +420,43 @@ CharacterData Database::GetCharacterById(int id) {
     c.maxLife = static_cast<uint16_t>(sqlite3_column_int(stmt, 15));
     c.mana = static_cast<uint16_t>(sqlite3_column_int(stmt, 16));
     c.maxMana = static_cast<uint16_t>(sqlite3_column_int(stmt, 17));
-    c.money = static_cast<uint32_t>(sqlite3_column_int(stmt, 18));
-    c.experience = static_cast<uint64_t>(sqlite3_column_int64(stmt, 19));
-    c.levelUpPoints = static_cast<uint16_t>(sqlite3_column_int(stmt, 20));
-    c.quickSlotDefIndex = static_cast<int16_t>(sqlite3_column_int(stmt, 21));
+    c.ag = static_cast<uint16_t>(sqlite3_column_int(stmt, 18));
+    c.maxAg = static_cast<uint16_t>(sqlite3_column_int(stmt, 19));
+    c.money = static_cast<uint32_t>(sqlite3_column_int(stmt, 20));
+    c.experience = static_cast<uint64_t>(sqlite3_column_int64(stmt, 21));
+    c.levelUpPoints = static_cast<uint16_t>(sqlite3_column_int(stmt, 22));
+
+    const void *skillBlob = sqlite3_column_blob(stmt, 23);
+    if (skillBlob && sqlite3_column_bytes(stmt, 23) == 10) {
+      memcpy(c.skillBar, skillBlob, 10);
+    } else {
+      memset(c.skillBar, -1, 10);
+    }
+    const void *potionBlob = sqlite3_column_blob(stmt, 24);
+    int potionBytes = sqlite3_column_bytes(stmt, 24);
+    memset(c.potionBar, -1, 8); // 4 × int16_t, default all empty
+    if (potionBlob && potionBytes >= 6) {
+      memcpy(c.potionBar, potionBlob, std::min(potionBytes, 8));
+    }
+
+    c.rmcSkillId = static_cast<int8_t>(sqlite3_column_int(stmt, 25));
   }
   sqlite3_finalize(stmt);
   return c;
 }
 
-void Database::UpdateCharacterStats(int charId, uint16_t level,
-                                    uint16_t strength, uint16_t dexterity,
-                                    uint16_t vitality, uint16_t energy,
-                                    uint16_t life, uint16_t maxLife,
-                                    uint16_t levelUpPoints, uint64_t experience,
-                                    int16_t quickSlotDefIndex) {
+void Database::UpdateCharacterStats(
+    int charId, uint16_t level, uint16_t strength, uint16_t dexterity,
+    uint16_t vitality, uint16_t energy, uint16_t life, uint16_t maxLife,
+    uint16_t mana, uint16_t maxMana, uint16_t ag, uint16_t maxAg,
+    uint16_t levelUpPoints, uint64_t experience, const int8_t *skillBar,
+    const int16_t *potionBar, int8_t rmcSkillId) {
   sqlite3_stmt *stmt = nullptr;
-  const char *sql =
-      "UPDATE characters SET level=?, strength=?, dexterity=?, vitality=?, "
-      "energy=?, "
-      "life=?, max_life=?, level_up_points=?, experience=?, "
-      "quick_slot_def_index=? WHERE id=?";
-  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return;
-  sqlite3_bind_int(stmt, 1, level);
-  sqlite3_bind_int(stmt, 2, strength);
-  sqlite3_bind_int(stmt, 3, dexterity);
-  sqlite3_bind_int(stmt, 4, vitality);
-  sqlite3_bind_int(stmt, 5, energy);
-  sqlite3_bind_int(stmt, 6, life);
-  sqlite3_bind_int(stmt, 7, maxLife);
-  sqlite3_bind_int(stmt, 8, levelUpPoints);
-  sqlite3_bind_int64(stmt, 9, static_cast<int64_t>(experience));
-  sqlite3_bind_int(stmt, 10, quickSlotDefIndex);
-  sqlite3_bind_int(stmt, 11, charId);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
-  printf("[DB] Saved character %d: Lv%d STR=%d DEX=%d VIT=%d ENE=%d HP=%d/%d "
-         "XP=%llu pts=%d\n",
-         charId, level, strength, dexterity, vitality, energy, life, maxLife,
-         (unsigned long long)experience, levelUpPoints);
-}
-
-void Database::SaveCharacterFull(int charId, uint16_t level,
-                                 uint16_t strength, uint16_t dexterity,
-                                 uint16_t vitality, uint16_t energy,
-                                 uint16_t life, uint16_t maxLife,
-                                 uint16_t mana, uint16_t maxMana,
-                                 uint16_t levelUpPoints, uint64_t experience,
-                                 uint32_t money, uint8_t posX, uint8_t posY,
-                                 int16_t quickSlotDefIndex) {
-  sqlite3_stmt *stmt = nullptr;
-  const char *sql =
-      "UPDATE characters SET level=?, strength=?, dexterity=?, vitality=?, "
-      "energy=?, life=?, max_life=?, mana=?, max_mana=?, "
-      "level_up_points=?, experience=?, money=?, pos_x=?, pos_y=?, "
-      "quick_slot_def_index=? WHERE id=?";
+  const char *sql = "UPDATE characters SET level=?, strength=?, dexterity=?, "
+                    "vitality=?, energy=?, life=?, max_life=?, mana=?, "
+                    "max_mana=?, ag=?, max_ag=?, level_up_points=?, "
+                    "experience=?, skill_bar=?, potion_bar=?, rmc_skill_id=? "
+                    "WHERE id=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return;
   sqlite3_bind_int(stmt, 1, level);
@@ -417,13 +468,62 @@ void Database::SaveCharacterFull(int charId, uint16_t level,
   sqlite3_bind_int(stmt, 7, maxLife);
   sqlite3_bind_int(stmt, 8, mana);
   sqlite3_bind_int(stmt, 9, maxMana);
-  sqlite3_bind_int(stmt, 10, levelUpPoints);
-  sqlite3_bind_int64(stmt, 11, static_cast<int64_t>(experience));
-  sqlite3_bind_int(stmt, 12, static_cast<int>(money));
-  sqlite3_bind_int(stmt, 13, posX);
-  sqlite3_bind_int(stmt, 14, posY);
-  sqlite3_bind_int(stmt, 15, quickSlotDefIndex);
-  sqlite3_bind_int(stmt, 16, charId);
+  sqlite3_bind_int(stmt, 10, ag);
+  sqlite3_bind_int(stmt, 11, maxAg);
+  sqlite3_bind_int(stmt, 12, levelUpPoints);
+  sqlite3_bind_int64(stmt, 13, experience);
+  sqlite3_bind_blob(stmt, 14, skillBar, 10, SQLITE_TRANSIENT);
+  sqlite3_bind_blob(stmt, 15, potionBar, 8, SQLITE_TRANSIENT); // 4 × int16_t
+  sqlite3_bind_int(stmt, 16, rmcSkillId);
+  sqlite3_bind_int(stmt, 17, charId);
+
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  printf("[DB] Saved character %d stats: Lv%d STR=%d DEX=%d VIT=%d ENE=%d "
+         "HP=%d/%d MP=%d/%d AG=%d/%d XP=%llu pts=%d RMC=%d\n",
+         charId, level, strength, dexterity, vitality, energy, life, maxLife,
+         mana, maxMana, ag, maxAg, (unsigned long long)experience,
+         levelUpPoints, rmcSkillId);
+}
+
+void Database::SaveCharacterFull(int charId, uint16_t level, uint16_t strength,
+                                 uint16_t dexterity, uint16_t vitality,
+                                 uint16_t energy, uint16_t life,
+                                 uint16_t maxLife, uint16_t mana,
+                                 uint16_t maxMana, uint16_t ag, uint16_t maxAg,
+                                 uint16_t levelUpPoints, uint64_t experience,
+                                 uint32_t money, uint8_t posX, uint8_t posY,
+                                 const int8_t *skillBar,
+                                 const int16_t *potionBar, int8_t rmcSkillId) {
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql =
+      "UPDATE characters SET level=?, strength=?, dexterity=?, vitality=?, "
+      "energy=?, life=?, max_life=?, mana=?, max_mana=?, ag=?, max_ag=?, "
+      "level_up_points=?, experience=?, money=?, pos_x=?, pos_y=?, "
+      "skill_bar=?, potion_bar=?, rmc_skill_id=? WHERE id=?";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return;
+  sqlite3_bind_int(stmt, 1, level);
+  sqlite3_bind_int(stmt, 2, strength);
+  sqlite3_bind_int(stmt, 3, dexterity);
+  sqlite3_bind_int(stmt, 4, vitality);
+  sqlite3_bind_int(stmt, 5, energy);
+  sqlite3_bind_int(stmt, 6, life);
+  sqlite3_bind_int(stmt, 7, maxLife);
+  sqlite3_bind_int(stmt, 8, mana);
+  sqlite3_bind_int(stmt, 9, maxMana);
+  sqlite3_bind_int(stmt, 10, ag);
+  sqlite3_bind_int(stmt, 11, maxAg);
+  sqlite3_bind_int(stmt, 12, levelUpPoints);
+  sqlite3_bind_int64(stmt, 13, experience);
+  sqlite3_bind_int(stmt, 14, money);
+  sqlite3_bind_int(stmt, 15, posX);
+  sqlite3_bind_int(stmt, 16, posY);
+  sqlite3_bind_blob(stmt, 17, skillBar, 10, SQLITE_TRANSIENT);
+  sqlite3_bind_blob(stmt, 18, potionBar, 8, SQLITE_TRANSIENT); // 4 × int16_t
+  sqlite3_bind_int(stmt, 19, rmcSkillId);
+  sqlite3_bind_int(stmt, 20, charId);
+
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 }
@@ -1189,51 +1289,6 @@ void Database::SeedDefaultEquipment(int characterId) {
 
   printf("[DB] Reset character %d to Level 1 DK defaults (EMPTY)\n",
          characterId);
-}
-
-void Database::SeedVeteranCharacter(int accountId) {
-  sqlite3_stmt *stmt = nullptr;
-  sqlite3_prepare_v2(m_db,
-                     "SELECT id, level FROM characters WHERE name='VeteranDK'",
-                     -1, &stmt, nullptr);
-  int charId = 0;
-  int level = 0;
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    charId = sqlite3_column_int(stmt, 0);
-    level = sqlite3_column_int(stmt, 1);
-  }
-  sqlite3_finalize(stmt);
-
-  if (charId == 0) {
-    char sql[512];
-    snprintf(sql, sizeof(sql),
-             "INSERT INTO characters (account_id, slot, name, class, level, "
-             "strength, dexterity, vitality, energy, life, max_life, mana, "
-             "max_mana, level_up_points) "
-             "VALUES (%d, 1, 'VeteranDK', 16, 20, 100, 60, 50, 20, 250, 250, "
-             "80, 80, 0)",
-             accountId);
-    sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
-    charId = static_cast<int>(sqlite3_last_insert_rowid(m_db));
-    printf("[DB] Created VeteranDK character for account %d\n", accountId);
-  } else if (level < 20) {
-    char sql[256];
-    snprintf(sql, sizeof(sql),
-             "UPDATE characters SET level=20, strength=100, dexterity=60, "
-             "vitality=50, energy=20, life=250, max_life=250, mana=80, "
-             "max_mana=80 WHERE id=%d",
-             charId);
-    sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
-    printf("[DB] Upgraded VeteranDK to Level 20\n");
-  }
-
-  // Seed equipment for VeteranDK (Leather Set + Rapier)
-  UpdateEquipment(charId, EQUIP_RIGHT_HAND, 0, 2, 0); // Rapier
-  UpdateEquipment(charId, EQUIP_HELM, 7, 5, 0);       // Leather Helm
-  UpdateEquipment(charId, EQUIP_ARMOR, 8, 5, 0);      // Leather Armor
-  UpdateEquipment(charId, EQUIP_PANTS, 9, 5, 0);      // Leather Pants
-  UpdateEquipment(charId, EQUIP_GLOVES, 10, 5, 0);    // Leather Gloves
-  UpdateEquipment(charId, EQUIP_BOOTS, 11, 5, 0);     // Leather Boots
 }
 
 void Database::UpdateEquipment(int characterId, uint8_t slot, uint8_t category,

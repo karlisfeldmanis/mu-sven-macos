@@ -66,6 +66,9 @@ void Handle(Session &session, const std::vector<uint8_t> &packet, Database &db,
   case Opcode::ATTACK:
     CombatHandler::HandleAttack(session, packet, world, server);
     break;
+  case Opcode::SKILL_USE:
+    CombatHandler::HandleSkillAttack(session, packet, world, server);
+    break;
 
   // Inventory
   case Opcode::PICKUP:

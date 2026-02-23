@@ -43,6 +43,10 @@ void SendInventorySync(Session &session) {
 }
 
 void LoadInventory(Session &session, Database &db, int characterId) {
+  // Clear bag before loading to avoid stale data
+  for (int i = 0; i < 64; i++) {
+    session.bag[i] = {};
+  }
   auto invItems = db.GetCharacterInventory(characterId);
   printf("[Inventory] Loading %zu inventory items from DB for char %d\n",
          invItems.size(), characterId);
@@ -215,7 +219,8 @@ void HandlePickup(Session &session, const std::vector<uint8_t> &packet,
         h = 1;
       }
 
-      // Stackable items (category 14 = potions): try to merge into existing stack
+      // Stackable items (category 14 = potions): try to merge into existing
+      // stack
       static constexpr uint8_t MAX_STACK = 20;
       if (cat == 14 && w == 1 && h == 1) {
         for (int i = 0; i < 64; i++) {
@@ -223,10 +228,9 @@ void HandlePickup(Session &session, const std::vector<uint8_t> &packet,
               session.bag[i].defIndex == drop->defIndex &&
               session.bag[i].quantity < MAX_STACK) {
             session.bag[i].quantity++;
-            db.SaveCharacterInventory(session.characterId, drop->defIndex,
-                                      session.bag[i].quantity,
-                                      session.bag[i].itemLevel,
-                                      static_cast<uint8_t>(i));
+            db.SaveCharacterInventory(
+                session.characterId, drop->defIndex, session.bag[i].quantity,
+                session.bag[i].itemLevel, static_cast<uint8_t>(i));
             printf("[Inventory] Stacked potion def=%d in slot %d (qty=%d)\n",
                    drop->defIndex, i, session.bag[i].quantity);
             result.success = 1;
@@ -279,8 +283,9 @@ void HandlePickup(Session &session, const std::vector<uint8_t> &packet,
             db.SaveCharacterInventory(session.characterId, drop->defIndex,
                                       drop->quantity, drop->itemLevel,
                                       static_cast<uint8_t>(startSlot));
-            printf("[Inventory] Pickup: def=%d (cat=%d idx=%d) -> bag slot %d\n",
-                   drop->defIndex, cat, idx, startSlot);
+            printf(
+                "[Inventory] Pickup: def=%d (cat=%d idx=%d) -> bag slot %d\n",
+                drop->defIndex, cat, idx, startSlot);
             placed = true;
             goto done_placement;
           }
@@ -413,8 +418,9 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
     if (healAmount > 0) {
       // Full HP check — don't consume potion if already at max
       if (session.hp >= session.maxHp) {
-        printf("[Inventory] Rejecting item use fd=%d: HP already full (%d/%d)\n",
-               session.GetFd(), session.hp, session.maxHp);
+        printf(
+            "[Inventory] Rejecting item use fd=%d: HP already full (%d/%d)\n",
+            session.GetFd(), session.hp, session.maxHp);
         return;
       }
 
@@ -460,9 +466,11 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
             static_cast<uint16_t>(session.hp),
             static_cast<uint16_t>(session.maxHp),
             static_cast<uint16_t>(std::max(session.mana, 0)),
-            static_cast<uint16_t>(session.maxMana), session.levelUpPoints,
+            static_cast<uint16_t>(session.maxMana),
+            static_cast<uint16_t>(std::max(session.ag, 0)),
+            static_cast<uint16_t>(session.maxAg), session.levelUpPoints,
             session.experience, session.zen, posX, posY,
-            session.quickSlotDefIndex);
+            session.skillBar, session.potionBar, session.rmcSkillId);
       }
     }
   }
@@ -472,7 +480,8 @@ void HandleItemDrop(Session &session, const std::vector<uint8_t> &packet,
                     GameWorld &world, Server &server, Database &db) {
   if (packet.size() < sizeof(PMSG_ITEM_DROP_RECV))
     return;
-  const auto *req = reinterpret_cast<const PMSG_ITEM_DROP_RECV *>(packet.data());
+  const auto *req =
+      reinterpret_cast<const PMSG_ITEM_DROP_RECV *>(packet.data());
 
   if (req->slot >= 64)
     return;

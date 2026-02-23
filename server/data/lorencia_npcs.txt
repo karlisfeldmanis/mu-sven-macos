@@ -1,9 +1,0 @@
-# Lorencia NPC Spawn Data (from MonsterSetBase.txt)
-# Format: Type  X  Y  Dir  Name
-253  127  86   2  Potion Girl Amy
-250  183  137  2  Weapon Merchant
-251  116  141  3  Hanzo the Blacksmith
-254  118  113  3  Pasi the Mage
-255  123  135  1  Lumen the Barmaid
-240  146  110  3  Safety Guardian
-240  147  145  1  Safety Guardian

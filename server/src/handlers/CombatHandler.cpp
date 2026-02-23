@@ -7,24 +7,43 @@
 #include "handlers/CharacterHandler.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 
 namespace CombatHandler {
 
-void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
-                  GameWorld &world, Server &server) {
-  if (packet.size() < sizeof(PMSG_ATTACK_RECV))
-    return;
-  const auto *atk = reinterpret_cast<const PMSG_ATTACK_RECV *>(packet.data());
+// DK skill definitions (server-side copy matching client g_dkSkills)
+struct SkillDef {
+  uint8_t skillId;
+  int agCost;
+  int damageBonus;
+};
 
-  auto *mon = world.FindMonster(atk->monsterIndex);
-  if (!mon || mon->aiState == MonsterInstance::AIState::DYING ||
-      mon->aiState == MonsterInstance::AIState::DEAD)
-    return;
+static const SkillDef g_skillDefs[] = {
+    {19, 9, 15},  // Falling Slash
+    {20, 9, 15},  // Lunge
+    {21, 8, 15},  // Uppercut
+    {22, 9, 18},  // Cyclone
+    {23, 10, 20}, // Slash
+    {41, 10, 25}, // Twisting Slash
+    {42, 20, 60}, // Rageful Blow
+    {43, 12, 70}, // Death Stab
+};
 
+static const SkillDef *FindSkillDef(uint8_t skillId) {
+  for (auto &s : g_skillDefs)
+    if (s.skillId == skillId)
+      return &s;
+  return nullptr;
+}
+
+// Shared combat logic: calculate damage, apply to monster, handle aggro/kill/XP
+static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
+                                 int bonusDamage, GameWorld &world,
+                                 Server &server) {
   CharacterClass charCls = static_cast<CharacterClass>(session.classCode);
-  bool hasBow = false;
+  bool hasBow = session.hasBow;
 
   int baseMin = StatCalculator::CalculateMinDamage(charCls, session.strength,
                                                    session.dexterity,
@@ -47,12 +66,11 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
   int defRate = mon->defenseRate;
 
   // OpenMU hit chance: hitChance = 1 - defRate/atkRate (min 3%)
-  // Reference: AttackableExtensions.cs GetHitChanceTo()
   int hitChance;
   if (attackRate > 0 && defRate < attackRate) {
     hitChance = 100 - (defRate * 100) / attackRate;
   } else {
-    hitChance = 3; // 3% minimum (OpenMU)
+    hitChance = 3;
   }
   if (hitChance < 3)
     hitChance = 3;
@@ -70,12 +88,20 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
 
     int critRoll = rand() % 100;
     if (critRoll < 1) {
-      damage = (baseMax * 120) / 100; // Excellent: 1.2x max (OpenMU)
+      damage = (baseMax * 120) / 100; // Excellent: 1.2x max
       damageType = 3;
     } else if (critRoll < 6) {
-      damage = baseMax; // Critical: max damage (OpenMU)
+      damage = baseMax; // Critical: max damage
       damageType = 2;
     }
+
+    // Two-handed weapon bonus: 120%
+    if (session.hasTwoHandedWeapon) {
+      damage = (damage * 120) / 100;
+    }
+
+    // Skill damage bonus (flat addition before defense)
+    damage += bonusDamage;
 
     damage = std::max(1, damage - mon->defense);
     mon->hp -= damage;
@@ -91,8 +117,8 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
     mon->currentPath.clear();
     mon->pathStep = 0;
     mon->repathTimer = 0.0f;
-    mon->moveTimer = mon->moveDelay; // First chase step happens immediately
-    mon->attackCooldown = 0.0f;      // Attack back immediately
+    mon->moveTimer = mon->moveDelay;
+    mon->attackCooldown = 0.0f;
 
     // Pack assist (same-type monsters within viewRange join aggro)
     if (mon->aggressive) {
@@ -110,11 +136,10 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
           continue;
         if (ally.aggroTimer < 0.0f)
           continue;
-        // Skip monsters that recently failed to pathfind (avoid aggro loop)
         if (ally.chaseFailCount >= 5)
           continue;
-        int dist = PathFinder::ChebyshevDist(ally.gridX, ally.gridY,
-                                             mon->gridX, mon->gridY);
+        int dist = PathFinder::ChebyshevDist(ally.gridX, ally.gridY, mon->gridX,
+                                             mon->gridY);
         if (dist <= ally.viewRange) {
           ally.aggroTargetFd = session.GetFd();
           ally.aggroTimer = 15.0f;
@@ -122,7 +147,7 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
           ally.currentPath.clear();
           ally.pathStep = 0;
           ally.repathTimer = 0.0f;
-          ally.moveTimer = ally.moveDelay; // First step immediately
+          ally.moveTimer = ally.moveDelay;
           ally.attackCooldown = 0.0f;
           printf("[AI] Mon %d (type %d): PACK ASSIST on attacker fd=%d "
                  "(dist=%d cells from attacked)\n",
@@ -139,7 +164,6 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       mon->aiState = MonsterInstance::AIState::DYING;
       mon->stateTimer = 0.0f;
 
-      // OpenMU XP formula: (targetLevel + 25) * targetLevel / 3.0 * 1.25
       double baseXP = (mon->level + 25.0) * mon->level / 3.0;
       if (session.level > mon->level + 10) {
         baseXP *= (double)(mon->level + 10) / session.level;
@@ -149,7 +173,6 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       }
       int xp = std::max(1, (int)(baseXP * 1.25 * ServerConfig::XP_MULTIPLIER));
 
-      // Broadcast death + XP
       PMSG_MONSTER_DEATH_SEND deathPkt{};
       deathPkt.h = MakeC1Header(sizeof(deathPkt), Opcode::MON_DEATH);
       deathPkt.monsterIndex = mon->index;
@@ -157,7 +180,6 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
       deathPkt.xpReward = static_cast<uint32_t>(xp);
       server.Broadcast(&deathPkt, sizeof(deathPkt));
 
-      // Authoritative leveling
       session.experience += xp;
       bool leveledUp = false;
       while (true) {
@@ -165,18 +187,21 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
         if (session.experience >= nextXP && session.level < 400) {
           session.level++;
 
-          CharacterClass charCls =
+          CharacterClass charCls2 =
               static_cast<CharacterClass>(session.classCode);
-          session.levelUpPoints += StatCalculator::GetLevelUpPoints(charCls);
+          session.levelUpPoints += StatCalculator::GetLevelUpPoints(charCls2);
 
-          session.maxHp = StatCalculator::CalculateMaxHP(charCls, session.level,
-                                                         session.vitality);
-          session.maxMana = StatCalculator::CalculateMaxManaOrAG(
-              charCls, session.level, session.strength, session.dexterity,
-              session.vitality, session.energy);
+          session.maxHp = StatCalculator::CalculateMaxHP(
+              charCls2, session.level, session.vitality);
+          session.maxMana = StatCalculator::CalculateMaxMP(
+              charCls2, session.level, session.energy);
+          session.maxAg = StatCalculator::CalculateMaxAG(
+              session.strength, session.dexterity, session.vitality,
+              session.energy);
 
           session.hp = session.maxHp;
           session.mana = session.maxMana;
+          session.ag = session.maxAg;
           leveledUp = true;
           printf("[Combat] Char %d leveled up to %d! Total XP: %llu\n",
                  session.characterId, (int)session.level,
@@ -190,7 +215,6 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
         CharacterHandler::SendCharStats(session);
       }
 
-      // Spawn drops
       auto drops = world.SpawnDrops(mon->worldX, mon->worldZ, mon->level,
                                     mon->type, server.GetDB());
       for (auto &drop : drops) {
@@ -220,6 +244,119 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
   dmgPkt.remainingHp = static_cast<uint16_t>(std::max(0, mon->hp));
   dmgPkt.attackerCharId = static_cast<uint16_t>(session.characterId);
   server.Broadcast(&dmgPkt, sizeof(dmgPkt));
+}
+
+void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
+                  GameWorld &world, Server &server) {
+  if (packet.size() < sizeof(PMSG_ATTACK_RECV))
+    return;
+  const auto *atk = reinterpret_cast<const PMSG_ATTACK_RECV *>(packet.data());
+
+  auto *mon = world.FindMonster(atk->monsterIndex);
+  if (!mon || mon->aiState == MonsterInstance::AIState::DYING ||
+      mon->aiState == MonsterInstance::AIState::DEAD)
+    return;
+
+  ApplyDamageToMonster(session, mon, 0, world, server);
+}
+
+// File-based debug log for skill attacks (stdout goes to /dev/null)
+static void SkillLog(const char *fmt, ...) {
+  FILE *f = fopen("skill_debug.log", "a");
+  if (!f)
+    return;
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(f, fmt, args);
+  va_end(args);
+  fclose(f);
+}
+
+void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
+                       GameWorld &world, Server &server) {
+  SkillLog("[SkillAttack] ENTER: pktSize=%zu learnedSkills=%zu mana=%d\n",
+           packet.size(), session.learnedSkills.size(), session.mana);
+
+  if (packet.size() < sizeof(PMSG_SKILL_ATTACK_RECV)) {
+    SkillLog("[SkillAttack] FAIL: packet too small (%zu < %zu)\n",
+             packet.size(), sizeof(PMSG_SKILL_ATTACK_RECV));
+    return;
+  }
+  const auto *atk =
+      reinterpret_cast<const PMSG_SKILL_ATTACK_RECV *>(packet.data());
+
+  SkillLog("[SkillAttack] monsterIndex=%d skillId=%d\n", atk->monsterIndex,
+           atk->skillId);
+
+  // Validate skill is learned
+  bool hasSkill = false;
+  for (auto s : session.learnedSkills) {
+    if (s == atk->skillId) {
+      hasSkill = true;
+      break;
+    }
+  }
+  if (!hasSkill) {
+    SkillLog("[SkillAttack] FAIL: skill %d not learned (have %zu skills)\n",
+             atk->skillId, session.learnedSkills.size());
+    printf("[Combat] fd=%d tried skill %d but hasn't learned it\n",
+           session.GetFd(), atk->skillId);
+    return;
+  }
+
+  // Look up skill definition
+  const SkillDef *skillDef = FindSkillDef(atk->skillId);
+  if (!skillDef) {
+    SkillLog("[SkillAttack] FAIL: unknown skill %d\n", atk->skillId);
+    printf("[Combat] fd=%d unknown skill %d\n", session.GetFd(), atk->skillId);
+    return;
+  }
+
+  // Check resource (DK uses AG, others use Mana)
+  CharacterClass charCls = static_cast<CharacterClass>(session.classCode);
+  bool isDK = (charCls == CharacterClass::CLASS_DK);
+  int currentResource = isDK ? session.ag : session.mana;
+
+  if (currentResource < skillDef->agCost) {
+    SkillLog("[SkillAttack] FAIL: not enough resource (%d < %d) isDK=%d\n",
+             currentResource, skillDef->agCost, (int)isDK);
+    printf("[Combat] fd=%d not enough %s (%d/%d) for skill %d\n",
+           session.GetFd(), isDK ? "AG" : "Mana", currentResource,
+           skillDef->agCost, atk->skillId);
+    return;
+  }
+
+  // Deduct resource
+  if (isDK) {
+    session.ag -= skillDef->agCost;
+  } else {
+    session.mana -= skillDef->agCost;
+  }
+
+  SkillLog("[SkillAttack] Resource deducted: %d -> %d\n", currentResource,
+           isDK ? session.ag : session.mana);
+
+  // Find target monster
+  auto *mon = world.FindMonster(atk->monsterIndex);
+  if (!mon || mon->aiState == MonsterInstance::AIState::DYING ||
+      mon->aiState == MonsterInstance::AIState::DEAD) {
+    SkillLog("[SkillAttack] FAIL: monster %d not found or dead\n",
+             atk->monsterIndex);
+    return;
+  }
+
+  SkillLog("[SkillAttack] SUCCESS: applying damage bonus=%d to mon %d\n",
+           skillDef->damageBonus, atk->monsterIndex);
+
+  // Apply damage with skill bonus
+  ApplyDamageToMonster(session, mon, skillDef->damageBonus, world, server);
+
+  // Send updated stats (so client sees AG decrease)
+  CharacterHandler::SendCharStats(session);
+
+  printf("[Combat] fd=%d used skill %d (AG cost=%d, bonus=%d) on mon %d\n",
+         session.GetFd(), atk->skillId, skillDef->agCost, skillDef->damageBonus,
+         atk->monsterIndex);
 }
 
 } // namespace CombatHandler

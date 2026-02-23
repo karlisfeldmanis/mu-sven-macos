@@ -1,55 +1,89 @@
 # MU Online Remaster - C++ Edition
 
-A high-performance, native C++20 restoration of the MU Online engine, built with focus on rendering fidelity, smooth terrain blending, and direct legacy format compatibility. This project targets macOS as a primary platform with OpenGL 3.3+.
+A native C++20 restoration of the MU Online engine for macOS with OpenGL 3.3+. Faithful migration from Main 5.2 source with server-side balance from OpenMU Version075.
 
-## Core Features
+## Features
 
-- **High-Fidelity Rendering**: Custom OpenGL 3.3+ renderer with native support for legacy MU effects, lighting, and alpha testing.
-- **4-Tap Smooth Blending**: Advanced terrain shader that eliminates jagged tile boundaries through 4-tap bilinear index and attribute interpolation.
-- **Advanced World Systems**: 
-    - Full **BMD Object Rendering** with per-mesh blend states (Alpha, Bright/Additive, Hidden).
-    - **Fire Effect System**: High-performance GPU-instanced billboarding for Lorenzian torches and bonfires.
-    - **Interactive Object Browser**: Built-in ImGui browser to inspect every model in the `Data/Object1` directory.
-- **Optimized Capture System**:
-    - **GIF Animations**: High-performance recording with **consecutive frame diffing** and **dirty rectangle encoding**.
-    - **Scale & Performance**: Integrated resolution downscaling (box filter) and frame skipping to reduce output size (e.g., 500KB → 20KB).
-- **Universal BMD Support**: Native parsers for both version **0xC (encrypted)** and **0xA (unencrypted)** BMD models.
-
-## Targets
-
-### 1. MuRemaster
-The main world viewer. Loads the full Lorencia (World1) map, including heightmaps, lightmaps, terrain textures, and over 2800 objects.
-
-### 2. ModelViewer
-A standalone object browser. Scans model directories and allows real-time inspection of BMD files, animations, and textures with orbit camera controls.
-
-## Getting Started
-
-### Prerequisites
-- CMake 3.15+
-- C++20 Compiler (Clang/GCC)
-- giflib (for optimized GIF output)
-- Original MU Online client data
-
-### Quick Start
-```bash
-mkdir build && cd build
-cmake ..
-make -j
-./MuRemaster  # Run world viewer
-./ModelViewer # Run object browser
-```
-
-## Controls
-- **WASD / Arrows**: Move camera / Navigate lists
-- **Shift**: Speed up camera (Turbo)
-- **Mouse Drag**: Rotate camera (Orbit in ModelViewer / FPS in World)
-- **Mouse Wheel**: Zoom / Scroll
-- **P**: Capture Screenshot (JPEG)
-- **ImGui Panel**: Configure GIF Capture (ModelViewer)
+- **Lorencia World**: Full terrain, 2800+ objects, fire effects, grass, sky dome, lightmaps
+- **Dark Knight Class**: 5-part body model, weapon attachment, 8 skills (Falling Slash through Rageful Blow)
+- **Combat System**: Server-authoritative hit resolution, DK stat formulas, AG (stamina) system, skill orb learning
+- **Monster AI**: Server-driven state machine (idle, wander, chase, attack, return), A* pathfinding, pack assist
+- **Inventory & Equipment**: 64-slot bag, 12 equipment slots, drag-drop, tooltips, stat allocation, NPC shops
+- **Unified HUD**: Bottom bar with HP/AG bars, QWER potion slots, 1234 skill slots, RMC skill, XP bar
+- **VFX System**: Particle bursts (blood, sparks, fire, energy), ribbon trails (lightning), level-up effects
+- **Networking**: Binary TCP protocol, SQLite persistence, 60s autosave
 
 ## Project Structure
-- `src/`: Native implementation files including BMD parsing, texture loading, and effect systems.
-- `include/`: C++20 header definitions and data structures.
-- `shaders/`: GLSL shaders for terrain, skeletal models, and billboard effects.
-- `references/`: MU Online source of truth data and original implementation logic.
+
+```
+mu_remaster/
+├── client/           # Game client
+│   ├── src/          # Client source code
+│   ├── include/      # Client headers
+│   ├── shaders/      # GLSL shaders
+│   ├── external/     # Third-party libs (imgui, stb)
+│   ├── Data/         # Game assets (symlink to references/)
+│   └── CMakeLists.txt
+├── server/           # Game server
+│   ├── src/          # Server source code
+│   ├── include/      # Server headers
+│   └── CMakeLists.txt
+├── docs/             # Reference documentation
+└── references/       # Original MU source (gitignored)
+```
+
+## Quick Start
+
+### Prerequisites
+- macOS with Xcode command line tools
+- CMake 3.15+, Ninja (recommended)
+- GLFW3, GLEW, libjpeg-turbo, giflib, GLM, SQLite3
+- Original MU Online client data in `client/Data/`
+
+### Build & Run
+
+```bash
+# Build server
+cd server/build && cmake .. && ninja
+
+# Build client (always use Release)
+cd client/build && cmake -DCMAKE_BUILD_TYPE=Release .. && ninja
+
+# Run (from build directories)
+cd server/build && ./MuServer &
+cd client/build && ./MuRemaster
+```
+
+### Database
+
+Server auto-creates `server/build/mu_server.db` on first run with seeded item definitions, NPC spawns, and monster spawns. Delete the DB file to reset.
+
+## Controls
+
+| Key | Action |
+|-----|--------|
+| Left Click | Move / Attack / Interact |
+| Right Click | Skill attack (RMC slot) |
+| Q, W, E, R | Use potion slots 1-4 |
+| 1, 2, 3, 4 | Select skill to RMC slot |
+| C | Toggle character info panel |
+| I | Toggle inventory panel |
+| S | Toggle skill window |
+| Esc | Close panels / Cancel |
+| Mouse Wheel | Camera zoom |
+
+## Documentation
+
+Detailed reference docs in `docs/`:
+
+| Document | Content |
+|----------|---------|
+| [build-and-project.md](docs/build-and-project.md) | Build system, source files, architecture, packets |
+| [character-system.md](docs/character-system.md) | DK stats, combat formulas, weapon config |
+| [monster-system.md](docs/monster-system.md) | Monster types, AI, stats, movement |
+| [bmd-format.md](docs/bmd-format.md) | BMD binary model format spec |
+| [texture-formats.md](docs/texture-formats.md) | OZJ/OZT formats, texture resolution |
+| [animation-system.md](docs/animation-system.md) | Tick-based timing, PlaySpeed tables |
+| [rendering.md](docs/rendering.md) | Coordinate system, blend states, shadows |
+| [terrain-and-environment.md](docs/terrain-and-environment.md) | Terrain, water, lightmap, grass |
+| [reference-navigation.md](docs/reference-navigation.md) | Key functions in original Main 5.2 |

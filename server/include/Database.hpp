@@ -44,10 +44,14 @@ struct CharacterData {
   uint16_t maxLife = 100;
   uint16_t mana = 50;
   uint16_t maxMana = 50;
+  uint16_t ag = 50;
+  uint16_t maxAg = 50;
   uint32_t money = 0;
   uint64_t experience = 0;
   uint16_t levelUpPoints = 0;
-  int16_t quickSlotDefIndex = -1;
+  int8_t skillBar[10];
+  int16_t potionBar[3];
+  int8_t rmcSkillId = -1;
 };
 
 // Equipment slot constants (matching original MU inventory layout)
@@ -124,15 +128,18 @@ public:
   void UpdateCharacterStats(int charId, uint16_t level, uint16_t strength,
                             uint16_t dexterity, uint16_t vitality,
                             uint16_t energy, uint16_t life, uint16_t maxLife,
-                            uint16_t levelUpPoints, uint64_t experience,
-                            int16_t quickSlotDefIndex);
+                            uint16_t mana, uint16_t maxMana, uint16_t ag,
+                            uint16_t maxAg, uint16_t levelUpPoints,
+                            uint64_t experience, const int8_t *skillBar,
+                            const int16_t *potionBar, int8_t rmcSkillId);
   void SaveCharacterFull(int charId, uint16_t level, uint16_t strength,
-                         uint16_t dexterity, uint16_t vitality,
-                         uint16_t energy, uint16_t life, uint16_t maxLife,
-                         uint16_t mana, uint16_t maxMana,
+                         uint16_t dexterity, uint16_t vitality, uint16_t energy,
+                         uint16_t life, uint16_t maxLife, uint16_t mana,
+                         uint16_t maxMana, uint16_t ag, uint16_t maxAg,
                          uint16_t levelUpPoints, uint64_t experience,
                          uint32_t money, uint8_t posX, uint8_t posY,
-                         int16_t quickSlotDefIndex);
+                         const int8_t *skillBar, const int16_t *potionBar,
+                         int8_t rmcSkillId);
   void CreateDefaultAccount();
 
   // NPC spawns
@@ -150,7 +157,7 @@ public:
   std::vector<ItemDropInfo> GetItemsByLevelRange(int minLevel, int maxLevel);
   std::vector<EquipmentSlot> GetCharacterEquipment(int characterId);
   void SeedDefaultEquipment(int characterId);
-  void SeedVeteranCharacter(int accountId);
+
   void UpdateEquipment(int characterId, uint8_t slot, uint8_t category,
                        uint8_t itemIndex, uint8_t itemLevel);
 

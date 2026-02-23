@@ -1,3 +1,6 @@
+#ifndef MU_STAT_CALCULATOR_HPP
+#define MU_STAT_CALCULATOR_HPP
+
 #pragma once
 #include "PacketDefs.hpp"
 #include <cstdint>
@@ -34,3 +37,5 @@ int CalculateMaxManaOrAG(CharacterClass cls, int level, int strength,
 int GetLevelUpPoints(CharacterClass cls);
 
 } // namespace StatCalculator
+
+#endif // MU_STAT_CALCULATOR_HPP
