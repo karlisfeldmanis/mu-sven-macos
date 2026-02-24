@@ -18,7 +18,7 @@ Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only),
 
 ### Data Directory
 
-`client/Data/` is the canonical data directory (symlink to `references/MuMain/src/bin/Data`). CMake auto-creates `build/Data` symlinks in both client and server build directories. Base assets from Kayito 0.97k (complete client with terrain, models, textures), with `Player.bmd` from Main 5.2 (247 actions).
+`client/Data/` is the canonical data directory (local copy, gitignored). CMake auto-creates `build/Data` symlinks in both client and server build directories pointing to `client/Data/`. All assets from Main 5.2, `Player.bmd` has 247 actions.
 
 ### macOS Specifics
 - **Window Activation**: Uses `activateMacOSApp()` (Objective-C runtime) to force the GLFW window to the foreground on launch.

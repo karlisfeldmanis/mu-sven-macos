@@ -53,7 +53,13 @@ struct InventoryUIContext {
   int *serverLevelUpPoints, *serverDefense, *serverAttackSpeed,
       *serverMagicSpeed;
   int *serverHP, *serverMaxHP, *serverMP, *serverMaxMP;
+  int *serverAG; // AG for DK (separate from mana)
   int64_t *serverXP;
+
+  // Teleport trigger (T button)
+  bool *teleportingToTown;
+  float *teleportTimer;
+  float teleportCastTime;
 
   int *heroCharacterId;
   char *characterName;

@@ -13,7 +13,7 @@ mu_remaster/
 │   ├── include/      # Client headers
 │   ├── shaders/      # GLSL shaders
 │   ├── external/     # Third-party libs (imgui, stb)
-│   ├── Data/         # Game assets (symlink to references/, gitignored)
+│   ├── Data/         # Game assets (Main 5.2, local copy, gitignored)
 │   ├── CMakeLists.txt
 │   └── build/        # Build output (CMake symlinks Data/ here)
 ├── server/           # Game server (standalone, zero client code dependencies)
@@ -139,9 +139,15 @@ Skills are server-authoritative. Stored in `character_skills` table. DK starts w
 - **NPC direction values**: DB stores OpenMU-style 1-8 (West=1, SouthWest=2, South=3, SouthEast=4, East=5, NE=6, North=7, NW=8). Main 5.2 MonsterSetBase uses raw protocol 0-7 (add +1 for our DB). Client formula: `facing = (dir-1) * PI/4`.
 - **NPC coordinates are version-stable**: Lorencia NPC positions (grid x/y) are identical across Version075, 095d, Season 6, and Main 5.2. Season 6 inherits from 095d which inherits from 075.
 - **Player.bmd version matters**: Must use Main 5.2 Player.bmd (247 actions, 3.0 MB), NOT Kayito 0.97k (141 actions, 1.47 MB). Our code uses Main 5.2 `_enum.h` action indices which map to wrong animations in Kayito's version. Guards also use Player.bmd skeleton.
-- **Data directory**: `client/Data/` is the canonical data directory (symlink to `references/MuMain/src/bin/Data`). CMake auto-creates `build/Data` symlinks in both client and server build dirs. Base assets from Kayito 0.97k (complete client with EncTerrain1.obj, models, textures), Player.bmd from Main 5.2.
+- **Data directory**: `client/Data/` is the canonical data directory (local copy, gitignored). CMake creates `build/Data` symlinks in both client and server build dirs pointing to `client/Data/`. All assets from Main 5.2, Player.bmd has 247 actions.
 - **Server terrain path**: CMake symlinks `server/build/Data/` → `client/Data/`, so server loads `Data/World1/EncTerrain1.att` directly.
 - **Safe zone attribute**: Only `TW_SAFEZONE` (0x01). Do NOT include `TW_NOGROUND` (0x08) in safe zone checks — that flag is for bridge/void cells.
 - **Monster pathfinding chase fail**: Monsters that fail pathfinding 5+ times transition to RETURNING. Pack assist must skip these monsters (chaseFailCount >= 5) or they enter an infinite aggro-give up-re-aggro loop. Reset chaseFailCount on return to spawn and respawn.
 - **Autosave optimization**: Skip empty equipment slots (category 0xFF) during autosave. Don't call SaveSession on every kill — rely on periodic 60s autosave.
 - **Guard NPC type 249**: Guards don't have shops. ShopHandler silently ignores non-shop NPC types.
+- **Body part BMDs have 1 action**: Helm/Armor/Pant/Glove/Boot BMDs (e.g. `HelmMale01.bmd`) have 56 bones and exactly 1 action with 1 keyframe (a static bind pose). Player.bmd has 60 bones and 284 actions. For UI rendering (inventory/shop), use Player.bmd action 1 (idle) bones to get a natural standing pose. Body part vertex bone indices 0-55 are a subset of Player.bmd's 0-59.
+- **Helm BMD textures are `head_XX.jpg`**: Helm meshes use texture names like `head_02.jpg`, `head_03.jpg`. When filtering body part meshes for UI display (to hide character skin), do NOT filter `head_` for category 7 (helms) -- that IS the actual helm. Only filter `skin_` and `hide` for helms. Filter all three (`head_`, `skin_`, `hide`) for categories 8-11.
+- **Shadow render order**: Shadows with `glDisable(GL_DEPTH_TEST)` MUST render BEFORE the character model, not after, or they appear on top of the character instead of on the ground.
+- **Stencil shadow merging**: Use `GL_INCR` (not `GL_REPLACE`) in `glStencilOp` for unified body+weapon+shield shadows. `GL_REPLACE` with ref=0 replaces stencil with 0, never blocking subsequent fragments.
+- **Character select point lights**: Collect from world object instances (types 50/51=fire, 52=bonfire, 55=gate, 90=streetlight, etc.). Pass to terrain via CPU lightmap and to character shader via uniform arrays.
+- **Click-to-move state guard**: GLFW mouse callbacks fire regardless of game state. Guard with `!s_gameReady` to prevent character select button clicks from bleeding through as click-to-move commands during state transition.

@@ -4,7 +4,7 @@ project(MuServer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Symlink client Data/ so server can load terrain attributes at "Data/World1/..."
+# Symlink build/Data/ -> client/Data/ so server can load terrain attributes at "Data/World1/..."
 if(NOT EXISTS "${CMAKE_BINARY_DIR}/Data")
     file(CREATE_LINK "${CMAKE_SOURCE_DIR}/../client/Data" "${CMAKE_BINARY_DIR}/Data" SYMBOLIC)
 endif()
@@ -33,6 +33,7 @@ add_executable(MuServer
     src/handlers/InventoryHandler.cpp
     src/handlers/WorldHandler.cpp
     src/handlers/ShopHandler.cpp
+    src/handlers/CharacterSelectHandler.cpp
 )
 
 target_link_libraries(MuServer PRIVATE SQLite::SQLite3)

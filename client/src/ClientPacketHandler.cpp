@@ -1,4 +1,5 @@
 #include "ClientPacketHandler.hpp"
+#include "CharacterSelect.hpp"
 #include "InventoryUI.hpp"
 #include "ItemDatabase.hpp"
 #include "PacketDefs.hpp"
@@ -389,11 +390,20 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
 
         glm::vec3 monPos =
             g_state->monsterManager->GetMonsterInfo(idx).position;
-        // Main 5.2: Regular hits create blood (10x BITMAP_BLOOD+1)
-        // Giant (type 7) excluded: if(to->Type != MODEL_MONSTER01+7)
         glm::vec3 hitPos = monPos + glm::vec3(0, 50, 0);
-        if (mi.type != 7) {
-          g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 10);
+
+        // Skill attacks: spawn skill-specific impact VFX + reduced blood
+        // Normal attacks: standard blood burst (Main 5.2: 10x BITMAP_BLOOD+1)
+        uint8_t heroSkill = g_state->hero->GetActiveSkillId();
+        if (heroSkill > 0 &&
+            p->attackerCharId == (uint16_t)*g_state->heroCharacterId) {
+          g_state->vfxManager->SpawnSkillImpact(heroSkill, monPos);
+          if (mi.type != 7)
+            g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 5);
+        } else {
+          // Giant (type 7) excluded from blood
+          if (mi.type != 7)
+            g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 10);
         }
 
         uint8_t dmgType = 0;
@@ -666,6 +676,82 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
         std::cout << "[Shop] Received list with " << (int)count << " items\n";
       }
     }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Character select packet handler (F3 sub-codes: charlist, create, delete)
+// ═══════════════════════════════════════════════════════════════════
+
+void HandleCharSelectPacket(const uint8_t *pkt, int pktSize) {
+  if (pktSize < 4)
+    return;
+  uint8_t type = pkt[0];
+  if (type != 0xC1)
+    return;
+
+  uint8_t headcode = pkt[2];
+  if (headcode != Opcode::CHARSELECT)
+    return;
+
+  uint8_t subcode = pkt[3];
+
+  // F3:00 — Character List
+  if (subcode == Opcode::SUB_CHARLIST) {
+    if (pktSize < (int)sizeof(PMSG_CHARLIST_HEAD))
+      return;
+    auto *head = reinterpret_cast<const PMSG_CHARLIST_HEAD *>(pkt);
+    int count = head->count;
+    int entryOff = sizeof(PMSG_CHARLIST_HEAD);
+
+    CharacterSelect::CharSlot slots[CharacterSelect::MAX_SLOTS] = {};
+    int parsed = 0;
+
+    for (int i = 0; i < count; i++) {
+      if (entryOff + (int)sizeof(PMSG_CHARLIST_ENTRY) > pktSize)
+        break;
+      auto *entry =
+          reinterpret_cast<const PMSG_CHARLIST_ENTRY *>(pkt + entryOff);
+      int slot = entry->slot;
+      if (slot >= 0 && slot < CharacterSelect::MAX_SLOTS) {
+        slots[slot].occupied = true;
+        std::memcpy(slots[slot].name, entry->name, 10);
+        slots[slot].name[10] = '\0';
+        slots[slot].classCode = entry->classCode;
+        slots[slot].level = GetWordBE(reinterpret_cast<const uint8_t *>(&entry->level));
+        // Parse equipment appearance from charSet[1..14]
+        for (int e = 0; e < 7; e++) {
+          slots[slot].equip[e].category = entry->charSet[1 + e * 2];
+          slots[slot].equip[e].itemIndex = entry->charSet[2 + e * 2];
+        }
+        parsed++;
+      }
+      entryOff += sizeof(PMSG_CHARLIST_ENTRY);
+    }
+
+    CharacterSelect::SetCharacterList(slots, CharacterSelect::MAX_SLOTS);
+    std::cout << "[Net] Character list: " << parsed << " characters"
+              << std::endl;
+  }
+
+  // F3:01 — Character Create Result
+  if (subcode == Opcode::SUB_CHARCREATE) {
+    if (pktSize < (int)sizeof(PMSG_CHARCREATE_RESULT))
+      return;
+    auto *res = reinterpret_cast<const PMSG_CHARCREATE_RESULT *>(pkt);
+    CharacterSelect::OnCreateResult(res->result, res->name, res->slot,
+                                    res->classCode);
+    std::cout << "[Net] Create result: " << (int)res->result << " name='"
+              << res->name << "'" << std::endl;
+  }
+
+  // F3:02 — Character Delete Result
+  if (subcode == Opcode::SUB_CHARDELETE) {
+    if (pktSize < (int)sizeof(PMSG_CHARDELETE_RESULT))
+      return;
+    auto *res = reinterpret_cast<const PMSG_CHARDELETE_RESULT *>(pkt);
+    CharacterSelect::OnDeleteResult(res->result);
+    std::cout << "[Net] Delete result: " << (int)res->result << std::endl;
   }
 }
 

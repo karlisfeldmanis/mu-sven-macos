@@ -1,5 +1,6 @@
 #include "GrassRenderer.hpp"
 #include "TextureLoader.hpp"
+#include <cstdio>
 #include <cstdlib>
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
@@ -77,6 +78,9 @@ uniform sampler2D grassTex0;
 uniform sampler2D grassTex1;
 uniform sampler2D grassTex2;
 uniform vec3 viewPos;
+uniform vec3 uFogColor;
+uniform float uFogNear;
+uniform float uFogFar;
 
 void main() {
     vec4 color;
@@ -90,9 +94,8 @@ void main() {
 
     // Fog matching terrain shader parameters
     float dist = length(FragPos - viewPos);
-    float fogFactor = clamp((3500.0 - dist) / (3500.0 - 1500.0), 0.0, 1.0);
-    vec3 fogColor = vec3(0.117, 0.078, 0.039);
-    lit = mix(fogColor, lit, fogFactor);
+    float fogFactor = clamp((uFogFar - dist) / (uFogFar - uFogNear), 0.0, 1.0);
+    lit = mix(uFogColor, lit, fogFactor);
 
     // Edge fog (same as terrain)
     float edgeWidth = 2500.0;
@@ -151,6 +154,26 @@ void GrassRenderer::setupShader() {
 
   glDeleteShader(vert);
   glDeleteShader(frag);
+
+  // Cache uniform locations once
+  u_view = glGetUniformLocation(shaderProgram, "view");
+  u_projection = glGetUniformLocation(shaderProgram, "projection");
+  u_uTime = glGetUniformLocation(shaderProgram, "uTime");
+  u_viewPos = glGetUniformLocation(shaderProgram, "viewPos");
+  u_fogColor = glGetUniformLocation(shaderProgram, "uFogColor");
+  u_fogNear = glGetUniformLocation(shaderProgram, "uFogNear");
+  u_fogFar = glGetUniformLocation(shaderProgram, "uFogFar");
+  u_numPushers = glGetUniformLocation(shaderProgram, "numPushers");
+  for (int i = 0; i < 17; ++i) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "pushPos[%d]", i);
+    u_pushPos[i] = glGetUniformLocation(shaderProgram, buf);
+    snprintf(buf, sizeof(buf), "pushRadius[%d]", i);
+    u_pushRadius[i] = glGetUniformLocation(shaderProgram, buf);
+  }
+  u_grassTex[0] = glGetUniformLocation(shaderProgram, "grassTex0");
+  u_grassTex[1] = glGetUniformLocation(shaderProgram, "grassTex1");
+  u_grassTex[2] = glGetUniformLocation(shaderProgram, "grassTex2");
 }
 
 void GrassRenderer::Load(const TerrainData &data, int worldID,
@@ -369,24 +392,20 @@ void GrassRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
 
   glUseProgram(shaderProgram);
 
-  glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE,
-                     glm::value_ptr(view));
-  glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1,
-                     GL_FALSE, glm::value_ptr(projection));
-  glUniform1f(glGetUniformLocation(shaderProgram, "uTime"), time);
-  glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1,
-               glm::value_ptr(viewPos));
+  glUniformMatrix4fv(u_view, 1, GL_FALSE, glm::value_ptr(view));
+  glUniformMatrix4fv(u_projection, 1, GL_FALSE, glm::value_ptr(projection));
+  glUniform1f(u_uTime, time);
+  glUniform3fv(u_viewPos, 1, glm::value_ptr(viewPos));
+  glUniform3fv(u_fogColor, 1, glm::value_ptr(fogColor));
+  glUniform1f(u_fogNear, fogNear);
+  glUniform1f(u_fogFar, fogFar);
 
   // Upload push sources (hero + monsters)
   int count = std::min((int)pushSources.size(), 17);
-  glUniform1i(glGetUniformLocation(shaderProgram, "numPushers"), count);
+  glUniform1i(u_numPushers, count);
   for (int i = 0; i < count; ++i) {
-    std::string posName = "pushPos[" + std::to_string(i) + "]";
-    std::string radName = "pushRadius[" + std::to_string(i) + "]";
-    glUniform3fv(glGetUniformLocation(shaderProgram, posName.c_str()), 1,
-                 glm::value_ptr(pushSources[i].pos));
-    glUniform1f(glGetUniformLocation(shaderProgram, radName.c_str()),
-                pushSources[i].radius);
+    glUniform3fv(u_pushPos[i], 1, glm::value_ptr(pushSources[i].pos));
+    glUniform1f(u_pushRadius[i], pushSources[i].radius);
   }
 
   // Bind grass textures
@@ -394,9 +413,9 @@ void GrassRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
     glActiveTexture(GL_TEXTURE0 + i);
     glBindTexture(GL_TEXTURE_2D, grassTextures[i] ? grassTextures[i] : 0);
   }
-  glUniform1i(glGetUniformLocation(shaderProgram, "grassTex0"), 0);
-  glUniform1i(glGetUniformLocation(shaderProgram, "grassTex1"), 1);
-  glUniform1i(glGetUniformLocation(shaderProgram, "grassTex2"), 2);
+  glUniform1i(u_grassTex[0], 0);
+  glUniform1i(u_grassTex[1], 1);
+  glUniform1i(u_grassTex[2], 2);
 
   // Render state: alpha blend, no face culling (both sides visible)
   glEnable(GL_BLEND);

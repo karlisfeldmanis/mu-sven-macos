@@ -1,6 +1,7 @@
 #ifndef MU_CLIENT_PACKET_HANDLER_HPP
 #define MU_CLIENT_PACKET_HANDLER_HPP
 
+#include "CharacterSelect.hpp"
 #include "ClientTypes.hpp"
 #include "HeroCharacter.hpp"
 #include "ItemDatabase.hpp"
@@ -74,6 +75,9 @@ void HandleInitialPacket(const uint8_t *pkt, int pktSize, ServerData &out);
 
 // Handle ongoing game packets (monster AI, combat, drops, stats)
 void HandleGamePacket(const uint8_t *pkt, int pktSize);
+
+// Handle character select packets (F3:00 charlist, F3:01 create, F3:02 delete)
+void HandleCharSelectPacket(const uint8_t *pkt, int pktSize);
 
 } // namespace ClientPacketHandler
 

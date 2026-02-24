@@ -2,6 +2,7 @@
 #include "BMDUtils.hpp"
 #include "BoidManager.hpp"
 #include "Camera.hpp"
+#include "CharacterSelect.hpp"
 #include "ClickEffect.hpp"
 #include "ClientPacketHandler.hpp"
 #include "ClientTypes.hpp"
@@ -270,6 +271,18 @@ static std::unordered_map<int, float> g_typeAlpha = {{125, 1.0f}, {126, 1.0f}};
 static std::unordered_map<int, float> g_typeAlphaTarget = {{125, 1.0f},
                                                            {126, 1.0f}};
 
+// ── Game state machine ──
+enum class GameState {
+  CONNECTING,  // TCP connect in progress
+  CHAR_SELECT, // Character select scene active
+  LOADING,     // Selected character, loading world data
+  INGAME       // Normal gameplay
+};
+static GameState g_gameState = GameState::CONNECTING;
+static bool g_worldInitialized = false; // True once game world is set up
+static int g_loadingFrames = 0;         // Frames spent in LOADING state
+static GLuint g_loadingTex = 0;         // Loading screen texture
+
 struct LightTemplate {
   glm::vec3 color;
   float range;
@@ -315,6 +328,10 @@ static const LightTemplate *GetLightProperties(int type) {
     return nullptr;
   }
 }
+
+// ── Game world initialization (called after character select) ──
+// Forward declared, defined after main() helpers
+static void InitGameWorld(ServerData &serverData);
 
 // Input handling (mouse, keyboard, click-to-move, processInput) delegated
 // to InputHandler module (see src/InputHandler.cpp)
@@ -624,6 +641,7 @@ int main(int argc, char **argv) {
   // Initialize hero character and click effect
   g_hero.Init(data_path);
   g_hero.SetTerrainData(&terrainData);
+  g_hero.SetVFXManager(&g_vfxManager);
 
   // Starting character initialization: empty inventory for realistic testing
   // Initial stats for Level 1 DK
@@ -671,7 +689,11 @@ int main(int argc, char **argv) {
     ctx.serverMaxHP = &g_serverMaxHP;
     ctx.serverMP = &g_serverMP;
     ctx.serverMaxMP = &g_serverMaxMP;
+    ctx.serverAG = &g_serverAG;
     ctx.serverXP = &g_serverXP;
+    ctx.teleportingToTown = &g_teleportingToTown;
+    ctx.teleportTimer = &g_teleportTimer;
+    ctx.teleportCastTime = TELEPORT_CAST_TIME;
     ctx.hero = &g_hero;
     ctx.server = &g_server;
     ctx.hudCoords = &g_hudCoords;
@@ -706,6 +728,7 @@ int main(int argc, char **argv) {
     inputCtx.skillBar = g_skillBar;
     inputCtx.rmcSkillId = &g_rmcSkillId;
     inputCtx.serverMP = &g_serverMP;
+    inputCtx.serverAG = &g_serverAG;
     inputCtx.shopOpen = &g_shopOpen;
     inputCtx.isLearningSkill = &g_isLearningSkill;
     inputCtx.learnedSkills = &g_learnedSkills;
@@ -770,13 +793,19 @@ int main(int argc, char **argv) {
     ClientPacketHandler::Init(&gameState);
   }
 
-  // Set up packet handler BEFORE connecting so no packets are lost
+  // Set up unified packet handler — routes based on g_gameState
   g_server.onPacket = [&serverData](const uint8_t *pkt, int size) {
-    if (size >= 3) {
-      std::cout << "[Net:Initial] Received packet type=0x" << std::hex
-                << (int)pkt[0] << std::dec << " size=" << size << std::endl;
+    if (g_gameState == GameState::CHAR_SELECT ||
+        g_gameState == GameState::CONNECTING) {
+      // Handle character select packets (F3 sub-codes)
+      ClientPacketHandler::HandleCharSelectPacket(pkt, size);
+    } else if (g_gameState == GameState::LOADING) {
+      // Handle initial world data burst
+      ClientPacketHandler::HandleInitialPacket(pkt, size, serverData);
+    } else {
+      // Normal game packets
+      ClientPacketHandler::HandleGamePacket(pkt, size);
     }
-    ClientPacketHandler::HandleInitialPacket(pkt, size, serverData);
   };
 
   // Auto-diagnostic mode: --diag flag captures all debug views and exits
@@ -822,6 +851,35 @@ int main(int argc, char **argv) {
     }
   }
 
+  // Initialize CharacterSelect scene
+  {
+    CharacterSelect::Context csCtx;
+    csCtx.server = &g_server;
+    csCtx.dataPath = data_path;
+    csCtx.window = window;
+    csCtx.onCharSelected = [&]() {
+      // Server will send world data burst after char select — switch to LOADING
+      g_loadingFrames = 0;
+      g_gameState = GameState::LOADING;
+      // Load a random loading screen image
+      if (!g_loadingTex) {
+        int idx = (rand() % 3) + 1;
+        char path[256];
+        snprintf(path, sizeof(path), "%s/Logo/Loading%02d.OZJ",
+                 data_path.c_str(), idx);
+        g_loadingTex = TextureLoader::LoadOZJ(path);
+        if (!g_loadingTex) {
+          snprintf(path, sizeof(path), "%s/Local/loading%02d.ozj",
+                   data_path.c_str(), idx);
+          g_loadingTex = TextureLoader::LoadOZJ(path);
+        }
+      }
+      std::cout << "[State] -> LOADING (waiting for world data)" << std::endl;
+    };
+    csCtx.onExit = [&]() { glfwSetWindowShouldClose(window, GLFW_TRUE); };
+    CharacterSelect::Init(csCtx);
+  }
+
   bool connected = false;
   for (int i = 0; i < 5; ++i) {
     if (g_server.Connect("127.0.0.1", 44405)) {
@@ -840,207 +898,19 @@ int main(int argc, char **argv) {
   }
 
   serverData.connected = true;
+  g_gameState = GameState::CHAR_SELECT;
+  std::cout << "[State] -> CHAR_SELECT (waiting for character list)"
+            << std::endl;
 
-  // Receive initial data burst (welcome + NPCs + monsters + equipment +
-  // stats) Give server time to send all initial packets, poll to parse them
-  std::cout << "[Net] Connected. Syncing initial state..." << std::endl;
-  int packetsReceived = 0;
-  for (int attempt = 0; attempt < 100; attempt++) {
+  // Give server a moment to send character list
+  for (int i = 0; i < 10; i++) {
     g_server.Poll();
-    usleep(20000); // 20ms
+    usleep(10000);
   }
 
-  if (serverData.npcs.empty() && !autoScreenshot && !autoDiag) {
-    // If we didn't get initial sync data (e.g. timeout), it's probably a
-    // stale connection
-    std::cerr << "[Net] FATAL: Server connected but failed to sync initial "
-                 "game state."
-              << std::endl;
-    return 1;
-  }
-
-  // Switch to ongoing packet handler for game loop
-  g_server.onPacket = [](const uint8_t *pkt, int size) {
-    ClientPacketHandler::HandleGamePacket(pkt, size);
-  };
-
-  if (serverData.connected && !serverData.npcs.empty()) {
-    g_npcManager.InitModels(data_path);
-    for (auto &npc : serverData.npcs) {
-      g_npcManager.AddNpcByType(npc.type, npc.gridX, npc.gridY, npc.dir,
-                                npc.serverIndex);
-    }
-    std::cout << "[NPC] Loaded " << serverData.npcs.size()
-              << " NPCs from server" << std::endl;
-  } else {
-    std::cout << "[NPC] No server connection, using hardcoded NPCs"
-              << std::endl;
-    g_npcManager.Init(data_path);
-  }
-
-  // Equip weapon + shield + armor from server equipment data (DB-driven)
-  for (auto &eq : serverData.equipment) {
-    if (eq.slot == 0) {
-      g_hero.EquipWeapon(eq.info); // Right hand weapon
-    } else if (eq.slot == 1) {
-      g_hero.EquipShield(eq.info); // Left hand shield
-    }
-    // Body part equipment (slot 2=Helm, 3=Armor, 4=Pants, 5=Gloves, 6=Boots)
-    int bodyPart = ItemDatabase::GetBodyPartIndex(eq.info.category);
-    if (bodyPart >= 0) {
-      std::string partModel = ItemDatabase::GetBodyPartModelFile(
-          eq.info.category, eq.info.itemIndex);
-      if (!partModel.empty())
-        g_hero.EquipBodyPart(bodyPart, partModel);
-    }
-    std::cout << "[Equip] Slot " << (int)eq.slot << ": " << eq.info.modelFile
-              << " cat=" << (int)eq.info.category << std::endl;
-  }
-  g_syncDone = true; // Initial sync complete, allow updates
-  g_npcManager.SetTerrainLightmap(terrainData.lightmap);
-  g_npcManager.SetVFXManager(&g_vfxManager);
-  InventoryUI::RecalcEquipmentStats(); // Compute initial weapon/defense bonuses
-  g_npcManager.SetPointLights(g_pointLights);
-  g_boidManager.SetTerrainLightmap(terrainData.lightmap);
-  g_boidManager.SetPointLights(g_pointLights);
-  checkGLError("npc init");
-
-  // Initialize monster manager and spawn monsters from server data
-  g_monsterManager.InitModels(data_path);
-  g_monsterManager.SetTerrainData(&terrainData);
-  g_monsterManager.SetTerrainLightmap(terrainData.lightmap);
-  g_monsterManager.SetPointLights(g_pointLights);
-  g_monsterManager.SetVFXManager(&g_vfxManager);
-  if (!serverData.monsters.empty()) {
-    for (auto &mon : serverData.monsters) {
-      g_monsterManager.AddMonster(mon.monsterType, mon.gridX, mon.gridY,
-                                  mon.dir, mon.serverIndex, mon.hp, mon.maxHp,
-                                  mon.state);
-    }
-    std::cout << "[Monster] Spawned " << serverData.monsters.size()
-              << " monsters from server" << std::endl;
-  }
-  checkGLError("monster init");
-
-  // Default spawn: Lorencia town center
-  g_hero.SetPosition(glm::vec3(12750.0f, 0.0f, 13500.0f));
-  g_hero.SnapToTerrain();
-
-  // Fix: if hero spawned on a non-walkable tile, move to a known safe
-  // position
-  {
-    glm::vec3 heroPos = g_hero.GetPosition();
-    const int S = TerrainParser::TERRAIN_SIZE;
-    int gz = (int)(heroPos.x / 100.0f);
-    int gx = (int)(heroPos.z / 100.0f);
-    bool walkable = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
-                    (terrainData.mapping.attributes[gz * S + gx] & 0x04) == 0;
-    if (!walkable) {
-      std::cout << "[Hero] Spawn position non-walkable (attr=0x" << std::hex
-                << (int)terrainData.mapping.attributes[gz * S + gx] << std::dec
-                << "), searching for walkable tile..." << std::endl;
-      // Spiral search from Lorencia town center for nearest walkable tile
-      int startGX = 125, startGZ = 135;
-      bool found = false;
-      for (int radius = 0; radius < 30 && !found; radius++) {
-        for (int dy = -radius; dy <= radius && !found; dy++) {
-          for (int dx = -radius; dx <= radius && !found; dx++) {
-            if (radius > 0 && std::abs(dx) != radius && std::abs(dy) != radius)
-              continue;
-            int cx = startGX + dx, cz = startGZ + dy;
-            if (cx < 1 || cz < 1 || cx >= S - 1 || cz >= S - 1)
-              continue;
-            uint8_t attr = terrainData.mapping.attributes[cz * S + cx];
-            if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
-              float wx = (float)cz * 100.0f;
-              float wz = (float)cx * 100.0f;
-              std::cout << "[Hero] Found walkable tile at grid (" << cx << ","
-                        << cz << ") attr=0x" << std::hex << (int)attr
-                        << std::dec << std::endl;
-              g_hero.SetPosition(glm::vec3(wx, 0.0f, wz));
-              g_hero.SnapToTerrain();
-              found = true;
-            }
-          }
-        }
-      }
-      if (!found) {
-        std::cout << "[Hero] WARNING: No walkable tile found nearby"
-                  << std::endl;
-        g_hero.SetPosition(glm::vec3(13000.0f, 0.0f, 13000.0f));
-        g_hero.SnapToTerrain();
-      }
-    }
-  }
-  g_camera.SetPosition(g_hero.GetPosition());
-
-  if (autoDiag) {
-    // Diag mode no longer forces top-down view to respect user's "only default"
-    // request
-  }
-  if ((autoScreenshot || autoGif) && !hasCustomPos) {
-    // Lorencia town center at original MU isometric angle (default for
-    // captures)
-    g_camera.SetPosition(glm::vec3(13000.0f, 350.0f, 13500.0f));
-  }
-  // --pos X Y Z: override camera position with exact coordinates
-  if (hasCustomPos) {
-    g_hero.SetPosition(glm::vec3(customX, customY, customZ));
-    g_hero.SnapToTerrain();
-    g_camera.SetPosition(g_hero.GetPosition());
-    std::cout << "[camera] Position set to (" << customX << ", " << customY
-              << ", " << customZ << ")" << std::endl;
-  }
-  // --object-debug <index>: position camera to look at a specific object
-  if (objectDebugIdx >= 0 && objectDebugIdx < (int)terrainData.objects.size()) {
-    auto &debugObj = terrainData.objects[objectDebugIdx];
-    // Position camera offset from the object, looking at it
-    glm::vec3 objPos = debugObj.position;
-    // Check for --topdown flag for bird's eye view
-    bool topDown = false;
-    for (int ii = 1; ii < argc; ++ii) {
-      if (std::string(argv[ii]) == "--topdown")
-        topDown = true;
-    }
-    if (topDown) {
-      // Disabled to force "only default" view
-      g_hero.SetPosition(objPos);
-      g_hero.SnapToTerrain();
-      g_camera.SetPosition(g_hero.GetPosition());
-    } else {
-      // Position camera at the object using the fixed isometric angle
-      g_hero.SetPosition(objPos);
-      g_hero.SnapToTerrain();
-      g_camera.SetPosition(g_hero.GetPosition());
-    }
-    objectDebugName = "obj_type" + std::to_string(debugObj.type) + "_idx" +
-                      std::to_string(objectDebugIdx);
-    if (autoGif)
-      ; // keep autoGif, skip autoScreenshot
-    else
-      autoScreenshot = true;
-    std::cout << "[object-debug] Targeting object " << objectDebugIdx
-              << " type=" << debugObj.type << " at gl_pos=(" << objPos.x << ", "
-              << objPos.y << ", " << objPos.z << ")" << std::endl;
-  }
   int diagFrame = 0;
   const char *diagNames[] = {"normal", "tileindex", "tileuv",
                              "alpha",  "lightmap",  "nolightmap"};
-
-  // Pass point lights to renderers
-  {
-    std::vector<glm::vec3> lightPos, lightCol;
-    std::vector<float> lightRange;
-    std::vector<int> lightObjTypes;
-    for (auto &pl : g_pointLights) {
-      lightPos.push_back(pl.position);
-      lightCol.push_back(pl.color);
-      lightRange.push_back(pl.range);
-      lightObjTypes.push_back(pl.objectType);
-    }
-    g_objectRenderer.SetPointLights(lightPos, lightCol, lightRange);
-    g_terrain.SetPointLights(lightPos, lightCol, lightRange, lightObjTypes);
-  }
 
   glEnable(GL_DEPTH_TEST);
   glDepthFunc(GL_LEQUAL);
@@ -1054,12 +924,143 @@ int main(int argc, char **argv) {
     lastFrame = currentFrame;
 
     glfwPollEvents();
-    InputHandler::ProcessInput(window, deltaTime);
-    g_camera.Update(deltaTime);
 
     // Poll persistent network connection for server packets
     g_server.Poll();
     g_server.Flush();
+
+    // ── LOADING state: show loading screen, then process burst ──
+    if (g_gameState == GameState::LOADING && !g_worldInitialized) {
+      g_loadingFrames++;
+      // Render loading screen for a few frames before doing the heavy burst
+      if (g_loadingFrames <= 3) {
+        // Just poll lightly and continue to render loading screen below
+        g_server.Poll();
+      } else {
+        // Poll aggressively to receive all world data
+        for (int burst = 0; burst < 50; burst++) {
+          g_server.Poll();
+          usleep(10000);
+        }
+        // Switch packet handler to game mode before initializing
+        g_gameState = GameState::INGAME;
+        InitGameWorld(serverData);
+        g_worldInitialized = true;
+        // Cleanup loading texture
+        if (g_loadingTex) {
+          glDeleteTextures(1, &g_loadingTex);
+          g_loadingTex = 0;
+        }
+        std::cout << "[State] -> INGAME" << std::endl;
+
+        // Apply command-line camera overrides
+        if ((autoScreenshot || autoGif) && !hasCustomPos) {
+          g_camera.SetPosition(glm::vec3(13000.0f, 350.0f, 13500.0f));
+        }
+        if (hasCustomPos) {
+          g_hero.SetPosition(glm::vec3(customX, customY, customZ));
+          g_hero.SnapToTerrain();
+          g_camera.SetPosition(g_hero.GetPosition());
+        }
+        if (objectDebugIdx >= 0 &&
+            objectDebugIdx < (int)terrainData.objects.size()) {
+          auto &debugObj = terrainData.objects[objectDebugIdx];
+          g_hero.SetPosition(debugObj.position);
+          g_hero.SnapToTerrain();
+          g_camera.SetPosition(g_hero.GetPosition());
+          objectDebugName = "obj_type" + std::to_string(debugObj.type) + "_idx" +
+                            std::to_string(objectDebugIdx);
+          if (!autoGif)
+            autoScreenshot = true;
+        }
+      }
+    }
+
+    // ── CHAR_SELECT state: update and render character select scene ──
+    if (g_gameState == GameState::CHAR_SELECT ||
+        g_gameState == GameState::CONNECTING) {
+      // Poll mouse clicks for character slot selection
+      {
+        static bool prevMouseDown = false;
+        bool mouseDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        if (mouseDown && !prevMouseDown && !ImGui::GetIO().WantCaptureMouse) {
+          double mx, my;
+          glfwGetCursorPos(window, &mx, &my);
+          int ww, wh;
+          glfwGetWindowSize(window, &ww, &wh);
+          CharacterSelect::OnMouseClick(mx, my, ww, wh);
+        }
+        prevMouseDown = mouseDown;
+      }
+
+      CharacterSelect::Update(deltaTime);
+
+      int fbW, fbH;
+      glfwGetFramebufferSize(window, &fbW, &fbH);
+      glViewport(0, 0, fbW, fbH);
+
+      int winW, winH;
+      glfwGetWindowSize(window, &winW, &winH);
+
+      // ImGui frame for CharSelect UI
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+
+      CharacterSelect::Render(winW, winH);
+
+      ImGui::Render();
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+      glfwSwapBuffers(window);
+      continue; // Skip game world rendering
+    }
+
+    // ── LOADING state: show loading screen ──
+    if (g_gameState == GameState::LOADING) {
+      int fbW, fbH;
+      glfwGetFramebufferSize(window, &fbW, &fbH);
+      glViewport(0, 0, fbW, fbH);
+      glClearColor(0.0f, 0.0f, 0.02f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+      int winW, winH;
+      glfwGetWindowSize(window, &winW, &winH);
+
+      ImDrawList *dl = ImGui::GetForegroundDrawList();
+
+      // Draw loading screen image (centered, aspect-fit)
+      if (g_loadingTex) {
+        float imgW = 640.0f, imgH = 480.0f; // OZJ loading images are 640x480
+        float scale = std::min((float)winW / imgW, (float)winH / imgH);
+        float dispW = imgW * scale;
+        float dispH = imgH * scale;
+        float x0 = (winW - dispW) * 0.5f;
+        float y0 = (winH - dispH) * 0.5f;
+        dl->AddImage((ImTextureID)(intptr_t)g_loadingTex,
+                     ImVec2(x0, y0), ImVec2(x0 + dispW, y0 + dispH));
+      }
+
+      // Loading text overlay at bottom
+      const char *loadText = "Loading...";
+      ImVec2 tsz = ImGui::CalcTextSize(loadText);
+      dl->AddText(ImVec2(winW * 0.5f - tsz.x * 0.5f, winH * 0.85f),
+                  IM_COL32(220, 200, 160, 255), loadText);
+
+      ImGui::Render();
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+      glfwSwapBuffers(window);
+      continue;
+    }
+
+    // ═══════════════════════════════════════════════
+    // INGAME state: normal game world update + render
+    // ═══════════════════════════════════════════════
+    InputHandler::ProcessInput(window, deltaTime);
+    g_camera.Update(deltaTime);
 
     // Send player position to server periodically (~4Hz)
     {
@@ -1113,9 +1114,16 @@ int main(int argc, char **argv) {
             uint16_t serverIdx = g_monsterManager.GetServerIndex(targetIdx);
             uint8_t skillId = g_hero.GetActiveSkillId();
             if (skillId > 0) {
-              std::cout << "[Skill] HIT! SendSkillAttack monIdx=" << serverIdx
-                        << " skillId=" << (int)skillId << std::endl;
-              g_server.SendSkillAttack(serverIdx, skillId);
+              // Re-check AG before sending — AG may have been spent since
+              // the initial right-click
+              int agCost = InventoryUI::GetSkillAGCost(skillId);
+              if (g_serverAG >= agCost) {
+                std::cout << "[Skill] HIT! SendSkillAttack monIdx=" << serverIdx
+                          << " skillId=" << (int)skillId << std::endl;
+                g_server.SendSkillAttack(serverIdx, skillId);
+              } else {
+                InventoryUI::ShowNotification("Not enough AG!");
+              }
             } else {
               g_server.SendAttack(serverIdx);
             }
@@ -1406,11 +1414,10 @@ int main(int argc, char **argv) {
     GroundItemRenderer::RenderShadows(g_groundItems, MAX_GROUND_ITEMS, view,
                                       projection);
 
-    // Render hero character, shadow, and click effect (after all world
-    // geometry)
+    // Render hero shadow BEFORE hero model so character draws on top
     g_clickEffect.Render(view, projection, deltaTime, g_hero.GetShader());
-    g_hero.Render(view, projection, camPos, deltaTime);
     g_hero.RenderShadow(view, projection);
+    g_hero.Render(view, projection, camPos, deltaTime);
 
     // Render VFX (after all characters so particles layer on top)
     g_vfxManager.Render(view, projection);
@@ -1448,6 +1455,14 @@ int main(int argc, char **argv) {
     {
       // Unified bottom HUD bar (HP, QWER, 1234, RMC, AG, XP)
       ImDrawList *dl = ImGui::GetForegroundDrawList();
+
+      // FPS counter (top-left)
+      {
+        char fpsText[16];
+        snprintf(fpsText, sizeof(fpsText), "%.0f", 1.0f / std::max(deltaTime, 0.001f));
+        dl->AddText(ImVec2(5, 4), IM_COL32(200, 200, 200, 160), fpsText);
+      }
+
       InventoryUI::RenderQuickbar(dl, g_hudCoords);
 
       // ── Floating damage numbers ──
@@ -1457,7 +1472,8 @@ int main(int argc, char **argv) {
 
       // ── Monster nameplates ──
       g_monsterManager.RenderNameplates(dl, g_fontDefault, view, projection,
-                                        winW, winH, camPos, g_hoveredMonster);
+                                        winW, winH, camPos, g_hoveredMonster,
+                                        g_hero.GetAttackTarget());
 
       // ── Ground item 3D models + physics ──
       GroundItemRenderer::RenderModels(
@@ -1646,19 +1662,21 @@ int main(int argc, char **argv) {
   }
 
   // Save character stats to server before disconnecting
-  g_server.SendCharSave(
-      1, (uint16_t)g_serverLevel, (uint16_t)g_serverStr, (uint16_t)g_serverDex,
-      (uint16_t)g_serverVit, (uint16_t)g_serverEne, (uint16_t)g_serverHP,
-      (uint16_t)g_serverMaxHP, (uint16_t)g_serverMP, (uint16_t)g_serverMaxMP,
-      (uint16_t)g_serverAG, (uint16_t)g_serverMaxAG,
-      (uint16_t)g_serverLevelUpPoints, (uint64_t)g_serverXP, g_skillBar,
-      g_potionBar, g_rmcSkillId);
-  g_server.Flush();
+  if (g_worldInitialized) {
+    g_server.SendCharSave(
+        (uint16_t)g_heroCharacterId, (uint16_t)g_serverLevel,
+        (uint16_t)g_serverStr, (uint16_t)g_serverDex, (uint16_t)g_serverVit,
+        (uint16_t)g_serverEne, (uint16_t)g_serverHP, (uint16_t)g_serverMaxHP,
+        (uint16_t)g_serverMP, (uint16_t)g_serverMaxMP, (uint16_t)g_serverAG,
+        (uint16_t)g_serverMaxAG, (uint16_t)g_serverLevelUpPoints,
+        (uint64_t)g_serverXP, g_skillBar, g_potionBar, g_rmcSkillId);
+    g_server.Flush();
+  }
 
   // Disconnect from server
   g_server.Disconnect();
   // Cleanup
-  // Cleanup handled by RAII/End
+  CharacterSelect::Shutdown();
   g_monsterManager.Cleanup();
   g_boidManager.Cleanup();
   g_npcManager.Cleanup();
@@ -1677,4 +1695,130 @@ int main(int argc, char **argv) {
   // StreamRedirector handles restoration and deletion
 
   return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// InitGameWorld — called once after character select, when server
+// has sent all initial world data (NPCs, monsters, equipment, stats)
+// ═══════════════════════════════════════════════════════════════════
+
+static void InitGameWorld(ServerData &serverData) {
+  std::string data_path = g_dataPath;
+
+  // Shut down character select scene (free World74 resources)
+  CharacterSelect::Shutdown();
+
+  if (serverData.connected && !serverData.npcs.empty()) {
+    g_npcManager.InitModels(data_path);
+    for (auto &npc : serverData.npcs) {
+      g_npcManager.AddNpcByType(npc.type, npc.gridX, npc.gridY, npc.dir,
+                                npc.serverIndex);
+    }
+    std::cout << "[NPC] Loaded " << serverData.npcs.size()
+              << " NPCs from server" << std::endl;
+  } else {
+    std::cout << "[NPC] No server connection, using hardcoded NPCs"
+              << std::endl;
+    g_npcManager.Init(data_path);
+  }
+
+  // Equip weapon + shield + armor from server equipment data (DB-driven)
+  for (auto &eq : serverData.equipment) {
+    if (eq.slot == 0) {
+      g_hero.EquipWeapon(eq.info);
+    } else if (eq.slot == 1) {
+      g_hero.EquipShield(eq.info);
+    }
+    int bodyPart = ItemDatabase::GetBodyPartIndex(eq.info.category);
+    if (bodyPart >= 0) {
+      std::string partModel = ItemDatabase::GetBodyPartModelFile(
+          eq.info.category, eq.info.itemIndex);
+      if (!partModel.empty())
+        g_hero.EquipBodyPart(bodyPart, partModel);
+    }
+    std::cout << "[Equip] Slot " << (int)eq.slot << ": " << eq.info.modelFile
+              << " cat=" << (int)eq.info.category << std::endl;
+  }
+
+  g_syncDone = true;
+  g_npcManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
+  g_npcManager.SetVFXManager(&g_vfxManager);
+  InventoryUI::RecalcEquipmentStats();
+  g_npcManager.SetPointLights(g_pointLights);
+  g_boidManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
+  g_boidManager.SetPointLights(g_pointLights);
+
+  // Initialize monster manager and spawn monsters from server data
+  g_monsterManager.InitModels(data_path);
+  g_monsterManager.SetTerrainData(g_terrainDataPtr);
+  g_monsterManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
+  g_monsterManager.SetPointLights(g_pointLights);
+  g_monsterManager.SetVFXManager(&g_vfxManager);
+  if (!serverData.monsters.empty()) {
+    for (auto &mon : serverData.monsters) {
+      g_monsterManager.AddMonster(mon.monsterType, mon.gridX, mon.gridY,
+                                  mon.dir, mon.serverIndex, mon.hp, mon.maxHp,
+                                  mon.state);
+    }
+    std::cout << "[Monster] Spawned " << serverData.monsters.size()
+              << " monsters from server" << std::endl;
+  }
+
+  // Default spawn: Lorencia town center
+  g_hero.SetPosition(glm::vec3(12750.0f, 0.0f, 13500.0f));
+  g_hero.SnapToTerrain();
+
+  // Fix: if hero spawned on a non-walkable tile, move to a known safe position
+  {
+    glm::vec3 heroPos = g_hero.GetPosition();
+    const int S = TerrainParser::TERRAIN_SIZE;
+    int gz = (int)(heroPos.x / 100.0f);
+    int gx = (int)(heroPos.z / 100.0f);
+    bool walkable = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
+                    (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x04) == 0;
+    if (!walkable) {
+      int startGX = 125, startGZ = 135;
+      bool found = false;
+      for (int radius = 0; radius < 30 && !found; radius++) {
+        for (int dy = -radius; dy <= radius && !found; dy++) {
+          for (int dx = -radius; dx <= radius && !found; dx++) {
+            if (radius > 0 && std::abs(dx) != radius && std::abs(dy) != radius)
+              continue;
+            int cx = startGX + dx, cz = startGZ + dy;
+            if (cx < 1 || cz < 1 || cx >= S - 1 || cz >= S - 1)
+              continue;
+            uint8_t attr = g_terrainDataPtr->mapping.attributes[cz * S + cx];
+            if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
+              g_hero.SetPosition(
+                  glm::vec3((float)cz * 100.0f, 0.0f, (float)cx * 100.0f));
+              g_hero.SnapToTerrain();
+              found = true;
+            }
+          }
+        }
+      }
+      if (!found) {
+        g_hero.SetPosition(glm::vec3(13000.0f, 0.0f, 13000.0f));
+        g_hero.SnapToTerrain();
+      }
+    }
+  }
+  g_camera.SetPosition(g_hero.GetPosition());
+
+  // Pass point lights to renderers
+  {
+    std::vector<glm::vec3> lightPos, lightCol;
+    std::vector<float> lightRange;
+    std::vector<int> lightObjTypes;
+    for (auto &pl : g_pointLights) {
+      lightPos.push_back(pl.position);
+      lightCol.push_back(pl.color);
+      lightRange.push_back(pl.range);
+      lightObjTypes.push_back(pl.objectType);
+    }
+    g_objectRenderer.SetPointLights(lightPos, lightCol, lightRange);
+    g_terrain.SetPointLights(lightPos, lightCol, lightRange, lightObjTypes);
+  }
+
+  std::cout << "[World] Game world initialized" << std::endl;
 }

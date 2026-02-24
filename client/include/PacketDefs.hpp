@@ -31,6 +31,8 @@ constexpr uint8_t SUB_LOGIN = 0x01;
 
 // Sub-opcodes for CHARSELECT (0xF3)
 constexpr uint8_t SUB_CHARLIST = 0x00;
+constexpr uint8_t SUB_CHARCREATE = 0x01;
+constexpr uint8_t SUB_CHARDELETE = 0x02;
 constexpr uint8_t SUB_CHARSELECT = 0x03;
 
 // World & Viewport
@@ -149,9 +151,40 @@ struct PMSG_CHARLIST_ENTRY {
   uint8_t slot;
   char name[10];
   uint16_t level; // big-endian on wire
+  uint8_t classCode; // 0=DW, 16=DK, 32=ELF, 48=MG
   uint8_t ctlCode;
   uint8_t charSet[18];
   uint8_t guildStatus;
+};
+
+// C->S: Character Create (F3:01)
+struct PMSG_CHARCREATE_RECV {
+  PSBMSG_HEAD h; // C1:F3:01
+  char name[10];
+  uint8_t classCode; // 0=DW, 16=DK, 32=ELF, 48=MG
+};
+
+// S->C: Character Create Result (F3:01)
+struct PMSG_CHARCREATE_RESULT {
+  PSBMSG_HEAD h;    // C1:F3:01
+  uint8_t result;   // 0=fail, 1=success, 2=name taken
+  char name[10];
+  uint8_t slot;     // Assigned slot index (0-4)
+  uint8_t classCode;
+  uint16_t level;
+};
+
+// C->S: Character Delete (F3:02)
+struct PMSG_CHARDELETE_RECV {
+  PSBMSG_HEAD h; // C1:F3:02
+  uint8_t slot;  // Slot index to delete (0-4)
+  char name[10]; // Name confirmation
+};
+
+// S->C: Character Delete Result (F3:02)
+struct PMSG_CHARDELETE_RESULT {
+  PSBMSG_HEAD h;  // C1:F3:02
+  uint8_t result; // 0=fail, 1=success
 };
 
 // C->S: Character Select (F3:03)

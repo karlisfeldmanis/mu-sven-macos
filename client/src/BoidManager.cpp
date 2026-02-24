@@ -710,6 +710,9 @@ void BoidManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
   m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   m_shader->setVec3("viewPos", eye);
   m_shader->setBool("useFog", true);
+  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+  m_shader->setFloat("uFogNear", 1500.0f);
+  m_shader->setFloat("uFogFar", 3500.0f);
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
   m_shader->setFloat("luminosity", m_luminosity);

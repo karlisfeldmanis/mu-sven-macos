@@ -1,6 +1,7 @@
 #include "Terrain.hpp"
 #include "TextureLoader.hpp"
 #include <glm/gtc/type_ptr.hpp>
+#include <fstream>
 #include <iostream>
 #include <set>
 
@@ -46,6 +47,11 @@ uniform sampler2D lightMap;
 uniform float uTime;
 uniform int debugMode;
 uniform float luminosity;
+uniform vec3 uFogColor;
+uniform float uFogNear;
+uniform float uFogFar;
+uniform float uFogHeightBase;
+uniform float uFogHeightFade;
 
 vec2 applySymmetry(vec2 uv, uint symmetry) {
     uint rot = symmetry & 3u;
@@ -152,13 +158,14 @@ void main() {
     vec3 lightColor = texture(lightMap, TexCoord).rgb;
     finalColor *= lightColor * luminosity;
 
-    // Fog: match original engine (CameraViewFar=2000, dark brown fog color)
+    // Distance fog + height-based ground mist
     float dist = length(FragPos - viewPos);
-    float fogNear = 1500.0;
-    float fogFar = 3500.0;
-    float fogFactor = clamp((fogFar - dist) / (fogFar - fogNear), 0.0, 1.0);
-    vec3 fogColor = vec3(0.117, 0.078, 0.039) * luminosity; // 30/256, 20/256, 10/256
-    finalColor = mix(fogColor, finalColor, fogFactor);
+    float distFog = clamp((uFogFar - dist) / (uFogFar - uFogNear), 0.0, 1.0);
+    // Ground mist: dense below uFogHeightBase, fades above by uFogHeightFade
+    float heightMist = 1.0 - clamp((FragPos.y - uFogHeightBase) / uFogHeightFade, 0.0, 1.0);
+    float mistBuild = smoothstep(uFogNear * 0.7, uFogNear * 1.5, dist); // mist only in far distance
+    float fogFactor = distFog * (1.0 - heightMist * mistBuild * 0.55);
+    finalColor = mix(uFogColor * luminosity, finalColor, fogFactor);
 
     FragColor = vec4(finalColor, 1.0);
 }
@@ -256,17 +263,20 @@ void Terrain::Render(const glm::mat4 &view, const glm::mat4 &projection,
   glUseProgram(shaderProgram);
 
   glm::mat4 model = glm::mat4(1.0f);
-  glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE,
-                     glm::value_ptr(model));
-  glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE,
-                     glm::value_ptr(view));
-  glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1,
-                     GL_FALSE, glm::value_ptr(projection));
-  glUniform1f(glGetUniformLocation(shaderProgram, "uTime"), time);
-  glUniform1i(glGetUniformLocation(shaderProgram, "debugMode"), debugMode);
-  glUniform1f(glGetUniformLocation(shaderProgram, "luminosity"), m_luminosity);
-  glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1,
-               glm::value_ptr(viewPos));
+  glUniformMatrix4fv(u_model, 1, GL_FALSE, glm::value_ptr(model));
+  glUniformMatrix4fv(u_view, 1, GL_FALSE, glm::value_ptr(view));
+  glUniformMatrix4fv(u_projection, 1, GL_FALSE, glm::value_ptr(projection));
+  glUniform1f(u_uTime, time);
+  glUniform1i(u_debugMode, debugMode);
+  glUniform1f(u_luminosity, m_luminosity);
+  glUniform3fv(u_viewPos, 1, glm::value_ptr(viewPos));
+
+  // Fog uniforms (luminosity applied in shader)
+  glUniform3fv(u_fogColor, 1, glm::value_ptr(m_fogColor));
+  glUniform1f(u_fogNear, m_fogNear);
+  glUniform1f(u_fogFar, m_fogFar);
+  glUniform1f(u_fogHeightBase, m_fogHeightBase);
+  glUniform1f(u_fogHeightFade, m_fogHeightFade);
 
   // Apply dynamic point lights to lightmap (CPU-side, matching original engine)
   applyDynamicLights();
@@ -275,31 +285,31 @@ void Terrain::Render(const glm::mat4 &view, const glm::mat4 &projection,
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D_ARRAY, tileTextureArray);
-  glUniform1i(glGetUniformLocation(shaderProgram, "tileTextures"), 0);
+  glUniform1i(u_tileTextures, 0);
 
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, layer1InfoMap);
-  glUniform1i(glGetUniformLocation(shaderProgram, "layer1Map"), 1);
+  glUniform1i(u_layer1Map, 1);
 
   glActiveTexture(GL_TEXTURE2);
   glBindTexture(GL_TEXTURE_2D, layer2InfoMap);
-  glUniform1i(glGetUniformLocation(shaderProgram, "layer2Map"), 2);
+  glUniform1i(u_layer2Map, 2);
 
   glActiveTexture(GL_TEXTURE3);
   glBindTexture(GL_TEXTURE_2D, alphaMap);
-  glUniform1i(glGetUniformLocation(shaderProgram, "alphaMap"), 3);
+  glUniform1i(u_alphaMap, 3);
 
   glActiveTexture(GL_TEXTURE4);
   glBindTexture(GL_TEXTURE_2D, attributeMap);
-  glUniform1i(glGetUniformLocation(shaderProgram, "attributeMap"), 4);
+  glUniform1i(u_attributeMap, 4);
 
   glActiveTexture(GL_TEXTURE5);
   glBindTexture(GL_TEXTURE_2D, symmetryMap);
-  glUniform1i(glGetUniformLocation(shaderProgram, "symmetryMap"), 5);
+  glUniform1i(u_symmetryMap, 5);
 
   glActiveTexture(GL_TEXTURE6);
   glBindTexture(GL_TEXTURE_2D, lightmapTex);
-  glUniform1i(glGetUniformLocation(shaderProgram, "lightMap"), 6);
+  glUniform1i(u_lightMap, 6);
 
   glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indexCount),
                  GL_UNSIGNED_INT, 0);
@@ -495,42 +505,42 @@ void Terrain::setupTextures(const TerrainData &data,
                     GL_RGB, GL_UNSIGNED_BYTE, neutral.data());
   }
 
-  // Lorencia tile set - matches Sven MapManager.cpp tile loading order:
+  // Tile set - matches Main 5.2 MapManager.cpp tile loading order:
   // Indices 0-13: base tiles, 14-29: ExtTile01-16 (road/detail overlays)
-  std::vector<std::string> tile_names;
-  if (worldID == 1) {
-    tile_names = {
-        "TileGrass01",  // 0
-        "TileGrass02",  // 1
-        "TileGround01", // 2
-        "TileGround02", // 3
-        "TileGround03", // 4
-        "TileWater01",  // 5
-        "TileWood01",   // 6
-        "TileRock01",   // 7
-        "TileRock02",   // 8
-        "TileRock03",   // 9
-        "TileRock04",   // 10
-        "TileRock05",   // 11
-        "TileRock06",   // 12
-        "TileRock07",   // 13
-        "ExtTile01",    // 14
-        "ExtTile02",    // 15
-        "ExtTile03",    // 16
-        "ExtTile04",    // 17
-        "ExtTile05",    // 18
-        "ExtTile06",    // 19
-        "ExtTile07",    // 20
-        "ExtTile08",    // 21
-        "ExtTile09",    // 22
-        "ExtTile10",    // 23
-        "ExtTile11",    // 24
-        "ExtTile12",    // 25
-        "ExtTile13",    // 26
-        "ExtTile14",    // 27
-        "ExtTile15",    // 28
-        "ExtTile16",    // 29
-    };
+  // Base tiles are the same for all worlds; index 10 differs for World 73/74
+  std::vector<std::string> tile_names = {
+      "TileGrass01",  // 0
+      "TileGrass02",  // 1
+      "TileGround01", // 2
+      "TileGround02", // 3
+      "TileGround03", // 4
+      "TileWater01",  // 5
+      "TileWood01",   // 6
+      "TileRock01",   // 7
+      "TileRock02",   // 8
+      "TileRock03",   // 9
+      "TileRock04",   // 10 (World 73/74: AlphaTile01 instead)
+      "TileRock05",   // 11
+      "TileRock06",   // 12
+      "TileRock07",   // 13
+  };
+
+  // World 73/74 (login/character select) use AlphaTile01 for index 10
+  if (worldID == 73 || worldID == 74) {
+    tile_names[10] = "AlphaTile01";
+  }
+
+  // ExtTile overlays (14-29) — only present in some worlds
+  {
+    std::string extTest = base_path + "/ExtTile01.OZJ";
+    std::ifstream check(extTest);
+    if (check.good()) {
+      for (int i = 1; i <= 16; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "ExtTile%02d", i);
+        tile_names.push_back(name);
+      }
+    }
   }
 
   // Scan which tile indices are actually referenced by the mapping data
@@ -565,15 +575,15 @@ void Terrain::setupTextures(const TerrainData &data,
     int w = 0, h = 0;
     std::vector<unsigned char> raw_data;
 
-    // Try OZJ first, then jpg (Sven uses .jpg, our data has .OZJ)
+    // Try OZJ first, then jpg, then OZT (TGA)
     std::vector<std::string> extensions = {".OZJ", ".jpg", ".OZT"};
     for (const auto &ext : extensions) {
       std::string path = base_path + "/" + tile_names[i] + ext;
       if (ext == ".OZT") {
-        // OZT needs raw loader too - skip for now, OZJ/jpg cover Lorencia
-        continue;
+        raw_data = TextureLoader::LoadOZTRaw(path, w, h);
+      } else {
+        raw_data = TextureLoader::LoadOZJRaw(path, w, h);
       }
-      raw_data = TextureLoader::LoadOZJRaw(path, w, h);
       if (!raw_data.empty())
         break;
     }
@@ -739,4 +749,25 @@ void Terrain::setupShader() {
 
   glDeleteShader(vertex);
   glDeleteShader(fragment);
+
+  // Cache uniform locations once
+  u_model = glGetUniformLocation(shaderProgram, "model");
+  u_view = glGetUniformLocation(shaderProgram, "view");
+  u_projection = glGetUniformLocation(shaderProgram, "projection");
+  u_uTime = glGetUniformLocation(shaderProgram, "uTime");
+  u_debugMode = glGetUniformLocation(shaderProgram, "debugMode");
+  u_luminosity = glGetUniformLocation(shaderProgram, "luminosity");
+  u_viewPos = glGetUniformLocation(shaderProgram, "viewPos");
+  u_fogColor = glGetUniformLocation(shaderProgram, "uFogColor");
+  u_fogNear = glGetUniformLocation(shaderProgram, "uFogNear");
+  u_fogFar = glGetUniformLocation(shaderProgram, "uFogFar");
+  u_fogHeightBase = glGetUniformLocation(shaderProgram, "uFogHeightBase");
+  u_fogHeightFade = glGetUniformLocation(shaderProgram, "uFogHeightFade");
+  u_tileTextures = glGetUniformLocation(shaderProgram, "tileTextures");
+  u_layer1Map = glGetUniformLocation(shaderProgram, "layer1Map");
+  u_layer2Map = glGetUniformLocation(shaderProgram, "layer2Map");
+  u_alphaMap = glGetUniformLocation(shaderProgram, "alphaMap");
+  u_attributeMap = glGetUniformLocation(shaderProgram, "attributeMap");
+  u_symmetryMap = glGetUniformLocation(shaderProgram, "symmetryMap");
+  u_lightMap = glGetUniformLocation(shaderProgram, "lightMap");
 }

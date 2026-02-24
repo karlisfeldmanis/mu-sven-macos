@@ -17,6 +17,11 @@ public:
   void Init();
   void LoadObjects(const std::vector<ObjectData> &objects,
                    const std::string &objectDir);
+  // Generic naming: ObjectXX.bmd (for non-Lorencia maps like World74)
+  // fallbackDir: if set, try Lorencia naming from this dir when generic fails
+  void LoadObjectsGeneric(const std::vector<ObjectData> &objects,
+                          const std::string &objectDir,
+                          const std::string &fallbackDir = "");
   void Render(const glm::mat4 &view, const glm::mat4 &projection,
               const glm::vec3 &cameraPos, float currentTime = 0.0f);
   void Cleanup();
@@ -28,6 +33,10 @@ public:
   void SetTerrainHeightmap(const std::vector<float> &hm) { terrainHeightmap = hm; }
   void SetTypeAlpha(const std::unordered_map<int, float> &alphaMap);
   void SetLuminosity(float l) { m_luminosity = l; }
+  void SetFogEnabled(bool e) { m_fogEnabled = e; }
+  void SetFogColor(const glm::vec3 &c) { m_fogColor = c; }
+  void SetFogRange(float near_, float far_) { m_fogNear = near_; m_fogFar = far_; }
+  void SetTypeFilter(const std::vector<int> &types) { m_typeFilter.assign(types.begin(), types.end()); }
 
   int GetInstanceCount() const { return (int)instances.size(); }
   int GetModelCount() const { return (int)modelCache.size(); }
@@ -70,6 +79,11 @@ private:
   std::vector<float> terrainHeightmap;     // For grass height snapping
   std::unordered_map<int, float> typeAlphaMap; // Per-type alpha for roof hiding
   float m_luminosity = 1.0f;
+  bool m_fogEnabled = true;
+  glm::vec3 m_fogColor = glm::vec3(0.117f, 0.078f, 0.039f);
+  float m_fogNear = 1500.0f;
+  float m_fogFar = 3500.0f;
+  std::vector<int> m_typeFilter; // If non-empty, only render these types
 
   // Bilinear sample terrain lightmap at world position
   glm::vec3 SampleTerrainLight(const glm::vec3 &worldPos) const;

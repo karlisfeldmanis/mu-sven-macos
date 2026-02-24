@@ -12,6 +12,33 @@ std::map<std::string, LoadedItemModel> ItemModelManager::s_cache;
 Shader *ItemModelManager::s_shader = nullptr;
 std::unique_ptr<Shader> ItemModelManager::s_shadowShader;
 std::string ItemModelManager::s_dataPath;
+std::shared_ptr<BMDData> ItemModelManager::s_playerBmd;
+std::vector<BoneWorldMatrix> ItemModelManager::s_playerIdleBones;
+
+// Per-category display poses from Main 5.2 RenderObjectScreen()
+// Angles are MU Euler: (pitch, yaw, roll) in degrees
+struct ItemDisplayPose {
+  float pitch, yaw, roll;
+};
+static const ItemDisplayPose kItemPoses[] = {
+    {180.f, 270.f, 15.f},  //  0 Swords
+    {180.f, 270.f, 15.f},  //  1 Axes
+    {180.f, 270.f, 15.f},  //  2 Maces/Flails
+    {0.f, 90.f, 20.f},     //  3 Spears
+    {0.f, 270.f, 15.f},    //  4 Bows
+    {180.f, 270.f, 25.f},  //  5 Staffs
+    {270.f, 270.f, 0.f},   //  6 Shields
+    {-90.f, 0.f, 0.f},     //  7 Helms
+    {-90.f, 0.f, 0.f},     //  8 Armor
+    {-90.f, 0.f, 0.f},     //  9 Pants
+    {-90.f, 0.f, 0.f},     // 10 Gloves
+    {-90.f, 0.f, 0.f},     // 11 Boots
+    {270.f, -10.f, 0.f},   // 12 Wings
+    {270.f, -10.f, 0.f},   // 13 Accessories
+    {270.f, -10.f, 0.f},   // 14 Potions
+};
+static constexpr int kItemPoseCount =
+    sizeof(kItemPoses) / sizeof(kItemPoses[0]);
 
 void ItemModelManager::Init(Shader *shader, const std::string &dataPath) {
   s_shader = shader;
@@ -198,9 +225,32 @@ LoadedItemModel *ItemModelManager::Get(const std::string &filename) {
     return nullptr;
   }
 
-  // Compute static bind pose
-  auto bones =
-      ComputeBoneMatrices(model.bmd.get(), 0, 0); // Action 0, Frame 0
+  // For body parts (found in Player/), use Player.bmd idle pose (action 1)
+  // instead of the body part's own single-frame bind pose which looks unnatural.
+  bool isPlayerBodyPart = false;
+  if (foundDir == "Player") {
+    std::string fLower = filename;
+    std::transform(fLower.begin(), fLower.end(), fLower.begin(), ::tolower);
+    isPlayerBodyPart = (fLower.find("helm") != std::string::npos ||
+                        fLower.find("armor") != std::string::npos ||
+                        fLower.find("pant") != std::string::npos ||
+                        fLower.find("glove") != std::string::npos ||
+                        fLower.find("boot") != std::string::npos);
+  }
+
+  // Lazily load Player.bmd skeleton for idle pose computation
+  if (isPlayerBodyPart && !s_playerBmd) {
+    s_playerBmd = BMDParser::Parse(s_dataPath + "/Player/Player.bmd");
+    if (s_playerBmd) {
+      s_playerIdleBones =
+          ComputeBoneMatrices(s_playerBmd.get(), 1, 0); // Action 1 = idle
+    }
+  }
+
+  // Use Player.bmd idle bones for body parts, own bind pose for everything else
+  auto bones = (isPlayerBodyPart && !s_playerIdleBones.empty())
+                   ? s_playerIdleBones
+                   : ComputeBoneMatrices(model.bmd.get(), 0, 0);
   std::string texPath = s_dataPath + "/" + foundDir + "/";
 
   // Compute transformed AABB from bone-transformed vertices
@@ -298,8 +348,8 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
 
   // 1. Orientation to make the item "stand up" vertically in the grid
   auto &itemDefs = ItemDatabase::GetItemDefs();
+  int category = -1;
   if (defIndex != -1) {
-    int category = 0;
     auto it = itemDefs.find(defIndex);
     if (it != itemDefs.end()) {
       category = it->second.category;
@@ -307,32 +357,19 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
       category = defIndex / 32;
     }
 
-    // 1. Orientation to make the item "stand up" vertically in the grid
-    if (category <= 5) {
-      // Weapons and Staffs (0-5): Use smart axis-detection to ensure they are
-      // strictly vertical pointing UP.
-      if (size.z >= size.x && size.z >= size.y) {
-        mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(1, 0, 0));
-        if (size.x < size.y)
-          mod = glm::rotate(mod, glm::radians(90.0f), glm::vec3(0, 1, 0));
-      } else if (size.x >= size.y && size.x >= size.z) {
-        mod = glm::rotate(mod, glm::radians(90.0f), glm::vec3(0, 0, 1));
-        if (size.z < size.y)
-          mod = glm::rotate(mod, glm::radians(90.0f), glm::vec3(0, 1, 0));
-      } else {
-        if (size.x < size.z)
-          mod = glm::rotate(mod, glm::radians(90.0f), glm::vec3(0, 1, 0));
-      }
-    } else {
-      // Other items (Shields 6, Armor 7-11, Wings 12, etc):
-      // These are typically modeled lying flat. Use standard MU pose (-90 X).
-      mod = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
-                        glm::vec3(1, 0, 0));
-    }
+    // Apply per-category display pose from Main 5.2 RenderObjectScreen()
+    // MU models are Z-up; our UI camera looks down -Z with Y-up.
+    // MU AngleMatrix applies: pitch(X) → yaw(Y) → roll(Z) in MU local space.
+    // We first convert MU→GL coords (-90°X), then apply MU angles.
+    const auto &pose = (category < kItemPoseCount)
+                           ? kItemPoses[category]
+                           : kItemPoses[7]; // fallback = helm pose
+    mod = glm::rotate(mod, glm::radians(pose.pitch), glm::vec3(1, 0, 0));
+    mod = glm::rotate(mod, glm::radians(pose.yaw), glm::vec3(0, 1, 0));
+    mod = glm::rotate(mod, glm::radians(pose.roll), glm::vec3(0, 0, 1));
   } else {
-    // Zen/Default: Use -90 X to make the Zen coins/box stand up
-    mod = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
-                      glm::vec3(1, 0, 0));
+    // Zen/Default: Use helm pose
+    mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(1, 0, 0));
   }
 
   // 2. Consistent 360 spin around the GRID'S vertical axis (Y) on hover
@@ -369,11 +406,31 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
   shader->setBool("useFog", false);             // No fog in UI
   shader->setFloat("objectAlpha", 1.0f);        // Fully opaque
 
+  // For body-part items (cat 7-11), determine which meshes are skin/head
+  // by checking texture names. Body part BMDs include the character skin mesh
+  // which should be hidden in inventory/shop display.
+  bool isBodyPart = (category >= 7 && category <= 11);
+
   // Render — disable face culling for double-sided meshes (pet wings etc.)
   glDisable(GL_CULL_FACE);
-  for (const auto &mb : model->meshes) {
+  for (int mi = 0; mi < (int)model->meshes.size(); ++mi) {
+    const auto &mb = model->meshes[mi];
     if (mb.hidden)
       continue;
+
+    // Skip skin/body meshes for body part items in UI.
+    // For helms (cat 7): keep head_ meshes (that IS the helm), skip skin_/hide.
+    // For armor/pants/gloves/boots (cat 8-11): skip head_, skin_, hide.
+    if (isBodyPart && mi < (int)model->bmd->Meshes.size()) {
+      std::string texLower = model->bmd->Meshes[mi].TextureName;
+      std::transform(texLower.begin(), texLower.end(), texLower.begin(),
+                     ::tolower);
+      if (texLower.find("skin_") != std::string::npos ||
+          texLower.find("hide") != std::string::npos)
+        continue;
+      if (category != 7 && texLower.find("head_") != std::string::npos)
+        continue;
+    }
     glBindVertexArray(mb.vao);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, mb.texture);

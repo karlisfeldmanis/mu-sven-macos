@@ -152,6 +152,7 @@ public:
     int defenseRate;
     int life;
     bool dead;
+    uint16_t level;
   };
 
   // Monster attack result to broadcast

@@ -454,6 +454,9 @@ GameWorld::findBestTarget(const MonsterInstance &mon,
         continue;
       if (IsSafeZoneGrid(p.gridX, p.gridY))
         continue;
+      // Skip if player is 10+ levels above the monster
+      if (p.level >= mon.level + 10)
+        continue;
       int dist =
           PathFinder::ChebyshevDist(mon.gridX, mon.gridY, p.gridX, p.gridY);
       if (dist <= mon.viewRange && dist < bestDist) {

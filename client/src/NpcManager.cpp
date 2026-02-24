@@ -176,7 +176,9 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
   // Upload weapon meshes (guards only)
   if (mdl.weaponBmd) {
     std::string weaponTexDir = m_dataPath + "/Item/";
-    auto wBones = ComputeBoneMatrices(mdl.weaponBmd);
+    if (mdl.cachedWeaponBones.empty())
+      mdl.cachedWeaponBones = ComputeBoneMatrices(mdl.weaponBmd);
+    const auto &wBones = mdl.cachedWeaponBones;
     AABB wAabb{};
     for (auto &mesh : mdl.weaponBmd->Meshes) {
       UploadMeshWithBones(mesh, weaponTexDir, wBones, npc.weaponMeshBuffers,
@@ -371,6 +373,24 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
   if (!m_shader || m_npcs.empty())
     return;
 
+  // Extract frustum planes from VP matrix for culling
+  glm::mat4 vp = proj * view;
+  glm::vec4 frustum[6];
+  frustum[0] = glm::vec4(vp[0][3] + vp[0][0], vp[1][3] + vp[1][0],
+                          vp[2][3] + vp[2][0], vp[3][3] + vp[3][0]); // Left
+  frustum[1] = glm::vec4(vp[0][3] - vp[0][0], vp[1][3] - vp[1][0],
+                          vp[2][3] - vp[2][0], vp[3][3] - vp[3][0]); // Right
+  frustum[2] = glm::vec4(vp[0][3] + vp[0][1], vp[1][3] + vp[1][1],
+                          vp[2][3] + vp[2][1], vp[3][3] + vp[3][1]); // Bottom
+  frustum[3] = glm::vec4(vp[0][3] - vp[0][1], vp[1][3] - vp[1][1],
+                          vp[2][3] - vp[2][1], vp[3][3] - vp[3][1]); // Top
+  frustum[4] = glm::vec4(vp[0][3] + vp[0][2], vp[1][3] + vp[1][2],
+                          vp[2][3] + vp[2][2], vp[3][3] + vp[3][2]); // Near
+  frustum[5] = glm::vec4(vp[0][3] - vp[0][2], vp[1][3] - vp[1][2],
+                          vp[2][3] - vp[2][2], vp[3][3] - vp[3][2]); // Far
+  for (int i = 0; i < 6; ++i)
+    frustum[i] /= glm::length(glm::vec3(frustum[i]));
+
   m_shader->use();
   m_shader->setMat4("projection", proj);
   m_shader->setMat4("view", view);
@@ -380,6 +400,9 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
   m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   m_shader->setVec3("viewPos", eye);
   m_shader->setBool("useFog", true);
+  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+  m_shader->setFloat("uFogNear", 1500.0f);
+  m_shader->setFloat("uFogFar", 3500.0f);
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setFloat("objectAlpha", 1.0f);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
@@ -479,6 +502,23 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
     }
 
+    // Frustum culling: skip bone computation + rendering for off-screen NPCs
+    {
+      float cullRadius = 200.0f * npc.scale;
+      glm::vec3 center = npc.position + glm::vec3(0, cullRadius * 0.5f, 0);
+      bool outside = false;
+      for (int p = 0; p < 6; ++p) {
+        if (frustum[p].x * center.x + frustum[p].y * center.y +
+                frustum[p].z * center.z + frustum[p].w <
+            -cullRadius) {
+          outside = true;
+          break;
+        }
+      }
+      if (outside)
+        continue;
+    }
+
     // Compute bone matrices
     auto bones = ComputeBoneMatricesInterpolated(mdl.skeleton, npc.action,
                                                  npc.animFrame);
@@ -532,7 +572,6 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     }
 
     // Re-skin meshes
-    int partIdx = 0;
     for (auto &bp : npc.bodyParts) {
       BMDData *bmd = (bp.bmdIdx < 0) ? mdl.skeleton : mdl.parts[bp.bmdIdx];
       for (int mi = 0;
@@ -625,8 +664,8 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
           (const float(*)[4])bones[attachBone].data(),
           (const float(*)[4])offsetMat.data(), (float(*)[4])parentMat.data());
 
-      // Compute weapon bone matrices with parentMat as root
-      auto wLocalBones = ComputeBoneMatrices(mdl.weaponBmd);
+      // Use cached weapon local bones (static bind-pose, computed once at load)
+      const auto &wLocalBones = mdl.cachedWeaponBones;
       std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
       for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
         MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),

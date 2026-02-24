@@ -36,6 +36,11 @@ public:
   void SendDropItem(uint8_t bagSlot);
   void SendGridMove(uint8_t gridX, uint8_t gridY);
 
+  // Character Select
+  void SendCharCreate(const char *name, uint8_t classCode);
+  void SendCharDelete(uint8_t slot, const char *name);
+  void SendCharSelect(const char *name);
+
   // Shop
   void SendShopOpen(uint16_t npcType);
   void SendShopBuy(int16_t defIndex, uint8_t itemLevel, uint8_t quantity,

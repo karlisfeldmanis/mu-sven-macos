@@ -21,6 +21,9 @@ public:
               const std::vector<PushSource> &pushSources = {});
   void Cleanup();
 
+  void SetFogColor(const glm::vec3 &c) { fogColor = c; }
+  void SetFogRange(float near_, float far_) { fogNear = near_; fogFar = far_; }
+
 private:
   GLuint VAO = 0, VBO = 0, EBO = 0;
   GLuint shaderProgram = 0;
@@ -37,6 +40,17 @@ private:
   };
 
   void setupShader();
+
+  glm::vec3 fogColor = glm::vec3(0.117f, 0.078f, 0.039f); // Default: MU brown
+  float fogNear = 1500.0f;
+  float fogFar = 3500.0f;
+
+  // Cached uniform locations
+  GLint u_view = -1, u_projection = -1, u_uTime = -1, u_viewPos = -1;
+  GLint u_fogColor = -1, u_fogNear = -1, u_fogFar = -1;
+  GLint u_numPushers = -1;
+  GLint u_pushPos[17] = {}, u_pushRadius[17] = {};
+  GLint u_grassTex[3] = {};
 };
 
 #endif // GRASS_RENDERER_HPP

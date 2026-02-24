@@ -391,6 +391,103 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
             << " unique models, skipped " << skipped << std::endl;
 }
 
+void ObjectRenderer::LoadObjectsGeneric(
+    const std::vector<ObjectData> &objects, const std::string &objectDir,
+    const std::string &fallbackDir) {
+  int skipped = 0;
+  int fromFallback = 0;
+
+  for (auto &obj : objects) {
+    // Load model into cache if not already loaded
+    if (modelCache.find(obj.type) == modelCache.end()) {
+      // Try 1: Generic naming from objectDir (ObjectXX.bmd)
+      int idx = obj.type + 1;
+      char buf[64];
+      if (idx < 10)
+        snprintf(buf, sizeof(buf), "Object0%d.bmd", idx);
+      else
+        snprintf(buf, sizeof(buf), "Object%d.bmd", idx);
+
+      std::string fullPath = objectDir + "/" + buf;
+      std::string texDir = objectDir + "/";
+      auto bmd = BMDParser::Parse(fullPath);
+
+      // Try 2: Fallback to Lorencia naming from fallbackDir
+      if (!bmd && !fallbackDir.empty()) {
+        std::string lorName = GetObjectBMDFilename(obj.type);
+        if (!lorName.empty()) {
+          fullPath = fallbackDir + "/" + lorName;
+          texDir = fallbackDir + "/";
+          bmd = BMDParser::Parse(fullPath);
+          if (bmd)
+            ++fromFallback;
+        }
+      }
+
+      if (!bmd) {
+        modelCache[obj.type] = ModelCache{};
+        ++skipped;
+        continue;
+      }
+
+      ModelCache cache;
+      cache.boneMatrices = ComputeBoneMatrices(bmd.get());
+      cache.blendMeshTexId = -1;
+
+      // Enable animation for models with multiple keyframes (low instance count)
+      if (!bmd->Actions.empty() && bmd->Actions[0].NumAnimationKeys > 1) {
+        int instanceCount = 0;
+        for (auto &o : objects)
+          if (o.type == obj.type)
+            instanceCount++;
+        if (instanceCount <= 20) {
+          cache.isAnimated = true;
+          cache.numAnimationKeys = bmd->Actions[0].NumAnimationKeys;
+        }
+      }
+
+      for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
+        UploadMesh(bmd->Meshes[mi], texDir, cache.boneMatrices,
+                   cache.meshBuffers, cache.isAnimated);
+      }
+
+      if (cache.isAnimated) {
+        cache.bmdData = std::move(bmd);
+      }
+
+      modelCache[obj.type] = std::move(cache);
+    }
+
+    auto &cache = modelCache[obj.type];
+    if (cache.meshBuffers.empty()) {
+      ++skipped;
+      continue;
+    }
+
+    // Build model matrix (same transform as LoadObjects)
+    glm::vec3 objPos = obj.position;
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), objPos);
+    model =
+        glm::rotate(model, glm::radians(-90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    model =
+        glm::rotate(model, glm::radians(-90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::rotate(model, obj.rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+    model = glm::rotate(model, obj.rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::rotate(model, obj.rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::scale(model, glm::vec3(obj.scale));
+
+    glm::vec3 worldPos = glm::vec3(model[3]);
+    glm::vec3 tLight = SampleTerrainLight(worldPos);
+
+    instances.push_back({obj.type, model, tLight});
+  }
+
+  std::cout << "[ObjectRenderer] Generic: Loaded " << instances.size()
+            << " instances, " << modelCache.size() << " unique models ("
+            << fromFallback << " from fallback), skipped " << skipped
+            << std::endl;
+}
+
 void ObjectRenderer::SetTerrainLightmap(
     const std::vector<glm::vec3> &lightmap) {
   terrainLightmap = lightmap;
@@ -514,6 +611,24 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   if (instances.empty() || !shader)
     return;
 
+  // Extract frustum planes from VP matrix for culling
+  glm::mat4 vp = projection * view;
+  glm::vec4 frustum[6];
+  frustum[0] = glm::vec4(vp[0][3] + vp[0][0], vp[1][3] + vp[1][0],
+                          vp[2][3] + vp[2][0], vp[3][3] + vp[3][0]); // Left
+  frustum[1] = glm::vec4(vp[0][3] - vp[0][0], vp[1][3] - vp[1][0],
+                          vp[2][3] - vp[2][0], vp[3][3] - vp[3][0]); // Right
+  frustum[2] = glm::vec4(vp[0][3] + vp[0][1], vp[1][3] + vp[1][1],
+                          vp[2][3] + vp[2][1], vp[3][3] + vp[3][1]); // Bottom
+  frustum[3] = glm::vec4(vp[0][3] - vp[0][1], vp[1][3] - vp[1][1],
+                          vp[2][3] - vp[2][1], vp[3][3] - vp[3][1]); // Top
+  frustum[4] = glm::vec4(vp[0][3] + vp[0][2], vp[1][3] + vp[1][2],
+                          vp[2][3] + vp[2][2], vp[3][3] + vp[3][2]); // Near
+  frustum[5] = glm::vec4(vp[0][3] - vp[0][2], vp[1][3] - vp[1][2],
+                          vp[2][3] - vp[2][2], vp[3][3] - vp[3][2]); // Far
+  for (int i = 0; i < 6; ++i)
+    frustum[i] /= glm::length(glm::vec3(frustum[i]));
+
   shader->use();
   glActiveTexture(GL_TEXTURE0);
   shader->setInt("texture_diffuse", 0);
@@ -523,7 +638,10 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   shader->setVec3("lightPos", cameraPos + glm::vec3(0, 8000, 0));
   shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   shader->setVec3("viewPos", cameraPos);
-  shader->setBool("useFog", true);
+  shader->setBool("useFog", m_fogEnabled);
+  shader->setVec3("uFogColor", m_fogColor);
+  shader->setFloat("uFogNear", m_fogNear);
+  shader->setFloat("uFogFar", m_fogFar);
   shader->setFloat("blendMeshLight", 1.0f);
   shader->setFloat("objectAlpha", 1.0f);
   shader->setVec2("texCoordOffset", glm::vec2(0.0f));
@@ -580,6 +698,31 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
     // Light01-03 (types 130-132) are fire/smoke-only emitters (HiddenMesh=-2)
     if (inst.type == 133 || (inst.type >= 130 && inst.type <= 132))
       continue;
+
+    // Type filter: if set, only render specified types
+    if (!m_typeFilter.empty()) {
+      bool allowed = false;
+      for (int t : m_typeFilter)
+        if (inst.type == t) { allowed = true; break; }
+      if (!allowed) continue;
+    }
+
+    // Frustum culling: skip objects outside view frustum
+    {
+      glm::vec3 objPos = glm::vec3(inst.modelMatrix[3]);
+      float cullRadius = 500.0f; // Generous radius for buildings/trees
+      bool outside = false;
+      for (int p = 0; p < 6; ++p) {
+        if (frustum[p].x * objPos.x + frustum[p].y * objPos.y +
+                frustum[p].z * objPos.z + frustum[p].w <
+            -cullRadius) {
+          outside = true;
+          break;
+        }
+      }
+      if (outside)
+        continue;
+    }
 
     auto it = modelCache.find(inst.type);
     if (it == modelCache.end())

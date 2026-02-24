@@ -3,6 +3,7 @@
 #include "PacketHandler.hpp"
 #include "StatCalculator.hpp"
 #include "handlers/CharacterHandler.hpp"
+#include "handlers/CharacterSelectHandler.hpp"
 #include "handlers/InventoryHandler.hpp"
 #include "handlers/WorldHandler.hpp"
 #include <arpa/inet.h>
@@ -174,6 +175,7 @@ void Server::Run() {
             StatCalculator::CalculateDefenseRate(cls, s->dexterity);
         pt.life = s->hp;
         pt.dead = s->dead;
+        pt.level = s->level;
         targets.push_back(pt);
       }
       std::vector<GameWorld::MonsterMoveUpdate> moves;
@@ -471,104 +473,13 @@ void Server::OnClientConnected(Session &session) {
   // Send welcome immediately
   WorldHandler::SendWelcome(session);
 
-  // For our remaster client: send NPCs + monsters right away (no login needed)
-  WorldHandler::SendNpcViewport(session, m_world);
+  // Auto-assign account (no login flow yet)
+  session.accountId = 1;
 
-  // Send v2 monster viewport with HP/state/index (C2 header supports >255
-  // bytes)
-  auto v2pkt = m_world.BuildMonsterViewportV2Packet();
-  if (!v2pkt.empty())
-    session.Send(v2pkt.data(), v2pkt.size());
+  // Send character list — client enters character select screen
+  CharacterSelectHandler::SendCharList(session, m_db);
 
-  // Find the first character for our account
-  int accountId = 1; // Default for remaster
-  auto charList = m_db.GetCharacterList(accountId);
-  CharacterData c;
-  if (!charList.empty()) {
-    c = charList[0];
-
-    session.characterId = c.id;
-    // Load equipment into session cache and send to client
-    {
-      auto equip = m_db.GetCharacterEquipment(c.id);
-      for (auto &e : equip) {
-        if (e.slot < Session::NUM_EQUIP_SLOTS) {
-          session.equipment[e.slot].category = e.category;
-          session.equipment[e.slot].itemIndex = e.itemIndex;
-          session.equipment[e.slot].itemLevel = e.itemLevel;
-        }
-      }
-    }
-    CharacterHandler::SendEquipment(session, m_db, c.id);
-    // Send character stats (level, STR/DEX/VIT/ENE, XP, stat points)
-    CharacterHandler::SendCharStats(session, m_db, c.id);
-
-    // Initial inventory sync - Load from DB first
-    session.zen = c.money;
-    InventoryHandler::LoadInventory(session, m_db, c.id);
-    InventoryHandler::SendInventorySync(session);
-
-    // Load and send learned skills
-    session.learnedSkills = m_db.GetCharacterSkills(c.id);
-    CharacterHandler::SendSkillList(session);
-
-    printf("[Server] FD=%d initialized with character '%s' (ID:%d)\n",
-           session.GetFd(), c.name.c_str(), c.id);
-  } else {
-    printf("[Server] WARNING: Default character 'RealPlayer' not found for "
-           "FD=%d\n",
-           session.GetFd());
-  }
-
-  // Cache combat stats for default character (no login flow)
-  // The character 'c' is already fetched above.
-  if (c.id > 0) { // Check if character was found
-    session.inWorld = true;
-    session.level = c.level;
-    session.charClass = c.charClass;
-    session.classCode = c.charClass;
-    session.vitality = c.vitality;
-    session.energy = c.energy;
-    session.strength = c.strength;
-    session.dexterity = c.dexterity;
-    session.worldX = c.posY * 100.0f;
-    session.worldZ = c.posX * 100.0f;
-    session.maxHp = StatCalculator::CalculateMaxHP(
-        static_cast<CharacterClass>(c.charClass), c.level, c.vitality);
-    session.maxMana = StatCalculator::CalculateMaxManaOrAG(
-        static_cast<CharacterClass>(c.charClass), c.level, c.strength,
-        c.dexterity, c.vitality, c.energy);
-    session.hp = std::min(static_cast<int>(c.life), session.maxHp);
-    session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
-    session.experience = c.experience;
-    session.levelUpPoints = c.levelUpPoints;
-    session.dead = false;
-    memcpy(session.skillBar, c.skillBar, 10);
-    memcpy(session.potionBar, c.potionBar, 8); // 4 × int16_t
-    session.rmcSkillId = c.rmcSkillId;
-  }
-  CharacterHandler::RefreshCombatStats(session, m_db, c.id);
-  {
-    CharacterClass cls = static_cast<CharacterClass>(session.classCode);
-    int baseDef = StatCalculator::CalculateDefense(cls, session.dexterity);
-    printf("[Server] Combat stats: STR=%d weapon=%d-%d baseDef=%d equipDef=%d "
-           "totalDef=%d\n",
-           session.strength, session.weaponDamageMin, session.weaponDamageMax,
-           baseDef, session.totalDefense, baseDef + session.totalDefense);
-  }
-
-  // Send existing ground drops so late-joining clients see them
-  for (auto &drop : m_world.GetDrops()) {
-    PMSG_DROP_SPAWN_SEND dpkt{};
-    dpkt.h = MakeC1Header(sizeof(dpkt), Opcode::DROP_SPAWN);
-    dpkt.dropIndex = drop.index;
-    dpkt.defIndex = drop.defIndex;
-    dpkt.quantity = drop.quantity;
-    dpkt.itemLevel = drop.itemLevel;
-    dpkt.worldX = drop.worldX;
-    dpkt.worldZ = drop.worldZ;
-    session.Send(&dpkt, sizeof(dpkt));
-  }
+  printf("[Server] FD=%d connected, sent char list\n", session.GetFd());
 }
 
 void Server::HandlePacket(Session &session,

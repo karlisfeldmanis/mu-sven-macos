@@ -34,6 +34,7 @@ public:
   std::string characterName;
   uint8_t charClass = 0;
   bool inWorld = false;
+  bool inCharSelect = true;
 
   // Cached combat stats (populated on char select / equip change)
   uint16_t strength = 0;

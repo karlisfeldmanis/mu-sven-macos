@@ -32,7 +32,9 @@ pos.z = 5.0  // flatten to just above ground
 ```
 - Facing rotation baked into vertices before projection
 - Shadow model matrix: `translate(m_pos) * Rz(-90) * Ry(-90)` -- NO facing rotation
-- Stencil buffer (`GL_EQUAL, 0` + `GL_INCR`) prevents overlap darkening
+- Stencil buffer (`GL_EQUAL, 0` + `GL_INCR`) prevents overlap darkening — body, weapon, and shield draw as one unified shadow
+- Must use `GL_INCR` not `GL_REPLACE` (GL_REPLACE with ref=0 writes 0, never blocks subsequent fragments)
+- When depth test is disabled for shadows, render shadows BEFORE the character model or they appear on top
 - Requires `glfwWindowHint(GLFW_STENCIL_BITS, 8)`
 - Position-only VBOs (`GL_DYNAMIC_DRAW`), re-uploaded per frame via `glBufferSubData`
 

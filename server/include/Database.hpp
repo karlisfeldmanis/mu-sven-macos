@@ -124,6 +124,11 @@ public:
   CharacterData GetCharacter(const std::string &name);
   CharacterData GetCharacterById(int id);
 
+  // Character creation/deletion
+  bool CharacterNameExists(const std::string &name);
+  int CreateCharacter(int accountId, const std::string &name, uint8_t classCode);
+  bool DeleteCharacter(int accountId, int charId);
+
   void UpdatePosition(int charId, uint8_t x, uint8_t y);
   void UpdateCharacterStats(int charId, uint16_t level, uint16_t strength,
                             uint16_t dexterity, uint16_t vitality,

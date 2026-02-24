@@ -1,5 +1,6 @@
 #include "HeroCharacter.hpp"
 #include "TextureLoader.hpp"
+#include "VFXManager.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -599,6 +600,9 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
   m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   m_shader->setVec3("viewPos", eye);
   m_shader->setBool("useFog", true);
+  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+  m_shader->setFloat("uFogNear", 1500.0f);
+  m_shader->setFloat("uFogFar", 3500.0f);
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setFloat("objectAlpha", 1.0f);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
@@ -670,9 +674,8 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
                              (const float(*)[4])weaponOffsetMat.data(),
                              (float(*)[4])parentMat.data());
 
-    // Compute weapon bone matrices with parentMat as root parent
-    // Mirrors original Animation(Parent=true)
-    auto wLocalBones = ComputeBoneMatrices(m_weaponBmd.get());
+    // Use cached weapon local bones (static bind-pose, computed once at equip)
+    const auto &wLocalBones = m_weaponLocalBones;
     std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
     for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
       MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
@@ -763,7 +766,7 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
                              (const float(*)[4])shieldOffsetMat.data(),
                              (float(*)[4])shieldParentMat.data());
 
-    auto sLocalBones = ComputeBoneMatrices(m_shieldBmd.get());
+    const auto &sLocalBones = m_shieldLocalBones;
     std::vector<BoneWorldMatrix> sFinalBones(sLocalBones.size());
     for (int bi = 0; bi < (int)sLocalBones.size(); ++bi) {
       MuMath::ConcatTransforms((const float(*)[4])shieldParentMat.data(),
@@ -771,6 +774,7 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
                                (float(*)[4])sFinalBones[bi].data());
     }
 
+    // Re-skin shield vertices
     for (int mi = 0; mi < (int)m_shieldMeshBuffers.size() &&
                      mi < (int)m_shieldBmd->Meshes.size();
          ++mi) {
@@ -813,9 +817,13 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
 
       glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
-      glBufferSubData(GL_ARRAY_BUFFER, 0, verts.size() * sizeof(ViewerVertex),
-                      verts.data());
-
+      glBufferSubData(GL_ARRAY_BUFFER, 0,
+                      verts.size() * sizeof(ViewerVertex), verts.data());
+    }
+    // Draw shield meshes
+    for (auto &mb : m_shieldMeshBuffers) {
+      if (mb.indexCount == 0)
+        continue;
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
       glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
@@ -842,15 +850,16 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glDepthMask(GL_FALSE);
-  glEnable(GL_POLYGON_OFFSET_FILL);
-  glPolygonOffset(-1.0f, -1.0f);
+  glDisable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
 
-  // Stencil: only draw each shadow pixel once (prevents overlap darkening)
+  // Stencil: draw each shadow pixel exactly once — body + weapon + shield
+  // merge into one unified shadow silhouette.
   glEnable(GL_STENCIL_TEST);
+  glStencilMask(0xFF);
   glClear(GL_STENCIL_BUFFER_BIT);
   glStencilFunc(GL_EQUAL, 0, 0xFF);
-  glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
+  glStencilOp(GL_KEEP, GL_INCR, GL_INCR);
 
   // Shadow projection constants (from ZzzBMD.cpp RenderBodyShadow)
   const float sx = 2000.0f;
@@ -862,7 +871,8 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
 
   auto renderShadowBatch = [&](const BMDData *bmd,
                                std::vector<ShadowMesh> &shadowMeshes,
-                               int attachBone = -1) {
+                               int attachBone = -1,
+                               const std::vector<BoneWorldMatrix> *weaponFinalBones = nullptr) {
     if (!bmd)
       return;
     for (int mi = 0;
@@ -876,7 +886,7 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
       shadowVerts.reserve(sm.vertexCount);
 
       const float(*boneMatrix)[4] = nullptr;
-      if (attachBone >= 0 && attachBone < (int)m_cachedBones.size()) {
+      if (!weaponFinalBones && attachBone >= 0 && attachBone < (int)m_cachedBones.size()) {
         boneMatrix = (const float(*)[4])m_cachedBones[attachBone].data();
       }
 
@@ -887,8 +897,14 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
           auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
           glm::vec3 pos = srcVert.Position;
 
-          if (boneMatrix) {
-            // Weapon/Shield: transform by attach bone
+          if (weaponFinalBones) {
+            // Weapon/Shield: per-vertex bone from precomputed final bones
+            int boneIdx = srcVert.Node;
+            if (boneIdx >= 0 && boneIdx < (int)weaponFinalBones->size())
+              pos = MuMath::TransformPoint(
+                  (const float(*)[4])(*weaponFinalBones)[boneIdx].data(), pos);
+          } else if (boneMatrix) {
+            // Single attach bone (legacy path)
             pos = MuMath::TransformPoint(boneMatrix, pos);
           } else {
             // Body parts: transform by per-vertex bone
@@ -920,7 +936,12 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
             auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
             glm::vec3 pos = srcVert.Position;
 
-            if (boneMatrix) {
+            if (weaponFinalBones) {
+              int boneIdx = srcVert.Node;
+              if (boneIdx >= 0 && boneIdx < (int)weaponFinalBones->size())
+                pos = MuMath::TransformPoint(
+                    (const float(*)[4])(*weaponFinalBones)[boneIdx].data(), pos);
+            } else if (boneMatrix) {
               pos = MuMath::TransformPoint(boneMatrix, pos);
             } else {
               int boneIdx = srcVert.Node;
@@ -962,23 +983,67 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
     }
   }
 
-  // Weapons and shields (bone 47 = back in SafeZone)
+  // Weapons and shields — compute full bone matrices matching visible rendering
+  // (parentMat * weaponLocalBones[i] for per-vertex skinning)
+  static constexpr int SHADOW_BONE_BACK = 47;
   if (m_weaponBmd) {
-    int bone = (m_inSafeZone && 47 < (int)m_cachedBones.size())
-                   ? 47
-                   : GetWeaponCategoryRender(m_weaponInfo.category).attachBone;
-    renderShadowBatch(m_weaponBmd.get(), m_weaponShadowMeshes, bone);
+    auto &wCat = GetWeaponCategoryRender(m_weaponInfo.category);
+    int bone = (m_inSafeZone && SHADOW_BONE_BACK < (int)m_cachedBones.size())
+                   ? SHADOW_BONE_BACK
+                   : wCat.attachBone;
+    if (bone < (int)m_cachedBones.size()) {
+      BoneWorldMatrix off =
+          m_inSafeZone
+              ? MuMath::BuildWeaponOffsetMatrix(glm::vec3(70.f, 0.f, 90.f),
+                                                glm::vec3(-20.f, 5.f, 40.f))
+              : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
+                                                glm::vec3(0, 0, 0));
+      BoneWorldMatrix parentMat;
+      MuMath::ConcatTransforms((const float(*)[4])m_cachedBones[bone].data(),
+                               (const float(*)[4])off.data(),
+                               (float(*)[4])parentMat.data());
+      const auto &wLocalBones = m_weaponLocalBones;
+      std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
+      for (int bi = 0; bi < (int)wLocalBones.size(); ++bi)
+        MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
+                                 (const float(*)[4])wLocalBones[bi].data(),
+                                 (float(*)[4])wFinalBones[bi].data());
+      renderShadowBatch(m_weaponBmd.get(), m_weaponShadowMeshes, -1, &wFinalBones);
+    }
   }
   if (m_shieldBmd) {
-    int bone = (m_inSafeZone && 47 < (int)m_cachedBones.size())
-                   ? 47
-                   : GetWeaponCategoryRender(m_shieldInfo.category).attachBone;
-    renderShadowBatch(m_shieldBmd.get(), m_shieldShadowMeshes, bone);
+    int bone = (m_inSafeZone && SHADOW_BONE_BACK < (int)m_cachedBones.size())
+                   ? SHADOW_BONE_BACK
+                   : GetWeaponCategoryRender(6).attachBone;
+    if (bone < (int)m_cachedBones.size()) {
+      bool dw = m_inSafeZone && isDualWielding();
+      BoneWorldMatrix off =
+          m_inSafeZone
+              ? (dw ? MuMath::BuildWeaponOffsetMatrix(
+                          glm::vec3(-110.f, 180.f, 90.f),
+                          glm::vec3(20.f, 15.f, 40.f))
+                    : MuMath::BuildWeaponOffsetMatrix(
+                          glm::vec3(70.f, 0.f, 90.f),
+                          glm::vec3(-10.f, 0.f, 0.f)))
+              : MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
+                                                glm::vec3(0, 0, 0));
+      BoneWorldMatrix parentMat;
+      MuMath::ConcatTransforms((const float(*)[4])m_cachedBones[bone].data(),
+                               (const float(*)[4])off.data(),
+                               (float(*)[4])parentMat.data());
+      const auto &sLocalBones = m_shieldLocalBones;
+      std::vector<BoneWorldMatrix> sFinalBones(sLocalBones.size());
+      for (int bi = 0; bi < (int)sLocalBones.size(); ++bi)
+        MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
+                                 (const float(*)[4])sLocalBones[bi].data(),
+                                 (float(*)[4])sFinalBones[bi].data());
+      renderShadowBatch(m_shieldBmd.get(), m_shieldShadowMeshes, -1, &sFinalBones);
+    }
   }
 
   glBindVertexArray(0);
   glDisable(GL_STENCIL_TEST);
-  glDisable(GL_POLYGON_OFFSET_FILL);
+  glEnable(GL_DEPTH_TEST);
   glDepthMask(GL_TRUE);
   glEnable(GL_CULL_FACE);
 }
@@ -1138,6 +1203,7 @@ void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
   m_weaponShadowMeshes = createShadowMeshes(bmd.get());
 
   m_weaponBmd = std::move(bmd);
+  m_weaponLocalBones = ComputeBoneMatrices(m_weaponBmd.get());
 
   auto &catRender = GetWeaponCategoryRender(weapon.category);
   std::cout << "[Hero] Loaded weapon " << weapon.modelFile << ": "
@@ -1219,21 +1285,21 @@ void HeroCharacter::EquipShield(const WeaponEquipInfo &shield) {
   m_shieldShadowMeshes = createShadowMeshes(bmd.get());
 
   m_shieldBmd = std::move(bmd);
-
-  std::cout << "[Hero] Loaded shield " << shield.modelFile << ": "
-            << m_shieldBmd->Meshes.size() << " meshes, "
-            << m_shieldBmd->Bones.size() << " bones" << std::endl;
-
-  std::vector<BoneWorldMatrix> shieldBones;
   if (!m_shieldBmd->Bones.empty()) {
-    shieldBones = ComputeBoneMatrices(m_shieldBmd.get());
+    m_shieldLocalBones = ComputeBoneMatrices(m_shieldBmd.get());
   } else {
     BoneWorldMatrix identity{};
     identity[0] = {1, 0, 0, 0};
     identity[1] = {0, 1, 0, 0};
     identity[2] = {0, 0, 1, 0};
-    shieldBones.push_back(identity);
+    m_shieldLocalBones = {identity};
   }
+
+  std::cout << "[Hero] Loaded shield " << shield.modelFile << ": "
+            << m_shieldBmd->Meshes.size() << " meshes, "
+            << m_shieldBmd->Bones.size() << " bones" << std::endl;
+
+  const auto &shieldBones = m_shieldLocalBones;
 
   CleanupMeshBuffers(m_shieldMeshBuffers);
   for (auto &mesh : m_shieldBmd->Meshes) {
@@ -1382,10 +1448,13 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       m_targetFacing = atan2f(dir.z, -dir.x);
 
       // Skill or weapon-type-specific attack animation
-      if (m_activeSkillId > 0)
+      if (m_activeSkillId > 0) {
         SetAction(GetSkillAction(m_activeSkillId));
-      else
+        if (m_vfxManager)
+          m_vfxManager->SpawnSkillCast(m_activeSkillId, m_pos, m_facing);
+      } else {
         SetAction(nextAttackAction());
+      }
     } else if (!m_moving) {
       // Stopped moving but not in range (blocked) — cancel
       CancelAttack();
@@ -1486,6 +1555,8 @@ int HeroCharacter::GetSkillAction(uint8_t skillId) {
     return ACTION_SKILL_SWORD5; // Slash
   case 41:
     return ACTION_SKILL_WHEEL; // Twisting Slash
+  case 42:
+    return ACTION_SKILL_FURY; // Rageful Blow
   case 43:
     return ACTION_SKILL_DEATH_STAB; // Death Stab
   default:
@@ -1527,6 +1598,8 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
     m_moving = false;
     m_targetFacing = atan2f(dir.z, -dir.x);
     SetAction(skillAction);
+    if (m_vfxManager)
+      m_vfxManager->SpawnSkillCast(skillId, m_pos, m_facing);
     std::cout << "[Skill] Started SWINGING with action " << skillAction
               << std::endl;
   } else {
@@ -1709,6 +1782,7 @@ void HeroCharacter::SetAction(int newAction) {
 
   m_action = newAction;
   m_animFrame = 0.0f;
+
 }
 
 void HeroCharacter::Cleanup() {

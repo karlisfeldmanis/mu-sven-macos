@@ -75,7 +75,8 @@ public:
                                const glm::mat4 &proj);
   void RenderNameplates(ImDrawList *dl, ImFont *font, const glm::mat4 &view,
                         const glm::mat4 &proj, int winW, int winH,
-                        const glm::vec3 &camPos, int hoveredMonster);
+                        const glm::vec3 &camPos, int hoveredMonster,
+                        int attackTarget = -1);
   void Cleanup();
   void ClearMonsters();
 
@@ -132,6 +133,7 @@ private:
     int attachBone = 33;    // Player.bmd bone index (33=R Hand, 42=L Hand)
     glm::vec3 rot{0};       // Local rotation (degrees) — Main 5.2 AngleMatrix
     glm::vec3 offset{0}; // Local offset in bone space — Main 5.2 Matrix[i][3]
+    std::vector<BoneWorldMatrix> cachedLocalBones; // Static bind-pose bones (computed once)
   };
 
   struct MonsterModel {
@@ -209,6 +211,7 @@ private:
     std::vector<glm::vec3> splinePoints; // World-space waypoints from A* path
     float splineT = 0.0f;               // Parametric position along spline
     float splineRate = 0.0f;            // Pre-computed t advance per second
+
 
     std::vector<MeshBuffers> meshBuffers;
     // Per-weapon mesh buffers (parallel to model.weaponDefs)

@@ -268,10 +268,124 @@ void VFXManager::SpawnBurst(ParticleType type, const glm::vec3 &position,
       p.alpha = 1.0f;
       break;
     }
+    case ParticleType::SKILL_SLASH: {
+      // Main 5.2: BITMAP_SPARK+1 — white-blue slash sparks, wide horizontal
+      float speed = 120.0f + (float)(rand() % 100);
+      p.velocity =
+          glm::vec3(std::cos(angle) * speed, 40.0f + (float)(rand() % 60),
+                    std::sin(angle) * speed);
+      p.scale = 12.0f + (float)(rand() % 10);
+      p.maxLifetime = 0.25f + (float)(rand() % 15) / 100.0f;
+      p.color = glm::vec3(0.7f, 0.85f, 1.0f); // White-blue
+      p.alpha = 1.0f;
+      break;
+    }
+    case ParticleType::SKILL_CYCLONE: {
+      // Main 5.2: Spinning ring of cyan sparks (evenly spaced + jitter)
+      float ringAngle =
+          (float)i / (float)std::max(count, 1) * 6.2832f + angle * 0.3f;
+      float speed = 60.0f + (float)(rand() % 40);
+      p.velocity =
+          glm::vec3(std::cos(ringAngle) * speed,
+                    30.0f + (float)(rand() % 40),
+                    std::sin(ringAngle) * speed);
+      p.scale = 15.0f + (float)(rand() % 12);
+      p.maxLifetime = 0.4f + (float)(rand() % 20) / 100.0f;
+      p.color = glm::vec3(0.3f, 0.9f, 1.0f); // Cyan-teal
+      p.alpha = 1.0f;
+      break;
+    }
+    case ParticleType::SKILL_FURY: {
+      // Main 5.2: CreateEffect(MODEL_SKILL_FURY_STRIKE) — ground burst
+      float speed = 40.0f + (float)(rand() % 80);
+      p.velocity =
+          glm::vec3(std::cos(angle) * speed, 150.0f + (float)(rand() % 80),
+                    std::sin(angle) * speed);
+      p.scale = 40.0f + (float)(rand() % 30);
+      p.maxLifetime = 0.5f + (float)(rand() % 20) / 100.0f;
+      p.color = glm::vec3(1.0f, 0.5f, 0.15f); // Orange-red
+      p.alpha = 1.0f;
+      break;
+    }
+    case ParticleType::SKILL_STAB: {
+      // Main 5.2: Piercing directional sparks — narrow cone, fast, dark red
+      float spread = 0.4f; // Narrow cone
+      float fwdAngle = angle * spread;
+      float speed = 150.0f + (float)(rand() % 100);
+      p.velocity =
+          glm::vec3(std::cos(fwdAngle) * speed,
+                    20.0f + (float)(rand() % 30),
+                    std::sin(fwdAngle) * speed);
+      p.scale = 10.0f + (float)(rand() % 8);
+      p.maxLifetime = 0.2f + (float)(rand() % 10) / 100.0f;
+      p.color = glm::vec3(0.9f, 0.2f, 0.2f); // Dark red
+      p.alpha = 1.0f;
+      break;
+    }
     }
 
     p.lifetime = p.maxLifetime;
     m_particles.push_back(p);
+  }
+}
+
+void VFXManager::SpawnSkillCast(uint8_t skillId, const glm::vec3 &heroPos,
+                                float facing) {
+  glm::vec3 castPos = heroPos + glm::vec3(0, 50, 0); // Chest height
+  switch (skillId) {
+  case 19:
+  case 20:
+  case 21:
+  case 23: // Sword skills (Falling Slash, Lunge, Uppercut, Slash)
+    SpawnBurst(ParticleType::FLARE, castPos, 2);
+    SpawnBurst(ParticleType::HIT_SPARK, castPos, 8);
+    break;
+  case 22: // Cyclone
+    SpawnBurst(ParticleType::SKILL_CYCLONE, heroPos + glm::vec3(0, 30, 0), 20);
+    break;
+  case 41: // Twisting Slash
+    SpawnBurst(ParticleType::SKILL_CYCLONE, heroPos + glm::vec3(0, 30, 0), 30);
+    SpawnBurst(ParticleType::FLARE, castPos, 3);
+    break;
+  case 42: // Rageful Blow
+    SpawnBurst(ParticleType::SKILL_FURY, heroPos, 20);
+    SpawnBurst(ParticleType::FLARE, castPos, 4);
+    break;
+  case 43: // Death Stab
+    SpawnBurst(ParticleType::SKILL_STAB, castPos, 12);
+    break;
+  }
+}
+
+void VFXManager::SpawnSkillImpact(uint8_t skillId,
+                                  const glm::vec3 &monsterPos) {
+  glm::vec3 hitPos = monsterPos + glm::vec3(0, 50, 0);
+  switch (skillId) {
+  case 19:
+  case 20:
+  case 21:
+  case 23: // Basic sword skills
+    SpawnBurst(ParticleType::SKILL_SLASH, hitPos, 15);
+    SpawnBurst(ParticleType::FLARE, hitPos, 1);
+    break;
+  case 22: // Cyclone
+    SpawnBurst(ParticleType::SKILL_CYCLONE, hitPos, 15);
+    SpawnBurst(ParticleType::HIT_SPARK, hitPos, 10);
+    break;
+  case 41: // Twisting Slash
+    SpawnBurst(ParticleType::SKILL_CYCLONE, hitPos, 20);
+    SpawnBurst(ParticleType::FLARE, hitPos, 2);
+    SpawnBurst(ParticleType::HIT_SPARK, hitPos, 15);
+    break;
+  case 42: // Rageful Blow
+    SpawnBurst(ParticleType::SKILL_FURY, hitPos, 25);
+    SpawnBurst(ParticleType::FLARE, hitPos, 3);
+    SpawnBurst(ParticleType::HIT_SPARK, hitPos, 20);
+    break;
+  case 43: // Death Stab
+    SpawnBurst(ParticleType::SKILL_STAB, hitPos, 15);
+    SpawnBurst(ParticleType::FLARE, hitPos, 2);
+    break;
   }
 }
 
@@ -417,6 +531,29 @@ void VFXManager::Update(float deltaTime) {
         p.scale *= (1.0f + 0.5f * deltaTime);
       else
         p.scale *= (1.0f - 1.5f * deltaTime);
+      break;
+    case ParticleType::SKILL_SLASH:
+      // Fast horizontal spread with gravity, quick shrink
+      p.velocity.y -= 300.0f * deltaTime;
+      p.scale *= (1.0f - 2.0f * deltaTime);
+      break;
+    case ParticleType::SKILL_CYCLONE:
+      // Orbital motion: slight centripetal + updraft
+      p.velocity.y += 15.0f * deltaTime;
+      p.velocity.x *= (1.0f - 2.0f * deltaTime);
+      p.velocity.z *= (1.0f - 2.0f * deltaTime);
+      p.scale *= (1.0f - 1.0f * deltaTime);
+      break;
+    case ParticleType::SKILL_FURY:
+      // Strong gravity pull, large particles fall back down
+      p.velocity.y -= 500.0f * deltaTime;
+      p.scale *= (1.0f - 0.8f * deltaTime);
+      break;
+    case ParticleType::SKILL_STAB:
+      // Fast directional, rapid fade, slight gravity
+      p.velocity.y -= 150.0f * deltaTime;
+      p.velocity *= (1.0f - 2.0f * deltaTime);
+      p.scale *= (1.0f - 3.0f * deltaTime);
       break;
     }
 
@@ -661,6 +798,16 @@ void VFXManager::Render(const glm::mat4 &view, const glm::mat4 &projection) {
   drawBatch(ParticleType::ENERGY, m_energyTexture);
   drawBatch(ParticleType::FLARE,
             m_flareTexture ? m_flareTexture : m_hitTexture);
+
+  // DK Skill effect particles (additive)
+  drawBatch(ParticleType::SKILL_SLASH,
+            m_sparkTexture ? m_sparkTexture : m_hitTexture);
+  drawBatch(ParticleType::SKILL_CYCLONE,
+            m_energyTexture ? m_energyTexture : m_sparkTexture);
+  drawBatch(ParticleType::SKILL_FURY,
+            m_flareTexture ? m_flareTexture : m_hitTexture);
+  drawBatch(ParticleType::SKILL_STAB,
+            m_sparkTexture ? m_sparkTexture : m_hitTexture);
 
   // Render level-up orbiting flares (Main 5.2: 15 BITMAP_FLARE joints)
   renderLevelUpEffects(view, projection);

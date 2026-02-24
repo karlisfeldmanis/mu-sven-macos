@@ -404,6 +404,7 @@ void MonsterManager::InitModels(const std::string &dataPath) {
       wd.attachBone = bone;
       wd.rot = rot;
       wd.offset = off;
+      wd.cachedLocalBones = ComputeBoneMatrices(wd.bmd);
       m_models[it->second].weaponDefs.push_back(wd);
       m_ownedBmds.push_back(std::move(wpnBmd));
       std::cout << "[Monster] Loaded weapon " << bmdFile << " for type " << type
@@ -456,6 +457,7 @@ void MonsterManager::InitModels(const std::string &dataPath) {
       wd.attachBone = bone;
       wd.rot = rot;
       wd.offset = off;
+      wd.cachedLocalBones = ComputeBoneMatrices(wd.bmd);
       m_models[it->second].weaponDefs.push_back(wd);
       m_ownedBmds.push_back(std::move(wpnBmd));
       std::cout << "[Monster] Loaded weapon " << bmdFile << " for type " << type
@@ -965,6 +967,24 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
   if (!m_shader || m_monsters.empty())
     return;
 
+  // Extract frustum planes from VP matrix for culling
+  glm::mat4 vp = proj * view;
+  glm::vec4 frustum[6];
+  frustum[0] = glm::vec4(vp[0][3] + vp[0][0], vp[1][3] + vp[1][0],
+                          vp[2][3] + vp[2][0], vp[3][3] + vp[3][0]); // Left
+  frustum[1] = glm::vec4(vp[0][3] - vp[0][0], vp[1][3] - vp[1][0],
+                          vp[2][3] - vp[2][0], vp[3][3] - vp[3][0]); // Right
+  frustum[2] = glm::vec4(vp[0][3] + vp[0][1], vp[1][3] + vp[1][1],
+                          vp[2][3] + vp[2][1], vp[3][3] + vp[3][1]); // Bottom
+  frustum[3] = glm::vec4(vp[0][3] - vp[0][1], vp[1][3] - vp[1][1],
+                          vp[2][3] - vp[2][1], vp[3][3] - vp[3][1]); // Top
+  frustum[4] = glm::vec4(vp[0][3] + vp[0][2], vp[1][3] + vp[1][2],
+                          vp[2][3] + vp[2][2], vp[3][3] + vp[3][2]); // Near
+  frustum[5] = glm::vec4(vp[0][3] - vp[0][2], vp[1][3] - vp[1][2],
+                          vp[2][3] - vp[2][2], vp[3][3] - vp[3][2]); // Far
+  for (int i = 0; i < 6; ++i)
+    frustum[i] /= glm::length(glm::vec3(frustum[i]));
+
   m_shader->use();
   m_shader->setMat4("projection", proj);
   m_shader->setMat4("view", view);
@@ -974,6 +994,9 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
   m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   m_shader->setVec3("viewPos", eye);
   m_shader->setBool("useFog", true);
+  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+  m_shader->setFloat("uFogNear", 1500.0f);
+  m_shader->setFloat("uFogFar", 3500.0f);
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
   m_shader->setFloat("luminosity", m_luminosity);
@@ -998,6 +1021,23 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       continue;
 
     auto &mdl = m_models[mon.modelIdx];
+
+    // Frustum culling: skip entities fully outside view frustum
+    {
+      float cullRadius = mdl.collisionHeight * mon.scale * 2.0f;
+      glm::vec3 center = mon.position + glm::vec3(0, cullRadius * 0.4f, 0);
+      bool outside = false;
+      for (int p = 0; p < 6; ++p) {
+        if (frustum[p].x * center.x + frustum[p].y * center.y +
+                frustum[p].z * center.z + frustum[p].w <
+            -cullRadius) {
+          outside = true;
+          break;
+        }
+      }
+      if (outside)
+        continue;
+    }
 
     // Advance animation (use animBmd + actionMap for skeleton types)
     BMDData *animBmd = mdl.getAnimBmd();
@@ -1198,7 +1238,7 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
                                      (const float(*)[4])weaponLocal.data(),
                                      (float(*)[4])parentMat.data());
 
-            auto wLocalBones = ComputeBoneMatrices(staffDef->bmd);
+            const auto &wLocalBones = staffDef->cachedLocalBones;
             std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
             for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
               MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
@@ -1304,7 +1344,8 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     for (int mi = 0;
          mi < (int)mon.meshBuffers.size() && mi < (int)mdl.bmd->Meshes.size();
          ++mi) {
-      RetransformMeshWithBones(mdl.bmd->Meshes[mi], bones, mon.meshBuffers[mi]);
+      RetransformMeshWithBones(mdl.bmd->Meshes[mi], bones,
+                               mon.meshBuffers[mi]);
     }
 
     // Build model matrix
@@ -1398,8 +1439,8 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
                                (const float(*)[4])weaponLocal.data(),
                                (float(*)[4])parentMat.data());
 
-      // Compute weapon local bones and combine with parent
-      auto wLocalBones = ComputeBoneMatrices(wd.bmd);
+      // Use cached weapon local bones (static bind-pose, computed once at load)
+      const auto &wLocalBones = wd.cachedLocalBones;
       std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
       for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
         MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
@@ -2059,6 +2100,9 @@ void MonsterManager::renderDebris(const glm::mat4 &view,
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setInt("numPointLights", 0);
   m_shader->setBool("useFog", true);
+  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+  m_shader->setFloat("uFogNear", 1500.0f);
+  m_shader->setFloat("uFogFar", 3500.0f);
   m_shader->setVec3("viewPos", camPos);
   // We need camPos if we want fog to work correctly, passing it via Render
   // For now let's assume viewPos is already set or passed.
@@ -2147,6 +2191,9 @@ void MonsterManager::renderArrows(const glm::mat4 &view,
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setInt("numPointLights", 0);
   m_shader->setBool("useFog", true);
+  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+  m_shader->setFloat("uFogNear", 1500.0f);
+  m_shader->setFloat("uFogFar", 3500.0f);
   m_shader->setVec3("viewPos", camPos);
 
   for (const auto &a : m_arrows) {
@@ -2214,78 +2261,75 @@ void MonsterManager::RenderNameplates(ImDrawList *dl, ImFont *font,
                                       const glm::mat4 &view,
                                       const glm::mat4 &proj, int winW, int winH,
                                       const glm::vec3 &camPos,
-                                      int hoveredMonster) {
-  glm::mat4 vp = proj * view;
-  for (int i = 0; i < GetMonsterCount(); ++i) {
-    MonsterInfo mi = GetMonsterInfo(i);
-    if (mi.state == MonsterState::DEAD)
-      continue;
+                                      int hoveredMonster,
+                                      int attackTarget) {
+  // ── Top-center name/HP for hovered monster ──
+  if (hoveredMonster >= 0 && hoveredMonster < GetMonsterCount()) {
+    MonsterInfo mi = GetMonsterInfo(hoveredMonster);
+    if (mi.state != MonsterState::DEAD) {
+      float centerX = winW * 0.5f;
+      float curY = 12.0f;
 
-    // Project nameplate position (above monster head)
-    glm::vec3 namePos = mi.position + glm::vec3(0, mi.height + 15.0f, 0);
-    glm::vec4 clip = vp * glm::vec4(namePos, 1.0f);
-    if (clip.w <= 0.0f)
-      continue;
-    float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * winW;
-    float sy = ((1.0f - (clip.y / clip.w)) * 0.5f) * winH;
+      char nameText[64];
+      snprintf(nameText, sizeof(nameText), "%s  Lv.%d", mi.name.c_str(), mi.level);
+      ImVec2 nameSize = font->CalcTextSizeA(16.0f, FLT_MAX, 0, nameText);
 
-    // Distance culling
-    float dist = glm::length(mi.position - camPos);
-    if (dist > 2000.0f)
-      continue;
+      char hpText[32];
+      snprintf(hpText, sizeof(hpText), "%d / %d", mi.hp, mi.maxHp);
+      ImVec2 hpTextSize = font->CalcTextSizeA(13.0f, FLT_MAX, 0, hpText);
 
-    // Fade based on distance
-    float alpha = dist < 1000.0f ? 1.0f : 1.0f - (dist - 1000.0f) / 1000.0f;
-    alpha = std::max(0.0f, std::min(1.0f, alpha));
-    if (mi.state == MonsterState::DYING)
-      alpha *= 0.5f;
+      ImU32 nameCol = (mi.state == MonsterState::ATTACKING ||
+                       mi.state == MonsterState::CHASING)
+                          ? IM_COL32(255, 100, 100, 255)
+                          : IM_COL32(255, 255, 255, 230);
 
-    // Name + level text
-    char nameText[64];
-    snprintf(nameText, sizeof(nameText), "%s  Lv.%d", mi.name.c_str(),
-             mi.level);
-    ImVec2 textSize = font->CalcTextSizeA(14.0f, FLT_MAX, 0, nameText);
-    float tx = sx - textSize.x * 0.5f;
-    float ty = sy - textSize.y;
+      float nameX = centerX - nameSize.x * 0.5f;
+      dl->AddText(font, 16.0f, ImVec2(nameX + 1, curY + 1),
+                  IM_COL32(0, 0, 0, 180), nameText);
+      dl->AddText(font, 16.0f, ImVec2(nameX, curY), nameCol, nameText);
+      curY += nameSize.y + 3.0f;
 
-    // Name color: white normally, red if attacking hero
-    ImU32 nameCol = (mi.state == MonsterState::ATTACKING ||
-                     mi.state == MonsterState::CHASING)
-                        ? IM_COL32(255, 100, 100, (int)(alpha * 255))
-                        : IM_COL32(255, 255, 255, (int)(alpha * 220));
-
-    // Shadow + text
-    dl->AddText(font, 14.0f, ImVec2(tx + 1, ty + 1),
-                IM_COL32(0, 0, 0, (int)(alpha * 180)), nameText);
-    dl->AddText(font, 14.0f, ImVec2(tx, ty), nameCol, nameText);
-
-    // HP bar below name
-    float barW = 50.0f, barH = 4.0f;
-    float barX = sx - barW * 0.5f;
-    float barY = sy + 2.0f;
-    float hpFrac = mi.maxHp > 0 ? (float)mi.hp / mi.maxHp : 0.0f;
-    hpFrac = std::max(0.0f, std::min(1.0f, hpFrac));
-    // Background
-    dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH),
-                      IM_COL32(0, 0, 0, (int)(alpha * 160)));
-    // HP fill (green -> yellow -> red)
-    ImU32 hpCol = hpFrac > 0.5f    ? IM_COL32(60, 220, 60, (int)(alpha * 220))
-                  : hpFrac > 0.25f ? IM_COL32(220, 220, 60, (int)(alpha * 220))
-                                   : IM_COL32(220, 60, 60, (int)(alpha * 220));
-    if (hpFrac > 0.0f) {
-      dl->AddRectFilled(ImVec2(barX, barY),
-                        ImVec2(barX + barW * hpFrac, barY + barH), hpCol);
+      float hpX = centerX - hpTextSize.x * 0.5f;
+      dl->AddText(font, 13.0f, ImVec2(hpX + 1, curY + 1),
+                  IM_COL32(0, 0, 0, 180), hpText);
+      dl->AddText(font, 13.0f, ImVec2(hpX, curY),
+                  IM_COL32(220, 220, 220, 230), hpText);
     }
+  }
 
-    // HP text
-    char hpText[32];
-    snprintf(hpText, sizeof(hpText), "%d / %d", mi.hp, mi.maxHp);
-    ImVec2 hpTextSize = font->CalcTextSizeA(11.0f, FLT_MAX, 0, hpText);
-    float hpTx = sx - hpTextSize.x * 0.5f;
-    float hpTy = barY + barH + 1.0f;
-    dl->AddText(font, 11.0f, ImVec2(hpTx + 1, hpTy + 1),
-                IM_COL32(0, 0, 0, (int)(alpha * 180)), hpText);
-    dl->AddText(font, 11.0f, ImVec2(hpTx, hpTy),
-                IM_COL32(220, 220, 220, (int)(alpha * 220)), hpText);
+  // ── Minimal world-space HP bar above attacked monster ──
+  if (attackTarget >= 0 && attackTarget < GetMonsterCount()) {
+    MonsterInfo mi = GetMonsterInfo(attackTarget);
+    if (mi.state != MonsterState::DEAD && mi.hp < mi.maxHp) {
+      // Project monster head position to screen
+      glm::vec4 worldPos(mi.position.x, mi.position.y + mi.height + 20.0f,
+                         mi.position.z, 1.0f);
+      glm::vec4 clip = proj * view * worldPos;
+      if (clip.w > 0.0f) {
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        float sx = (ndc.x * 0.5f + 0.5f) * winW;
+        float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * winH;
+
+        float barW = 48.0f;
+        float barH = 4.0f;
+        float bx = sx - barW * 0.5f;
+        float by = sy - barH * 0.5f;
+
+        float hpFrac = mi.maxHp > 0 ? (float)mi.hp / mi.maxHp : 0.0f;
+        hpFrac = std::max(0.0f, std::min(1.0f, hpFrac));
+
+        // Background
+        dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + barW, by + barH),
+                          IM_COL32(0, 0, 0, 140));
+        // Fill
+        ImU32 hpCol = hpFrac > 0.5f    ? IM_COL32(60, 200, 60, 220)
+                      : hpFrac > 0.25f ? IM_COL32(220, 200, 60, 220)
+                                       : IM_COL32(220, 60, 60, 220);
+        if (hpFrac > 0.0f) {
+          dl->AddRectFilled(ImVec2(bx, by),
+                            ImVec2(bx + barW * hpFrac, by + barH), hpCol);
+        }
+      }
+    }
   }
 }

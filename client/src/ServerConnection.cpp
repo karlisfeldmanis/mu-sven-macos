@@ -134,6 +134,35 @@ void ServerConnection::SendGridMove(uint8_t gridX, uint8_t gridY) {
   m_client.Send(&pkt, sizeof(pkt));
 }
 
+void ServerConnection::SendCharCreate(const char *name, uint8_t classCode) {
+  PMSG_CHARCREATE_RECV pkt{};
+  pkt.h = MakeC1SubHeader(sizeof(pkt), Opcode::CHARSELECT,
+                          Opcode::SUB_CHARCREATE);
+  std::memset(pkt.name, 0, 10);
+  std::strncpy(pkt.name, name, 10);
+  pkt.classCode = classCode;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendCharDelete(uint8_t slot, const char *name) {
+  PMSG_CHARDELETE_RECV pkt{};
+  pkt.h = MakeC1SubHeader(sizeof(pkt), Opcode::CHARSELECT,
+                          Opcode::SUB_CHARDELETE);
+  pkt.slot = slot;
+  std::memset(pkt.name, 0, 10);
+  std::strncpy(pkt.name, name, 10);
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendCharSelect(const char *name) {
+  PMSG_CHARSELECT_RECV pkt{};
+  pkt.h = MakeC1SubHeader(sizeof(pkt), Opcode::CHARSELECT,
+                          Opcode::SUB_CHARSELECT);
+  std::memset(pkt.name, 0, 10);
+  std::strncpy(pkt.name, name, 10);
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
 void ServerConnection::SendShopOpen(uint16_t npcType) {
   std::cout << "[Client] Sending SHOP_OPEN for npcType: " << npcType
             << std::endl;

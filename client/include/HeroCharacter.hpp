@@ -118,6 +118,7 @@ public:
   bool IsAttacking() const { return m_attackState != AttackState::NONE; }
   uint8_t GetActiveSkillId() const { return m_activeSkillId; }
   static int GetSkillAction(uint8_t skillId);
+  void SetVFXManager(class VFXManager *vfx) { m_vfxManager = vfx; }
 
   // HP and damage
   void TakeDamage(int damage);
@@ -276,7 +277,7 @@ private:
   static constexpr int ACTION_SKILL_SWORD4 = 63;     // Cyclone
   static constexpr int ACTION_SKILL_SWORD5 = 64;     // Slash
   static constexpr int ACTION_SKILL_WHEEL = 65;      // Twisting Slash
-  static constexpr int ACTION_SKILL_FURY = 66;       // (unused)
+  static constexpr int ACTION_SKILL_FURY = 66;       // Rageful Blow
   static constexpr int ACTION_SKILL_DEATH_STAB = 71; // Death Stab
 
   // Hit/death actions (CharViewer: Shock=230, Die1=231, Die2=232)
@@ -333,6 +334,9 @@ private:
   bool m_inSafeZone = true;
   WeaponEquipInfo m_weaponInfo;
 
+  // VFX manager for skill cast effects
+  class VFXManager *m_vfxManager = nullptr;
+
   // Attack state machine
   AttackState m_attackState = AttackState::NONE;
   int m_attackTargetMonster = -1;
@@ -386,6 +390,7 @@ private:
   std::unique_ptr<BMDData> m_weaponBmd;
   std::vector<MeshBuffers> m_weaponMeshBuffers;
   std::vector<ShadowMesh> m_weaponShadowMeshes;
+  std::vector<BoneWorldMatrix> m_weaponLocalBones; // Cached static bind-pose
   std::string m_dataPath; // Cached for late weapon loading
 
   // Shield (attached item model — left hand)
@@ -393,6 +398,7 @@ private:
   std::unique_ptr<BMDData> m_shieldBmd;
   std::vector<MeshBuffers> m_shieldMeshBuffers;
   std::vector<ShadowMesh> m_shieldShadowMeshes;
+  std::vector<BoneWorldMatrix> m_shieldLocalBones; // Cached static bind-pose
 
   // Shadow rendering
   std::unique_ptr<Shader> m_shadowShader;

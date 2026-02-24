@@ -331,6 +331,131 @@ std::vector<CharacterData> Database::GetCharacterList(int accountId) {
   return chars;
 }
 
+bool Database::CharacterNameExists(const std::string &name) {
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql = "SELECT COUNT(*) FROM characters WHERE name=?";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return true; // Assume exists on error
+  sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_STATIC);
+  int count = 0;
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    count = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  return count > 0;
+}
+
+int Database::CreateCharacter(int accountId, const std::string &name,
+                              uint8_t classCode) {
+  // Find next free slot (0-4) for this account
+  auto chars = GetCharacterList(accountId);
+  if (chars.size() >= 5)
+    return -1; // Max 5 characters
+
+  // Find lowest unused slot
+  bool slotUsed[5] = {};
+  for (auto &c : chars) {
+    if (c.slot >= 0 && c.slot < 5)
+      slotUsed[c.slot] = true;
+  }
+  int freeSlot = -1;
+  for (int i = 0; i < 5; i++) {
+    if (!slotUsed[i]) {
+      freeSlot = i;
+      break;
+    }
+  }
+  if (freeSlot < 0)
+    return -1;
+
+  // Starting stats per class (OpenMU ClassDarkKnight.cs etc.)
+  uint16_t str, dex, vit, ene, hp, maxHp, mp, maxMp;
+  switch (classCode) {
+  case 0: // DW
+    str = 18; dex = 18; vit = 15; ene = 30; hp = 60; maxHp = 60; mp = 60; maxMp = 60;
+    break;
+  case 16: // DK
+    str = 28; dex = 20; vit = 25; ene = 10; hp = 110; maxHp = 110; mp = 20; maxMp = 20;
+    break;
+  case 32: // ELF
+    str = 22; dex = 25; vit = 20; ene = 15; hp = 80; maxHp = 80; mp = 30; maxMp = 30;
+    break;
+  case 48: // MG
+    str = 26; dex = 26; vit = 26; ene = 26; hp = 110; maxHp = 110; mp = 60; maxMp = 60;
+    break;
+  default:
+    return -1; // Invalid class
+  }
+
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql =
+      "INSERT INTO characters (account_id, slot, name, class, level, "
+      "strength, dexterity, vitality, energy, life, max_life, mana, "
+      "max_mana, pos_x, pos_y, money, level_up_points) "
+      "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 142, 116, 0, 0)";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    printf("[DB] CreateCharacter prepare error: %s\n", sqlite3_errmsg(m_db));
+    return -1;
+  }
+  sqlite3_bind_int(stmt, 1, accountId);
+  sqlite3_bind_int(stmt, 2, freeSlot);
+  sqlite3_bind_text(stmt, 3, name.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_int(stmt, 4, classCode);
+  sqlite3_bind_int(stmt, 5, str);
+  sqlite3_bind_int(stmt, 6, dex);
+  sqlite3_bind_int(stmt, 7, vit);
+  sqlite3_bind_int(stmt, 8, ene);
+  sqlite3_bind_int(stmt, 9, hp);
+  sqlite3_bind_int(stmt, 10, maxHp);
+  sqlite3_bind_int(stmt, 11, mp);
+  sqlite3_bind_int(stmt, 12, maxMp);
+
+  if (sqlite3_step(stmt) != SQLITE_DONE) {
+    printf("[DB] CreateCharacter error: %s\n", sqlite3_errmsg(m_db));
+    sqlite3_finalize(stmt);
+    return -1;
+  }
+  int charId = static_cast<int>(sqlite3_last_insert_rowid(m_db));
+  sqlite3_finalize(stmt);
+  printf("[DB] Created character '%s' (class=%d, slot=%d, id=%d)\n",
+         name.c_str(), classCode, freeSlot, charId);
+  return charId;
+}
+
+bool Database::DeleteCharacter(int accountId, int charId) {
+  // Verify character belongs to account
+  sqlite3_stmt *stmt = nullptr;
+  const char *checkSql =
+      "SELECT id FROM characters WHERE id=? AND account_id=?";
+  if (sqlite3_prepare_v2(m_db, checkSql, -1, &stmt, nullptr) != SQLITE_OK)
+    return false;
+  sqlite3_bind_int(stmt, 1, charId);
+  sqlite3_bind_int(stmt, 2, accountId);
+  bool found = (sqlite3_step(stmt) == SQLITE_ROW);
+  sqlite3_finalize(stmt);
+  if (!found)
+    return false;
+
+  // Delete associated data
+  char sql[256];
+  snprintf(sql, sizeof(sql),
+           "DELETE FROM character_equipment WHERE character_id=%d", charId);
+  sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+
+  snprintf(sql, sizeof(sql),
+           "DELETE FROM character_inventory WHERE character_id=%d", charId);
+  sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+
+  snprintf(sql, sizeof(sql),
+           "DELETE FROM character_skills WHERE character_id=%d", charId);
+  sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+
+  snprintf(sql, sizeof(sql), "DELETE FROM characters WHERE id=%d", charId);
+  sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+
+  printf("[DB] Deleted character id=%d\n", charId);
+  return true;
+}
+
 CharacterData Database::GetCharacter(const std::string &name) {
   CharacterData c;
   sqlite3_stmt *stmt = nullptr;

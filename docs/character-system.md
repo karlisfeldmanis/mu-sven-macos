@@ -49,6 +49,26 @@ Enum values map **1:1 to BMD action indices**. No offset needed. `MAX_PLAYER_ACT
 | Staff | 10 (STOP_WAND) | 22 (WALK_WAND) | 42 |
 | Shield | 4 | 17 | 42 |
 
+### Body Part BMD Structure
+
+Body part models (Helm, Armor, Pants, Gloves, Boots) live in `Data/Player/`. Each has 56 bones (subset of Player.bmd's 60), 1 action, 1 keyframe.
+
+| Part | Default (DK) | Example Equipped | Texture Naming |
+|------|-------------|-----------------|----------------|
+| Helm | HelmClass02.bmd | HelmMale01.bmd | `head_02.jpg` (helm mesh), `hide.jpg` |
+| Armor | ArmorClass02.bmd | ArmorMale01.bmd | `upper_02_m.jpg` (armor), `skin_barbarian_01.jpg`, `hide.jpg` |
+| Pants | PantClass02.bmd | PantMale01.bmd | `lower_02_m.jpg` (pants), `hide_m.jpg` |
+| Gloves | GloveClass02.bmd | — | `skin_wizard_01.jpg` (single mesh) |
+| Boots | BootClass02.bmd | — | `skin_wizard_01.jpg` (single mesh) |
+
+**Texture naming convention for UI filtering**:
+- `skin_*` = character body skin mesh (hide in inventory/shop)
+- `hide*` = invisible placeholder mesh (always hide)
+- `head_*` = head/helm mesh. For helms (cat 7) this IS the item; for other body parts it's the character head (hide in UI)
+- `upper_*`, `lower_*` = actual armor/pants mesh (always show)
+
+**Pose**: Body part BMDs' single action is a static bind pose. For natural display, use Player.bmd action 1 (PLAYER_STOP_MALE) bone matrices instead.
+
 ## DK Stats (MuEmu-0.97k DefaultClassInfo.txt)
 
 | Stat | Starting Value |

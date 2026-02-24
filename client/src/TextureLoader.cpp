@@ -215,6 +215,97 @@ GLuint TextureLoader::LoadOZT(const std::string &path) {
   return textureID;
 }
 
+std::vector<unsigned char> TextureLoader::LoadOZTRaw(const std::string &path,
+                                                     int &width, int &height) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file)
+    return {};
+
+  std::vector<unsigned char> full_data((std::istreambuf_iterator<char>(file)),
+                                       std::istreambuf_iterator<char>());
+
+  size_t offset = 0;
+  if (full_data.size() > 24) {
+    if (full_data[4 + 2] == 2 || full_data[4 + 2] == 10)
+      offset = 4;
+    else if (full_data[24 + 2] == 2 || full_data[24 + 2] == 10)
+      offset = 24;
+  }
+
+  if (full_data.size() < offset + 18)
+    return {};
+
+  unsigned char *header = &full_data[offset];
+  unsigned char imageType = header[2];
+  width = header[12] | (header[13] << 8);
+  height = header[14] | (header[15] << 8);
+  int bpp = header[16];
+
+  if (bpp != 24 && bpp != 32)
+    return {};
+
+  int bytesPerPixel = bpp / 8;
+  size_t pixelDataOffset = offset + 18;
+  size_t expectedSize = (size_t)width * height * bytesPerPixel;
+
+  if (pixelDataOffset >= full_data.size())
+    return {};
+
+  unsigned char *pixel_data = &full_data[pixelDataOffset];
+  std::vector<unsigned char> pixels;
+
+  if (imageType == 10) {
+    // RLE decompression
+    pixels.resize(expectedSize);
+    size_t srcIdx = 0, dstIdx = 0;
+    size_t srcSize = full_data.size() - pixelDataOffset;
+    while (dstIdx < expectedSize && srcIdx < srcSize) {
+      unsigned char ph = pixel_data[srcIdx++];
+      int count = (ph & 0x7F) + 1;
+      if (ph & 0x80) {
+        if (srcIdx + bytesPerPixel > srcSize)
+          break;
+        for (int i = 0; i < count && dstIdx + bytesPerPixel <= expectedSize; ++i) {
+          memcpy(&pixels[dstIdx], &pixel_data[srcIdx], bytesPerPixel);
+          dstIdx += bytesPerPixel;
+        }
+        srcIdx += bytesPerPixel;
+      } else {
+        size_t rawBytes = (size_t)count * bytesPerPixel;
+        if (srcIdx + rawBytes > srcSize || dstIdx + rawBytes > expectedSize)
+          break;
+        memcpy(&pixels[dstIdx], &pixel_data[srcIdx], rawBytes);
+        srcIdx += rawBytes;
+        dstIdx += rawBytes;
+      }
+    }
+    if (dstIdx != expectedSize)
+      return {};
+  } else {
+    pixels.assign(pixel_data, pixel_data + std::min(expectedSize,
+                  full_data.size() - pixelDataOffset));
+    if (pixels.size() < expectedSize)
+      return {};
+  }
+
+  // V-flip (TGA is top-to-bottom, we want bottom-to-top)
+  int rowSize = width * bytesPerPixel;
+  std::vector<unsigned char> rowTemp(rowSize);
+  for (int y = 0; y < height / 2; ++y) {
+    unsigned char *topRow = pixels.data() + y * rowSize;
+    unsigned char *botRow = pixels.data() + (height - 1 - y) * rowSize;
+    memcpy(rowTemp.data(), topRow, rowSize);
+    memcpy(topRow, botRow, rowSize);
+    memcpy(botRow, rowTemp.data(), rowSize);
+  }
+
+  // Convert BGR(A) to RGB(A) for consistency with LoadOZJRaw
+  for (size_t i = 0; i + 2 < pixels.size(); i += bytesPerPixel)
+    std::swap(pixels[i], pixels[i + 2]);
+
+  return pixels;
+}
+
 GLuint TextureLoader::LoadByExtension(const std::string &path) {
   std::string lower = path;
   std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);

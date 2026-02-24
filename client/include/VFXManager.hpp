@@ -16,6 +16,11 @@ enum class ParticleType {
   ENERGY,      // Blue/white energy flash (Lich hand)
   FLARE,       // Bright additive impact flash (Main 5.2: BITMAP_FLASH)
   LEVEL_FLARE, // Main 5.2: BITMAP_FLARE level-up ring (15 joints rising)
+  // DK Skill effects
+  SKILL_SLASH,   // White-blue slash sparks (Sword1-5)
+  SKILL_CYCLONE, // Cyan spinning spark ring (Cyclone/Twisting Slash)
+  SKILL_FURY,    // Orange-red ground burst (Rageful Blow)
+  SKILL_STAB,    // Dark red piercing sparks (Death Stab)
 };
 
 class VFXManager {
@@ -33,6 +38,12 @@ public:
 
   // Update level-up effect center to follow the character
   void UpdateLevelUpCenter(const glm::vec3 &position);
+
+  // Spawn skill cast VFX at hero position (Main 5.2: BITMAP_SHINY+2 sparkle)
+  void SpawnSkillCast(uint8_t skillId, const glm::vec3 &heroPos, float facing);
+
+  // Spawn skill impact VFX at monster position (skill-specific particles)
+  void SpawnSkillImpact(uint8_t skillId, const glm::vec3 &monsterPos);
 
   // Spawns a textured ribbon from start heading toward target
   // Main 5.2: two passes per Lich bolt — scale=50 (thick) + scale=10 (thin)

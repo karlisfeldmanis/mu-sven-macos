@@ -647,24 +647,38 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
       th += lineH;
   }
 
-  // Hands specification
+  // Item level bonus calculations (MU 0.97d formulas)
+  int levelDmgBonus = 0, levelDefBonus = 0;
+  if (itemLevel > 0) {
+    if (def->category <= 6) // Weapons + shields
+      levelDmgBonus = itemLevel * 3;
+    if (def->category == 6 || (def->category >= 7 && def->category <= 11))
+      levelDefBonus = itemLevel;
+  }
+
+  // Hands / type specification
   if (def->category <= 5 || def->category == 12)
-    th += lineH;
+    th += lineH; // "Two-Handed Weapon" / "One-Handed Weapon"
+  if (def->category == 6)
+    th += lineH; // "Shield"
 
   if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0))
-    th += lineH;
+    th += lineH; // damage line
   // Attack Speed
   if (def->category <= 5 && def->attackSpeed > 0)
     th += lineH;
 
-  if (def->category >= 7 && def->category <= 11 && def->defense > 0)
+  // Defense for shields (cat 6) and armor (cat 7-11)
+  if ((def->category == 6 || (def->category >= 7 && def->category <= 11)) &&
+      def->defense > 0)
     th += lineH;
 
   // Comparison lines height
   if (equippedDef) {
     if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0))
       th += lineH; // damage diff
-    if (def->category >= 7 && def->category <= 11 && def->defense > 0)
+    if ((def->category == 6 || (def->category >= 7 && def->category <= 11)) &&
+        def->defense > 0)
       th += lineH; // defense diff
   }
 
@@ -717,15 +731,23 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
     else if (def->category != 4 || def->name == "Arrows" || def->name == "Bolt")
       AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), "One-Handed Weapon");
   }
+  if (def->category == 6)
+    AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), "Shield");
 
   // Weapon stats + comparison
   if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0)) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Damage: %d~%d", def->dmgMin, def->dmgMax);
+    int dMin = def->dmgMin + levelDmgBonus;
+    int dMax = def->dmgMax + levelDmgBonus;
+    char buf[48];
+    if (levelDmgBonus > 0)
+      snprintf(buf, sizeof(buf), "Damage: %d~%d (+%d)", dMin, dMax,
+               levelDmgBonus);
+    else
+      snprintf(buf, sizeof(buf), "Damage: %d~%d", dMin, dMax);
     AddPendingTooltipLine(IM_COL32(255, 140, 140, 255), buf);
 
     if (equippedDef) {
-      int avgNew = (def->dmgMin + def->dmgMax) / 2;
+      int avgNew = (dMin + dMax) / 2;
       int avgOld = (equippedDef->dmgMin + equippedDef->dmgMax) / 2;
       int diff = avgNew - avgOld;
       char cmpBuf[48];
@@ -747,14 +769,19 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
     AddPendingTooltipLine(IM_COL32(200, 255, 200, 255), buf);
   }
 
-  // Armor defense + comparison
-  if (def->category >= 7 && def->category <= 11 && def->defense > 0) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Defense: %d", def->defense);
+  // Defense for shields (cat 6) and armor (cat 7-11) + comparison
+  if ((def->category == 6 || (def->category >= 7 && def->category <= 11)) &&
+      def->defense > 0) {
+    int totalDef = def->defense + levelDefBonus;
+    char buf[48];
+    if (levelDefBonus > 0)
+      snprintf(buf, sizeof(buf), "Defense: %d (+%d)", totalDef, levelDefBonus);
+    else
+      snprintf(buf, sizeof(buf), "Defense: %d", totalDef);
     AddPendingTooltipLine(IM_COL32(140, 200, 255, 255), buf);
 
     if (equippedDef) {
-      int diff = (int)def->defense - (int)equippedDef->defense;
+      int diff = totalDef - (int)equippedDef->defense;
       char cmpBuf[48];
       if (diff > 0) {
         snprintf(cmpBuf, sizeof(cmpBuf), "  +%d defense", diff);
@@ -1734,9 +1761,13 @@ bool HandlePanelClick(float vx, float vy) {
   static constexpr float HUD_SLOT = 44.0f;
   static constexpr float HUD_GAP = 5.0f;
   static constexpr float HUD_BAR_W = 140.0f;
+  static constexpr float HUD_BTN = 36.0f;
+  static constexpr float HUD_BTN_GAP = 3.0f;
+  static constexpr float HUD_MENU_W = HUD_GAP + HUD_BTN * 3 + HUD_BTN_GAP * 2;
   static constexpr float HUD_CONTENT_W =
       HUD_BAR_W + HUD_GAP * 2 + (HUD_SLOT + HUD_GAP) * 4 + HUD_GAP +
-      (HUD_SLOT + HUD_GAP) * 4 + HUD_GAP + HUD_SLOT + HUD_GAP * 2 + HUD_BAR_W;
+      (HUD_SLOT + HUD_GAP) * 4 + HUD_GAP + HUD_SLOT + HUD_GAP * 2 +
+      HUD_BAR_W + HUD_MENU_W;
   static constexpr float HUD_START_VX = (1280.0f - HUD_CONTENT_W) * 0.5f;
   static constexpr float HUD_ROW_VY = 818.0f;
 
@@ -1780,6 +1811,24 @@ bool HandlePanelClick(float vx, float vy) {
         g_dragDefIndex = -(*s_ctx->rmcSkillId); // Negative = skill ID
         g_dragFromSlot = -1;
         g_dragFromEquipSlot = -1;
+        return true;
+      }
+    }
+
+    // Menu buttons: C, I, T (after AG bar)
+    float menuStartX = rmcX + HUD_SLOT + HUD_GAP * 2 + HUD_BAR_W + HUD_GAP;
+    for (int i = 0; i < 3; i++) {
+      float bx = menuStartX + i * (HUD_BTN + HUD_BTN_GAP);
+      if (vx >= bx && vx <= bx + HUD_BTN) {
+        if (i == 0 && s_ctx->showCharInfo)
+          *s_ctx->showCharInfo = !*s_ctx->showCharInfo;
+        else if (i == 1 && s_ctx->showInventory)
+          *s_ctx->showInventory = !*s_ctx->showInventory;
+        else if (i == 2 && s_ctx->teleportingToTown &&
+                 !*s_ctx->teleportingToTown) {
+          *s_ctx->teleportingToTown = true;
+          *s_ctx->teleportTimer = s_ctx->teleportCastTime;
+        }
         return true;
       }
     }
@@ -2150,10 +2199,13 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
     static constexpr float DROP_SLOT = 44.0f;
     static constexpr float DROP_GAP = 5.0f;
     static constexpr float DROP_BAR_W = 140.0f;
+    static constexpr float DROP_BTN = 36.0f;
+    static constexpr float DROP_BTN_GAP = 3.0f;
+    static constexpr float DROP_MENU_W = DROP_GAP + DROP_BTN * 3 + DROP_BTN_GAP * 2;
     static constexpr float DROP_CONTENT_W =
         DROP_BAR_W + DROP_GAP * 2 + (DROP_SLOT + DROP_GAP) * 4 + DROP_GAP +
         (DROP_SLOT + DROP_GAP) * 4 + DROP_GAP + DROP_SLOT + DROP_GAP * 2 +
-        DROP_BAR_W;
+        DROP_BAR_W + DROP_MENU_W;
     static constexpr float DROP_START_VX = (1280.0f - DROP_CONTENT_W) * 0.5f;
     static constexpr float DROP_ROW_VY = 818.0f;
 
@@ -2458,6 +2510,12 @@ void RenderRmcSlot(ImDrawList *dl, float screenX, float screenY, float size) {
     return;
   int8_t skillId = *s_ctx->rmcSkillId;
 
+  // Check if player can afford the AG cost
+  int agCost = (skillId > 0) ? GetSkillAGCost(skillId) : 0;
+  bool canAfford = s_ctx->serverAG ? (*s_ctx->serverAG >= agCost) : true;
+  ImU32 tint = canAfford ? IM_COL32(255, 255, 255, 255)
+                         : IM_COL32(100, 100, 100, 180);
+
   ImVec2 p0(screenX, screenY);
   ImVec2 p1(screenX + size, screenY + size);
 
@@ -2477,8 +2535,11 @@ void RenderRmcSlot(ImDrawList *dl, float screenX, float screenY, float size) {
     ImVec2 iMin(screenX + pad, screenY + pad);
     ImVec2 iMax(screenX + size - pad, screenY + size - pad);
     dl->AddImage((ImTextureID)(uintptr_t)g_texSkillIcons, iMin, iMax,
-                 ImVec2(u0, v0), ImVec2(u1, v1), IM_COL32(255, 255, 255, 255));
+                 ImVec2(u0, v0), ImVec2(u1, v1), tint);
   }
+
+  if (skillId > 0 && !canAfford)
+    dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 120), 3.0f);
 
   // "RMC" label
   dl->AddText(ImVec2(screenX + 2, screenY + 1), IM_COL32(255, 255, 255, 180),
@@ -2505,7 +2566,8 @@ static void RenderBar(ImDrawList *dl, float x, float y, float w, float h,
 
 // Helper: render a skill icon into a rect
 static void RenderSkillIcon(ImDrawList *dl, int8_t skillId, float sx, float sy,
-                            float sz) {
+                            float sz,
+                            ImU32 tint = IM_COL32(255, 255, 255, 255)) {
   if (skillId >= 0 && g_texSkillIcons != 0) {
     int ic = skillId % SKILL_ICON_COLS;
     int ir = skillId / SKILL_ICON_COLS;
@@ -2518,7 +2580,7 @@ static void RenderSkillIcon(ImDrawList *dl, int8_t skillId, float sx, float sy,
     dl->AddImage((ImTextureID)(uintptr_t)g_texSkillIcons,
                  ImVec2(sx + pad, sy + pad),
                  ImVec2(sx + sz - pad, sy + sz - pad), ImVec2(u0, v0),
-                 ImVec2(u1, v1), IM_COL32(255, 255, 255, 255));
+                 ImVec2(u1, v1), tint);
   }
 }
 
@@ -2539,11 +2601,16 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
   static constexpr float BAR_H = 22.0f;
   static constexpr float XP_H = 10.0f;
 
+  // Menu button constants
+  static constexpr float BTN = 36.0f;
+  static constexpr float BTN_GAP = 3.0f;
+  static constexpr float MENU_W = GAP + BTN * 3 + BTN_GAP * 2;
+
   // Compute total width: HP + gap + 4pots + gap + 4skills + gap + RMC + gap +
-  // AG
+  // AG + menu buttons
   static constexpr float CONTENT_W =
       BAR_W + GAP * 2 + (SLOT + GAP) * 4 + GAP + (SLOT + GAP) * 4 + GAP +
-      SLOT + GAP * 2 + BAR_W;
+      SLOT + GAP * 2 + BAR_W + MENU_W;
 
   // Center horizontally
   static constexpr float START_VX = (1280.0f - CONTENT_W) * 0.5f;
@@ -2650,7 +2717,14 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
     dl->AddText(ImVec2(sx + 2, sy + 1), IM_COL32(255, 255, 255, 180),
                 skillLabels[i]);
 
-    RenderSkillIcon(dl, s_ctx->skillBar[i], sx, sy, sz);
+    int8_t sid = s_ctx->skillBar[i];
+    int agCost = (sid > 0) ? GetSkillAGCost(sid) : 0;
+    bool canAfford = s_ctx->serverAG ? (*s_ctx->serverAG >= agCost) : true;
+    ImU32 tint = canAfford ? IM_COL32(255, 255, 255, 255)
+                           : IM_COL32(100, 100, 100, 180);
+    RenderSkillIcon(dl, sid, sx, sy, sz, tint);
+    if (sid > 0 && !canAfford)
+      dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 120), 3.0f);
     curVX += SLOT + GAP;
   }
   curVX += GAP;
@@ -2688,6 +2762,25 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
              std::max(curVal, 0), maxVal);
     RenderBar(dl, sx, sy, sw, sh, frac, fillColor, bgCol, barLabel);
     curVX += BAR_W;
+  }
+
+  // ── Menu buttons: C (Character), I (Inventory), T (Teleport) ──
+  {
+    curVX += GAP;
+    const char *btnLabels[] = {"C", "I", "T"};
+    for (int i = 0; i < 3; i++) {
+      float bx = c.ToScreenX(curVX);
+      float by = c.ToScreenY(ROW_VY + (SLOT - BTN) * 0.5f);
+      float bs = c.ToScreenX(curVX + BTN) - bx;
+      ImVec2 bp0(bx, by), bp1(bx + bs, by + bs);
+      dl->AddRectFilled(bp0, bp1, IM_COL32(25, 25, 40, 220), 4.0f);
+      dl->AddRect(bp0, bp1, IM_COL32(80, 80, 120, 200), 4.0f);
+      ImVec2 tsz = ImGui::CalcTextSize(btnLabels[i]);
+      dl->AddText(
+          ImVec2(bx + (bs - tsz.x) * 0.5f, by + (bs - tsz.y) * 0.5f),
+          IM_COL32(200, 200, 220, 230), btnLabels[i]);
+      curVX += BTN + BTN_GAP;
+    }
   }
 
   // ── XP Bar (spans full HUD width, below slots) ──

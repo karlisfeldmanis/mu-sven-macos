@@ -86,6 +86,7 @@ private:
     int weaponAttachBone = -1;     // -1 = no weapon, 33 = R hand, 42 = L hand
     int defaultAction = 0;        // Starting action (6 = spear idle for guards)
     int rootBone = -1;            // Root bone index for LockPositions
+    std::vector<BoneWorldMatrix> cachedWeaponBones; // Static weapon bind-pose (computed once)
   };
 
   // Per-NPC instance
@@ -99,6 +100,7 @@ private:
     uint16_t npcType = 0;
     uint16_t serverIndex = 0; // Server-assigned index (1001+)
     std::string name;
+
 
     // Guard patrol movement (server-driven)
     bool isMoving = false;

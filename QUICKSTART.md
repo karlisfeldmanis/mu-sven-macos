@@ -5,7 +5,7 @@
 - macOS with Xcode command line tools (`xcode-select --install`)
 - CMake 3.15+ and Ninja build system (`brew install cmake ninja`)
 - Dependencies: `brew install glfw glew libjpeg-turbo giflib glm sqlite3`
-- Original MU Online client data — symlink or copy to `client/Data/`
+- Original MU Online client data (Main 5.2) in `client/Data/`
 
 ## Building
 
@@ -45,10 +45,9 @@ The server creates `mu_server.db` on first run with seeded data (items, NPCs, mo
 
 ## Data Directory
 
-`client/Data/` is the canonical data directory. CMake auto-creates `build/Data` symlinks in both client and server build directories. Required assets:
+`client/Data/` is the canonical data directory (local copy, gitignored). CMake auto-creates `build/Data` symlinks in both client and server build directories. Required assets:
 
-- Kayito 0.97k base client (terrain, models, textures)
-- Main 5.2 `Player.bmd` (247 actions) — must replace Kayito's version
+- Main 5.2 client data (terrain, models, textures, Player.bmd with 247 actions)
 
 ## Default Character
 

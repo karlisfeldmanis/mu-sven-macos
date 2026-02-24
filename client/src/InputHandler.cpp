@@ -156,7 +156,7 @@ static void HandleNpcInteraction(int npcIdx) {
 static void mouse_button_callback(GLFWwindow *window, int button, int action,
                                   int mods) {
   ImGui_ImplGlfw_MouseButtonCallback(window, button, action, mods);
-  if (!s_ctxInitialized)
+  if (!s_ctxInitialized || !s_gameReady)
     return;
 
   // Block world interactions while learning a skill
@@ -245,7 +245,7 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
         if (s_ctx->rmcSkillId && *s_ctx->rmcSkillId >= 0) {
           uint8_t skillId = (uint8_t)*s_ctx->rmcSkillId;
           int agCost = InventoryUI::GetSkillAGCost(skillId);
-          int currentAG = s_ctx->serverMP ? *s_ctx->serverMP : 0;
+          int currentAG = s_ctx->serverAG ? *s_ctx->serverAG : 0;
           if (currentAG < agCost) {
             InventoryUI::ShowNotification("Not enough AG!");
           } else {

@@ -14,21 +14,23 @@
 namespace CombatHandler {
 
 // DK skill definitions (server-side copy matching client g_dkSkills)
+// aoeRange: world units (0 = single target, 200 = 2 grid cells, etc.)
 struct SkillDef {
   uint8_t skillId;
   int agCost;
   int damageBonus;
+  float aoeRange; // 0 = single target
 };
 
 static const SkillDef g_skillDefs[] = {
-    {19, 9, 15},  // Falling Slash
-    {20, 9, 15},  // Lunge
-    {21, 8, 15},  // Uppercut
-    {22, 9, 18},  // Cyclone
-    {23, 10, 20}, // Slash
-    {41, 10, 25}, // Twisting Slash
-    {42, 20, 60}, // Rageful Blow
-    {43, 12, 70}, // Death Stab
+    {19, 9, 15, 0},     // Falling Slash (single target)
+    {20, 9, 15, 0},     // Lunge (single target)
+    {21, 8, 15, 0},     // Uppercut (single target)
+    {22, 9, 18, 0},     // Cyclone (single target)
+    {23, 10, 20, 0},    // Slash (single target)
+    {41, 10, 25, 200},  // Twisting Slash (AoE range 2 grid)
+    {42, 20, 60, 300},  // Rageful Blow (AoE range 3 grid)
+    {43, 12, 70, 100},  // Death Stab (splash range 1 grid around target)
 };
 
 static const SkillDef *FindSkillDef(uint8_t skillId) {
@@ -323,6 +325,8 @@ void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
     printf("[Combat] fd=%d not enough %s (%d/%d) for skill %d\n",
            session.GetFd(), isDK ? "AG" : "Mana", currentResource,
            skillDef->agCost, atk->skillId);
+    // Re-sync stats so client has accurate AG value
+    CharacterHandler::SendCharStats(session);
     return;
   }
 
@@ -348,15 +352,38 @@ void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
   SkillLog("[SkillAttack] SUCCESS: applying damage bonus=%d to mon %d\n",
            skillDef->damageBonus, atk->monsterIndex);
 
-  // Apply damage with skill bonus
+  // Apply damage with skill bonus to primary target
   ApplyDamageToMonster(session, mon, skillDef->damageBonus, world, server);
+
+  // AoE: hit all nearby monsters within skill range (OpenMU: AreaSkillAutomaticHits)
+  // Twisting Slash (41): range 2 grid, Rageful Blow (42): range 3, Death Stab (43): splash 1
+  int aoeHits = 0;
+  if (skillDef->aoeRange > 0) {
+    float cx = mon->worldX, cz = mon->worldZ;
+    float r2 = skillDef->aoeRange * skillDef->aoeRange;
+    for (auto &other : world.GetMonsterInstancesMut()) {
+      if (other.index == mon->index)
+        continue;
+      if (other.aiState == MonsterInstance::AIState::DYING ||
+          other.aiState == MonsterInstance::AIState::DEAD)
+        continue;
+      float dx = other.worldX - cx;
+      float dz = other.worldZ - cz;
+      if (dx * dx + dz * dz <= r2) {
+        ApplyDamageToMonster(session, &other, skillDef->damageBonus, world,
+                             server);
+        aoeHits++;
+      }
+    }
+  }
 
   // Send updated stats (so client sees AG decrease)
   CharacterHandler::SendCharStats(session);
 
-  printf("[Combat] fd=%d used skill %d (AG cost=%d, bonus=%d) on mon %d\n",
+  printf("[Combat] fd=%d used skill %d (AG cost=%d, bonus=%d) on mon %d "
+         "(+%d AoE)\n",
          session.GetFd(), atk->skillId, skillDef->agCost, skillDef->damageBonus,
-         atk->monsterIndex);
+         atk->monsterIndex, aoeHits);
 }
 
 } // namespace CombatHandler

@@ -24,6 +24,8 @@ public:
   static std::vector<unsigned char> LoadOZJRaw(const std::string &path,
                                                int &width, int &height);
   static GLuint LoadOZT(const std::string &path);
+  static std::vector<unsigned char> LoadOZTRaw(const std::string &path,
+                                               int &width, int &height);
 
   // Load texture by extension (OZJ/JPG -> LoadOZJ, OZT/TGA -> LoadOZT)
   static GLuint LoadByExtension(const std::string &path);

@@ -34,7 +34,8 @@ struct InputContext {
   int16_t *potionBar; // [4]
   int8_t *skillBar;   // [10]
   int8_t *rmcSkillId;
-  int *serverMP; // AG for DK
+  int *serverMP;
+  int *serverAG; // AG for DK (separate from mana)
   bool *shopOpen;
   bool *isLearningSkill;
   int *heroCharacterId;

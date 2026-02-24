@@ -1,5 +1,6 @@
 #include "PacketHandler.hpp"
 #include "PacketDefs.hpp"
+#include "handlers/CharacterSelectHandler.hpp"
 #include "handlers/ShopHandler.hpp"
 #include <cstdio>
 
@@ -38,9 +39,14 @@ void Handle(Session &session, const std::vector<uint8_t> &packet, Database &db,
     break;
   case Opcode::CHARSELECT:
     if (subcode == Opcode::SUB_CHARLIST)
-      WorldHandler::HandleCharListRequest(session, db);
+      CharacterSelectHandler::SendCharList(session, db);
+    else if (subcode == Opcode::SUB_CHARCREATE)
+      CharacterSelectHandler::HandleCharCreate(session, packet, db);
+    else if (subcode == Opcode::SUB_CHARDELETE)
+      CharacterSelectHandler::HandleCharDelete(session, packet, db);
     else if (subcode == Opcode::SUB_CHARSELECT)
-      WorldHandler::HandleCharSelect(session, packet, db, world);
+      CharacterSelectHandler::HandleCharSelect(session, packet, db, world,
+                                               server);
     break;
 
   // Movement

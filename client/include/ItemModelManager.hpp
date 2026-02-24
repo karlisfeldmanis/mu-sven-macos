@@ -2,6 +2,7 @@
 #define MU_ITEM_MODEL_MANAGER_HPP
 
 #include "BMDParser.hpp"
+#include "BMDUtils.hpp"
 #include "ViewerCommon.hpp"
 #include <cstdint>
 #include <map>
@@ -46,6 +47,9 @@ private:
   static Shader *s_shader;
   static std::unique_ptr<Shader> s_shadowShader;
   static std::string s_dataPath;
+  // Player.bmd skeleton for computing idle-pose bones for body part items
+  static std::shared_ptr<BMDData> s_playerBmd;
+  static std::vector<BoneWorldMatrix> s_playerIdleBones;
 };
 
 #endif // MU_ITEM_MODEL_MANAGER_HPP

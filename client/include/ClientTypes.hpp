@@ -9,6 +9,38 @@
 #include <string>
 #include <vector>
 
+// ── Character class codes and starting stats ──
+
+enum ClassCode : uint8_t {
+  CLASS_DW = 0,
+  CLASS_DK = 16,
+  CLASS_ELF = 32,
+  CLASS_MG = 48,
+};
+
+struct ClassStartingStats {
+  uint8_t classCode;
+  const char *name;
+  int str, dex, vit, ene;
+  int hp, mp;
+};
+
+// OpenMU Version075 starting stats per class
+inline const ClassStartingStats &GetClassStats(uint8_t classCode) {
+  static const ClassStartingStats stats[] = {
+      {CLASS_DW, "Dark Wizard", 18, 18, 15, 30, 60, 60},
+      {CLASS_DK, "Dark Knight", 28, 20, 25, 10, 110, 20},
+      {CLASS_ELF, "Fairy Elf", 22, 25, 20, 15, 80, 30},
+      {CLASS_MG, "Magic Gladiator", 26, 26, 26, 26, 110, 60},
+  };
+  for (auto &s : stats)
+    if (s.classCode == classCode)
+      return s;
+  static const ClassStartingStats fallback = {0, "Unknown", 20, 20, 20, 20, 60,
+                                              30};
+  return fallback;
+}
+
 // ── Client-side item definition (synced from server item_definitions table) ──
 
 struct ClientItemDefinition {

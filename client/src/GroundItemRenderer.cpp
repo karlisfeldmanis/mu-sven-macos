@@ -22,8 +22,8 @@ void Spawn(const glm::vec3 &pos, int damage, uint8_t type, FloatingDamage *pool,
       d.type = type;
       d.gravity = 10.0f; // Main 5.2: initial upward velocity
       d.yOffset = 0.0f;
-      // Main 5.2: large damage gets bigger font
-      d.fontScale = (damage >= 3000) ? 1.5f : 1.0f;
+      // Main 5.2: critical/excellent start at scale 50, normal at 15
+      d.scale = (type == 2 || type == 3) ? 50.0f : 15.0f;
       d.active = true;
       return;
     }
@@ -51,6 +51,11 @@ void UpdateAndRender(FloatingDamage *pool, int poolSize, float deltaTime,
       continue;
     }
 
+    // Main 5.2: scale decay — 5.0 per tick, minimum 15.0
+    d.scale -= 5.0f * ticks;
+    if (d.scale < 15.0f)
+      d.scale = 15.0f;
+
     // Current position
     glm::vec3 pos = d.worldPos + glm::vec3(0, d.yOffset, 0);
 
@@ -65,13 +70,14 @@ void UpdateAndRender(FloatingDamage *pool, int poolSize, float deltaTime,
     // 0)
     float alpha = std::min(d.gravity * 0.4f, 1.0f);
 
-    // Color by type (Main 5.2 colors: red <1000, orange >=1000)
+    // Main 5.2 exact colors (WSclient.cpp ReceiveAttackDamage)
     ImU32 col;
     const char *text;
     char buf[16];
     int a = (int)(alpha * 255);
     if (d.type == 7) {
-      col = IM_COL32(250, 250, 250, a);
+      // Main 5.2: miss = orange (1.0, 0.6, 0.0)
+      col = IM_COL32(255, 153, 0, a);
       text = "MISS";
     } else if (d.type == 9) {
       snprintf(buf, sizeof(buf), "+%d XP", d.damage);
@@ -85,20 +91,18 @@ void UpdateAndRender(FloatingDamage *pool, int poolSize, float deltaTime,
       snprintf(buf, sizeof(buf), "%d", d.damage);
       text = buf;
       if (d.type == 8)
-        col = IM_COL32(255, 60, 60, a); // Incoming (player taking damage)
+        col = IM_COL32(255, 0, 0, a); // Incoming: Main 5.2 red (1,0,0)
       else if (d.type == 2)
-        col = IM_COL32(80, 180, 255, a); // Critical
+        col = IM_COL32(0, 255, 255, a); // Critical: Main 5.2 DT_PERFECT cyan
       else if (d.type == 3)
-        col = IM_COL32(80, 255, 120, a); // Excellent
-      else if (d.damage >= 1000)
-        col = IM_COL32(242, 178, 38, a); // Orange (Main 5.2: >=1000)
+        col = IM_COL32(0, 255, 153, a); // Excellent: Main 5.2 DT_EXCELLENT
       else
-        col = IM_COL32(255, 200, 100,
-                       a); // Light Orange (Normal hitting monsters)
+        col = IM_COL32(255, 0, 0, a); // Normal hit: Main 5.2 red (1,0,0)
     }
 
     // Draw with shadow
-    float fontSize = 20.0f * d.fontScale;
+    // Main 5.2: scale 15 → 20px base, scale 50 → ~67px for crits
+    float fontSize = d.scale * (20.0f / 15.0f);
     ImVec2 tpos(sx, sy);
     dl->AddText(font, fontSize, ImVec2(tpos.x + 1, tpos.y + 1),
                 IM_COL32(0, 0, 0, (int)(alpha * 200)), text);
