@@ -70,20 +70,22 @@ void UpdateAndRender(FloatingDamage *pool, int poolSize, float deltaTime,
     // 0)
     float alpha = std::min(d.gravity * 0.4f, 1.0f);
 
-    // Main 5.2 exact colors (WSclient.cpp ReceiveAttackDamage)
+    // WoW-style scrolling combat text colors
     ImU32 col;
     const char *text;
     char buf[16];
     int a = (int)(alpha * 255);
     if (d.type == 7) {
-      // Main 5.2: miss = orange (1.0, 0.6, 0.0)
-      col = IM_COL32(255, 153, 0, a);
+      // Miss: gray text (WoW: white "Miss")
+      col = IM_COL32(180, 180, 180, a);
       text = "MISS";
     } else if (d.type == 9) {
+      // XP gain: purple-gold (WoW-style)
       snprintf(buf, sizeof(buf), "+%d XP", d.damage);
       text = buf;
       col = IM_COL32(220, 180, 255, a);
     } else if (d.type == 10) {
+      // Healing: green (WoW: bright green)
       snprintf(buf, sizeof(buf), "+%d", d.damage);
       text = buf;
       col = IM_COL32(60, 255, 60, a);
@@ -91,13 +93,15 @@ void UpdateAndRender(FloatingDamage *pool, int poolSize, float deltaTime,
       snprintf(buf, sizeof(buf), "%d", d.damage);
       text = buf;
       if (d.type == 8)
-        col = IM_COL32(255, 0, 0, a); // Incoming: Main 5.2 red (1,0,0)
+        col = IM_COL32(255, 0, 0, a);       // Incoming damage: red
       else if (d.type == 2)
-        col = IM_COL32(0, 255, 255, a); // Critical: Main 5.2 DT_PERFECT cyan
+        col = IM_COL32(255, 255, 0, a);      // Critical: yellow (WoW)
       else if (d.type == 3)
-        col = IM_COL32(0, 255, 153, a); // Excellent: Main 5.2 DT_EXCELLENT
+        col = IM_COL32(255, 200, 0, a);      // Excellent: gold (WoW)
+      else if (d.type == 4)
+        col = IM_COL32(30, 255, 30, a);      // Poison DoT: green (WoW nature)
       else
-        col = IM_COL32(255, 0, 0, a); // Normal hit: Main 5.2 red (1,0,0)
+        col = IM_COL32(255, 255, 255, a);    // Normal hit: white (WoW)
     }
 
     // Draw with shadow

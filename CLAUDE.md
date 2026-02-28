@@ -79,7 +79,9 @@ Detailed reference docs are in `docs/`:
 
 ## Database
 
-Canonical path: `server/build/mu_server.db` (auto-created on first server run via `SeedItemDefinitions()` + `SeedNpcSpawns()`). Delete to reset/re-seed. Schema: `characters`, `character_inventory`, `character_equipment`, `character_skills`, `item_definitions`, `npc_spawns`.
+**Single source of truth: `server/build/mu_server.db`** (auto-created on first server run via `SeedItemDefinitions()` + `SeedNpcSpawns()`). Delete to reset/re-seed. All item definitions, NPC spawns, and character data live here. There is NO other database — any `.db` files found elsewhere (e.g. `server/mu_server.db`, `server/build/mu.db`) are stale leftovers and should be deleted. Schema: `characters`, `character_inventory`, `character_equipment`, `character_skills`, `item_definitions`, `npc_spawns`.
+
+**Classes**: Only DW (classCode=0), DK (16), ELF (32), MG (48) are supported. No other classes.
 
 ## AG (Ability Gauge) System
 
@@ -151,3 +153,7 @@ Skills are server-authoritative. Stored in `character_skills` table. DK starts w
 - **Stencil shadow merging**: Use `GL_INCR` (not `GL_REPLACE`) in `glStencilOp` for unified body+weapon+shield shadows. `GL_REPLACE` with ref=0 replaces stencil with 0, never blocking subsequent fragments.
 - **Character select point lights**: Collect from world object instances (types 50/51=fire, 52=bonfire, 55=gate, 90=streetlight, etc.). Pass to terrain via CPU lightmap and to character shader via uniform arrays.
 - **Click-to-move state guard**: GLFW mouse callbacks fire regardless of game state. Guard with `!s_gameReady` to prevent character select button clicks from bleeding through as click-to-move commands during state transition.
+- **D4 MOVE packet = destination, not position**: `HandleMove` receives the click-to-move TARGET coordinates. Only `HandlePrecisePosition` (D7) provides actual current player position. Using D4 to update `session.worldX/worldZ` causes monster AI to think player teleported, breaking aggro.
+- **Melee attack range**: Chebyshev grid distance is too coarse for melee (diagonal adjacency = ~141 world units). Layer Euclidean world-space check (`MELEE_ATTACK_DIST_SQ = 150²`) on top.
+- **VFX model separation**: Each spell VFX type (meteor, lightning, poison, ice) should have its own struct, vector, update, and render functions. Do NOT mix them into shared structs with `isMeteor`/`isLightning` flags — this creates hard-to-maintain branching.
+- **Main 5.2 Meteorite trail**: NOT a ribbon trail. Trail is per-tick BITMAP_FIRE billboard sprite particles spawned at the fireball's position. They fade, shrink, and rotate individually. The fireball itself is Fire01.bmd 3D model falling diagonally (Direction(0,0,-50) rotated by Angle(0,20,0)).

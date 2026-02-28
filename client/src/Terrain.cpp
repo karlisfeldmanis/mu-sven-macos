@@ -661,8 +661,7 @@ void Terrain::applyDynamicLights() {
     float gx = plPositions[li].z / 100.0f;
     float gz = plPositions[li].x / 100.0f;
 
-    const int cellRange = 3; // Original uses range 3 for most light types
-    float rf = (float)cellRange;
+    int cellRange = 3; // Original uses range 3 for most light types
 
     // Per-type flickering (Main 5.2 ZzzObject.cpp:3908-3940)
     // Use slow sine-wave modulation instead of per-frame random to avoid strobing.
@@ -671,7 +670,12 @@ void Terrain::applyDynamicLights() {
     if (li == 0) s_flickerPhase += 0.04f; // ~2.4 rad/sec ≈ gentle flicker
     glm::vec3 color = plColors[li];
     int objType = (li < (int)plObjectTypes.size()) ? plObjectTypes[li] : 0;
-    if (objType == 90) { // StreetLight
+    if (objType == -1) {
+      // Spell light: color already has Main 5.2 luminosity, pass through unscaled
+      // Use plRanges to determine cell range (300 = 3 cells, 200 = 2 cells)
+      float spellRange = (li < (int)plRanges.size()) ? plRanges[li] : 200.0f;
+      cellRange = (int)(spellRange / 100.0f);
+    } else if (objType == 90) { // StreetLight
       float phase = s_flickerPhase + (float)li * 1.7f; // per-light offset
       float L = 0.7f + 0.1f * std::sin(phase); // [0.6, 0.8]
       color = glm::vec3(L, L * 0.8f, L * 0.6f);
@@ -683,6 +687,7 @@ void Terrain::applyDynamicLights() {
       color *= 0.35f; // Default scaling for non-flickering lights
     }
 
+    float rf = (float)cellRange;
     int gxi = (int)gx;
     int gzi = (int)gz;
 

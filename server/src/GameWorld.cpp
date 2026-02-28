@@ -33,6 +33,17 @@ static const MonsterTypeDef s_monsterDefs[] = {
 static constexpr int NUM_MONSTER_DEFS =
     sizeof(s_monsterDefs) / sizeof(s_monsterDefs[0]);
 
+// World-space melee range threshold (squared) — 1.5 grid cells.
+// Melee monsters (attackRange <= 1) must be within this distance to attack.
+static constexpr float MELEE_ATTACK_DIST_SQ = 150.0f * 150.0f;
+
+static float WorldDistSq(const MonsterInstance &mon,
+                         const GameWorld::PlayerTarget &target) {
+  float dx = mon.worldX - target.worldX;
+  float dz = mon.worldZ - target.worldZ;
+  return dx * dx + dz * dz;
+}
+
 const MonsterTypeDef *GameWorld::FindMonsterTypeDef(uint16_t type) {
   for (int i = 0; i < NUM_MONSTER_DEFS; i++) {
     if (s_monsterDefs[i].type == type)
@@ -584,9 +595,10 @@ void GameWorld::processChasing(MonsterInstance &mon, float dt,
     }
   }
 
-  // Helper: transition to RETURNING
+  // Helper: transition to RETURNING (evade mode: invulnerable until spawn)
   auto beginReturn = [&]() {
     mon.aiState = MonsterInstance::AIState::RETURNING;
+    mon.evading = true;
     mon.aggroTargetFd = -1;
     mon.aggroTimer = 0.0f;
     mon.currentPath.clear();
@@ -600,29 +612,35 @@ void GameWorld::processChasing(MonsterInstance &mon, float dt,
     return;
   }
 
-  // Leash check
+  // Leash check — chase limit from spawn point
+  int leashDist = std::max(20, mon.viewRange * 5);
   int distFromSpawn = PathFinder::ChebyshevDist(mon.gridX, mon.gridY,
                                                 mon.spawnGridX, mon.spawnGridY);
-  if (distFromSpawn > mon.viewRange * 3) {
+  if (distFromSpawn > leashDist) {
     printf("[AI] Mon %d LEASHED (dist=%d, limit=%d)\n", mon.index,
-           distFromSpawn, mon.viewRange * 3);
+           distFromSpawn, leashDist);
     beginReturn();
     return;
   }
 
-  // De-aggro if target too far
+  // De-aggro if target too far from monster
   int distToTarget = PathFinder::ChebyshevDist(mon.gridX, mon.gridY,
                                                target->gridX, target->gridY);
-  if (distToTarget > mon.viewRange * 3) {
-    printf("[AI] Mon %d DE-AGGRO (dist=%d)\n", mon.index, distToTarget);
+  if (distToTarget > leashDist) {
+    printf("[AI] Mon %d DE-AGGRO (dist=%d) monGrid=(%d,%d) targetGrid=(%d,%d)\n",
+           mon.index, distToTarget, mon.gridX, mon.gridY,
+           target->gridX, target->gridY);
     beginReturn();
     return;
   }
 
-  // In attack range → ATTACKING
-  if (distToTarget <= mon.attackRange) {
-    mon.aiState = MonsterInstance::AIState::ATTACKING;
-    mon.attackCooldown = 0.0f; // Can attack immediately
+  // In attack range → APPROACHING (brief delay for client walk anim to finish)
+  if (distToTarget <= mon.attackRange &&
+      (mon.attackRange > 1 ||
+       WorldDistSq(mon, *target) <= MELEE_ATTACK_DIST_SQ)) {
+    mon.aiState = MonsterInstance::AIState::APPROACHING;
+    mon.approachTimer = 0.0f;
+    mon.staggerDelay = calculateStaggerDelay(mon.aggroTargetFd);
     emitMoveIfChanged(mon, mon.gridX, mon.gridY, true, false, outMoves);
     return;
   }
@@ -663,6 +681,73 @@ void GameWorld::processChasing(MonsterInstance &mon, float dt,
   }
 }
 
+// ─── Attack stagger: offset attack timers for multi-monster encounters ───────
+
+float GameWorld::calculateStaggerDelay(int targetFd) const {
+  int count = 0;
+  for (const auto &m : m_monsterInstances) {
+    if (m.aggroTargetFd == targetFd &&
+        (m.aiState == MonsterInstance::AIState::APPROACHING ||
+         m.aiState == MonsterInstance::AIState::ATTACKING))
+      count++;
+  }
+  // First monster: no delay. Each additional: 0.3-0.6s stagger
+  if (count <= 1)
+    return 0.0f;
+  return 0.3f + (float)(rand() % 300) / 1000.0f;
+}
+
+// ─── APPROACHING: brief delay before first attack (WoW-style) ───────────────
+
+void GameWorld::processApproaching(MonsterInstance &mon, float dt,
+                                   std::vector<PlayerTarget> &players,
+                                   std::vector<MonsterMoveUpdate> &outMoves,
+                                   std::vector<MonsterAttackResult> &attacks) {
+  // Find target
+  PlayerTarget *target = nullptr;
+  for (auto &p : players) {
+    if (p.fd == mon.aggroTargetFd && !p.dead) {
+      target = &p;
+      break;
+    }
+  }
+
+  // Lost target or safezone → return
+  if (!target || IsSafeZoneGrid(target->gridX, target->gridY)) {
+    mon.aiState = MonsterInstance::AIState::RETURNING;
+    mon.evading = true;
+    mon.aggroTargetFd = -1;
+    mon.currentPath.clear();
+    mon.pathStep = 0;
+    mon.moveTimer = 0.0f;
+    return;
+  }
+
+  // Target moved out of range → resume chasing
+  int dist = PathFinder::ChebyshevDist(mon.gridX, mon.gridY, target->gridX,
+                                       target->gridY);
+  if (dist > mon.attackRange ||
+      (mon.attackRange <= 1 && WorldDistSq(mon, *target) > MELEE_ATTACK_DIST_SQ)) {
+    mon.aiState = MonsterInstance::AIState::CHASING;
+    mon.currentPath.clear();
+    mon.pathStep = 0;
+    mon.repathTimer = 0.0f;
+    return;
+  }
+
+  // Wait for approach delay (moveDelay ensures client walk anim finishes + stagger)
+  mon.approachTimer += dt;
+  float requiredDelay = mon.moveDelay + mon.staggerDelay;
+  if (mon.approachTimer >= requiredDelay) {
+    // Transition to ATTACKING — can attack immediately
+    mon.aiState = MonsterInstance::AIState::ATTACKING;
+    mon.attackCooldown = 0.0f;
+    emitMoveIfChanged(mon, mon.gridX, mon.gridY, true, false, outMoves);
+    printf("[AI] Mon %d: APPROACHING→ATTACKING (delay=%.2fs)\n", mon.index,
+           requiredDelay);
+  }
+}
+
 void GameWorld::processAttacking(MonsterInstance &mon, float dt,
                                  std::vector<PlayerTarget> &players,
                                  std::vector<MonsterMoveUpdate> &outMoves,
@@ -679,6 +764,7 @@ void GameWorld::processAttacking(MonsterInstance &mon, float dt,
   // Lost target → return
   if (!target) {
     mon.aiState = MonsterInstance::AIState::RETURNING;
+    mon.evading = true;
     mon.aggroTargetFd = -1;
     mon.currentPath.clear();
     mon.pathStep = 0;
@@ -689,7 +775,8 @@ void GameWorld::processAttacking(MonsterInstance &mon, float dt,
   // Out of attack range → resume chasing
   int dist = PathFinder::ChebyshevDist(mon.gridX, mon.gridY, target->gridX,
                                        target->gridY);
-  if (dist > mon.attackRange) {
+  if (dist > mon.attackRange ||
+      (mon.attackRange <= 1 && WorldDistSq(mon, *target) > MELEE_ATTACK_DIST_SQ)) {
     mon.aiState = MonsterInstance::AIState::CHASING;
     mon.currentPath.clear();
     mon.pathStep = 0;
@@ -712,9 +799,14 @@ void GameWorld::processAttacking(MonsterInstance &mon, float dt,
                                  ? rand() % (mon.attackMax - mon.attackMin + 1)
                                  : 0);
 
-  // OpenMU hit chance: hitChance = 1 - defenseRate/attackRate (min 3%)
+  // Level-based auto-miss: monster 10+ levels below player always misses
   bool missed = false;
-  {
+  if (target->level >= mon.level + 10) {
+    missed = true;
+  }
+
+  // OpenMU hit chance: hitChance = 1 - defenseRate/attackRate (min 3%)
+  if (!missed) {
     float hitChance = 0.03f; // 3% minimum (OpenMU AttackableExtensions.cs)
     if (mon.attackRate > 0 && target->defenseRate < mon.attackRate) {
       hitChance = 1.0f - (float)target->defenseRate / (float)mon.attackRate;
@@ -732,6 +824,15 @@ void GameWorld::processAttacking(MonsterInstance &mon, float dt,
     // damage is reduced to 30% (AttackableExtensions.cs line 188)
     if (target->defenseRate >= mon.attackRate && dmg > 0) {
       dmg = std::max(1, dmg * 3 / 10);
+    }
+    // Level-based damage reduction: 10% less per level above 4-level gap
+    // (smooth ramp before the 10+ auto-miss cutoff)
+    int levelGap = (int)target->level - (int)mon.level;
+    if (levelGap >= 5 && dmg > 0) {
+      // 5 levels above: 90%, 6: 80%, 7: 70%, 8: 60%, 9: 50%
+      int reduction = (levelGap - 4) * 10; // 10-60%
+      if (reduction > 60) reduction = 60;
+      dmg = std::max(1, dmg * (100 - reduction) / 100);
     }
   }
 
@@ -763,14 +864,17 @@ void GameWorld::processReturning(MonsterInstance &mon, float dt,
   // Path exhausted — check if arrived or need to re-pathfind
   if (mon.currentPath.empty() || mon.pathStep >= (int)mon.currentPath.size()) {
     if (mon.gridX == mon.spawnGridX && mon.gridY == mon.spawnGridY) {
-      // Arrived at spawn — keep current HP, idle regen handles recovery
+      // Arrived at spawn — heal to full (WoW evade behavior)
+      mon.hp = mon.maxHp;
+      mon.evading = false;
       mon.aiState = MonsterInstance::AIState::IDLE;
       mon.stateTimer = 2.0f + (float)(rand() % 3000) / 1000.0f;
       mon.aggroTargetFd = -1;
       mon.aggroTimer = 0.0f;
       mon.chaseFailCount = 0;
       emitMoveIfChanged(mon, mon.gridX, mon.gridY, false, false, outMoves);
-      printf("[AI] Mon %d returned to spawn, HP=%d\n", mon.index, mon.hp);
+      printf("[AI] Mon %d returned to spawn, healed to %d/%d\n", mon.index,
+             mon.hp, mon.maxHp);
       return;
     }
 
@@ -792,7 +896,8 @@ void GameWorld::processReturning(MonsterInstance &mon, float dt,
       mon.worldX = mon.spawnX;
       mon.worldZ = mon.spawnZ;
       setOccupied(mon.gridX, mon.gridY, true);
-      // Keep current HP — idle regen handles recovery
+      mon.hp = mon.maxHp; // Heal to full (WoW evade)
+      mon.evading = false;
       mon.aiState = MonsterInstance::AIState::IDLE;
       mon.stateTimer = 2.0f;
       mon.chaseFailCount = 0;
@@ -851,6 +956,8 @@ void GameWorld::Update(float dt,
         mon.aggroTimer = -3.0f; // 3s respawn immunity (negative = immune)
         mon.attackCooldown = 1.5f;
         mon.chaseFailCount = 0;
+        mon.poisoned = false;
+        mon.evading = false;
         mon.justRespawned = true;
         setOccupied(mon.gridX, mon.gridY, true);
       }
@@ -995,11 +1102,18 @@ GameWorld::ProcessMonsterAI(float dt, std::vector<PlayerTarget> &players,
     }
 
     // Tick aggro timer (positive = active aggro duration)
+    // Only decay when idle/wandering with aggro — not while actively chasing/attacking
     if (mon.aggroTargetFd != -1 && mon.aggroTimer > 0.0f) {
-      mon.aggroTimer -= dt;
-      if (mon.aggroTimer <= 0.0f) {
-        mon.aggroTargetFd = -1;
-        mon.aggroTimer = 0.0f;
+      bool activelyEngaged =
+          mon.aiState == MonsterInstance::AIState::CHASING ||
+          mon.aiState == MonsterInstance::AIState::APPROACHING ||
+          mon.aiState == MonsterInstance::AIState::ATTACKING;
+      if (!activelyEngaged) {
+        mon.aggroTimer -= dt;
+        if (mon.aggroTimer <= 0.0f) {
+          mon.aggroTargetFd = -1;
+          mon.aggroTimer = 0.0f;
+        }
       }
     }
 
@@ -1015,8 +1129,10 @@ GameWorld::ProcessMonsterAI(float dt, std::vector<PlayerTarget> &players,
     // If no players and currently in combat, return to spawn
     if (players.empty()) {
       if (mon.aiState == MonsterInstance::AIState::CHASING ||
-          mon.aiState == MonsterInstance::AIState::ATTACKING) {
+          mon.aiState == MonsterInstance::AIState::ATTACKING ||
+          mon.aiState == MonsterInstance::AIState::APPROACHING) {
         mon.aiState = MonsterInstance::AIState::RETURNING;
+        mon.evading = true;
         mon.aggroTargetFd = -1;
         mon.currentPath.clear();
         mon.pathStep = 0;
@@ -1034,6 +1150,9 @@ GameWorld::ProcessMonsterAI(float dt, std::vector<PlayerTarget> &players,
       break;
     case MonsterInstance::AIState::CHASING:
       processChasing(mon, dt, players, outMoves, attacks);
+      break;
+    case MonsterInstance::AIState::APPROACHING:
+      processApproaching(mon, dt, players, outMoves, attacks);
       break;
     case MonsterInstance::AIState::ATTACKING:
       processAttacking(mon, dt, players, outMoves, attacks);
@@ -1056,6 +1175,58 @@ MonsterInstance *GameWorld::FindMonster(uint16_t index) {
       return &mon;
   }
   return nullptr;
+}
+
+// ─── Poison DoT processing ───────────────────────────────────────────────────
+
+std::vector<GameWorld::PoisonTickResult>
+GameWorld::ProcessPoisonTicks(float dt) {
+  std::vector<PoisonTickResult> results;
+
+  for (auto &mon : m_monsterInstances) {
+    if (!mon.poisoned)
+      continue;
+    if (mon.aiState == MonsterInstance::AIState::DYING ||
+        mon.aiState == MonsterInstance::AIState::DEAD) {
+      mon.poisoned = false;
+      continue;
+    }
+
+    mon.poisonDuration -= dt;
+    if (mon.poisonDuration <= 0.0f) {
+      mon.poisoned = false;
+      printf("[Poison] Mon %d: poison expired\n", mon.index);
+      continue;
+    }
+
+    mon.poisonTickTimer += dt;
+    if (mon.poisonTickTimer >= 3.0f) { // 3-second tick (OpenMU)
+      mon.poisonTickTimer -= 3.0f;
+
+      int dmg = mon.poisonDamage;
+      mon.hp -= dmg;
+      bool killed = mon.hp <= 0;
+      if (killed)
+        mon.hp = 0;
+
+      printf("[Poison] Mon %d tick: %d dmg, HP=%d/%d%s\n", mon.index, dmg,
+             mon.hp, mon.maxHp, killed ? " KILLED" : "");
+
+      PoisonTickResult r;
+      r.monsterIndex = mon.index;
+      r.damage = static_cast<uint16_t>(dmg);
+      r.remainingHp = static_cast<uint16_t>(std::max(0, mon.hp));
+      r.attackerFd = mon.poisonAttackerFd;
+      results.push_back(r);
+
+      if (killed) {
+        mon.poisoned = false;
+        mon.aiState = MonsterInstance::AIState::DYING;
+        mon.stateTimer = 0.0f;
+      }
+    }
+  }
+  return results;
 }
 
 // ─── Viewport packets ────────────────────────────────────────────────────────

@@ -32,10 +32,15 @@ void main() {
     vec3 worldPos = iWorldPos + (right * rotCorner.x + up * rotCorner.y) * iScale;
     gl_Position = projection * view * vec4(worldPos, 1.0);
 
-    // UV: sprite sheet with 4 columns, select by iFrame
+    // UV: frame >= 0 = sprite sheet (4 columns), frame < 0 = full texture
     float frame = floor(iFrame);
-    TexCoord = vec2((aCorner.x + 0.5) * 0.25 + frame * 0.25,
-                     1.0 - (aCorner.y + 0.5));
+    float u = aCorner.x + 0.5;
+    float v = 1.0 - (aCorner.y + 0.5);
+    if (frame >= 0.0) {
+        TexCoord = vec2(u * 0.25 + frame * 0.25, v);
+    } else {
+        TexCoord = vec2(u, v);
+    }
 
     vColor = iColor;
     vAlpha = iAlpha;

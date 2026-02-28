@@ -122,6 +122,12 @@ void HandleCharCreate(Session &session, const std::vector<uint8_t> &packet,
     return;
   }
 
+  // DW (class 0) auto-learns Energy Ball (skill 17) on creation
+  if (classCode == 0) {
+    db.LearnSkill(charId, 17);
+    printf("[CharSelect] DW '%s' auto-learned Energy Ball (skill 17)\n", name);
+  }
+
   // Find the slot that was assigned
   auto chars = db.GetCharacterList(session.accountId);
   for (auto &c : chars) {
@@ -290,7 +296,6 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   }
 
   CharacterHandler::RefreshCombatStats(session, db, c.id);
-  CharacterHandler::SendEquipment(session, db, c.id);
 
   // Load inventory from DB
   session.zen = c.money;
@@ -308,8 +313,11 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
     session.Send(v2pkt.data(), v2pkt.size());
 
   InventoryHandler::SendInventorySync(session);
+  // IMPORTANT: Send CharStats BEFORE Equipment so the client knows the class
+  // before body parts are equipped (LoadStats class-change resets body parts)
   CharacterHandler::SendCharStats(session, db, session.characterId);
   CharacterHandler::SendSkillList(session);
+  CharacterHandler::SendEquipment(session, db, c.id);
 
   // Send existing ground drops
   for (auto &drop : world.GetDrops()) {

@@ -141,6 +141,7 @@ DYING → DEAD → IDLE (death + respawn after 10s)
 | **IDLE** | Wait 2-6s, pick random walkable cell within moveRange, pathfind there |
 | **WANDERING** | Walk along path, interrupt if player enters viewRange. Emit target on state entry. |
 | **CHASING** | A* pathfind toward aggro target every 1s. Give up after 5 consecutive path failures. |
+| **APPROACHING** | Close-range approach when within grid attackRange but outside melee world distance. |
 | **ATTACKING** | Deal damage every attackCooldown. Return to CHASING if target leaves attackRange. |
 | **RETURNING** | Pathfind back to spawn. Teleport if no path. Restore full HP on arrival. |
 | **DYING** | 3s death animation timer. |
@@ -153,6 +154,18 @@ Server uses `PathFinder::FindPath()` — A* on the 256x256 terrain grid.
 - Max iterations: 500 (prevent stalls)
 - Checks terrain walkability (`TW_NOMOVE`) and monster occupancy grid
 - Monsters temporarily clear their own cell before pathfinding
+
+### Melee Attack Range
+Melee monsters (attackRange <= 1) use an additional Euclidean world-space distance check (`MELEE_ATTACK_DIST_SQ = 150²`) on top of Chebyshev grid distance. This prevents melee monsters from attacking at diagonal adjacency (~141 world units) when they should be closer.
+
+### Leash & Aggro Timer
+- Leash distance: `max(20, viewRange * 5)` grid cells from spawn
+- Aggro timer (15s) only decays when monster is IDLE, not during active engagement (CHASING/APPROACHING/ATTACKING)
+
+### Position Tracking
+- `HandleMove` (D4 packet) contains click-to-move DESTINATION, NOT current position
+- `HandlePrecisePosition` (D7 packet) provides actual current player position
+- Only D7 updates `session.worldX/worldZ` — using D4 caused monsters to de-aggro immediately
 
 ### Pack Assist
 

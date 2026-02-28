@@ -7,6 +7,17 @@
 #include <fstream>
 #include <iostream>
 
+// Class code → body part suffix: DW=Class01, DK=Class02, ELF=Class03, MG=Class04
+static const char *GetClassBodySuffix(uint8_t classCode) {
+  switch (classCode) {
+  case 0:  return "Class01"; // DW
+  case 16: return "Class02"; // DK
+  case 32: return "Class03"; // ELF
+  case 48: return "Class04"; // MG
+  default: return "Class02";
+  }
+}
+
 // ─── DK Stat Formulas (MuEmu-0.97k ObjectManager.cpp) ──────────────────
 
 uint64_t HeroCharacter::CalcXPForLevel(int level) {
@@ -108,8 +119,17 @@ void HeroCharacter::LoadStats(int level, uint16_t str, uint16_t dex,
                               int levelUpPoints, int currentHp, int maxHp,
                               int currentMana, int maxMana, int currentAg,
                               int maxAg, uint8_t charClass) {
+  uint8_t oldClass = m_class;
   m_level = level;
   m_class = charClass;
+
+  // Reload default body parts if class changed (e.g. DK→DW)
+  if (m_class != oldClass && m_skeleton) {
+    for (int i = 0; i < PART_COUNT; i++)
+      EquipBodyPart(i, ""); // empty = reload class default
+    std::cout << "[Hero] Class changed " << (int)oldClass << " -> "
+              << (int)m_class << ", reloaded body parts" << std::endl;
+  }
   m_strength = str;
   m_dexterity = dex;
   m_vitality = vit;
@@ -261,8 +281,10 @@ int HeroCharacter::weaponIdleAction() const {
   case 4: // Bow / Crossbow (index >= 8 = crossbow)
     return (m_weaponInfo.itemIndex >= 8) ? ACTION_STOP_CROSSBOW
                                          : ACTION_STOP_BOW;
-  case 5: // Staff
-    return ACTION_STOP_WAND;
+  case 5: // Staff — Main 5.2: WAND animation only for items 14-20 (Season 2+)
+    if (m_weaponInfo.itemIndex >= 14 && m_weaponInfo.itemIndex <= 20)
+      return ACTION_STOP_WAND;
+    return twoH ? ACTION_STOP_SCYTHE : ACTION_STOP_SWORD;
   default:
     return ACTION_STOP_SWORD;
   }
@@ -286,8 +308,10 @@ int HeroCharacter::weaponWalkAction() const {
   case 4: // Bow / Crossbow
     return (m_weaponInfo.itemIndex >= 8) ? ACTION_WALK_CROSSBOW
                                          : ACTION_WALK_BOW;
-  case 5: // Staff
-    return ACTION_WALK_WAND;
+  case 5: // Staff — Main 5.2: WAND animation only for items 14-20 (Season 2+)
+    if (m_weaponInfo.itemIndex >= 14 && m_weaponInfo.itemIndex <= 20)
+      return ACTION_WALK_WAND;
+    return twoH ? ACTION_WALK_SCYTHE : ACTION_WALK_SWORD;
   default:
     return ACTION_WALK_SWORD;
   }
@@ -349,10 +373,14 @@ void HeroCharacter::Init(const std::string &dataPath) {
   std::cout << "[Hero] Player.bmd: " << m_skeleton->Bones.size() << " bones, "
             << m_skeleton->Actions.size() << " actions" << std::endl;
 
-  // Load DK Naked body parts (Class02)
-  const char *partFiles[] = {"HelmClass02.bmd", "ArmorClass02.bmd",
-                             "PantClass02.bmd", "GloveClass02.bmd",
-                             "BootClass02.bmd"};
+  // Load naked body parts for current class
+  const char *suffix = GetClassBodySuffix(m_class);
+  char partFiles[5][64];
+  snprintf(partFiles[0], 64, "Helm%s.bmd", suffix);
+  snprintf(partFiles[1], 64, "Armor%s.bmd", suffix);
+  snprintf(partFiles[2], 64, "Pant%s.bmd", suffix);
+  snprintf(partFiles[3], 64, "Glove%s.bmd", suffix);
+  snprintf(partFiles[4], 64, "Boot%s.bmd", suffix);
 
   auto bones = ComputeBoneMatrices(m_skeleton.get());
   AABB totalAABB{};
@@ -583,6 +611,15 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
                                m_parts[p].meshBuffers[mi]);
     }
   }
+  // Re-skin base head (for accessory helms that show face)
+  if (m_showBaseHead && m_baseHead.bmd) {
+    for (int mi = 0; mi < (int)m_baseHead.meshBuffers.size() &&
+                     mi < (int)m_baseHead.bmd->Meshes.size();
+         ++mi) {
+      RetransformMeshWithBones(m_baseHead.bmd->Meshes[mi], bones,
+                               m_baseHead.meshBuffers[mi]);
+    }
+  }
 
   // Build model matrix: translate -> MU->GL coord conversion -> facing rotation
   glm::mat4 model = glm::translate(glm::mat4(1.0f), m_pos);
@@ -644,6 +681,16 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       } else {
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
       }
+    }
+  }
+  // Draw base head for accessory helms (face visible underneath helm)
+  if (m_showBaseHead) {
+    for (auto &mb : m_baseHead.meshBuffers) {
+      if (mb.indexCount == 0 || mb.hidden)
+        continue;
+      glBindTexture(GL_TEXTURE_2D, mb.texture);
+      glBindVertexArray(mb.vao);
+      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
     }
   }
 
@@ -982,6 +1029,10 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
       renderShadowBatch(m_parts[p].bmd.get(), m_parts[p].shadowMeshes, -1);
     }
   }
+  // Base head shadow (accessory helms)
+  if (m_showBaseHead && m_baseHead.bmd) {
+    renderShadowBatch(m_baseHead.bmd.get(), m_baseHead.shadowMeshes, -1);
+  }
 
   // Weapons and shields — compute full bone matrices matching visible rendering
   // (parentMat * weaponLocalBones[i] for per-vertex skinning)
@@ -1311,17 +1362,35 @@ void HeroCharacter::EquipShield(const WeaponEquipInfo &shield) {
             << m_shieldMeshBuffers.size() << " GPU meshes)" << std::endl;
 }
 
+// Main 5.2 ZzzCharacter.cpp:11718 — helm model indices that show the base head
+// underneath (accessory helms that don't cover the full face).
+// MODEL_HELM + index: 0=Bronze, 2=Pad, 10=Vine, 11=Silk, 12=Wind, 13=Spirit
+static bool IsShowHeadHelm(const std::string &helmFile) {
+  std::string lower = helmFile;
+  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+  // Male01=Bronze(idx0), Male03=Pad(idx2)
+  if (lower.find("helmmale01") != std::string::npos) return true;
+  if (lower.find("helmmale03") != std::string::npos) return true;
+  // Elf01-Elf04 = Vine/Silk/Wind/Spirit (idx 10-13)
+  if (lower.find("helmelf01") != std::string::npos) return true;
+  if (lower.find("helmelf02") != std::string::npos) return true;
+  if (lower.find("helmelf03") != std::string::npos) return true;
+  if (lower.find("helmelf04") != std::string::npos) return true;
+  return false;
+}
+
 void HeroCharacter::EquipBodyPart(int partIndex, const std::string &modelFile) {
   if (partIndex < 0 || partIndex >= PART_COUNT)
     return;
 
-  // Default naked DK body parts (Class02 = DK starting gear)
-  static const char *defaultParts[] = {"HelmClass02.bmd", "ArmorClass02.bmd",
-                                       "PantClass02.bmd", "GloveClass02.bmd",
-                                       "BootClass02.bmd"};
+  // Default naked body parts for current class
+  const char *suffix = GetClassBodySuffix(m_class);
+  static const char *partPrefixes[] = {"Helm", "Armor", "Pant", "Glove", "Boot"};
+  char defaultPart[64];
+  snprintf(defaultPart, 64, "%s%s.bmd", partPrefixes[partIndex], suffix);
 
   std::string fileToLoad =
-      modelFile.empty() ? defaultParts[partIndex] : modelFile;
+      modelFile.empty() ? defaultPart : modelFile;
   std::string fullPath = m_dataPath + "/Player/" + fileToLoad;
 
   auto bmd = BMDParser::Parse(fullPath);
@@ -1380,6 +1449,38 @@ void HeroCharacter::EquipBodyPart(int partIndex, const std::string &modelFile) {
 
   m_parts[partIndex].bmd = std::move(bmd);
 
+  // For helms (partIndex 0): load base head model underneath accessory helms
+  // Main 5.2 ZzzCharacter.cpp:11718 — certain helms show the face
+  if (partIndex == 0) {
+    // Cleanup old base head
+    CleanupMeshBuffers(m_baseHead.meshBuffers);
+    for (auto &sm : m_baseHead.shadowMeshes) {
+      if (sm.vao) glDeleteVertexArrays(1, &sm.vao);
+      if (sm.vbo) glDeleteBuffers(1, &sm.vbo);
+    }
+    m_baseHead.shadowMeshes.clear();
+    m_baseHead.bmd.reset();
+    m_showBaseHead = false;
+
+    bool isDefault = modelFile.empty() || fileToLoad == std::string(defaultPart);
+    if (!isDefault && IsShowHeadHelm(fileToLoad)) {
+      // Load class default head (HelmClassXX.bmd) underneath
+      std::string headPath = m_dataPath + "/Player/" + defaultPart;
+      auto headBmd = BMDParser::Parse(headPath);
+      if (headBmd) {
+        AABB headAABB{};
+        for (auto &mesh : headBmd->Meshes) {
+          UploadMeshWithBones(mesh, m_dataPath + "/Player/", bones,
+                              m_baseHead.meshBuffers, headAABB, true);
+        }
+        m_baseHead.shadowMeshes = createShadowMeshes(headBmd.get());
+        m_baseHead.bmd = std::move(headBmd);
+        m_showBaseHead = true;
+        std::cout << "[Hero] Base head loaded: " << defaultPart << std::endl;
+      }
+    }
+  }
+
   std::cout << "[Hero] Equipped body part[" << partIndex << "]: " << fileToLoad
             << " (" << m_parts[partIndex].meshBuffers.size() << " GPU meshes)"
             << std::endl;
@@ -1389,6 +1490,8 @@ void HeroCharacter::AttackMonster(int monsterIndex,
                                   const glm::vec3 &monsterPos) {
   if (IsDead())
     return;
+  if (m_globalAttackCooldown > 0.0f)
+    return; // Still on cooldown from cancelled attack
 
   // Already attacking same target — just update position, don't reset cycle
   if (monsterIndex == m_attackTargetMonster && m_activeSkillId == 0 &&
@@ -1418,7 +1521,17 @@ void HeroCharacter::AttackMonster(int monsterIndex,
     m_targetFacing = atan2f(dir.z, -dir.x);
 
     // Weapon-type-specific attack animation (Main 5.2 SwordCount cycle)
-    SetAction(nextAttackAction());
+    int act = nextAttackAction();
+    SetAction(act);
+
+    // Set GCD = full attack cycle (animation + cooldown)
+    int nk = (act >= 0 && act < (int)m_skeleton->Actions.size())
+                 ? m_skeleton->Actions[act].NumAnimationKeys : 1;
+    float spd = ANIM_SPEED * attackSpeedMultiplier();
+    float animDur = (nk > 1) ? (float)nk / spd : 0.5f;
+    float cd = ATTACK_COOLDOWN_TIME / attackSpeedMultiplier();
+    m_globalAttackCooldown = animDur + cd;
+    m_globalAttackCooldownMax = m_globalAttackCooldown;
   } else {
     // Out of range — walk toward target
     m_attackState = AttackState::APPROACHING;
@@ -1427,6 +1540,13 @@ void HeroCharacter::AttackMonster(int monsterIndex,
 }
 
 void HeroCharacter::UpdateAttack(float deltaTime) {
+  // Tick global cooldown (persists after cancel to prevent exploit)
+  if (m_globalAttackCooldown > 0.0f) {
+    m_globalAttackCooldown -= deltaTime;
+    if (m_globalAttackCooldown < 0.0f)
+      m_globalAttackCooldown = 0.0f;
+  }
+
   if (m_attackState == AttackState::NONE)
     return;
 
@@ -1450,8 +1570,41 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       // Skill or weapon-type-specific attack animation
       if (m_activeSkillId > 0) {
         SetAction(GetSkillAction(m_activeSkillId));
-        if (m_vfxManager)
+        if (m_vfxManager) {
           m_vfxManager->SpawnSkillCast(m_activeSkillId, m_pos, m_facing);
+          // Spell VFX dispatch (same as SkillAttackMonster in-range path)
+          switch (m_activeSkillId) {
+          case 17: // Energy Ball
+          case 4:  // Fire Ball
+            m_vfxManager->SpawnSpellProjectile(m_activeSkillId, m_pos,
+                                               m_attackTargetPos);
+            break;
+          case 1: // Poison — Main 5.2: MODEL_POISON cloud + 10 smoke at target
+            m_vfxManager->SpawnPoisonCloud(m_attackTargetPos);
+            break;
+          case 7: // Ice
+            m_vfxManager->SpawnBurst(
+                ParticleType::SPELL_ICE,
+                m_attackTargetPos + glm::vec3(0, 50, 0), 8);
+            break;
+          case 2: // Meteorite — fireball falls from sky
+            m_vfxManager->SpawnMeteorStrike(m_attackTargetPos);
+            break;
+          case 3: { // Lightning: AT_SKILL_THUNDER — ribbon beams from caster to target
+            glm::vec3 castPos = m_pos + glm::vec3(0, 100, 0);
+            glm::vec3 hitPos = m_attackTargetPos + glm::vec3(0, 50, 0);
+            m_vfxManager->SpawnRibbon(castPos, hitPos, 50.0f,
+                                      glm::vec3(0.4f, 0.6f, 1.0f), 0.5f);
+            m_vfxManager->SpawnRibbon(castPos, hitPos, 10.0f,
+                                      glm::vec3(0.6f, 0.8f, 1.0f), 0.5f);
+            m_vfxManager->SpawnBurst(ParticleType::SPELL_LIGHTNING, hitPos, 15);
+            break;
+          }
+          case 13: // Cometfall: AT_SKILL_BLAST — sky-strike at target
+            m_vfxManager->SpawnLightningStrike(m_attackTargetPos);
+            break;
+          }
+        }
       } else {
         SetAction(nextAttackAction());
       }
@@ -1475,7 +1628,10 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
     if (m_attackAnimTimer >= animDuration) {
       // Swing finished — go to cooldown (also scaled by attack speed)
       m_attackState = AttackState::COOLDOWN;
-      m_attackCooldown = ATTACK_COOLDOWN_TIME / attackSpeedMultiplier();
+      // Spells have shorter cooldown (0.2s base) for smoother casting flow
+      float baseCooldown =
+          (m_activeSkillId > 0) ? 0.2f : ATTACK_COOLDOWN_TIME;
+      m_attackCooldown = baseCooldown / attackSpeedMultiplier();
 
       // Return to combat idle (weapon stance or unarmed)
       SetAction(m_weaponBmd ? weaponIdleAction() : ACTION_STOP_MALE);
@@ -1527,6 +1683,8 @@ bool HeroCharacter::CheckAttackHit() {
 }
 
 void HeroCharacter::CancelAttack() {
+  // GCD already set when swing started — don't reduce it on cancel
+
   m_attackState = AttackState::NONE;
   m_attackTargetMonster = -1;
   m_activeSkillId = 0;
@@ -1543,6 +1701,7 @@ void HeroCharacter::CancelAttack() {
 
 int HeroCharacter::GetSkillAction(uint8_t skillId) {
   switch (skillId) {
+  // DK skills
   case 19:
     return ACTION_SKILL_SWORD1; // Falling Slash
   case 20:
@@ -1559,6 +1718,35 @@ int HeroCharacter::GetSkillAction(uint8_t skillId) {
     return ACTION_SKILL_FURY; // Rageful Blow
   case 43:
     return ACTION_SKILL_DEATH_STAB; // Death Stab
+  // DW spells
+  case 17:
+    return ACTION_SKILL_HAND1; // Energy Ball
+  case 4:
+    return ACTION_SKILL_WEAPON1; // Fire Ball
+  case 1:
+    return ACTION_SKILL_WEAPON2; // Poison
+  case 3:
+    return ACTION_SKILL_WEAPON1; // Lightning
+  case 2:
+    return ACTION_SKILL_WEAPON2; // Meteorite
+  case 7:
+    return ACTION_SKILL_WEAPON1; // Ice
+  case 5:
+    return ACTION_SKILL_INFERNO; // Flame (AoE fire)
+  case 8:
+    return ACTION_SKILL_WEAPON2; // Twister
+  case 6:
+    return ACTION_SKILL_TELEPORT; // Teleport
+  case 9:
+    return ACTION_SKILL_INFERNO; // Evil Spirit
+  case 12:
+    return ACTION_SKILL_FLASH; // Aqua Beam
+  case 10:
+    return ACTION_SKILL_HELL; // Hellfire
+  case 13:
+    return ACTION_SKILL_WEAPON2; // Cometfall (AT_SKILL_BLAST sky-strike)
+  case 14:
+    return ACTION_SKILL_INFERNO; // Inferno (self-centered AoE)
   default:
     return ACTION_SKILL_SWORD1; // Fallback
   }
@@ -1569,6 +1757,8 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
                                        uint8_t skillId) {
   if (IsDead())
     return;
+  if (m_globalAttackCooldown > 0.0f)
+    return; // Still on cooldown from cancelled attack
 
   // Already swinging same target with same skill — just update position
   if (monsterIndex == m_attackTargetMonster && m_activeSkillId == skillId &&
@@ -1598,8 +1788,48 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
     m_moving = false;
     m_targetFacing = atan2f(dir.z, -dir.x);
     SetAction(skillAction);
-    if (m_vfxManager)
+
+    // Set GCD = full attack cycle (animation + cooldown)
+    int nk = (skillAction >= 0 && skillAction < (int)m_skeleton->Actions.size())
+                 ? m_skeleton->Actions[skillAction].NumAnimationKeys : 1;
+    float spd = ANIM_SPEED * attackSpeedMultiplier();
+    float animDur = (nk > 1) ? (float)nk / spd : 0.5f;
+    float cd = 0.2f / attackSpeedMultiplier(); // Spell cooldown = 0.2s base
+    m_globalAttackCooldown = animDur + cd;
+    m_globalAttackCooldownMax = m_globalAttackCooldown;
+
+    if (m_vfxManager) {
       m_vfxManager->SpawnSkillCast(skillId, m_pos, m_facing);
+      // Spell VFX: dispatch by skill ID (not class — server authorizes skills)
+      switch (skillId) {
+      case 17: // Energy Ball: traveling BITMAP_ENERGY projectile
+      case 4:  // Fire Ball: traveling MODEL_FIRE projectile
+        m_vfxManager->SpawnSpellProjectile(skillId, m_pos, monsterPos);
+        break;
+      case 1: // Poison — Main 5.2: MODEL_POISON cloud + 10 smoke at target
+        m_vfxManager->SpawnPoisonCloud(monsterPos);
+        break;
+      case 7: // Ice: MODEL_ICE at target (instant freeze)
+        m_vfxManager->SpawnBurst(ParticleType::SPELL_ICE, monsterPos + glm::vec3(0, 50, 0), 8);
+        break;
+      case 2: // Meteorite — fireball falls from sky
+        m_vfxManager->SpawnMeteorStrike(monsterPos);
+        break;
+      case 3: { // Lightning: AT_SKILL_THUNDER — ribbon beams from caster to target
+        glm::vec3 castPos = m_pos + glm::vec3(0, 100, 0);
+        glm::vec3 hitPos = monsterPos + glm::vec3(0, 50, 0);
+        m_vfxManager->SpawnRibbon(castPos, hitPos, 50.0f,
+                                  glm::vec3(0.4f, 0.6f, 1.0f), 0.5f);
+        m_vfxManager->SpawnRibbon(castPos, hitPos, 10.0f,
+                                  glm::vec3(0.6f, 0.8f, 1.0f), 0.5f);
+        m_vfxManager->SpawnBurst(ParticleType::SPELL_LIGHTNING, hitPos, 15);
+        break;
+      }
+      case 13: // Cometfall: AT_SKILL_BLAST — sky-strike at target
+        m_vfxManager->SpawnLightningStrike(monsterPos);
+        break;
+      }
+    }
     std::cout << "[Skill] Started SWINGING with action " << skillAction
               << std::endl;
   } else {
@@ -1800,6 +2030,9 @@ void HeroCharacter::Cleanup() {
     CleanupMeshBuffers(m_parts[p].meshBuffers);
     cleanupShadows(m_parts[p].shadowMeshes);
   }
+  CleanupMeshBuffers(m_baseHead.meshBuffers);
+  cleanupShadows(m_baseHead.shadowMeshes);
+  m_baseHead.bmd.reset();
 
   CleanupMeshBuffers(m_weaponMeshBuffers);
   cleanupShadows(m_weaponShadowMeshes);

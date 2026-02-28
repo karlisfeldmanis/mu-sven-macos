@@ -12,6 +12,19 @@ cd server/build && cmake .. && ninja
 
 **Always use Release builds** (`-DCMAKE_BUILD_TYPE=Release`) for the client — Debug builds have significant performance issues due to unoptimized rendering code.
 
+### Launcher Script
+
+Use `run.sh` from the project root to launch with correct working directories and data symlinks:
+
+```bash
+./run.sh          # Launch server + client (default)
+./run.sh client   # Launch client only
+./run.sh server   # Launch server only
+./run.sh both     # Launch server + client
+```
+
+The script ensures `Data/` symlinks exist in both build directories before launching. When using `both`, the server is stopped automatically when the client exits.
+
 Client targets: `MuRemaster` (game client), `ModelViewer` (BMD object browser), `CharViewer` (character animation browser).
 Server target: `MuServer` (game server).
 Dependencies: glfw3, GLEW, OpenGL, libjpeg-turbo (TurboJPEG), GLM (header-only), ImGui, giflib, SQLite3 (server only).
@@ -72,7 +85,7 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `GrassRenderer.hpp` | Billboard grass system: wind animation, ball-push displacement, 3 texture layers. |
 | `Sky.hpp` | Sky dome: gradient hemisphere rendered behind scene. |
 | `FireEffect.hpp` | Particle-based fire system for Lorencia torches/bonfires/lights. GPU instancing + billboarding. |
-| `VFXManager.hpp` | Visual effects: particle bursts (blood/fire/energy/spark/smoke), ribbon trails (lightning/ice), fire effects. GPU instanced billboards. |
+| `VFXManager.hpp` | Visual effects: particle bursts (blood/fire/energy/spark/smoke), ribbon trails (lightning), 3D model effects (meteor falling fireball, lightning bolt, poison cloud), GPU instanced billboards. |
 | **Characters & Entities** | |
 | `HeroCharacter.hpp` | Player character: 5-part DK model, click-to-move, combat, weapon attachment (bone 33/42/47), equipment visuals, blob shadow. |
 | `MonsterManager.hpp` | Monster system: multi-type rendering, server-driven state machine (7 states), skeleton weapon attachment, arrow projectiles, debris, nameplate rendering. |
@@ -111,9 +124,9 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `GrassRenderer.cpp` | 42k grass billboards with GPU vertex shader wind and ball-push displacement. |
 | `Sky.cpp` | Sky dome rendering. |
 | `FireEffect.cpp` | Fire particle system: emitter management, GPU instanced billboards. |
-| `VFXManager.cpp` | VFX: particle bursts (8 types), ribbon/lightning trails, per-monster combat effects (Budge fire, Lich lightning, Spider web). Main 5.2 1:1 migration. |
+| `VFXManager.cpp` | VFX: particle bursts (10+ types), ribbon trails (lightning skill), 3D model effects (MeteorBolt with Fire01.bmd, LightningBolt with Blast01.bmd, PoisonCloud with Poison01.bmd), per-monster combat effects (Budge fire, Lich lightning, Spider web), level-up effects. Main 5.2 1:1 migration. |
 | **Characters & Entities** | |
-| `HeroCharacter.cpp` | DK character: 5-part body, skeletal animation, click-to-move, weapon bone attachment (safe zone/combat), blob shadow with stencil buffer. |
+| `HeroCharacter.cpp` | DK character: 5-part body, skeletal animation, click-to-move, weapon bone attachment (safe zone/combat), blob shadow with stencil buffer, attack state machine with GCD (global cooldown). |
 | `MonsterManager.cpp` | Monster rendering, state machine, skeleton weapons (Sword/Shield/Bow/Axe via RetransformMeshWithBones), arrow projectiles (Arrow01.bmd), death debris, nameplates. |
 | `NpcManager.cpp` | NPC models, animation, name label overlays. |
 | `ClickEffect.cpp` | Click-to-move ring effect. |

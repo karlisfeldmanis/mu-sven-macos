@@ -40,7 +40,13 @@ static void ApplyEquipToUI(uint8_t slot, const WeaponEquipInfo &weapon) {
     g_state->equipSlots[slot].category = weapon.category;
     g_state->equipSlots[slot].itemIndex = weapon.itemIndex;
     g_state->equipSlots[slot].itemLevel = weapon.itemLevel;
-    g_state->equipSlots[slot].modelFile = weapon.modelFile;
+    // Use client-side model file lookup to ensure consistency with
+    // ItemModelManager cache (server may have different naming)
+    int16_t defIdx =
+        (int16_t)weapon.category * 32 + (int16_t)weapon.itemIndex;
+    const char *clientModel = ItemDatabase::GetDropModelName(defIdx);
+    g_state->equipSlots[slot].modelFile =
+        (clientModel && clientModel[0]) ? clientModel : weapon.modelFile;
     g_state->equipSlots[slot].equipped = (weapon.category != 0xFF);
   }
 }
@@ -386,24 +392,32 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
       if (idx >= 0) {
         MonsterInfo mi = g_state->monsterManager->GetMonsterInfo(idx);
         g_state->monsterManager->SetMonsterHP(idx, p->remainingHp, mi.maxHp);
-        g_state->monsterManager->TriggerHitAnimation(idx);
 
         glm::vec3 monPos =
             g_state->monsterManager->GetMonsterInfo(idx).position;
         glm::vec3 hitPos = monPos + glm::vec3(0, 50, 0);
 
-        // Skill attacks: spawn skill-specific impact VFX + reduced blood
-        // Normal attacks: standard blood burst (Main 5.2: 10x BITMAP_BLOOD+1)
-        uint8_t heroSkill = g_state->hero->GetActiveSkillId();
-        if (heroSkill > 0 &&
-            p->attackerCharId == (uint16_t)*g_state->heroCharacterId) {
-          g_state->vfxManager->SpawnSkillImpact(heroSkill, monPos);
-          if (mi.type != 7)
-            g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 5);
+        // Poison DoT ticks: no hit animation or blood, just green damage number
+        if (p->damageType == 4) {
+          // Spawn small green poison particles on tick
+          g_state->vfxManager->SpawnBurst(ParticleType::SPELL_POISON, hitPos, 5);
         } else {
-          // Giant (type 7) excluded from blood
-          if (mi.type != 7)
-            g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 10);
+          // Normal/skill hits: trigger hit animation + VFX
+          g_state->monsterManager->TriggerHitAnimation(idx);
+
+          // Skill attacks: spawn skill-specific impact VFX + reduced blood
+          // Normal attacks: standard blood burst (Main 5.2: 10x BITMAP_BLOOD+1)
+          uint8_t heroSkill = g_state->hero->GetActiveSkillId();
+          if (heroSkill > 0 &&
+              p->attackerCharId == (uint16_t)*g_state->heroCharacterId) {
+            g_state->vfxManager->SpawnSkillImpact(heroSkill, monPos);
+            if (mi.type != 7)
+              g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 5);
+          } else {
+            // Giant (type 7) excluded from blood
+            if (mi.type != 7)
+              g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 10);
+          }
         }
 
         uint8_t dmgType = 0;
@@ -413,6 +427,8 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
           dmgType = 2; // Critical
         else if (p->damageType == 3)
           dmgType = 3; // Excellent
+        else if (p->damageType == 4)
+          dmgType = 4; // Poison DoT (green)
 
         if (g_state->spawnDamageNumber)
           g_state->spawnDamageNumber(monPos + glm::vec3(0, 80, 0), p->damage,

@@ -714,29 +714,20 @@ void Init() {
   addDef(872, 14, 22, "Jewel of Creation", "Gem01.bmd", 1, 1, 0, 0, 0, 0, 0,
          15);
 
-  // Category 15: Scrolls (IDs 900+)
-  addDef(900, 15, 0, "Scroll of Poison", "Book01.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
-  addDef(901, 15, 1, "Scroll of Meteorite", "Book02.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
-  addDef(902, 15, 2, "Scroll of Lightning", "Book03.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
-  addDef(903, 15, 3, "Scroll of Fire Ball", "Book04.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
-  addDef(904, 15, 4, "Scroll of Flame", "Book05.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
-  addDef(905, 15, 5, "Scroll of Teleport", "Book06.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
-  addDef(906, 15, 6, "Scroll of Ice", "Book07.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
-  addDef(907, 15, 7, "Scroll of Twister", "Book08.bmd", 1, 2, 0, 0, 0, 0, 0, 1);
-  addDef(908, 15, 8, "Scroll of Evil Spirit", "Book09.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
-  addDef(909, 15, 9, "Scroll of Hellfire", "Book10.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
-  addDef(910, 15, 10, "Scroll of Power Wave", "Book11.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
-  addDef(911, 15, 11, "Scroll of Aqua Beam", "Book12.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
-  addDef(912, 15, 12, "Scroll of Cometfall", "Book13.bmd", 1, 2, 0, 0, 0, 0, 0,
-         1);
+  // Category 15: Scrolls (IDs 900+) — Version075 requirements (level, energy)
+  //             id  cat idx  name                    model       w h  s  d  v   e    l  cf
+  addDef(900, 15, 0, "Scroll of Poison", "Book01.bmd", 1, 2, 0, 0, 0, 140, 30, 1);
+  addDef(901, 15, 1, "Scroll of Meteorite", "Book02.bmd", 1, 2, 0, 0, 0, 104, 21, 1);
+  addDef(902, 15, 2, "Scroll of Lightning", "Book03.bmd", 1, 2, 0, 0, 0, 72, 13, 1);
+  addDef(903, 15, 3, "Scroll of Fire Ball", "Book04.bmd", 1, 2, 0, 0, 0, 40, 5, 1);
+  addDef(904, 15, 4, "Scroll of Flame", "Book05.bmd", 1, 2, 0, 0, 0, 160, 35, 1);
+  addDef(905, 15, 5, "Scroll of Teleport", "Book06.bmd", 1, 2, 0, 0, 0, 88, 17, 1);
+  addDef(906, 15, 6, "Scroll of Ice", "Book07.bmd", 1, 2, 0, 0, 0, 120, 25, 1);
+  addDef(907, 15, 7, "Scroll of Twister", "Book08.bmd", 1, 2, 0, 0, 0, 180, 40, 1);
+  addDef(908, 15, 8, "Scroll of Evil Spirit", "Book09.bmd", 1, 2, 0, 0, 0, 220, 50, 1);
+  addDef(909, 15, 9, "Scroll of Hellfire", "Book10.bmd", 1, 2, 0, 0, 0, 260, 60, 1);
+  addDef(911, 15, 11, "Scroll of Aqua Beam", "Book12.bmd", 1, 2, 0, 0, 0, 345, 74, 1);
+  addDef(912, 15, 12, "Scroll of Cometfall", "Book13.bmd", 1, 2, 0, 0, 0, 436, 80, 1);
   addDef(913, 15, 13, "Scroll of Inferno", "Book14.bmd", 1, 2, 0, 0, 0, 0, 0,
          1);
 

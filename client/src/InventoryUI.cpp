@@ -75,17 +75,18 @@ static bool g_dragFromRmcSlot = false;
 static int g_dragFromShopSlot =
     -1; // Primary slot in s_shopGrid when dragging from shop
 
-// DK Skill Data (used by drag cursor, RMC slot, skill panel)
-struct DKSkillDef {
+// Unified skill definition (works for DK skills and DW spells)
+struct SkillDef {
   uint8_t skillId;
   const char *name;
-  int agCost;
+  int resourceCost; // AG for DK, Mana for DW
   int levelReq;
   int damageBonus;
   const char *desc;
 };
 
-static const DKSkillDef g_dkSkills[] = {
+// DK skills (AG cost)
+static const SkillDef g_dkSkills[] = {
     {19, "Falling Slash", 9, 1, 15, "Downward slash attack"},
     {20, "Lunge", 9, 1, 15, "Forward thrust attack"},
     {21, "Uppercut", 8, 1, 15, "Upward strike attack"},
@@ -96,6 +97,35 @@ static const DKSkillDef g_dkSkills[] = {
     {43, "Death Stab", 12, 160, 70, "Piercing stab attack"},
 };
 static constexpr int NUM_DK_SKILLS = 8;
+
+// DW spells (Mana cost) — OpenMU Version075
+static const SkillDef g_dwSpells[] = {
+    {17, "Energy Ball", 4, 1, 8, "Basic energy projectile"},
+    {4, "Fire Ball", 10, 5, 22, "Fireball projectile"},
+    {1, "Poison", 12, 10, 20, "Poison magic"},
+    {3, "Lightning", 15, 13, 30, "Lightning bolt"},
+    {2, "Meteorite", 16, 21, 40, "Falling meteorite"},
+    {7, "Ice", 18, 25, 35, "Ice magic"},
+    {5, "Flame", 25, 35, 50, "Fire AoE"},
+    {8, "Twister", 28, 40, 55, "Twisting wind AoE"},
+    {6, "Teleport", 30, 17, 0, "Teleport to location"},
+    {9, "Evil Spirit", 45, 50, 80, "Dark spirit AoE"},
+    {12, "Aqua Beam", 50, 74, 90, "Water beam attack"},
+    {10, "Hellfire", 60, 60, 100, "Massive fire AoE"},
+    {13, "Cometfall", 90, 72, 120, "Sky-strike AoE"},
+    {14, "Inferno", 200, 88, 150, "Ring of explosions"},
+};
+static constexpr int NUM_DW_SPELLS = 14;
+
+// Helper to get the skill list for current class
+static const SkillDef *GetClassSkills(uint8_t classCode, int &outCount) {
+  if (classCode == 0) { // DW
+    outCount = NUM_DW_SPELLS;
+    return g_dwSpells;
+  }
+  outCount = NUM_DK_SKILLS;
+  return g_dkSkills;
+}
 
 // Skill icon sprite sheet: 25 cols, 20x28px per icon, 512x512 texture
 static constexpr int SKILL_ICON_COLS = 25;
@@ -458,29 +488,37 @@ void ConsumeQuickSlotItem(int slotIndex) {
   }
 
   if (foundSlot != -1) {
-    // Determine healing amount (for client-side validation/feedback)
-    int healAmount = 0;
     auto &g_itemDefs = ItemDatabase::GetItemDefs();
     auto it = g_itemDefs.find(defIdx);
-    if (it != g_itemDefs.end()) {
-      const auto &def = it->second;
-      if (def.category == 14) {
-        if (def.itemIndex == 0)
-          healAmount = 10; // Apple
-        else if (def.itemIndex == 1)
-          healAmount = 20; // Small HP
-        else if (def.itemIndex == 2)
-          healAmount = 50; // Medium HP
-        else if (def.itemIndex == 3)
-          healAmount = 100; // Large HP
-      }
-    }
+    if (it == g_itemDefs.end())
+      return;
+    const auto &def = it->second;
 
-    if (healAmount > 0) {
-      if (*s_ctx->serverHP >= *s_ctx->serverMaxHP) {
-        ShowNotification("HP is full!");
-        return;
+    if (def.category == 14) {
+      // HP potions (itemIndex 0-3)
+      if (def.itemIndex >= 0 && def.itemIndex <= 3) {
+        if (*s_ctx->serverHP >= *s_ctx->serverMaxHP) {
+          ShowNotification("HP is full!");
+          return;
+        }
       }
+      // Mana potions (itemIndex 4-6)
+      else if (def.itemIndex >= 4 && def.itemIndex <= 6) {
+        bool isDK = s_ctx->hero && s_ctx->hero->GetClass() == 16;
+        if (isDK) {
+          int curAG = s_ctx->serverAG ? *s_ctx->serverAG : 0;
+          // AG max not directly available — let server validate
+          ShowNotification("Using mana potion...");
+        } else {
+          if (*s_ctx->serverMP >= *s_ctx->serverMaxMP) {
+            ShowNotification("Mana is full!");
+            return;
+          }
+        }
+      } else {
+        return; // Unknown potion
+      }
+
       s_ctx->server->SendItemUse((uint8_t)foundSlot);
       *s_ctx->potionCooldown = POTION_COOLDOWN_TIME;
       std::cout << "[QuickSlot] Requested to use "
@@ -632,8 +670,9 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
   if (catDesc[0])
     th += lineH;
 
-  // Potion healing info
+  // Potion healing/mana info
   int potionHeal = 0;
+  int potionMana = 0;
   if (def->category == 14) {
     if ((defIndex % 32) == 0)
       potionHeal = 10;
@@ -643,7 +682,13 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
       potionHeal = 50;
     else if ((defIndex % 32) == 3)
       potionHeal = 100;
-    if (potionHeal > 0)
+    else if ((defIndex % 32) == 4)
+      potionMana = 20;
+    else if ((defIndex % 32) == 5)
+      potionMana = 50;
+    else if ((defIndex % 32) == 6)
+      potionMana = 100;
+    if (potionHeal > 0 || potionMana > 0)
       th += lineH;
   }
 
@@ -654,6 +699,39 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
       levelDmgBonus = itemLevel * 3;
     if (def->category == 6 || (def->category >= 7 && def->category <= 11))
       levelDefBonus = itemLevel;
+  }
+
+  // Skill scroll/orb: resolve skill ID and check learned status
+  uint8_t scrollSkillId = 0;
+  bool scrollAlreadyLearned = false;
+  if (def->category == 15) {
+    // Inline scroll index → skill ID mapping (matches ScrollIndexToSkillId)
+    static const uint8_t scrollMap[][2] = {
+        {0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}, {6, 7},
+        {7, 8}, {8, 9}, {9, 10}, {11, 12}, {12, 13}, {13, 14},
+    };
+    uint8_t idx = (uint8_t)(defIndex % 32);
+    for (auto &m : scrollMap)
+      if (m[0] == idx) { scrollSkillId = m[1]; break; }
+  } else if (def->category == 12) {
+    // Inline orb index → skill ID mapping (matches OrbIndexToSkillId)
+    static const uint8_t orbMap[][2] = {
+        {20, 19}, {21, 20}, {22, 21}, {23, 22},
+        {24, 23}, {7, 41}, {12, 42}, {19, 43},
+    };
+    uint8_t idx = (uint8_t)(defIndex % 32);
+    for (auto &m : orbMap)
+      if (m[0] == idx) { scrollSkillId = m[1]; break; }
+  }
+  if (scrollSkillId > 0 && s_ctx->learnedSkills) {
+    for (auto s : *s_ctx->learnedSkills) {
+      if (s == scrollSkillId) {
+        scrollAlreadyLearned = true;
+        break;
+      }
+    }
+    th += lineH; // Skill info line (name + cost)
+    th += lineH; // "Already Learned" or "Not Learned"
   }
 
   // Hands / type specification
@@ -719,10 +797,52 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
   if (catDesc[0])
     AddPendingTooltipLine(IM_COL32(160, 160, 160, 200), catDesc);
 
+  // Skill scroll/orb: show skill info and learned status
+  if (scrollSkillId > 0) {
+    // Find skill name and cost from skill tables
+    const char *skillName = nullptr;
+    int skillCost = 0;
+    const char *skillDesc = nullptr;
+    for (int i = 0; i < NUM_DK_SKILLS; i++) {
+      if (g_dkSkills[i].skillId == scrollSkillId) {
+        skillName = g_dkSkills[i].name;
+        skillCost = g_dkSkills[i].resourceCost;
+        skillDesc = g_dkSkills[i].desc;
+        break;
+      }
+    }
+    if (!skillName) {
+      for (int i = 0; i < NUM_DW_SPELLS; i++) {
+        if (g_dwSpells[i].skillId == scrollSkillId) {
+          skillName = g_dwSpells[i].name;
+          skillCost = g_dwSpells[i].resourceCost;
+          skillDesc = g_dwSpells[i].desc;
+          break;
+        }
+      }
+    }
+    if (skillName) {
+      char skillBuf[64];
+      bool isDW = (def->category == 15);
+      snprintf(skillBuf, sizeof(skillBuf), "Teaches: %s (%d %s)", skillName,
+               skillCost, isDW ? "Mana" : "AG");
+      AddPendingTooltipLine(IM_COL32(150, 200, 255, 255), skillBuf);
+    }
+    if (scrollAlreadyLearned)
+      AddPendingTooltipLine(IM_COL32(255, 150, 50, 255), "(Already Learned)");
+    else
+      AddPendingTooltipLine(IM_COL32(80, 255, 80, 255), "(Not Learned)");
+  }
+
   if (potionHeal > 0) {
     char healBuf[32];
     snprintf(healBuf, sizeof(healBuf), "Restores %d HP", potionHeal);
     AddPendingTooltipLine(IM_COL32(80, 255, 80, 255), healBuf);
+  }
+  if (potionMana > 0) {
+    char manaBuf[32];
+    snprintf(manaBuf, sizeof(manaBuf), "Restores %d Mana", potionMana);
+    AddPendingTooltipLine(IM_COL32(100, 150, 255, 255), manaBuf);
   }
 
   if (def->category <= 5) {
@@ -917,13 +1037,20 @@ void UpdateAndRenderNotification(float deltaTime) {
     ImGui::PopFont();
 }
 
-int GetSkillAGCost(uint8_t skillId) {
+int GetSkillResourceCost(uint8_t skillId) {
   for (int i = 0; i < NUM_DK_SKILLS; i++) {
     if (g_dkSkills[i].skillId == skillId)
-      return g_dkSkills[i].agCost;
+      return g_dkSkills[i].resourceCost;
+  }
+  for (int i = 0; i < NUM_DW_SPELLS; i++) {
+    if (g_dwSpells[i].skillId == skillId)
+      return g_dwSpells[i].resourceCost;
   }
   return 0;
 }
+
+// Legacy wrapper for compatibility
+int GetSkillAGCost(uint8_t skillId) { return GetSkillResourceCost(skillId); }
 
 void ShowNotification(const char *msg) {
   s_notifyText = msg;
@@ -965,7 +1092,19 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
                      colValue);
 
   DrawPanelText(dl, c, px, py, 20, 65, "Class", colLabel);
-  DrawPanelTextRight(dl, c, px, py, 20, 65, 145, "Dark Knight", colValue);
+  {
+    const char *className = "Dark Knight";
+    if (s_ctx->hero) {
+      uint8_t cc = s_ctx->hero->GetClass();
+      if (cc == 0)
+        className = "Dark Wizard";
+      else if (cc == 32)
+        className = "Elf";
+      else if (cc == 48)
+        className = "Magic Gladiator";
+    }
+    DrawPanelTextRight(dl, c, px, py, 20, 65, 145, className, colValue);
+  }
 
   DrawPanelText(dl, c, px, py, 20, 85, "Level", colLabel);
   snprintf(buf, sizeof(buf), "%d", *s_ctx->serverLevel);
@@ -1028,15 +1167,25 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
     DrawPanelText(dl, c, px, py, 15, 272, buf, colGreen);
   }
 
-  // Combat Info (OpenMU DK formulas: STR/6 min, STR/4 max)
-  int dMin = *s_ctx->serverStr / 6 + s_ctx->hero->GetWeaponBonusMin();
-  int dMax = *s_ctx->serverStr / 4 + s_ctx->hero->GetWeaponBonusMax();
+  // Combat Info — class-aware damage formulas
+  bool isDKChar = s_ctx->hero && s_ctx->hero->GetClass() == 16;
+  int dMin, dMax;
+  if (isDKChar) {
+    // DK: STR/6 min, STR/4 max + weapon bonus
+    dMin = *s_ctx->serverStr / 6 + s_ctx->hero->GetWeaponBonusMin();
+    dMax = *s_ctx->serverStr / 4 + s_ctx->hero->GetWeaponBonusMax();
+  } else {
+    // DW: ENE/9 min, ENE/4 max + staff bonus (wizardry damage)
+    dMin = *s_ctx->serverEne / 9 + s_ctx->hero->GetWeaponBonusMin();
+    dMax = *s_ctx->serverEne / 4 + s_ctx->hero->GetWeaponBonusMax();
+  }
 
-  snprintf(buf, sizeof(buf), "Damage: %d - %d", dMin, dMax);
+  snprintf(buf, sizeof(buf), "%s: %d - %d",
+           isDKChar ? "Damage" : "Wiz Dmg", dMin, dMax);
   DrawPanelText(dl, c, px, py, 15, 300, buf, colValue);
 
-  // Defense: base (DEX/3) + equipment
-  int baseDef = *s_ctx->serverDex / 3;
+  // Defense: DK=DEX/3, DW=DEX/4 + equipment
+  int baseDef = isDKChar ? *s_ctx->serverDex / 3 : *s_ctx->serverDex / 4;
   int addDef = s_ctx->hero->GetDefenseBonus();
   if (addDef > 0) {
     snprintf(buf, sizeof(buf), "Defense: %d + %d", baseDef, addDef);
@@ -1045,8 +1194,8 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   }
   DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
 
-  // Defense Rate (OpenMU: DEX/3 for DK)
-  int defRate = *s_ctx->serverDex / 3;
+  // Defense Rate (OpenMU: DK=DEX/3, DW=DEX/4)
+  int defRate = isDKChar ? *s_ctx->serverDex / 3 : *s_ctx->serverDex / 4;
   snprintf(buf, sizeof(buf), "Def Rate: %d", defRate);
   DrawPanelText(dl, c, px, py, 15, 330, buf, colValue);
 
@@ -1061,9 +1210,13 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   snprintf(buf, sizeof(buf), "Atk Speed: %d", *s_ctx->serverAttackSpeed);
   DrawPanelText(dl, c, px, py, 15, 360, buf, colValue);
 
-  // Attack Rate / Hit Chance (Level*5 + DEX*3/2 + STR/4)
-  int atkRate = *s_ctx->serverLevel * 5 + (*s_ctx->serverDex * 3) / 2 +
-                *s_ctx->serverStr / 4;
+  // Attack Rate / Hit Chance — DK: Level*5+DEX*3/2+STR/4, DW: Level*5+ENE*3/2
+  int atkRate;
+  if (isDKChar)
+    atkRate = *s_ctx->serverLevel * 5 + (*s_ctx->serverDex * 3) / 2 +
+              *s_ctx->serverStr / 4;
+  else
+    atkRate = *s_ctx->serverLevel * 5 + (*s_ctx->serverEne * 3) / 2;
   snprintf(buf, sizeof(buf), "Atk Rate: %d", atkRate);
   DrawPanelText(dl, c, px, py, 15, 375, buf, colValue);
 
@@ -1740,10 +1893,14 @@ bool HandlePanelClick(float vx, float vy) {
 
   // Skill Window — consume clicks so they don't fall through to click-to-move
   if (*s_ctx->showSkillWindow) {
-    // Same layout constants as RenderSkillPanel
+    // Must match RenderSkillPanel layout exactly (dynamic rows)
     constexpr float SK_CELL_W = 110.0f, SK_CELL_H = 105.0f, SK_CELL_PAD = 10.0f;
-    constexpr float SK_TITLE_H = 32.0f, SK_FOOTER_H = 24.0f, SK_MARGIN = 15.0f;
-    constexpr int SK_COLS = 4, SK_ROWS = 2;
+    constexpr float SK_TITLE_H = 32.0f, SK_FOOTER_H = 24.0f, SK_MARGIN = 16.0f;
+    constexpr int SK_COLS = 4;
+    uint8_t classCode = s_ctx->hero ? s_ctx->hero->GetClass() : 16;
+    int skillCount = 0;
+    GetClassSkills(classCode, skillCount);
+    int SK_ROWS = (skillCount + SK_COLS - 1) / SK_COLS;
     float spw =
         SK_MARGIN * 2 + SK_COLS * SK_CELL_W + (SK_COLS - 1) * SK_CELL_PAD;
     float sph = SK_TITLE_H + SK_MARGIN + SK_ROWS * SK_CELL_H +
@@ -1852,6 +2009,32 @@ static uint8_t OrbIndexToSkillId(uint8_t orbIndex) {
   return 0;
 }
 
+// Map scroll itemIndex → skillId (matches server scrollSkillMap)
+static uint8_t ScrollIndexToSkillId(uint8_t scrollIndex) {
+  static const struct {
+    uint8_t scrollIdx;
+    uint8_t skillId;
+  } map[] = {
+      {0, 1},   // Scroll of Poison
+      {1, 2},   // Scroll of Meteorite
+      {2, 3},   // Scroll of Lightning
+      {3, 4},   // Scroll of Fire Ball
+      {4, 5},   // Scroll of Flame
+      {5, 6},   // Scroll of Teleport
+      {6, 7},   // Scroll of Ice
+      {7, 8},   // Scroll of Twister
+      {8, 9},   // Scroll of Evil Spirit
+      {9, 10},  // Scroll of Hellfire
+      {11, 12}, // Scroll of Aqua Beam
+      {12, 13}, // Scroll of Cometfall
+      {13, 14}, // Scroll of Inferno
+  };
+  for (auto &m : map)
+    if (m.scrollIdx == scrollIndex)
+      return m.skillId;
+  return 0;
+}
+
 bool HandlePanelRightClick(float vx, float vy) {
   // Shop Panel - inform user drag-drop is required for buy
   if (*s_ctx->shopOpen && IsPointInPanel(vx, vy, GetShopPanelX())) {
@@ -1903,6 +2086,20 @@ bool HandlePanelRightClick(float vx, float vy) {
             *s_ctx->learningSkillId = skillId;
             std::cout << "[Skill] Learning skill " << (int)skillId
                       << " from orb idx=" << (int)itemIdx << std::endl;
+            return true;
+          }
+        }
+
+        // DW Scroll (category 15): right-click to USE (learn spell)
+        if (!*s_ctx->shopOpen && cat == 15 && !*s_ctx->isLearningSkill) {
+          uint8_t skillId = ScrollIndexToSkillId(itemIdx);
+          if (skillId > 0) {
+            s_ctx->server->SendItemUse((uint8_t)primarySlot);
+            *s_ctx->isLearningSkill = true;
+            *s_ctx->learnSkillTimer = 0.0f;
+            *s_ctx->learningSkillId = skillId;
+            std::cout << "[Spell] Learning spell " << (int)skillId
+                      << " from scroll idx=" << (int)itemIdx << std::endl;
             return true;
           }
         }
@@ -2491,13 +2688,20 @@ void RenderSkillDragCursor(ImDrawList *dl) {
     dl->AddImage((ImTextureID)(uintptr_t)g_texSkillIcons, iMin, iMax,
                  ImVec2(u0, v0), ImVec2(u1, v1));
   }
+  // Look up skill name from both DK and DW tables
+  const char *skillName = nullptr;
   for (int i = 0; i < NUM_DK_SKILLS; i++) {
-    if (g_dkSkills[i].skillId == skillId) {
-      ImVec2 nsz = ImGui::CalcTextSize(g_dkSkills[i].name);
-      dl->AddText(ImVec2(iMin.x + dw * 0.5f - nsz.x * 0.5f, iMax.y + 2),
-                  IM_COL32(255, 210, 80, 255), g_dkSkills[i].name);
-      break;
+    if (g_dkSkills[i].skillId == skillId) { skillName = g_dkSkills[i].name; break; }
+  }
+  if (!skillName) {
+    for (int i = 0; i < NUM_DW_SPELLS; i++) {
+      if (g_dwSpells[i].skillId == skillId) { skillName = g_dwSpells[i].name; break; }
     }
+  }
+  if (skillName) {
+    ImVec2 nsz = ImGui::CalcTextSize(skillName);
+    dl->AddText(ImVec2(iMin.x + dw * 0.5f - nsz.x * 0.5f, iMax.y + 2),
+                IM_COL32(255, 210, 80, 255), skillName);
   }
 }
 
@@ -2510,9 +2714,12 @@ void RenderRmcSlot(ImDrawList *dl, float screenX, float screenY, float size) {
     return;
   int8_t skillId = *s_ctx->rmcSkillId;
 
-  // Check if player can afford the AG cost
-  int agCost = (skillId > 0) ? GetSkillAGCost(skillId) : 0;
-  bool canAfford = s_ctx->serverAG ? (*s_ctx->serverAG >= agCost) : true;
+  // Check if player can afford the resource cost (AG for DK, Mana for DW)
+  int cost = (skillId > 0) ? GetSkillResourceCost(skillId) : 0;
+  bool isDK = s_ctx->hero && s_ctx->hero->GetClass() == 16;
+  int currentResource = isDK ? (s_ctx->serverAG ? *s_ctx->serverAG : 0)
+                             : (s_ctx->serverMP ? *s_ctx->serverMP : 0);
+  bool canAfford = currentResource >= cost;
   ImU32 tint = canAfford ? IM_COL32(255, 255, 255, 255)
                          : IM_COL32(100, 100, 100, 180);
 
@@ -2670,6 +2877,7 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
       int count = 0;
       for (int slot = 0; slot < INVENTORY_SLOTS; slot++) {
         if (s_ctx->inventory[slot].occupied &&
+            s_ctx->inventory[slot].primary &&
             s_ctx->inventory[slot].defIndex == defIdx)
           count += s_ctx->inventory[slot].quantity;
       }
@@ -2718,13 +2926,28 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
                 skillLabels[i]);
 
     int8_t sid = s_ctx->skillBar[i];
-    int agCost = (sid > 0) ? GetSkillAGCost(sid) : 0;
-    bool canAfford = s_ctx->serverAG ? (*s_ctx->serverAG >= agCost) : true;
+    int skillCost = (sid > 0) ? GetSkillResourceCost(sid) : 0;
+    bool isDKClass = s_ctx->hero && s_ctx->hero->GetClass() == 16;
+    int curRes = isDKClass ? (s_ctx->serverAG ? *s_ctx->serverAG : 0)
+                           : (s_ctx->serverMP ? *s_ctx->serverMP : 0);
+    bool canAfford = curRes >= skillCost;
     ImU32 tint = canAfford ? IM_COL32(255, 255, 255, 255)
                            : IM_COL32(100, 100, 100, 180);
     RenderSkillIcon(dl, sid, sx, sy, sz, tint);
     if (sid > 0 && !canAfford)
       dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 120), 3.0f);
+
+    // GCD overlay — dark sweep from top, proportional to remaining cooldown
+    if (sid > 0 && s_ctx->hero) {
+      float gcd = s_ctx->hero->GetGlobalCooldown();
+      float gcdMax = s_ctx->hero->GetGlobalCooldownMax();
+      if (gcd > 0.0f && gcdMax > 0.0f) {
+        float frac = gcd / gcdMax; // 1.0 = full, 0.0 = ready
+        float fillH = sz * frac;   // Height of darkened portion
+        dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + fillH),
+                          IM_COL32(10, 10, 10, 180), 3.0f);
+      }
+    }
     curVX += SLOT + GAP;
   }
   curVX += GAP;
@@ -2809,13 +3032,21 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Skill Window (S key) — DK 0.97d / Blade Knight skills
+// Skill Window (S key) — Class-aware skill/spell panel
 // ═══════════════════════════════════════════════════════════════════
 
 void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
-  // Grid layout: 4 columns x 2 rows of skill cells
+  // Get class-appropriate skill list
+  uint8_t classCode = s_ctx->hero ? s_ctx->hero->GetClass() : 16;
+  bool isDK = (classCode == 16);
+  int skillCount = 0;
+  const SkillDef *skills = GetClassSkills(classCode, skillCount);
+  const char *resourceLabel = isDK ? "AG" : "Mana";
+  const char *panelTitle = isDK ? "Skills" : "Spells";
+
+  // Grid layout: adapt rows to skill count
   static constexpr int GRID_COLS = 4;
-  static constexpr int GRID_ROWS = 2;
+  int GRID_ROWS = (skillCount + GRID_COLS - 1) / GRID_COLS;
   static constexpr float CELL_W = 110.0f;
   static constexpr float CELL_H = 105.0f;
   static constexpr float CELL_PAD = 10.0f;
@@ -2852,7 +3083,7 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
 
   // Title — centered
   {
-    const char *title = "Skills";
+    const char *title = panelTitle;
     ImVec2 tsz = ImGui::CalcTextSize(title);
     float tx = c.ToScreenX(px + pw * 0.5f) - tsz.x * 0.5f;
     float ty = c.ToScreenY(py + 10.0f);
@@ -2902,8 +3133,8 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
 
   float gridStartY = py + TITLE_H;
 
-  for (int i = 0; i < NUM_DK_SKILLS; i++) {
-    const auto &skill = g_dkSkills[i];
+  for (int i = 0; i < skillCount; i++) {
+    const auto &skill = skills[i];
     bool learned = isLearned(skill.skillId);
 
     int col = i % GRID_COLS;
@@ -3017,7 +3248,8 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
       BeginPendingTooltip(tw, th);
       AddPendingTooltipLine(colTitle, skill.name);
 
-      snprintf(buf, sizeof(buf), "AG Cost: %d", skill.agCost);
+      snprintf(buf, sizeof(buf), "%s Cost: %d", resourceLabel,
+               skill.resourceCost);
       AddPendingTooltipLine(IM_COL32(100, 180, 255, 255), buf);
 
       snprintf(buf, sizeof(buf), "Damage: +%d", skill.damageBonus);
@@ -3038,7 +3270,7 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
   // Footer — centered
   int learnedCount =
       s_ctx->learnedSkills ? (int)s_ctx->learnedSkills->size() : 0;
-  snprintf(buf, sizeof(buf), "Learned: %d / %d", learnedCount, NUM_DK_SKILLS);
+  snprintf(buf, sizeof(buf), "Learned: %d / %d", learnedCount, skillCount);
   {
     ImVec2 fsz = ImGui::CalcTextSize(buf);
     float fx = c.ToScreenX(px + pw * 0.5f) - fsz.x * 0.5f;

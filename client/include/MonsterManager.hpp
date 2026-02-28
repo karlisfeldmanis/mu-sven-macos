@@ -200,9 +200,6 @@ private:
     bool isBlending = false;
     static constexpr float BLEND_DURATION = 0.12f;
 
-    // Melee idle hysteresis (prevents oscillation at melee range boundary)
-    bool inMeleeIdle = false;
-
     // Server-driven position target (from 0x35 packet)
     glm::vec3 serverTargetPos{0.0f};
     bool serverChasing = false;
@@ -295,7 +292,7 @@ private:
   // ── Client-side visual constants ──
   static constexpr float CORPSE_FADE_TIME = 3.0f;
   static constexpr float CHASE_SPEED =
-      200.0f; // Chase speed (player=334, can outrun)
+      250.0f; // Match server grid speed (100 units / 0.4s moveDelay)
   static constexpr float WANDER_SPEED =
       150.0f; // Wander/walk speed
 

@@ -229,6 +229,7 @@ static constexpr float LEARN_SKILL_DURATION = 3.0f; // Seconds of heal anim
 
 // RMC (Right Mouse Click) skill slot
 static int8_t g_rmcSkillId = -1;
+static bool g_rightMouseHeld = false;
 
 // Town teleport state
 static bool g_teleportingToTown = false;
@@ -578,6 +579,8 @@ int main(int argc, char **argv) {
   // Initialize fire effects and register emitters from fire-type objects
   g_fireEffect.Init(data_path + "/Effect");
   g_vfxManager.Init(data_path);
+  g_vfxManager.SetTerrainHeightFunc(
+      [](float x, float z) -> float { return g_terrain.GetHeight(x, z); });
   g_boidManager.Init(data_path);
   g_boidManager.SetTerrainData(&terrainData);
   checkGLError("fire init");
@@ -643,9 +646,8 @@ int main(int argc, char **argv) {
   g_hero.SetTerrainData(&terrainData);
   g_hero.SetVFXManager(&g_vfxManager);
 
-  // Starting character initialization: empty inventory for realistic testing
-  // Initial stats for Level 1 DK
-  g_hero.LoadStats(1, 28, 20, 25, 10, 0, 0, 110, 110, 20, 20, 50, 50, 1);
+  // Starting character initialization: placeholder stats (server overrides)
+  g_hero.LoadStats(1, 28, 20, 25, 10, 0, 0, 110, 110, 20, 20, 50, 50, 16);
   g_hero.SetTerrainLightmap(terrainData.lightmap);
   g_hero.SetPointLights(g_pointLights);
   ItemModelManager::Init(g_hero.GetShader(), g_dataPath);
@@ -733,6 +735,7 @@ int main(int argc, char **argv) {
     inputCtx.isLearningSkill = &g_isLearningSkill;
     inputCtx.learnedSkills = &g_learnedSkills;
     inputCtx.heroCharacterId = &g_heroCharacterId;
+    inputCtx.rightMouseHeld = &g_rightMouseHeld;
     InputHandler::Init(inputCtx);
     InputHandler::RegisterCallbacks(window);
   }
@@ -1114,15 +1117,17 @@ int main(int argc, char **argv) {
             uint16_t serverIdx = g_monsterManager.GetServerIndex(targetIdx);
             uint8_t skillId = g_hero.GetActiveSkillId();
             if (skillId > 0) {
-              // Re-check AG before sending — AG may have been spent since
+              // Re-check resource before sending — may have been spent since
               // the initial right-click
-              int agCost = InventoryUI::GetSkillAGCost(skillId);
-              if (g_serverAG >= agCost) {
+              int cost = InventoryUI::GetSkillResourceCost(skillId);
+              bool isDK = (g_hero.GetClass() == 16);
+              int curResource = isDK ? g_serverAG : g_serverMP;
+              if (curResource >= cost) {
                 std::cout << "[Skill] HIT! SendSkillAttack monIdx=" << serverIdx
                           << " skillId=" << (int)skillId << std::endl;
                 g_server.SendSkillAttack(serverIdx, skillId);
               } else {
-                InventoryUI::ShowNotification("Not enough AG!");
+                InventoryUI::ShowNotification(isDK ? "Not enough AG!" : "Not enough Mana!");
               }
             } else {
               g_server.SendAttack(serverIdx);
@@ -1130,17 +1135,69 @@ int main(int argc, char **argv) {
           }
         }
         // Auto-attack: re-engage after cooldown if target still alive
-        // Only normal attacks auto-re-engage; skills require explicit RMC
         if (g_hero.GetAttackState() == AttackState::NONE &&
-            g_hero.GetAttackTarget() >= 0 && g_hero.GetActiveSkillId() == 0) {
+            g_hero.GetAttackTarget() >= 0) {
           int targetIdx = g_hero.GetAttackTarget();
           if (targetIdx < g_monsterManager.GetMonsterCount()) {
             MonsterInfo mi = g_monsterManager.GetMonsterInfo(targetIdx);
-            if (mi.state == MonsterState::DYING ||
-                mi.state == MonsterState::DEAD || mi.hp <= 0) {
-              // Target died — clear so we don't re-engage on respawn
+            bool targetDead = (mi.state == MonsterState::DYING ||
+                               mi.state == MonsterState::DEAD || mi.hp <= 0);
+            if (targetDead && g_rightMouseHeld && g_rmcSkillId >= 0) {
+              // RMC held + target died — switch to hovered monster if any
+              if (g_hoveredMonster >= 0 &&
+                  g_hoveredMonster < g_monsterManager.GetMonsterCount()) {
+                MonsterInfo hmi =
+                    g_monsterManager.GetMonsterInfo(g_hoveredMonster);
+                if (hmi.state != MonsterState::DYING &&
+                    hmi.state != MonsterState::DEAD && hmi.hp > 0) {
+                  uint8_t skillId = (uint8_t)g_rmcSkillId;
+                  int cost = InventoryUI::GetSkillResourceCost(skillId);
+                  bool isDK = (g_hero.GetClass() == 16);
+                  int curResource = isDK ? g_serverAG : g_serverMP;
+                  if (curResource >= cost) {
+                    g_hero.SkillAttackMonster(g_hoveredMonster, hmi.position,
+                                              skillId);
+                  } else {
+                    InventoryUI::ShowNotification(
+                        isDK ? "Not enough AG!" : "Not enough Mana!");
+                    g_hero.CancelAttack();
+                  }
+                } else {
+                  g_hero.CancelAttack();
+                }
+              } else {
+                g_hero.CancelAttack();
+              }
+            } else if (targetDead) {
+              // Target died, no RMC — clear
               g_hero.CancelAttack();
-            } else {
+            } else if (g_rightMouseHeld && g_rmcSkillId >= 0) {
+              // RMC held + target alive — check if hovered a different monster
+              int nextTarget = targetIdx;
+              glm::vec3 nextPos = mi.position;
+              if (g_hoveredMonster >= 0 && g_hoveredMonster != targetIdx &&
+                  g_hoveredMonster < g_monsterManager.GetMonsterCount()) {
+                MonsterInfo hmi =
+                    g_monsterManager.GetMonsterInfo(g_hoveredMonster);
+                if (hmi.state != MonsterState::DYING &&
+                    hmi.state != MonsterState::DEAD && hmi.hp > 0) {
+                  nextTarget = g_hoveredMonster;
+                  nextPos = hmi.position;
+                }
+              }
+              uint8_t skillId = (uint8_t)g_rmcSkillId;
+              int cost = InventoryUI::GetSkillResourceCost(skillId);
+              bool isDK = (g_hero.GetClass() == 16);
+              int curResource = isDK ? g_serverAG : g_serverMP;
+              if (curResource >= cost) {
+                g_hero.SkillAttackMonster(nextTarget, nextPos, skillId);
+              } else {
+                InventoryUI::ShowNotification(
+                    isDK ? "Not enough AG!" : "Not enough Mana!");
+                g_hero.CancelAttack();
+              }
+            } else if (g_hero.GetActiveSkillId() == 0) {
+              // Normal attack auto-re-engage
               g_hero.AttackMonster(targetIdx, mi.position);
             }
           }
@@ -1360,6 +1417,39 @@ int main(int argc, char **argv) {
 
     // Sky renders first (behind everything, no depth write)
     g_sky.Render(view, projection, camPos);
+
+    // Main 5.2: AddTerrainLight — merge world point lights + spell projectile lights
+    // Spell lights are transient (per-frame), so rebuild the full list each frame.
+    {
+      std::vector<glm::vec3> lightPos, lightCol;
+      std::vector<float> lightRange;
+      std::vector<int> lightObjTypes;
+      // Static world lights (fires, streetlights, candles, etc.)
+      for (auto &pl : g_pointLights) {
+        lightPos.push_back(pl.position);
+        lightCol.push_back(pl.color);
+        lightRange.push_back(pl.range);
+        lightObjTypes.push_back(pl.objectType);
+      }
+      // Dynamic spell lights from active projectiles
+      g_vfxManager.GetActiveSpellLights(lightPos, lightCol, lightRange,
+                                        lightObjTypes);
+      // Update terrain (CPU lightmap) and object renderer (shader uniforms)
+      g_terrain.SetPointLights(lightPos, lightCol, lightRange, lightObjTypes);
+      g_objectRenderer.SetPointLights(lightPos, lightCol, lightRange);
+      // Update character renderers with merged PointLight list
+      std::vector<PointLight> mergedLights;
+      mergedLights.reserve(lightPos.size());
+      for (size_t i = 0; i < lightPos.size(); ++i) {
+        mergedLights.push_back(
+            {lightPos[i], lightCol[i], lightRange[i],
+             i < lightObjTypes.size() ? lightObjTypes[i] : 0});
+      }
+      g_hero.SetPointLights(mergedLights);
+      g_npcManager.SetPointLights(mergedLights);
+      g_monsterManager.SetPointLights(mergedLights);
+      g_boidManager.SetPointLights(mergedLights);
+    }
 
     g_terrain.Render(view, projection, currentFrame, camPos);
 

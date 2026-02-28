@@ -219,20 +219,33 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
               ->ClearPendingPickup(); // Cancel pickup if attacking monster
         } else {
           // Ground click — move to terrain
-          if (s_ctx->hero->IsAttacking())
-            s_ctx->hero->CancelAttack();
-          s_ctx->hero->ClearPendingPickup(); // Cancel pickup if manually moving
-          glm::vec3 target;
-          if (RayPicker::ScreenToTerrain(window, mx, my, target)) {
-            if (RayPicker::IsWalkable(target.x, target.z)) {
-              s_ctx->hero->MoveTo(target);
-              s_ctx->clickEffect->Show(target);
+          // Block movement cancel before hit frame (prevents animation cancel exploit)
+          if (s_ctx->hero->IsAttacking() && !s_ctx->hero->HasRegisteredHit()) {
+            // Can't cancel before hit frame — must commit to the swing
+          } else {
+            if (s_ctx->hero->IsAttacking())
+              s_ctx->hero->CancelAttack();
+            s_ctx->hero->ClearPendingPickup(); // Cancel pickup if manually moving
+            glm::vec3 target;
+            if (RayPicker::ScreenToTerrain(window, mx, my, target)) {
+              if (RayPicker::IsWalkable(target.x, target.z)) {
+                s_ctx->hero->MoveTo(target);
+                s_ctx->clickEffect->Show(target);
+              }
             }
           }
         }
       }
     }
-  } else if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
+  }
+
+  // Track right mouse held state for continuous skill casting
+  if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+    if (s_ctx->rightMouseHeld)
+      *s_ctx->rightMouseHeld = (action == GLFW_PRESS);
+  }
+
+  if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
     if (!ImGui::GetIO().WantCaptureMouse) {
       double mx, my;
       glfwGetCursorPos(window, &mx, &my);
@@ -244,10 +257,12 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
         // Not on UI panel — try skill attack on monster
         if (s_ctx->rmcSkillId && *s_ctx->rmcSkillId >= 0) {
           uint8_t skillId = (uint8_t)*s_ctx->rmcSkillId;
-          int agCost = InventoryUI::GetSkillAGCost(skillId);
-          int currentAG = s_ctx->serverAG ? *s_ctx->serverAG : 0;
-          if (currentAG < agCost) {
-            InventoryUI::ShowNotification("Not enough AG!");
+          int cost = InventoryUI::GetSkillResourceCost(skillId);
+          bool isDK = s_ctx->hero && s_ctx->hero->GetClass() == 16;
+          int currentResource = isDK ? (s_ctx->serverAG ? *s_ctx->serverAG : 0)
+                                     : (s_ctx->serverMP ? *s_ctx->serverMP : 0);
+          if (currentResource < cost) {
+            InventoryUI::ShowNotification(isDK ? "Not enough AG!" : "Not enough Mana!");
           } else {
             int monHit = RayPicker::PickMonster(window, mx, my);
             if (monHit >= 0) {

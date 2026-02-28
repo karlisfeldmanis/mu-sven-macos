@@ -201,11 +201,12 @@ void Server::Run() {
             if (s->hp <= 0) {
               s->hp = 0;
               s->dead = true;
-              // Player died: drop aggro and return to spawn (keep current HP)
+              // Player died: drop aggro and return to spawn (evade mode)
               auto *mon = m_world.FindMonster(atk.monsterIndex);
               if (mon) {
                 mon->aggroTargetFd = -1;
                 mon->aiState = MonsterInstance::AIState::RETURNING;
+                mon->evading = true;
                 mon->currentPath.clear();
                 mon->pathStep = 0;
                 printf("[Combat] Mon %d killed player fd=%d (mon HP=%d/%d)\n",
@@ -223,6 +224,94 @@ void Server::Run() {
             break;
           }
         }
+      }
+    }
+
+    // Process poison DoT ticks and broadcast damage
+    auto poisonTicks = m_world.ProcessPoisonTicks(dt);
+    for (auto &tick : poisonTicks) {
+      // Broadcast poison damage to all clients (damageType=4 = poison green)
+      PMSG_DAMAGE_SEND dmgPkt{};
+      dmgPkt.h = MakeC1Header(sizeof(dmgPkt), Opcode::DAMAGE);
+      dmgPkt.monsterIndex = tick.monsterIndex;
+      dmgPkt.damage = tick.damage;
+      dmgPkt.damageType = 4; // Poison (client renders green)
+      dmgPkt.remainingHp = tick.remainingHp;
+
+      // Find attacker session for charId and XP
+      Session *attacker = nullptr;
+      for (auto &s : m_sessions) {
+        if (s->GetFd() == tick.attackerFd && s->IsAlive()) {
+          attacker = s.get();
+          break;
+        }
+      }
+      dmgPkt.attackerCharId = attacker
+          ? static_cast<uint16_t>(attacker->characterId) : 0;
+      Broadcast(&dmgPkt, sizeof(dmgPkt));
+
+      // If poison killed the monster, handle death/XP/drops
+      auto *mon = m_world.FindMonster(tick.monsterIndex);
+      if (mon && mon->aiState == MonsterInstance::AIState::DYING &&
+          mon->hp <= 0 && attacker) {
+        double baseXP = (mon->level + 25.0) * mon->level / 3.0;
+        if (attacker->level > mon->level + 10) {
+          baseXP *= (double)(mon->level + 10) / attacker->level;
+        }
+        if (mon->level >= 65) {
+          baseXP += (mon->level - 64) * (mon->level / 4);
+        }
+        int xp = std::max(1, (int)(baseXP * 1.25 * ServerConfig::XP_MULTIPLIER));
+
+        PMSG_MONSTER_DEATH_SEND deathPkt{};
+        deathPkt.h = MakeC1Header(sizeof(deathPkt), Opcode::MON_DEATH);
+        deathPkt.monsterIndex = mon->index;
+        deathPkt.killerCharId = static_cast<uint16_t>(attacker->characterId);
+        deathPkt.xpReward = static_cast<uint32_t>(xp);
+        Broadcast(&deathPkt, sizeof(deathPkt));
+
+        attacker->experience += xp;
+        bool leveledUp = false;
+        while (true) {
+          uint64_t nextXP = Database::GetXPForLevel(attacker->level);
+          if (attacker->experience >= nextXP && attacker->level < 400) {
+            attacker->level++;
+            CharacterClass cls =
+                static_cast<CharacterClass>(attacker->classCode);
+            attacker->levelUpPoints += StatCalculator::GetLevelUpPoints(cls);
+            attacker->maxHp = StatCalculator::CalculateMaxHP(
+                cls, attacker->level, attacker->vitality);
+            attacker->maxMana = StatCalculator::CalculateMaxMP(
+                cls, attacker->level, attacker->energy);
+            attacker->maxAg = StatCalculator::CalculateMaxAG(
+                attacker->strength, attacker->dexterity,
+                attacker->vitality, attacker->energy);
+            attacker->hp = attacker->maxHp;
+            attacker->mana = attacker->maxMana;
+            attacker->ag = attacker->maxAg;
+            leveledUp = true;
+          } else {
+            break;
+          }
+        }
+        if (leveledUp || xp > 0)
+          CharacterHandler::SendCharStats(*attacker);
+
+        auto drops = m_world.SpawnDrops(mon->worldX, mon->worldZ, mon->level,
+                                        mon->type, m_db);
+        for (auto &drop : drops) {
+          PMSG_DROP_SPAWN_SEND dropPkt{};
+          dropPkt.h = MakeC1Header(sizeof(dropPkt), Opcode::DROP_SPAWN);
+          dropPkt.dropIndex = drop.index;
+          dropPkt.defIndex = drop.defIndex;
+          dropPkt.quantity = drop.quantity;
+          dropPkt.itemLevel = drop.itemLevel;
+          dropPkt.worldX = drop.worldX;
+          dropPkt.worldZ = drop.worldZ;
+          Broadcast(&dropPkt, sizeof(dropPkt));
+        }
+        printf("[Poison] Mon %d killed by poison (fd=%d, xp=%d, drops=%zu)\n",
+               mon->index, tick.attackerFd, xp, drops.size());
       }
     }
 
@@ -277,23 +366,23 @@ void Server::Run() {
       }
 
       // Safe Zone HP Regeneration (~2% per second)
-      if (session->inWorld && !session->dead && session->hp < session->maxHp) {
-        if (m_world.IsSafeZone(session->worldX, session->worldZ)) {
-          session->hpRemainder += 0.02f * (float)session->maxHp * dt;
-          float threshold = std::max(1.0f, 0.02f * (float)session->maxHp);
-          if (session->hpRemainder >= threshold) {
-            int gain = (int)session->hpRemainder;
-            session->hp = std::min(session->hp + gain, (int)session->maxHp);
-            session->hpRemainder -= (float)gain;
-            printf("[Regen] FD=%d Healed +%d HP in SafeZone. New HP: %d/%d\n",
-                   session->GetFd(), gain, session->hp, session->maxHp);
-            // Sync updated HP to client (session-only, don't reload from DB!)
-            CharacterHandler::SendCharStats(*session);
-            // Persist to DB
-            SaveSession(*session);
-          }
-        } else {
-          session->hpRemainder = 0.0f;
+      // Works while walking — don't reset accumulator on brief boundary flicker
+      bool inSafe = m_world.IsSafeZone(session->worldX, session->worldZ);
+      static float szDbgTimer = 0.0f;
+      szDbgTimer += dt;
+      if (szDbgTimer >= 3.0f && session->inWorld && session->hp < session->maxHp) {
+        printf("[SafeZone] fd=%d wX=%.1f wZ=%.1f inSafe=%d hp=%d/%d\n",
+               session->GetFd(), session->worldX, session->worldZ,
+               inSafe, session->hp, session->maxHp);
+        szDbgTimer = 0.0f;
+      }
+      if (session->inWorld && !session->dead && session->hp < session->maxHp && inSafe) {
+        session->hpRemainder += 0.02f * (float)session->maxHp * dt;
+        if (session->hpRemainder >= 1.0f) {
+          int gain = (int)session->hpRemainder;
+          session->hp = std::min(session->hp + gain, (int)session->maxHp);
+          session->hpRemainder -= (float)gain;
+          CharacterHandler::SendCharStats(*session);
         }
       }
 
@@ -301,16 +390,18 @@ void Server::Run() {
       if (session->inWorld && !session->dead) {
         bool isDK = session->classCode == 16;
 
-        // Mana recovery (existing logic)
+        // Mana recovery: DK: 5%/s (fast, AG-style). DW/ELF/MG: 2%/s everywhere
         if (session->mana < session->maxMana) {
-          if (isDK || m_world.IsSafeZone(session->worldX, session->worldZ)) {
-            float rate = isDK ? 0.05f : 0.02f;
-            int gain = (int)(rate * session->maxMana * dt);
-            if (gain >= 1) {
-              session->mana = std::min(session->mana + gain, session->maxMana);
-              CharacterHandler::SendCharStats(*session);
-            }
+          float rate = isDK ? 0.05f : 0.02f;
+          session->manaRemainder += rate * (float)session->maxMana * dt;
+          if (session->manaRemainder >= 1.0f) {
+            int gain = (int)session->manaRemainder;
+            session->manaRemainder -= (float)gain;
+            session->mana = std::min(session->mana + gain, session->maxMana);
+            CharacterHandler::SendCharStats(*session);
           }
+        } else {
+          session->manaRemainder = 0.0f;
         }
 
         // AG (Ability Gauge) recovery every 3 seconds

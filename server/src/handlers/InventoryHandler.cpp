@@ -380,6 +380,25 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
         return;
       }
 
+      // Check requirements (level, stats, class)
+      ItemDefinition itemDef = db.GetItemDefinition(item.category, item.itemIndex);
+      if (session.level < itemDef.level) {
+        printf("[Inventory] fd=%d orb rejected: level %d < %d required\n",
+               session.GetFd(), session.level, itemDef.level);
+        return;
+      }
+      if (session.energy < itemDef.reqEnergy) {
+        printf("[Inventory] fd=%d orb rejected: energy %d < %d required\n",
+               session.GetFd(), session.energy, itemDef.reqEnergy);
+        return;
+      }
+      int bitIndex = session.classCode >> 4;
+      if (!(itemDef.classFlags & (1 << bitIndex))) {
+        printf("[Inventory] fd=%d orb rejected: class mismatch (class=%d flags=0x%X)\n",
+               session.GetFd(), session.classCode, itemDef.classFlags);
+        return;
+      }
+
       // Learn the skill
       db.LearnSkill(session.characterId, skillId);
       session.learnedSkills.push_back(skillId);
@@ -404,7 +423,88 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
     }
   }
 
+  // DW Scrolls (category 15) — learn spell on use
+  if (item.category == 15) {
+    // Map scroll itemIndex to spell skill ID (OpenMU Version075)
+    static const struct {
+      uint8_t scrollIndex;
+      uint8_t skillId;
+    } scrollSkillMap[] = {
+        {0, 1},   // Scroll of Poison → Poison
+        {1, 2},   // Scroll of Meteorite → Meteorite
+        {2, 3},   // Scroll of Lightning → Lightning
+        {3, 4},   // Scroll of Fire Ball → Fire Ball
+        {4, 5},   // Scroll of Flame → Flame
+        {5, 6},   // Scroll of Teleport → Teleport
+        {6, 7},   // Scroll of Ice → Ice
+        {7, 8},   // Scroll of Twister → Twister
+        {8, 9},   // Scroll of Evil Spirit → Evil Spirit
+        {9, 10},  // Scroll of Hellfire → Hellfire
+        {11, 12}, // Scroll of Aqua Beam → Aqua Beam
+        {12, 13}, // Scroll of Cometfall → Cometfall
+        {13, 14}, // Scroll of Inferno → Inferno
+    };
+
+    uint8_t skillId = 0;
+    for (auto &m : scrollSkillMap) {
+      if (m.scrollIndex == item.itemIndex) {
+        skillId = m.skillId;
+        break;
+      }
+    }
+
+    if (skillId > 0) {
+      if (db.HasSkill(session.characterId, skillId)) {
+        printf("[Inventory] fd=%d already knows spell %d\n", session.GetFd(),
+               skillId);
+        return;
+      }
+
+      // Check requirements (level, energy, class)
+      ItemDefinition itemDef = db.GetItemDefinition(item.category, item.itemIndex);
+      if (session.level < itemDef.level) {
+        printf("[Inventory] fd=%d scroll rejected: level %d < %d required\n",
+               session.GetFd(), session.level, itemDef.level);
+        return;
+      }
+      if (session.energy < itemDef.reqEnergy) {
+        printf("[Inventory] fd=%d scroll rejected: energy %d < %d required\n",
+               session.GetFd(), session.energy, itemDef.reqEnergy);
+        return;
+      }
+      int bitIndex = session.classCode >> 4;
+      if (!(itemDef.classFlags & (1 << bitIndex))) {
+        printf("[Inventory] fd=%d scroll rejected: class mismatch (class=%d flags=0x%X)\n",
+               session.GetFd(), session.classCode, itemDef.classFlags);
+        return;
+      }
+
+      // Learn the spell
+      db.LearnSkill(session.characterId, skillId);
+      session.learnedSkills.push_back(skillId);
+
+      // Consume the scroll
+      if (item.quantity > 1) {
+        item.quantity--;
+        db.SaveCharacterInventory(session.characterId, item.defIndex,
+                                  item.quantity, item.itemLevel, req->slot);
+      } else {
+        session.bag[req->slot] = {};
+        db.DeleteCharacterInventoryItem(session.characterId, req->slot);
+      }
+
+      // Send updated skill list and inventory
+      CharacterHandler::SendSkillList(session);
+      SendInventorySync(session);
+
+      printf("[Inventory] fd=%d learned spell %d from scroll idx=%d\n",
+             session.GetFd(), skillId, item.itemIndex);
+      return;
+    }
+  }
+
   if (item.category == 14) {
+    // HP potions (itemIndex 0-3)
     int healAmount = 0;
     if (item.itemIndex == 0)
       healAmount = 10;
@@ -415,8 +515,16 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
     else if (item.itemIndex == 3)
       healAmount = 100;
 
+    // Mana potions (itemIndex 4-6)
+    int manaAmount = 0;
+    if (item.itemIndex == 4)
+      manaAmount = 20;  // Small Mana Potion
+    else if (item.itemIndex == 5)
+      manaAmount = 50;  // Medium Mana Potion
+    else if (item.itemIndex == 6)
+      manaAmount = 100; // Large Mana Potion
+
     if (healAmount > 0) {
-      // Full HP check — don't consume potion if already at max
       if (session.hp >= session.maxHp) {
         printf(
             "[Inventory] Rejecting item use fd=%d: HP already full (%d/%d)\n",
@@ -428,50 +536,81 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
       if (session.hp > session.maxHp)
         session.hp = session.maxHp;
 
-      session.potionCooldown = 30.0f;
-
-      if (item.quantity > 1) {
-        item.quantity--;
-        db.SaveCharacterInventory(session.characterId, item.defIndex,
-                                  item.quantity, item.itemLevel, req->slot);
-      } else {
-        ItemDefinition def = db.GetItemDefinition(item.defIndex);
-        int w = def.width > 0 ? def.width : 1;
-        int h = def.height > 0 ? def.height : 1;
-        int r = req->slot / 8;
-        int c = req->slot % 8;
-        for (int hh = 0; hh < h; hh++) {
-          for (int ww = 0; ww < w; ww++) {
-            int s = (r + hh) * 8 + (c + ww);
-            if (s < 64)
-              session.bag[s] = {};
-          }
-        }
-        db.DeleteCharacterInventoryItem(session.characterId, req->slot);
-      }
-
       printf("[Inventory] Item used fd=%d: Healed %d HP. New HP: %d/%d. "
              "Cooldown started.\n",
              session.GetFd(), healAmount, session.hp, session.maxHp);
-
-      CharacterHandler::SendCharStats(session);
-      SendInventorySync(session);
-
-      {
-        uint8_t posX = static_cast<uint8_t>(session.worldZ / 100.0f);
-        uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
-        db.SaveCharacterFull(
-            session.characterId, session.level, session.strength,
-            session.dexterity, session.vitality, session.energy,
-            static_cast<uint16_t>(session.hp),
-            static_cast<uint16_t>(session.maxHp),
-            static_cast<uint16_t>(std::max(session.mana, 0)),
-            static_cast<uint16_t>(session.maxMana),
-            static_cast<uint16_t>(std::max(session.ag, 0)),
-            static_cast<uint16_t>(session.maxAg), session.levelUpPoints,
-            session.experience, session.zen, posX, posY,
-            session.skillBar, session.potionBar, session.rmcSkillId);
+    } else if (manaAmount > 0) {
+      // DK uses AG instead of mana — mana potions restore AG for DK
+      bool isDK = (session.classCode == 16);
+      if (isDK) {
+        if (session.ag >= session.maxAg) {
+          printf("[Inventory] Rejecting item use fd=%d: AG already full (%d/%d)\n",
+                 session.GetFd(), session.ag, session.maxAg);
+          return;
+        }
+        session.ag += manaAmount;
+        if (session.ag > session.maxAg)
+          session.ag = session.maxAg;
+        printf("[Inventory] Item used fd=%d: Restored %d AG. New AG: %d/%d. "
+               "Cooldown started.\n",
+               session.GetFd(), manaAmount, session.ag, session.maxAg);
+      } else {
+        if (session.mana >= session.maxMana) {
+          printf("[Inventory] Rejecting item use fd=%d: Mana already full (%d/%d)\n",
+                 session.GetFd(), session.mana, session.maxMana);
+          return;
+        }
+        session.mana += manaAmount;
+        if (session.mana > session.maxMana)
+          session.mana = session.maxMana;
+        printf("[Inventory] Item used fd=%d: Restored %d Mana. New Mana: %d/%d. "
+               "Cooldown started.\n",
+               session.GetFd(), manaAmount, session.mana, session.maxMana);
       }
+    } else {
+      return; // Unknown potion type
+    }
+
+    // Common: start cooldown, consume item, sync client
+    session.potionCooldown = 30.0f;
+
+    if (item.quantity > 1) {
+      item.quantity--;
+      db.SaveCharacterInventory(session.characterId, item.defIndex,
+                                item.quantity, item.itemLevel, req->slot);
+    } else {
+      ItemDefinition def = db.GetItemDefinition(item.defIndex);
+      int w = def.width > 0 ? def.width : 1;
+      int h = def.height > 0 ? def.height : 1;
+      int r = req->slot / 8;
+      int c = req->slot % 8;
+      for (int hh = 0; hh < h; hh++) {
+        for (int ww = 0; ww < w; ww++) {
+          int s = (r + hh) * 8 + (c + ww);
+          if (s < 64)
+            session.bag[s] = {};
+        }
+      }
+      db.DeleteCharacterInventoryItem(session.characterId, req->slot);
+    }
+
+    CharacterHandler::SendCharStats(session);
+    SendInventorySync(session);
+
+    {
+      uint8_t posX = static_cast<uint8_t>(session.worldZ / 100.0f);
+      uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
+      db.SaveCharacterFull(
+          session.characterId, session.level, session.strength,
+          session.dexterity, session.vitality, session.energy,
+          static_cast<uint16_t>(session.hp),
+          static_cast<uint16_t>(session.maxHp),
+          static_cast<uint16_t>(std::max(session.mana, 0)),
+          static_cast<uint16_t>(session.maxMana),
+          static_cast<uint16_t>(std::max(session.ag, 0)),
+          static_cast<uint16_t>(session.maxAg), session.levelUpPoints,
+          session.experience, session.zen, posX, posY,
+          session.skillBar, session.potionBar, session.rmcSkillId);
     }
   }
 }

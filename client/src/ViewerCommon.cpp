@@ -303,11 +303,29 @@ void UploadMeshWithBones(const Mesh_t &mesh, const std::string &textureDir,
   mb.hidden = scriptFlags.hidden;
   mb.bright = scriptFlags.bright;
 
-  // Force additive for specific textures that lack _R suffix
+  // Main 5.2: BITMAP_HIDE — meshes with "hide" textures are never rendered.
+  // Note: "skin_" textures (bare skin under armor) are NOT hidden here — they
+  // are the character's exposed skin areas and also the DW default face mesh.
+  // In Main 5.2 these are conditionally hidden via HideSkin, but our body parts
+  // always show skin which is correct for character rendering.
   {
     std::string texLower = mesh.TextureName;
     std::transform(texLower.begin(), texLower.end(), texLower.begin(),
                    ::tolower);
+    // Strip path
+    auto slash = texLower.find_last_of("\\/");
+    if (slash != std::string::npos)
+      texLower = texLower.substr(slash + 1);
+    // Strip extension
+    auto dot = texLower.find_last_of('.');
+    if (dot != std::string::npos)
+      texLower = texLower.substr(0, dot);
+
+    if (texLower == "hide" || texLower == "hide_m" || texLower == "hide22") {
+      mb.hidden = true;
+    }
+
+    // Force additive for specific textures that lack _R suffix
     if (texLower.find("flail00") != std::string::npos) {
       mb.bright = true;
     }

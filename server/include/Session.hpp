@@ -100,7 +100,8 @@ public:
 
   // Potion cooldown timer (seconds)
   float potionCooldown = 0.0f;
-  float hpRemainder = 0.0f; // Fractional HP for safe zone regeneration
+  float hpRemainder = 0.0f;   // Fractional HP for safe zone regeneration
+  float manaRemainder = 0.0f; // Fractional mana for regeneration
   int8_t skillBar[10];
   int16_t potionBar[4];
   int8_t rmcSkillId = -1;

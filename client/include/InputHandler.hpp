@@ -40,6 +40,7 @@ struct InputContext {
   bool *isLearningSkill;
   int *heroCharacterId;
   std::vector<uint8_t> *learnedSkills;
+  bool *rightMouseHeld;
 };
 
 namespace InputHandler {

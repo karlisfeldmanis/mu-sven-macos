@@ -41,8 +41,9 @@ void HandleMove(Session &session, const std::vector<uint8_t> &packet,
     return;
   const auto *move = reinterpret_cast<const PMSG_MOVE_RECV *>(packet.data());
 
-  session.worldX = move->y * 100.0f; // MU grid Y -> world X
-  session.worldZ = move->x * 100.0f; // MU grid X -> world Z
+  // NOTE: Do NOT update session.worldX/worldZ here — move->x/y is the
+  // click-to-move DESTINATION, not the player's current position.
+  // HandlePrecisePosition (D7) provides the actual current position.
 
   if (session.characterId > 0) {
     db.UpdatePosition(session.characterId, move->x, move->y);
@@ -57,6 +58,9 @@ void HandlePrecisePosition(Session &session,
       reinterpret_cast<const PMSG_PRECISE_POS_RECV *>(packet.data());
   session.worldX = pos->worldX;
   session.worldZ = pos->worldZ;
+  printf("[PrecisePos] fd=%d worldX=%.1f worldZ=%.1f gridX=%d gridY=%d\n",
+         session.GetFd(), session.worldX, session.worldZ,
+         (int)(session.worldZ / 100.0f), (int)(session.worldX / 100.0f));
 }
 
 void HandleLogin(Session &session, const std::vector<uint8_t> &packet,

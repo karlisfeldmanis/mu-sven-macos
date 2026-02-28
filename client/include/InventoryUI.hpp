@@ -122,6 +122,7 @@ float GetShopPanelX();
 bool IsPointInPanel(float vx, float vy, float panelX);
 
 // Skill queries
+int GetSkillResourceCost(uint8_t skillId);
 int GetSkillAGCost(uint8_t skillId);
 
 // Notifications

@@ -55,7 +55,7 @@ inline const WeaponCategoryRender &GetWeaponCategoryRender(uint8_t category) {
       {4, 17, 33},  // MACE:   same as sword
       {6, 19, 33},  // SPEAR:  PLAYER_STOP_SPEAR / PLAYER_WALK_SPEAR, R Hand
       {8, 21, 42},  // BOW:    PLAYER_STOP_BOW / PLAYER_WALK_BOW, L Hand
-      {10, 23, 42}, // STAFF:  PLAYER_STOP_WAND / PLAYER_WALK_WAND, L Hand
+      {4, 17, 42},  // STAFF:  base=SWORD (WAND only for items 14-20), L Hand
       {4, 17, 42},  // SHIELD: PLAYER_STOP_SWORD / PLAYER_WALK_SWORD, L Hand
   };
   if (category < sizeof(table) / sizeof(table[0]))
@@ -116,7 +116,10 @@ public:
   int GetAttackTarget() const { return m_attackTargetMonster; }
   AttackState GetAttackState() const { return m_attackState; }
   bool IsAttacking() const { return m_attackState != AttackState::NONE; }
+  bool HasRegisteredHit() const { return m_attackHitRegistered; }
   uint8_t GetActiveSkillId() const { return m_activeSkillId; }
+  float GetGlobalCooldown() const { return m_globalAttackCooldown; }
+  float GetGlobalCooldownMax() const { return m_globalAttackCooldownMax; }
   static int GetSkillAction(uint8_t skillId);
   void SetVFXManager(class VFXManager *vfx) { m_vfxManager = vfx; }
 
@@ -280,12 +283,22 @@ private:
   static constexpr int ACTION_SKILL_FURY = 66;       // Rageful Blow
   static constexpr int ACTION_SKILL_DEATH_STAB = 71; // Death Stab
 
+  // DW Magic skill actions (_enum.h)
+  static constexpr int ACTION_SKILL_HAND1 = 146;    // Energy Ball
+  static constexpr int ACTION_SKILL_HAND2 = 147;    // Generic hand cast
+  static constexpr int ACTION_SKILL_WEAPON1 = 148;  // Staff cast 1
+  static constexpr int ACTION_SKILL_WEAPON2 = 149;  // Staff cast 2
+  static constexpr int ACTION_SKILL_TELEPORT = 151;  // Teleport
+  static constexpr int ACTION_SKILL_FLASH = 152;     // Aqua Beam
+  static constexpr int ACTION_SKILL_INFERNO = 153;   // Inferno / Evil Spirit
+  static constexpr int ACTION_SKILL_HELL = 154;      // Hell Fire
+
   // Hit/death actions (CharViewer: Shock=230, Die1=231, Die2=232)
   static constexpr int ACTION_SHOCK = 230;
   static constexpr int ACTION_DIE1 = 231;
 
   // ─── DK Stats (MuEmu-0.97k DefaultClassInfo.txt, Class=1) ───
-  uint8_t m_class = 0;
+  uint8_t m_class = 16; // Default DK, server overrides via LoadStats
   int m_level = 1;
   uint64_t m_experience = 0;
   uint64_t m_nextExperience = 0;
@@ -345,11 +358,17 @@ private:
   bool m_attackHitRegistered = false;
   int m_swordSwingCount = 0;
   float m_attackCooldown = 0.0f;
+  float m_globalAttackCooldown = 0.0f;    // GCD remaining
+  float m_globalAttackCooldownMax = 0.0f; // GCD total (for UI progress)
   uint8_t m_activeSkillId = 0;     // Non-zero when using a skill attack
   float m_slowAnimDuration = 0.0f; // >0 = stretch heal anim to this duration
   static constexpr float MELEE_ATTACK_RANGE = 150.0f;
   static constexpr float BOW_ATTACK_RANGE = 500.0f;
+  static constexpr float MAGIC_ATTACK_RANGE = 500.0f;
   float getAttackRange() const {
+    // DW with active spell uses magic range
+    if (m_class == 0 && m_activeSkillId > 0)
+      return MAGIC_ATTACK_RANGE;
     return (m_weaponInfo.category == 4) ? BOW_ATTACK_RANGE : MELEE_ATTACK_RANGE;
   }
   static constexpr float ATTACK_COOLDOWN_TIME = 0.6f;
@@ -384,6 +403,8 @@ private:
     std::vector<ShadowMesh> shadowMeshes;
   };
   BodyPart m_parts[PART_COUNT];
+  BodyPart m_baseHead; // Base head model (HelmClassXX.bmd) for accessory helms
+  bool m_showBaseHead = false; // True when equipped helm needs face visible
   std::unique_ptr<Shader> m_shader;
 
   // Weapon (attached item model — right hand)

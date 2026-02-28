@@ -585,9 +585,10 @@ void MonsterManager::AddMonster(uint16_t monsterType, uint8_t gridX,
   mon.hp = hp;
   mon.maxHp = maxHp > 0 ? maxHp : hp;
   mon.state = static_cast<MonsterState>(state);
+  // Fade in all monsters (including initial sync) so they don't pop in
+  mon.spawnAlpha = 0.0f;
   if (mon.state == MonsterState::DEAD || mon.state == MonsterState::DYING) {
     mon.corpseAlpha = 0.0f;
-    mon.spawnAlpha = 0.0f;
   }
 
   // Create per-instance weapon mesh buffers (skeleton types)
@@ -761,32 +762,14 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
   }
 
   case MonsterState::CHASING: {
-    // Melee idle hysteresis: server attackRange=1 cell (100 units)
-    // Use 120 to account for diagonal (141) + position rounding
-    static constexpr float MELEE_IDLE_RANGE = 120.0f;
-    static constexpr float MELEE_RESUME_RANGE = 160.0f;
-
-    glm::vec3 toPlayer = m_playerPos - mon.position;
-    toPlayer.y = 0.0f;
-    float distToPlayer = glm::length(toPlayer);
-    float effectiveRange =
-        mon.inMeleeIdle ? MELEE_RESUME_RANGE : MELEE_IDLE_RANGE;
-
+    // Server-authoritative: follow spline, face player when path exhausted
+    // Server APPROACHING state handles the melee gap delay
     float maxT = std::max(0.0f, (float)mon.splinePoints.size() - 1.0f);
     bool pathExhausted =
         mon.splinePoints.size() < 2 || mon.splineT >= maxT;
 
-    if (!m_playerDead && distToPlayer <= effectiveRange) {
-      // Within melee range — face player, wait for attack packet
-      mon.inMeleeIdle = true;
-      setAction(mon, ACTION_STOP1);
-      if (distToPlayer > 1.0f) {
-        glm::vec3 fdir = glm::normalize(toPlayer);
-        mon.facing = smoothFacing(mon.facing, facingFromDir(fdir), dt);
-      }
-    } else if (!pathExhausted) {
+    if (!pathExhausted) {
       // Follow A* spline toward server target
-      mon.inMeleeIdle = false;
       setAction(mon, ACTION_WALK);
       mon.splineT = std::min(mon.splineT + mon.splineRate * dt, maxT);
       glm::vec3 p = evalCatmullRom(mon.splinePoints, mon.splineT);
@@ -799,11 +782,15 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
         mon.facing =
             smoothFacing(mon.facing, facingFromDir(glm::normalize(tang)), dt);
     } else {
-      // Path exhausted — idle until next 0x35 packet
+      // Path exhausted — idle, face player, wait for server attack packet
       setAction(mon, ACTION_STOP1);
-      if (!m_playerDead && distToPlayer > 1.0f) {
-        glm::vec3 fdir = glm::normalize(toPlayer);
-        mon.facing = smoothFacing(mon.facing, facingFromDir(fdir), dt);
+      if (!m_playerDead) {
+        glm::vec3 toPlayer = m_playerPos - mon.position;
+        toPlayer.y = 0.0f;
+        if (glm::length(toPlayer) > 1.0f) {
+          glm::vec3 fdir = glm::normalize(toPlayer);
+          mon.facing = smoothFacing(mon.facing, facingFromDir(fdir), dt);
+        }
       }
     }
     mon.position.y =
@@ -833,16 +820,24 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
     }
     mon.stateTimer -= dt;
     if (mon.stateTimer <= 0.0f) {
-      if (mon.serverChasing) {
+      // After attack, smoothly move to deferred server position
+      glm::vec3 diff = mon.serverTargetPos - mon.position;
+      diff.y = 0.0f;
+      if (glm::length(diff) > 10.0f) {
+        mon.splinePoints.clear();
+        mon.splinePoints.push_back(mon.position);
+        mon.splinePoints.push_back(mon.serverTargetPos);
+        mon.splineT = 0.0f;
+        float totalDist = glm::length(diff);
+        float speed = CHASE_SPEED;
+        mon.splineRate =
+            (totalDist > 1.0f) ? speed / totalDist : 2.5f;
+        mon.state = mon.serverChasing ? MonsterState::CHASING
+                                      : MonsterState::WALKING;
+      } else if (mon.serverChasing) {
         mon.state = MonsterState::CHASING;
       } else {
-        // Resume walking if spline has remaining path, else idle
-        if (mon.splinePoints.size() >= 2 &&
-            mon.splineT < (float)(mon.splinePoints.size() - 1)) {
-          mon.state = MonsterState::WALKING;
-        } else {
-          mon.state = MonsterState::IDLE;
-        }
+        mon.state = MonsterState::IDLE;
       }
     }
     break;
@@ -859,7 +854,24 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
     }
     mon.stateTimer -= dt;
     if (mon.stateTimer <= 0.0f) {
-      if (mon.serverChasing) {
+      // After hit stun, smoothly move to deferred server position
+      // (MON_MOVE packets received during HIT updated serverTargetPos
+      //  but were skipped — now catch up to avoid visual teleport)
+      glm::vec3 diff = mon.serverTargetPos - mon.position;
+      diff.y = 0.0f;
+      if (glm::length(diff) > 10.0f) {
+        // Build a direct spline from current pos to server target
+        mon.splinePoints.clear();
+        mon.splinePoints.push_back(mon.position);
+        mon.splinePoints.push_back(mon.serverTargetPos);
+        mon.splineT = 0.0f;
+        float totalDist = glm::length(diff);
+        float speed = CHASE_SPEED;
+        mon.splineRate =
+            (totalDist > 1.0f) ? speed / totalDist : 2.5f;
+        mon.state = mon.serverChasing ? MonsterState::CHASING
+                                      : MonsterState::WALKING;
+      } else if (mon.serverChasing) {
         mon.state = MonsterState::CHASING;
       } else {
         mon.state = MonsterState::IDLE;
@@ -1364,9 +1376,9 @@ void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       tLight *= 0.45f;
     m_shader->setVec3("terrainLight", tLight);
 
-    // Spawn fade-in (0→1 over 1 second)
+    // Spawn fade-in (0→1 over ~0.4s)
     if (mon.spawnAlpha < 1.0f) {
-      mon.spawnAlpha += deltaTime * 1.5f; // ~0.67s fade-in
+      mon.spawnAlpha += deltaTime * 2.5f; // ~0.4s fade-in
       if (mon.spawnAlpha > 1.0f)
         mon.spawnAlpha = 1.0f;
     }
@@ -1803,15 +1815,8 @@ void MonsterManager::TriggerAttackAnimation(int index) {
   auto &mon = m_monsters[index];
   if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD)
     return;
-  // Don't override HIT stun — let flinch animation play out before attacking
-  // again
-  // Don't override HIT stun — let flinch animation play out before attacking
-  // again
-  // if (mon.state == MonsterState::HIT)
-  //   return;
-  // Attack packet confirms monster is actively chasing
-  std::cout << "[Client] Mon " << index << " (" << mon.name
-            << "): ATTACKING (was " << (int)mon.state << ")" << std::endl;
+  // Server-authoritative: attack packet means monster is ready to attack
+  // (server APPROACHING delay ensures client walk anim finished)
   mon.serverChasing = true;
   mon.state = MonsterState::ATTACKING;
   // Attack animation duration based on action keys / speed
@@ -1905,7 +1910,6 @@ void MonsterManager::RespawnMonster(int index, uint8_t gridX, uint8_t gridY,
   mon.splinePoints.clear();
   mon.splineT = 0.0f;
   mon.splineRate = 0.0f;
-  mon.inMeleeIdle = false;
   mon.deathSmokeDone = false;
   // Play APPEAR animation (action 7) if available, else STOP1
   // Skeleton types use Player.bmd — no monster APPEAR action, just idle
@@ -1934,8 +1938,8 @@ void MonsterManager::SetMonsterServerPosition(int index, float worldX,
   if (mon.state == MonsterState::ATTACKING || mon.state == MonsterState::HIT)
     return;
 
-  // If monster is still fading in from respawn, snap to position instantly
-  // instead of building a visible movement spline
+  // If monster is still fading in from respawn, snap to position silently
+  // and restart the fade so the monster is invisible at the new position
   if (mon.spawnAlpha < 1.0f) {
     auto &mdl = m_models[mon.modelIdx];
     mon.position = newTarget;
@@ -1943,6 +1947,7 @@ void MonsterManager::SetMonsterServerPosition(int index, float worldX,
     mon.splinePoints.clear();
     mon.splineT = 0.0f;
     mon.splineRate = 0.0f;
+    mon.spawnAlpha = 0.0f; // Restart fade from invisible at new position
     mon.state = chasing ? MonsterState::CHASING : MonsterState::IDLE;
     return;
   }

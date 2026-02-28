@@ -87,6 +87,11 @@ struct SlotRender {
   std::vector<MeshBuffers> shieldMeshes;
   std::vector<ShadowMesh> shieldShadowMeshes;
   std::vector<BoneWorldMatrix> shieldLocalBones;
+
+  // Base head (class default HelmClassXX.bmd) shown under accessory helms
+  std::vector<MeshBuffers> baseHeadMeshes;
+  std::vector<ShadowMesh> baseHeadShadowMeshes;
+  bool showBaseHead = false;
 };
 static SlotRender s_slotRender[MAX_SLOTS];
 
@@ -543,6 +548,36 @@ static void InitSlotMeshes(int slot) {
     s_slotRender[slot].shadowMeshes[p] = CreateShadowMeshes(partBmd);
   }
 
+  // --- Base head for accessory helms (Pad, Bronze, Elf helms show the face) ---
+  // Main 5.2: certain helms are "open" and the default class head renders underneath
+  s_slotRender[slot].showBaseHead = false;
+  if (s_slotRender[slot].partOverrideBmd[0]) {
+    // Check if the override helm is an accessory type
+    auto &helmEq = s_slots[slot].equip[2]; // equip[2] = helm
+    std::string helmFile =
+        ItemDatabase::GetBodyPartModelFile(helmEq.category, helmEq.itemIndex);
+    std::string lower = helmFile;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    bool isAccessory = (lower.find("helmmale01") != std::string::npos ||
+                        lower.find("helmmale03") != std::string::npos ||
+                        lower.find("helmelf01") != std::string::npos ||
+                        lower.find("helmelf02") != std::string::npos ||
+                        lower.find("helmelf03") != std::string::npos ||
+                        lower.find("helmelf04") != std::string::npos);
+    if (isAccessory && s_classParts[ci].bmd[0]) {
+      // Load class default head (HelmClassXX.bmd) underneath
+      AABB headAABB;
+      for (auto &mesh : s_classParts[ci].bmd[0]->Meshes) {
+        UploadMeshWithBones(mesh, texDirPlayer, bones,
+                            s_slotRender[slot].baseHeadMeshes, headAABB, true);
+      }
+      s_slotRender[slot].baseHeadShadowMeshes =
+          CreateShadowMeshes(s_classParts[ci].bmd[0].get());
+      s_slotRender[slot].showBaseHead = true;
+      printf("[CharSelect] Slot %d: base head loaded under accessory helm\n", slot);
+    }
+  }
+
   // --- Right hand weapon (equip[0]) ---
   auto &rh = s_slots[slot].equip[0];
   if (rh.category != 0xFF) {
@@ -703,6 +738,17 @@ static void ReskinSlot(int slot) {
          ++mi) {
       RetransformMeshWithBones(bmd->Meshes[mi], bones,
                                s_slotRender[slot].meshes[p][mi]);
+    }
+  }
+
+  // Re-skin base head (class default head under accessory helm)
+  if (s_slotRender[slot].showBaseHead && s_classParts[ci].bmd[0]) {
+    BMDData *headBmd = s_classParts[ci].bmd[0].get();
+    for (int mi = 0; mi < (int)s_slotRender[slot].baseHeadMeshes.size() &&
+                     mi < (int)headBmd->Meshes.size();
+         ++mi) {
+      RetransformMeshWithBones(headBmd->Meshes[mi], bones,
+                               s_slotRender[slot].baseHeadMeshes[mi]);
     }
   }
 
@@ -934,6 +980,14 @@ void Shutdown() {
     s_slotRender[i].weaponShadowMeshes.clear();
     s_slotRender[i].weaponLocalBones.clear();
     s_slotRender[i].weaponBmd.reset();
+    // Base head cleanup
+    CleanupMeshBuffers(s_slotRender[i].baseHeadMeshes);
+    for (auto &sm : s_slotRender[i].baseHeadShadowMeshes) {
+      if (sm.vao) glDeleteVertexArrays(1, &sm.vao);
+      if (sm.vbo) glDeleteBuffers(1, &sm.vbo);
+    }
+    s_slotRender[i].baseHeadShadowMeshes.clear();
+    s_slotRender[i].showBaseHead = false;
     // Shield cleanup
     CleanupMeshBuffers(s_slotRender[i].shieldMeshes);
     for (auto &sm : s_slotRender[i].shieldShadowMeshes) {
@@ -976,6 +1030,9 @@ void SetCharacterList(const CharSlot *slots, int count) {
     CleanupMeshBuffers(s_slotRender[i].weaponMeshes);
     s_slotRender[i].weaponBmd.reset();
     s_slotRender[i].weaponLocalBones.clear();
+    CleanupMeshBuffers(s_slotRender[i].baseHeadMeshes);
+    s_slotRender[i].baseHeadShadowMeshes.clear();
+    s_slotRender[i].showBaseHead = false;
     CleanupMeshBuffers(s_slotRender[i].shieldMeshes);
     s_slotRender[i].shieldBmd.reset();
     s_slotRender[i].shieldLocalBones.clear();
@@ -1358,7 +1415,18 @@ void Render(int windowWidth, int windowHeight) {
       // Draw all body parts
       for (int p = 0; p < PART_COUNT; p++) {
         for (auto &mb : s_slotRender[i].meshes[p]) {
-          if (mb.indexCount == 0) continue;
+          if (mb.indexCount == 0 || mb.hidden) continue;
+          glActiveTexture(GL_TEXTURE0);
+          glBindTexture(GL_TEXTURE_2D, mb.texture);
+          s_modelShader->setInt("texture_diffuse", 0);
+          glBindVertexArray(mb.vao);
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+      }
+      // Draw base head (class default face under accessory helm)
+      if (s_slotRender[i].showBaseHead) {
+        for (auto &mb : s_slotRender[i].baseHeadMeshes) {
+          if (mb.indexCount == 0 || mb.hidden) continue;
           glActiveTexture(GL_TEXTURE0);
           glBindTexture(GL_TEXTURE_2D, mb.texture);
           s_modelShader->setInt("texture_diffuse", 0);
@@ -1386,6 +1454,7 @@ void Render(int windowWidth, int windowHeight) {
         glBindVertexArray(mb.vao);
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
       }
+
     }
   }
 
@@ -1425,7 +1494,14 @@ void Render(int windowWidth, int windowHeight) {
 
     for (int p = 0; p < PART_COUNT; p++) {
       for (auto &mb : s_slotRender[i].meshes[p]) {
-        if (mb.indexCount == 0) continue;
+        if (mb.indexCount == 0 || mb.hidden) continue;
+        glBindVertexArray(mb.vao);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
+      }
+    }
+    if (s_slotRender[i].showBaseHead) {
+      for (auto &mb : s_slotRender[i].baseHeadMeshes) {
+        if (mb.indexCount == 0 || mb.hidden) continue;
         glBindVertexArray(mb.vao);
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
       }
@@ -1461,7 +1537,14 @@ void Render(int windowWidth, int windowHeight) {
 
       for (int p = 0; p < PART_COUNT; p++) {
         for (auto &mb : s_slotRender[i].meshes[p]) {
-          if (mb.indexCount == 0) continue;
+          if (mb.indexCount == 0 || mb.hidden) continue;
+          glBindVertexArray(mb.vao);
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+      }
+      if (s_slotRender[i].showBaseHead) {
+        for (auto &mb : s_slotRender[i].baseHeadMeshes) {
+          if (mb.indexCount == 0 || mb.hidden) continue;
           glBindVertexArray(mb.vao);
           glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
         }
@@ -1798,7 +1881,7 @@ void Render(int windowWidth, int windowHeight) {
                                 ImVec4(0.0f, 0.0f, 0.0f, 0.56f));
         }
 
-        bool enabled = (classCodes[i] == CLASS_DK);
+        bool enabled = (classCodes[i] == CLASS_DK || classCodes[i] == CLASS_DW);
         if (!enabled) ImGui::BeginDisabled();
 
         char btnId[32];

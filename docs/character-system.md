@@ -124,6 +124,25 @@ All DK skills are learned from orbs (category 12 items). DK starts with 0 skills
 Weapon/Armor damage/defense per level: `{0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 31, 36}`
 Shield defense per level: `+1/level`
 
+## Combat State Machine & Global Cooldown
+
+Attack state: `NONE → APPROACHING → SWINGING → COOLDOWN → NONE`
+
+### Global Cooldown (GCD)
+- Set when `SWINGING` starts: `GCD = animationDuration + cooldownTime`
+- Persists even if player cancels the attack via click-to-move
+- Prevents the attack cancel exploit (click-to-move → immediate recast)
+- `GetGlobalCooldown()` / `GetGlobalCooldownMax()` — used by UI for cooldown overlay
+
+### Attack Cancel Rules
+- **Before hit frame**: Movement clicks are blocked (player must commit to the swing)
+- **After hit frame**: Player can cancel via click-to-move, but GCD prevents immediate recast
+- `HasRegisteredHit()` — returns true after the hit has been applied
+
+### Cooldown Indicator
+- HUD quickslot skill icons show a dark sweep overlay proportional to remaining GCD
+- Rendered via ImDrawList in InventoryUI
+
 ## Movement
 
 - Click-to-move: `MoveTo(target)` sets destination

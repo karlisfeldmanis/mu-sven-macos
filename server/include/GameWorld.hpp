@@ -85,13 +85,14 @@ struct MonsterInstance {
 
   // ── Proper AI state machine (replaces boolean flag soup) ──
   enum class AIState : uint8_t {
-    IDLE,      // Standing, decrementing idle timer
-    WANDERING, // Following A* path to random wander point
-    CHASING,   // Following A* path toward player
-    ATTACKING, // In attack range, executing attack cooldown
-    RETURNING, // Following A* path back to spawn
-    DYING,     // Death animation (3s)
-    DEAD       // Respawn wait (10s)
+    IDLE,        // Standing, decrementing idle timer
+    WANDERING,   // Following A* path to random wander point
+    CHASING,     // Following A* path toward player
+    APPROACHING, // In attack range, brief delay before first hit (WoW-style)
+    ATTACKING,   // In attack range, executing attack cooldown
+    RETURNING,   // Following A* path back to spawn (evading/invulnerable)
+    DYING,       // Death animation (3s)
+    DEAD         // Respawn wait (10s)
   };
   AIState aiState = AIState::IDLE;
   float stateTimer = 0.0f;     // Time in current state / idle timer
@@ -116,6 +117,18 @@ struct MonsterInstance {
   float aggroTimer = 0.0f; // Duration to keep aggro (negative = respawn immune)
   float repathTimer = 0.0f; // Timer for re-pathfinding during chase
   int chaseFailCount = 0;   // Consecutive pathfinding failures
+
+  // WoW-style approach + evade
+  float approachTimer = 0.0f;   // Time spent in APPROACHING state
+  float staggerDelay = 0.0f;    // Per-monster random offset for attack timing
+  bool evading = false;          // True during RETURNING (invulnerable)
+
+  // Poison DoT debuff (Main 5.2: AT_SKILL_POISON, OpenMU PoisonMagicEffect)
+  bool poisoned = false;        // Currently has poison debuff
+  float poisonTickTimer = 0.0f; // Accumulator for 3-second tick interval
+  float poisonDuration = 0.0f;  // Remaining poison duration
+  int poisonDamage = 0;         // Flat damage per tick
+  int poisonAttackerFd = -1;    // FD of player who applied poison (for XP/aggro)
 
   // Broadcast dedup (event-driven: only emit when something changes)
   uint8_t lastBroadcastTargetX = 0;
@@ -163,6 +176,17 @@ public:
     uint8_t damageType;   // 0=Miss, 1=Normal, 2=Crit, 3=Exc, ...
     uint16_t remainingHp; // Player's remaining HP after damage
   };
+
+  // Poison DoT tick result to broadcast (reuses DAMAGE packet)
+  struct PoisonTickResult {
+    uint16_t monsterIndex;
+    uint16_t damage;
+    uint16_t remainingHp;
+    int attackerFd; // For XP if poison kills
+  };
+
+  // Process poison DoT ticks on all monsters. Returns tick results to broadcast.
+  std::vector<PoisonTickResult> ProcessPoisonTicks(float dt);
 
   // Monster target update to broadcast (event-driven, not periodic)
   struct MonsterMoveUpdate {
@@ -277,12 +301,19 @@ private:
                       std::vector<PlayerTarget> &players,
                       std::vector<MonsterMoveUpdate> &outMoves,
                       std::vector<MonsterAttackResult> &attacks);
+  void processApproaching(MonsterInstance &mon, float dt,
+                          std::vector<PlayerTarget> &players,
+                          std::vector<MonsterMoveUpdate> &outMoves,
+                          std::vector<MonsterAttackResult> &attacks);
   void processAttacking(MonsterInstance &mon, float dt,
                         std::vector<PlayerTarget> &players,
                         std::vector<MonsterMoveUpdate> &outMoves,
                         std::vector<MonsterAttackResult> &attacks);
   void processReturning(MonsterInstance &mon, float dt,
                         std::vector<MonsterMoveUpdate> &outMoves);
+
+  // Attack stagger: offset attack timers for multi-monster encounters
+  float calculateStaggerDelay(int targetFd) const;
 
   // Grid-step path advancement: returns true if monster moved one cell
   bool advancePathStep(MonsterInstance &mon, float dt,

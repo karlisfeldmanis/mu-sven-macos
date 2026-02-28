@@ -305,6 +305,8 @@ void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
     session.mana = session.maxMana;
     printf("[Character] Player fd=%d respawned (HP=%d/%d)\n", session.GetFd(),
            session.hp, session.maxHp);
+    // Notify client of restored HP/mana so HUD updates from 0
+    SendCharStats(session);
   } else {
     session.hp = save->life;
   }

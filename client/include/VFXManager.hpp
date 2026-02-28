@@ -1,9 +1,13 @@
 #ifndef VFX_MANAGER_HPP
 #define VFX_MANAGER_HPP
 
+#include "BMDParser.hpp"
+#include "BMDUtils.hpp"
+#include "MeshBuffers.hpp"
 #include "Shader.hpp"
 #include <GL/glew.h>
 #include <glm/glm.hpp>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,6 +25,18 @@ enum class ParticleType {
   SKILL_CYCLONE, // Cyan spinning spark ring (Cyclone/Twisting Slash)
   SKILL_FURY,    // Orange-red ground burst (Rageful Blow)
   SKILL_STAB,    // Dark red piercing sparks (Death Stab)
+  // DW Spell effects
+  SPELL_ENERGY,    // Blue-white energy burst (Energy Ball)
+  SPELL_FIRE,      // Orange-yellow fire burst (Fire Ball, Flame, Hellfire)
+  SPELL_ICE,       // Cyan-white ice shards (Ice)
+  SPELL_LIGHTNING,  // Bright white-blue electric sparks (Lightning)
+  SPELL_POISON,    // Green toxic cloud (Poison)
+  SPELL_METEOR,    // Dark orange falling sparks (Meteorite)
+  SPELL_DARK,      // Purple-black dark energy (Evil Spirit, Twister)
+  SPELL_WATER,     // Blue water spray (Aqua Beam)
+  SPELL_TELEPORT,  // Bright white flash ring (Teleport)
+  // Main 5.2: BITMAP_ENERGY orb (Thunder01.jpg, full-texture, rotating)
+  SPELL_ENERGY_ORB, // Energy Ball core glow — uses Thunder01 texture at full UV
 };
 
 class VFXManager {
@@ -45,10 +61,36 @@ public:
   // Spawn skill impact VFX at monster position (skill-specific particles)
   void SpawnSkillImpact(uint8_t skillId, const glm::vec3 &monsterPos);
 
+  // Spawn a spell projectile traveling from caster to target
+  // Main 5.2: BITMAP_ENERGY — billboard with trailing particles + sparks
+  void SpawnSpellProjectile(uint8_t skillId, const glm::vec3 &start,
+                            const glm::vec3 &target);
+
   // Spawns a textured ribbon from start heading toward target
   // Main 5.2: two passes per Lich bolt — scale=50 (thick) + scale=10 (thin)
   void SpawnRibbon(const glm::vec3 &start, const glm::vec3 &target, float scale,
                    const glm::vec3 &color, float duration = 0.5f);
+
+  // Main 5.2: AddTerrainLight — spell projectiles emit dynamic point lights
+  // Appends active spell lights to the provided vectors (caller merges with world lights)
+  void GetActiveSpellLights(std::vector<glm::vec3> &positions,
+                            std::vector<glm::vec3> &colors,
+                            std::vector<float> &ranges,
+                            std::vector<int> &objectTypes) const;
+
+  // Main 5.2: MODEL_SKILL_BLAST — twin sky-strike bolts falling at target
+  void SpawnLightningStrike(const glm::vec3 &targetPos);
+
+  // Main 5.2: Meteorite — single fireball falling from sky at target
+  void SpawnMeteorStrike(const glm::vec3 &targetPos);
+
+  // Main 5.2: MODEL_POISON — spawn green cloud at target position
+  void SpawnPoisonCloud(const glm::vec3 &targetPos);
+
+  // Terrain height callback (set from main.cpp for ground collision)
+  void SetTerrainHeightFunc(std::function<float(float, float)> fn) {
+    m_getTerrainHeight = std::move(fn);
+  }
 
 private:
   struct Particle {
@@ -61,6 +103,7 @@ private:
     float maxLifetime;
     glm::vec3 color;
     float alpha;
+    float frame = 0.0f; // 0+ = sprite sheet column, -1 = full texture UV
   };
 
   // Ribbon segment: one cross-section of the trail (Main 5.2 JOINT Tails)
@@ -129,10 +172,76 @@ private:
     std::vector<LevelUpSprite> sprites; // 15 orbiting BITMAP_FLARE joints
   };
 
+  // Main 5.2: BITMAP_ENERGY spell projectile (Energy Ball, Fire Ball, etc.)
+  // Rendered as glowing billboard traveling from caster to target with trail.
+  // Direction=(0,-60,0), LifeTime=20, Luminosity=LifeTime*0.2, trail=BITMAP_ENERGY+BITMAP_SPARK+1
+  struct SpellProjectile {
+    glm::vec3 position;
+    glm::vec3 target;
+    glm::vec3 direction; // Normalized travel direction
+    float speed;         // World units/sec (Main 5.2: ~1500)
+    float scale;         // Billboard size
+    float rotation;      // Current rotation angle (radians)
+    float rotSpeed;      // Rotation speed (Main 5.2: 20 deg/tick = 500 deg/sec)
+    float lifetime;
+    float maxLifetime;
+    float trailTimer;    // Accumulator for trail particle spawning
+    glm::vec3 color;     // RGB tint
+    float alpha;
+    uint8_t skillId;     // For matching spell type
+    ParticleType trailType; // Particle type for trail
+    float yaw = 0.0f;   // Heading toward target (3D model orientation)
+    float pitch = 0.0f;  // Vertical angle toward target
+  };
+
+  // Main 5.2: MODEL_SKILL_BLAST — falling sky-strike bolt
+  struct LightningBolt {
+    glm::vec3 position;
+    glm::vec3 velocity;
+    float scale;
+    float rotation;      // Spinning
+    float lifetime;
+    float maxLifetime;
+    bool impacted;
+    float impactTimer;
+    // Main 5.2: BITMAP_JOINT_ENERGY SubType 5 — 10-segment trailing energy aura
+    static constexpr int MAX_TRAIL = 10;
+    glm::vec3 trail[MAX_TRAIL];
+    int numTrail = 0;
+    float trailTimer = 0.0f;
+  };
+
+  // Main 5.2: MODEL_FIRE SubType 0 — falling fireball for Meteorite skill
+  // Trail = per-tick BITMAP_FIRE billboard particles, no ribbon
+  struct MeteorBolt {
+    glm::vec3 position;
+    glm::vec3 velocity;    // Diagonal fall
+    float scale;           // 1.0-1.7
+    float lifetime;
+    float maxLifetime;     // 40 ticks = 1.6s
+    bool impacted;
+    float impactTimer;
+    float trailTimer = 0.0f;
+  };
+
+  // Main 5.2: MODEL_POISON — green cloud at target (BlendMesh=1, LifeTime=40 ticks)
+  struct PoisonCloud {
+    glm::vec3 position;
+    float rotation;      // Spinning (Main 5.2: 20 deg/tick)
+    float lifetime;
+    float maxLifetime;   // 1.6s (40 ticks @ 25fps)
+    float alpha;
+    float scale;
+  };
+
   std::vector<Particle> m_particles;
   std::vector<Ribbon> m_ribbons;
   std::vector<GroundCircle> m_groundCircles;
   std::vector<LevelUpEffect> m_levelUpEffects;
+  std::vector<SpellProjectile> m_spellProjectiles;
+  std::vector<LightningBolt> m_lightningBolts;
+  std::vector<MeteorBolt> m_meteorBolts;
+  std::vector<PoisonCloud> m_poisonClouds;
 
   // Textures
   GLuint m_bloodTexture = 0;
@@ -143,6 +252,7 @@ private:
   GLuint m_fireTexture = 0;
   GLuint m_energyTexture = 0;
   GLuint m_lightningTexture = 0; // JointThunder01.OZJ for ribbons
+  GLuint m_thunderTexture = 0;   // Main 5.2: BITMAP_ENERGY (Effect/Thunder01.OZJ)
   GLuint m_magicGroundTexture =
       0; // Main 5.2: Magic_Ground2.OZJ (level-up circle)
   GLuint m_ringTexture = 0;         // ring_of_gradation.OZJ (level-up ring)
@@ -150,6 +260,22 @@ private:
 
   std::unique_ptr<Shader> m_shader;
   std::unique_ptr<Shader> m_lineShader;
+
+  // Fire Ball 3D model (Main 5.2: MODEL_FIRE = Data/Skill/Fire01.bmd)
+  std::unique_ptr<BMDData> m_fireBmd;
+  std::vector<MeshBuffers> m_fireMeshes;
+  std::unique_ptr<Shader> m_modelShader; // model.vert/model.frag for 3D rendering
+
+  // Lightning sky-strike (Main 5.2: MODEL_SKILL_BLAST = Data/Skill/Blast01.bmd)
+  std::unique_ptr<BMDData> m_blastBmd;
+  std::vector<MeshBuffers> m_blastMeshes;
+
+  // Poison cloud (Main 5.2: MODEL_POISON = Data/Skill/Poison01.bmd)
+  std::unique_ptr<BMDData> m_poisonBmd;
+  std::vector<MeshBuffers> m_poisonMeshes;
+
+  // Terrain height callback for ground collision
+  std::function<float(float, float)> m_getTerrainHeight;
 
   // Billboard particle buffers
   GLuint m_quadVAO = 0, m_quadVBO = 0, m_quadEBO = 0;
@@ -167,6 +293,17 @@ private:
   void renderRibbons(const glm::mat4 &view, const glm::mat4 &projection);
   void renderGroundCircles(const glm::mat4 &view, const glm::mat4 &projection);
   void renderLevelUpEffects(const glm::mat4 &view, const glm::mat4 &projection);
+  void updateSpellProjectiles(float dt);
+  void renderSpellProjectiles(const glm::mat4 &view,
+                              const glm::mat4 &projection);
+  void renderFireModel(const SpellProjectile &p, const glm::mat4 &view,
+                       const glm::mat4 &projection);
+  void updateLightningBolts(float dt);
+  void renderLightningBolts(const glm::mat4 &view, const glm::mat4 &projection);
+  void updateMeteorBolts(float dt);
+  void renderMeteorBolts(const glm::mat4 &view, const glm::mat4 &projection);
+  void updatePoisonClouds(float dt);
+  void renderPoisonClouds(const glm::mat4 &view, const glm::mat4 &projection);
 };
 
 #endif // VFX_MANAGER_HPP

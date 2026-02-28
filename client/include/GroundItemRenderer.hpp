@@ -13,8 +13,8 @@ struct ClientItemDefinition;
 struct FloatingDamage {
   glm::vec3 worldPos; // World position where damage occurred
   int damage;
-  uint8_t type;  // 0=normal(red), 2=critical(cyan), 3=excellent(cyan-green),
-                 // 7=miss(orange), 8=incoming(red), 9=XP, 10=heal
+  uint8_t type;  // 0=normal(white), 2=critical(yellow), 3=excellent(gold),
+                 // 4=poison(green), 7=miss(gray), 8=incoming(red), 9=XP, 10=heal
   float gravity; // Main 5.2: starts at 10, decreases 0.3/tick. Alpha = gravity*0.4
   float yOffset; // Accumulated vertical displacement
   float scale;   // Main 5.2: 50 for crits (decays to 15), 15 for normal

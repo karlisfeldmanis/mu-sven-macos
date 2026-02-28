@@ -13,24 +13,43 @@
 
 namespace CombatHandler {
 
-// DK skill definitions (server-side copy matching client g_dkSkills)
+// Skill definitions for all classes
+// resourceCost: AG for DK, Mana for DW/ELF/MG
 // aoeRange: world units (0 = single target, 200 = 2 grid cells, etc.)
+// isMagic: true = uses magic damage formula instead of physical
 struct SkillDef {
   uint8_t skillId;
-  int agCost;
+  int resourceCost;
   int damageBonus;
   float aoeRange; // 0 = single target
+  bool isMagic;   // true = wizardry damage
 };
 
 static const SkillDef g_skillDefs[] = {
-    {19, 9, 15, 0},     // Falling Slash (single target)
-    {20, 9, 15, 0},     // Lunge (single target)
-    {21, 8, 15, 0},     // Uppercut (single target)
-    {22, 9, 18, 0},     // Cyclone (single target)
-    {23, 10, 20, 0},    // Slash (single target)
-    {41, 10, 25, 200},  // Twisting Slash (AoE range 2 grid)
-    {42, 20, 60, 300},  // Rageful Blow (AoE range 3 grid)
-    {43, 12, 70, 100},  // Death Stab (splash range 1 grid around target)
+    // DK skills (AG cost)
+    {19, 9, 15, 0, false},     // Falling Slash (single target)
+    {20, 9, 15, 0, false},     // Lunge (single target)
+    {21, 8, 15, 0, false},     // Uppercut (single target)
+    {22, 9, 18, 0, false},     // Cyclone (single target)
+    {23, 10, 20, 0, false},    // Slash (single target)
+    {41, 10, 25, 200, false},  // Twisting Slash (AoE range 2 grid)
+    {42, 20, 60, 300, false},  // Rageful Blow (AoE range 3 grid)
+    {43, 12, 70, 100, false},  // Death Stab (splash range 1 grid around target)
+    // DW spells (Mana cost) — OpenMU Version075 skill definitions
+    {17, 1, 8, 0, true},        // Energy Ball (basic ranged)
+    {1, 42, 20, 0, true},       // Poison (DoT effect, single target)
+    {2, 12, 40, 0, true},       // Meteorite (single target ranged)
+    {3, 15, 30, 0, true},       // Lightning (single target)
+    {4, 3, 22, 0, true},        // Fire Ball (basic ranged)
+    {5, 50, 50, 200, true},     // Flame (AoE)
+    {6, 30, 0, 0, true},        // Teleport (no damage, utility)
+    {7, 38, 35, 0, true},       // Ice (single target)
+    {8, 60, 55, 200, true},     // Twister (AoE)
+    {9, 90, 80, 250, true},     // Evil Spirit (AoE)
+    {10, 160, 100, 300, true},   // Hellfire (large AoE)
+    {12, 140, 90, 0, true},     // Aqua Beam (beam, single target)
+    {13, 90, 120, 150, true},   // Cometfall (AoE sky-strike)
+    {14, 200, 150, 400, true},  // Inferno (ring of explosions AoE)
 };
 
 static const SkillDef *FindSkillDef(uint8_t skillId) {
@@ -43,18 +62,27 @@ static const SkillDef *FindSkillDef(uint8_t skillId) {
 // Shared combat logic: calculate damage, apply to monster, handle aggro/kill/XP
 static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
                                  int bonusDamage, GameWorld &world,
-                                 Server &server) {
+                                 Server &server, bool isMagic = false) {
   CharacterClass charCls = static_cast<CharacterClass>(session.classCode);
   bool hasBow = session.hasBow;
 
-  int baseMin = StatCalculator::CalculateMinDamage(charCls, session.strength,
-                                                   session.dexterity,
-                                                   session.energy, hasBow) +
-                session.weaponDamageMin;
-  int baseMax = StatCalculator::CalculateMaxDamage(charCls, session.strength,
-                                                   session.dexterity,
-                                                   session.energy, hasBow) +
-                session.weaponDamageMax;
+  int baseMin, baseMax;
+  if (isMagic) {
+    // Wizardry damage: ENE-based + staff magic damage
+    baseMin = StatCalculator::CalculateMinMagicDamage(charCls, session.energy) +
+              session.weaponDamageMin;
+    baseMax = StatCalculator::CalculateMaxMagicDamage(charCls, session.energy) +
+              session.weaponDamageMax;
+  } else {
+    baseMin = StatCalculator::CalculateMinDamage(charCls, session.strength,
+                                                 session.dexterity,
+                                                 session.energy, hasBow) +
+              session.weaponDamageMin;
+    baseMax = StatCalculator::CalculateMaxDamage(charCls, session.strength,
+                                                 session.dexterity,
+                                                 session.energy, hasBow) +
+              session.weaponDamageMax;
+  }
 
   if (baseMax < baseMin)
     baseMax = baseMin;
@@ -63,25 +91,33 @@ static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
   int damage = 0;
   bool missed = false;
 
+  // Level-based auto-miss: monster 10+ levels above player always dodges
+  if (mon->level >= session.level + 10) {
+    missed = true;
+    damageType = 0;
+  }
+
   int attackRate = StatCalculator::CalculateAttackRate(
       session.level, session.dexterity, session.strength);
   int defRate = mon->defenseRate;
 
   // OpenMU hit chance: hitChance = 1 - defRate/atkRate (min 3%)
-  int hitChance;
-  if (attackRate > 0 && defRate < attackRate) {
-    hitChance = 100 - (defRate * 100) / attackRate;
-  } else {
-    hitChance = 3;
-  }
-  if (hitChance < 3)
-    hitChance = 3;
-  if (hitChance > 100)
-    hitChance = 100;
+  if (!missed) {
+    int hitChance;
+    if (attackRate > 0 && defRate < attackRate) {
+      hitChance = 100 - (defRate * 100) / attackRate;
+    } else {
+      hitChance = 3;
+    }
+    if (hitChance < 3)
+      hitChance = 3;
+    if (hitChance > 100)
+      hitChance = 100;
 
-  if (rand() % 100 >= hitChance) {
-    missed = true;
-    damageType = 0; // miss
+    if (rand() % 100 >= hitChance) {
+      missed = true;
+      damageType = 0; // miss
+    }
   }
 
   if (!missed) {
@@ -106,13 +142,27 @@ static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
     damage += bonusDamage;
 
     damage = std::max(1, damage - mon->defense);
-    mon->hp -= damage;
+
+    // Evading monsters are invulnerable (WoW leash behavior)
+    // Cancel evade on re-aggro — this hit does no damage but re-engages
+    if (mon->evading) {
+      damage = 0;
+      damageType = 0; // Show as miss
+      mon->evading = false;
+      printf("[AI] Mon %d: EVADE cancelled by attacker fd=%d\n", mon->index,
+             session.GetFd());
+    } else {
+      mon->hp -= damage;
+    }
 
     // Aggro logic
     if (mon->aggroTargetFd != session.GetFd()) {
       mon->aggroTargetFd = session.GetFd();
-      printf("[AI] Mon %d (type %d): NEW AGGRO on attacker fd=%d (dmg=%d)\n",
-             mon->index, mon->type, session.GetFd(), damage);
+      printf("[AI] Mon %d (type %d): NEW AGGRO on attacker fd=%d (dmg=%d) "
+             "monGrid=(%d,%d) playerGrid=(%d,%d)\n",
+             mon->index, mon->type, session.GetFd(), damage,
+             mon->gridX, mon->gridY,
+             (int)(session.worldZ / 100.0f), (int)(session.worldX / 100.0f));
     }
     mon->aggroTimer = 15.0f;
     mon->aiState = MonsterInstance::AIState::CHASING;
@@ -122,7 +172,7 @@ static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
     mon->moveTimer = mon->moveDelay;
     mon->attackCooldown = 0.0f;
 
-    // Pack assist (same-type monsters within viewRange join aggro)
+    // Pack assist (same-type monsters within 3 cells join aggro)
     if (mon->aggressive) {
       for (auto &ally : world.GetMonsterInstancesMut()) {
         if (ally.index == mon->index)
@@ -134,6 +184,7 @@ static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
           continue;
         if (ally.aiState == MonsterInstance::AIState::CHASING ||
             ally.aiState == MonsterInstance::AIState::ATTACKING ||
+            ally.aiState == MonsterInstance::AIState::APPROACHING ||
             ally.aiState == MonsterInstance::AIState::RETURNING)
           continue;
         if (ally.aggroTimer < 0.0f)
@@ -142,7 +193,7 @@ static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
           continue;
         int dist = PathFinder::ChebyshevDist(ally.gridX, ally.gridY, mon->gridX,
                                              mon->gridY);
-        if (dist <= ally.viewRange) {
+        if (dist <= 3) { // 3 grid cells (was: ally.viewRange)
           ally.aggroTargetFd = session.GetFd();
           ally.aggroTimer = 15.0f;
           ally.aiState = MonsterInstance::AIState::CHASING;
@@ -319,12 +370,12 @@ void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
   bool isDK = (charCls == CharacterClass::CLASS_DK);
   int currentResource = isDK ? session.ag : session.mana;
 
-  if (currentResource < skillDef->agCost) {
+  if (currentResource < skillDef->resourceCost) {
     SkillLog("[SkillAttack] FAIL: not enough resource (%d < %d) isDK=%d\n",
-             currentResource, skillDef->agCost, (int)isDK);
+             currentResource, skillDef->resourceCost, (int)isDK);
     printf("[Combat] fd=%d not enough %s (%d/%d) for skill %d\n",
            session.GetFd(), isDK ? "AG" : "Mana", currentResource,
-           skillDef->agCost, atk->skillId);
+           skillDef->resourceCost, atk->skillId);
     // Re-sync stats so client has accurate AG value
     CharacterHandler::SendCharStats(session);
     return;
@@ -332,9 +383,9 @@ void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
 
   // Deduct resource
   if (isDK) {
-    session.ag -= skillDef->agCost;
+    session.ag -= skillDef->resourceCost;
   } else {
-    session.mana -= skillDef->agCost;
+    session.mana -= skillDef->resourceCost;
   }
 
   SkillLog("[SkillAttack] Resource deducted: %d -> %d\n", currentResource,
@@ -352,11 +403,36 @@ void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
   SkillLog("[SkillAttack] SUCCESS: applying damage bonus=%d to mon %d\n",
            skillDef->damageBonus, atk->monsterIndex);
 
+  // Teleport (skill 6) — no damage, just utility (TODO: implement teleport movement)
+  if (skillDef->skillId == 6) {
+    CharacterHandler::SendCharStats(session);
+    printf("[Combat] fd=%d used Teleport (mana cost=%d)\n",
+           session.GetFd(), skillDef->resourceCost);
+    return;
+  }
+
   // Apply damage with skill bonus to primary target
-  ApplyDamageToMonster(session, mon, skillDef->damageBonus, world, server);
+  ApplyDamageToMonster(session, mon, skillDef->damageBonus, world, server,
+                       skillDef->isMagic);
+
+  // Poison (skill 1): apply DoT debuff — OpenMU PoisonMagicEffect
+  // Duration 10s, tick every 3s, tick damage = 30% of initial hit
+  if (skillDef->skillId == 1 && mon->hp > 0) {
+    int tickDmg = std::max(1, (skillDef->damageBonus + session.maxMagicDamage) / 3);
+    if (!mon->poisoned) {
+      // Fresh poison: start tick timer from 0
+      mon->poisonTickTimer = 0.0f;
+    }
+    // Refresh duration and update damage (don't reset tick timer on re-apply)
+    mon->poisoned = true;
+    mon->poisonDuration = 10.0f;
+    mon->poisonDamage = std::max(mon->poisonDamage, tickDmg);
+    mon->poisonAttackerFd = session.GetFd();
+    printf("[Combat] Poison applied to mon %d (tick=%d, dur=10s) by fd=%d\n",
+           mon->index, mon->poisonDamage, session.GetFd());
+  }
 
   // AoE: hit all nearby monsters within skill range (OpenMU: AreaSkillAutomaticHits)
-  // Twisting Slash (41): range 2 grid, Rageful Blow (42): range 3, Death Stab (43): splash 1
   int aoeHits = 0;
   if (skillDef->aoeRange > 0) {
     float cx = mon->worldX, cz = mon->worldZ;
@@ -371,7 +447,7 @@ void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
       float dz = other.worldZ - cz;
       if (dx * dx + dz * dz <= r2) {
         ApplyDamageToMonster(session, &other, skillDef->damageBonus, world,
-                             server);
+                             server, skillDef->isMagic);
         aoeHits++;
       }
     }
@@ -382,7 +458,7 @@ void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
 
   printf("[Combat] fd=%d used skill %d (AG cost=%d, bonus=%d) on mon %d "
          "(+%d AoE)\n",
-         session.GetFd(), atk->skillId, skillDef->agCost, skillDef->damageBonus,
+         session.GetFd(), atk->skillId, skillDef->resourceCost, skillDef->damageBonus,
          atk->monsterIndex, aoeHits);
 }
 
