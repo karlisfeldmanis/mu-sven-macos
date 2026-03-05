@@ -37,6 +37,13 @@ static ALuint s_musicSource = 0;
 static float s_musicVolume = 0.7f;
 static std::string s_currentMusic; // Currently playing music file path
 
+// ── Fade state ──
+enum class FadeState { NONE, FADING_OUT, FADING_IN };
+static FadeState s_fadeState = FadeState::NONE;
+static float s_fadeTimer = 0.0f;
+static float s_fadeDuration = 1.5f;
+static std::string s_pendingTrack; // Track to play after fade-out (empty = just stop)
+
 // ── WAV Loader ──
 
 struct WAVData {
@@ -237,6 +244,12 @@ void Init(const std::string &dataPath) {
   // Teleport / Gem sounds
   LoadSound(SOUND_SUMMON, sndPath + "eSummon.wav", 1);
   LoadSound(SOUND_JEWEL01, sndPath + "eGem.wav", 1);
+
+  // Main 5.2: SOUND_THUNDER01 — lightning spell cast/impact
+  LoadSound(SOUND_THUNDER01, sndPath + "eThunder.wav", 2);
+
+  // Lich thunder attack (3D positional)
+  LoadSound(SOUND_LICH_THUNDER, sndPath + "w57/Naipin-Thunder.wav", 2, true);
 
   // Skeleton bone sounds (3D positional)
   LoadSound(SOUND_BONE1, sndPath + "mBone1.wav", 2, true);
@@ -519,6 +532,87 @@ bool IsMusicPlaying() {
   ALint state;
   alGetSourcei(s_musicSource, AL_SOURCE_STATE, &state);
   return state == AL_PLAYING;
+}
+
+// ── Crossfade / Fade ──
+
+void CrossfadeTo(const std::string &filename, float fadeSeconds) {
+  if (!s_initialized)
+    return;
+
+  // Already playing this track — skip
+  if (s_currentMusic == filename && IsMusicPlaying())
+    return;
+
+  // If no music playing, just start directly with fade-in
+  if (!IsMusicPlaying()) {
+    PlayMusic(filename);
+    // Start at 0 volume and fade in
+    alSourcef(s_musicSource, AL_GAIN, 0.0f);
+    s_fadeState = FadeState::FADING_IN;
+    s_fadeTimer = 0.0f;
+    s_fadeDuration = fadeSeconds;
+    s_pendingTrack.clear();
+    return;
+  }
+
+  // Fade out current, then play new
+  s_pendingTrack = filename;
+  s_fadeState = FadeState::FADING_OUT;
+  s_fadeTimer = 0.0f;
+  s_fadeDuration = fadeSeconds;
+}
+
+void FadeOut(float fadeSeconds) {
+  if (!s_initialized || !IsMusicPlaying())
+    return;
+
+  s_pendingTrack.clear(); // No next track — just stop
+  s_fadeState = FadeState::FADING_OUT;
+  s_fadeTimer = 0.0f;
+  s_fadeDuration = fadeSeconds;
+}
+
+void UpdateMusic(float deltaTime) {
+  if (!s_initialized || s_fadeState == FadeState::NONE)
+    return;
+
+  s_fadeTimer += deltaTime;
+  float t = (s_fadeDuration > 0.0f) ? (s_fadeTimer / s_fadeDuration) : 1.0f;
+  if (t > 1.0f)
+    t = 1.0f;
+
+  if (s_fadeState == FadeState::FADING_OUT) {
+    float vol = s_musicVolume * (1.0f - t);
+    if (s_musicSource)
+      alSourcef(s_musicSource, AL_GAIN, vol);
+
+    if (t >= 1.0f) {
+      // Fade-out complete
+      if (s_pendingTrack.empty()) {
+        // Just stop
+        StopMusic();
+        s_fadeState = FadeState::NONE;
+      } else {
+        // Start the pending track with fade-in
+        std::string track = s_pendingTrack;
+        s_pendingTrack.clear();
+        StopMusic();
+        PlayMusic(track);
+        alSourcef(s_musicSource, AL_GAIN, 0.0f);
+        s_fadeState = FadeState::FADING_IN;
+        s_fadeTimer = 0.0f;
+      }
+    }
+  } else if (s_fadeState == FadeState::FADING_IN) {
+    float vol = s_musicVolume * t;
+    if (s_musicSource)
+      alSourcef(s_musicSource, AL_GAIN, vol);
+
+    if (t >= 1.0f) {
+      s_fadeState = FadeState::NONE;
+    }
+  }
 }
 
 } // namespace SoundManager

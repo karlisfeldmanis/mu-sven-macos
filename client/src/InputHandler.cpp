@@ -7,13 +7,16 @@
 #include "InventoryUI.hpp"
 #include "MonsterManager.hpp"
 #include "NpcManager.hpp"
+#include "ObjectRenderer.hpp"
 #include "RayPicker.hpp"
 #include "ServerConnection.hpp"
+#include "TextureLoader.hpp"
 #include "UICoords.hpp"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <cstring>
 #include <glm/glm.hpp>
 #include <iostream>
 
@@ -25,6 +28,10 @@ static bool s_ctxInitialized = false;
 // Pending NPC interaction (walk to NPC then open shop)
 static int s_pendingNpcIdx = -1;
 
+// Pending interactive object interaction (sit/pose — walk to object then trigger)
+static int s_pendingInteractIdx = -1;
+static constexpr float INTERACT_TRIGGER_RANGE = 100.0f; // Trigger sit/pose within this
+
 // Distance thresholds for NPC interaction
 static constexpr float NPC_INTERACT_RANGE =
     200.0f; // Open shop when within this range
@@ -35,11 +42,78 @@ static constexpr float NPC_CLOSE_RANGE = 500.0f; // Auto-close shop beyond this
 // Set true after first ProcessInput — prevents callbacks during early init
 static bool s_gameReady = false;
 
-// GLFW cursors for hover feedback (Main 5.2: CursorId changes on hover)
-static GLFWcursor *s_cursorArrow = nullptr;    // Default
-static GLFWcursor *s_cursorAttack = nullptr;   // Monster hover (crosshair)
-static GLFWcursor *s_cursorInteract = nullptr; // NPC/item hover (hand)
+// Main 5.2 custom cursors loaded from OZT files in Data/Interface/
+static GLFWcursor *s_cursorDefault = nullptr;     // Cursor.ozt
+static GLFWcursor *s_cursorAttack = nullptr;      // CursorAttack.ozt
+static GLFWcursor *s_cursorGet = nullptr;         // CursorGet.ozt
+static GLFWcursor *s_cursorSitDown = nullptr;     // CursorSitDown.ozt
+static GLFWcursor *s_cursorLeanAgainst = nullptr; // CursorLeanAgainst.ozt
+static GLFWcursor *s_cursorTalk = nullptr;        // CursorTalk.ozt
+static GLFWcursor *s_cursorDontMove = nullptr;    // CursorDontMove.OZT
+static GLFWcursor *s_cursorPush = nullptr;        // CursorPush.ozt
+static GLFWcursor *s_cursorEye = nullptr;         // CursorEye.ozt
+static GLFWcursor *s_cursorRepair = nullptr;      // CursorRepair.OZT
+static GLFWcursor *s_cursorAddIn = nullptr;       // CursorAddIn.OZT
+static GLFWcursor *s_cursorFallback = nullptr;    // GLFW standard arrow (fallback)
 static GLFWwindow *s_window = nullptr;
+
+// Nearest-neighbor downscale RGBA image
+static std::vector<unsigned char> DownscaleRGBA(const unsigned char *src,
+                                                int srcW, int srcH,
+                                                int dstW, int dstH) {
+  std::vector<unsigned char> dst((size_t)dstW * dstH * 4);
+  for (int y = 0; y < dstH; y++) {
+    int sy = y * srcH / dstH;
+    for (int x = 0; x < dstW; x++) {
+      int sx = x * srcW / dstW;
+      std::memcpy(&dst[(y * dstW + x) * 4], &src[(sy * srcW + sx) * 4], 4);
+    }
+  }
+  return dst;
+}
+
+// Load an OZT file as a GLFW custom cursor.
+// LoadOZTRaw V-flips TGA data — the result is already top-to-bottom which GLFW expects.
+// For animated sprite sheets (e.g. 64x64 = 2x2 grid of 32x32), extract first frame.
+// Cursors are scaled to 24x24 to match typical display DPI.
+static constexpr int CURSOR_SIZE = 24;
+static GLFWcursor *LoadOZTCursor(const std::string &path, int hotX = 0,
+                                 int hotY = 0) {
+  int w, h;
+  auto pixels = TextureLoader::LoadOZTRaw(path, w, h);
+  if (pixels.empty())
+    return nullptr;
+  int bpp = (int)pixels.size() / (w * h); // 3 (RGB) or 4 (RGBA)
+  // GLFW requires RGBA — convert RGB to RGBA if needed
+  std::vector<unsigned char> rgba;
+  if (bpp == 3) {
+    rgba.resize((size_t)w * h * 4);
+    for (int i = 0; i < w * h; i++) {
+      rgba[i * 4 + 0] = pixels[i * 3 + 0];
+      rgba[i * 4 + 1] = pixels[i * 3 + 1];
+      rgba[i * 4 + 2] = pixels[i * 3 + 2];
+      rgba[i * 4 + 3] = 255;
+    }
+  } else {
+    rgba = std::move(pixels);
+  }
+  // For sprite sheets larger than 32x32, extract first 32x32 frame (top-left)
+  if (w > 32 && h > 32) {
+    std::vector<unsigned char> frame(32 * 32 * 4);
+    for (int y = 0; y < 32; y++)
+      std::memcpy(&frame[y * 32 * 4], &rgba[y * w * 4], 32 * 4);
+    rgba = std::move(frame);
+    w = 32;
+    h = 32;
+  }
+  // Scale hotspot proportionally
+  int scaledHotX = hotX * CURSOR_SIZE / w;
+  int scaledHotY = hotY * CURSOR_SIZE / h;
+  // Downscale to target cursor size
+  auto scaled = DownscaleRGBA(rgba.data(), w, h, CURSOR_SIZE, CURSOR_SIZE);
+  GLFWimage img = {CURSOR_SIZE, CURSOR_SIZE, scaled.data()};
+  return glfwCreateCursor(&img, scaledHotX, scaledHotY);
+}
 
 // ── GLFW callbacks ──
 
@@ -81,13 +155,38 @@ static void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
   }
 
   // Update cursor based on hover state (Main 5.2: CursorId switching)
+  // Only use game cursors when in-game; default cursor over UI panels and char select
   if (s_window) {
-    if (*s_ctx->hoveredMonster >= 0)
-      glfwSetCursor(s_window, s_cursorAttack);
-    else if (*s_ctx->hoveredNpc >= 0 || *s_ctx->hoveredGroundItem >= 0)
-      glfwSetCursor(s_window, s_cursorInteract);
-    else
-      glfwSetCursor(s_window, s_cursorArrow);
+    GLFWcursor *cursor = s_cursorDefault;
+    bool anyPanelOpen = *s_ctx->showCharInfo || *s_ctx->showInventory ||
+                        *s_ctx->showSkillWindow || *s_ctx->shopOpen;
+    if (s_gameReady && !ImGui::GetIO().WantCaptureMouse &&
+        !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && !anyPanelOpen) {
+      if (*s_ctx->hoveredMonster >= 0) {
+        cursor = s_cursorAttack;
+      } else if (*s_ctx->hoveredNpc >= 0) {
+        cursor = s_cursorTalk;
+      } else if (*s_ctx->hoveredGroundItem >= 0) {
+        cursor = s_cursorGet;
+      } else {
+        int interactHit =
+            RayPicker::PickInteractiveObject(window, xpos, ypos);
+        if (interactHit >= 0 && s_ctx->objectRenderer) {
+          const auto &objs =
+              s_ctx->objectRenderer->GetInteractiveObjects();
+          if (interactHit < (int)objs.size()) {
+            if (objs[interactHit].action ==
+                ObjectRenderer::InteractType::SIT)
+              cursor = s_cursorSitDown;
+            else
+              cursor = s_cursorLeanAgainst;
+          }
+        }
+      }
+    }
+    if (!cursor)
+      cursor = s_cursorFallback;
+    glfwSetCursor(s_window, cursor);
   }
 }
 
@@ -160,10 +259,12 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
   if (!s_ctxInitialized || !s_gameReady)
     return;
 
-  // Block world interactions while Game Menu or skill learning is active
+  // Block world interactions while Game Menu, skill learning, or town teleport is active
   if (s_ctx->showGameMenu && *s_ctx->showGameMenu)
     return;
   if (s_ctx->isLearningSkill && *s_ctx->isLearningSkill)
+    return;
+  if (s_ctx->teleportingToTown && *s_ctx->teleportingToTown)
     return;
 
   // Click-to-move on left click (NPC click takes priority)
@@ -177,6 +278,20 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
       float vy = s_ctx->hudCoords->ToVirtualY((float)my);
       if (InventoryUI::HandlePanelClick(vx, vy))
         return;
+
+      // Cancel sit/pose on any world click — character should stand up
+      if (s_ctx->hero->IsSittingOrPosing()) {
+        s_ctx->hero->CancelSitPose();
+        s_pendingInteractIdx = -1; // Prevent ProcessInput from re-triggering sit
+        glm::vec3 target;
+        if (RayPicker::ScreenToTerrain(window, mx, my, target)) {
+          if (RayPicker::IsWalkable(target.x, target.z)) {
+            s_ctx->hero->MoveTo(target);
+            s_ctx->clickEffect->Show(target);
+          }
+        }
+        return;
+      }
 
       // Highest priority interactions: NPC > Monster > Ground Item > Movement
       int npcHit = RayPicker::PickNpc(window, mx, my);
@@ -221,6 +336,32 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
           s_ctx->hero
               ->ClearPendingPickup(); // Cancel pickup if attacking monster
         } else {
+          // Check interactive world objects (chairs, pose boxes)
+          // Skip if already sitting/posing — click should cancel pose, not re-trigger
+          int interactHit = s_ctx->hero->IsSittingOrPosing()
+              ? -1
+              : RayPicker::PickInteractiveObject(window, mx, my);
+          if (interactHit >= 0 && s_ctx->objectRenderer) {
+            const auto &objs =
+                s_ctx->objectRenderer->GetInteractiveObjects();
+            const auto &obj = objs[interactHit];
+            float dist = glm::distance(s_ctx->hero->GetPosition(),
+                                       obj.worldPos);
+            s_ctx->hero->CancelAttack();
+            s_ctx->hero->ClearPendingPickup();
+            if (dist < INTERACT_TRIGGER_RANGE) {
+              // Close enough — sit/pose immediately
+              bool isSit =
+                  (obj.action == ObjectRenderer::InteractType::SIT);
+              s_ctx->hero->StartSitPose(isSit, obj.facingAngle,
+                                        obj.alignToObject, obj.worldPos);
+              s_pendingInteractIdx = -1;
+            } else {
+              // Walk to object, trigger on arrival
+              s_ctx->hero->MoveTo(obj.worldPos);
+              s_pendingInteractIdx = interactHit;
+            }
+          } else {
           // Ground click — move to terrain
           // Block movement cancel before hit frame (prevents animation cancel exploit)
           if (s_ctx->hero->IsAttacking() && !s_ctx->hero->HasRegisteredHit()) {
@@ -229,6 +370,7 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
             if (s_ctx->hero->IsAttacking())
               s_ctx->hero->CancelAttack();
             s_ctx->hero->ClearPendingPickup(); // Cancel pickup if manually moving
+            s_pendingInteractIdx = -1;         // Cancel pending interact
             glm::vec3 target;
             if (RayPicker::ScreenToTerrain(window, mx, my, target)) {
               if (RayPicker::IsWalkable(target.x, target.z)) {
@@ -236,6 +378,7 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
                 s_ctx->clickEffect->Show(target);
               }
             }
+          }
           }
         }
       }
@@ -264,27 +407,25 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
           bool isDK = s_ctx->hero && s_ctx->hero->GetClass() == 16;
           int currentResource = isDK ? (s_ctx->serverAG ? *s_ctx->serverAG : 0)
                                      : (s_ctx->serverMP ? *s_ctx->serverMP : 0);
-          if (currentResource < cost) {
+          if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
+            InventoryUI::ShowNotification("Cannot use skills in safe zone!");
+          } else if (currentResource < cost) {
             InventoryUI::ShowNotification(isDK ? "Not enough AG!" : "Not enough Mana!");
           } else if (skillId == 6) {
             // Teleport — ground-targeted (Main 5.2: AT_SKILL_TELEPORT)
-            // Block teleport in safe zone
-            if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
-              InventoryUI::ShowNotification("Cannot teleport in safe zone!");
-            } else {
-              glm::vec3 target;
-              if (RayPicker::ScreenToTerrain(window, mx, my, target)) {
-                if (RayPicker::IsWalkable(target.x, target.z)) {
-                  uint8_t gridX = (uint8_t)(target.z / 100.0f);
-                  uint8_t gridY = (uint8_t)(target.x / 100.0f);
-                  s_ctx->server->SendTeleport(gridX, gridY);
-                  s_ctx->hero->TeleportTo(target);
-                  s_ctx->hero->ClearPendingPickup();
-                }
+            glm::vec3 target;
+            if (RayPicker::ScreenToTerrain(window, mx, my, target)) {
+              if (RayPicker::IsWalkable(target.x, target.z)) {
+                uint8_t gridX = (uint8_t)(target.z / 100.0f);
+                uint8_t gridY = (uint8_t)(target.x / 100.0f);
+                s_ctx->server->SendTeleport(gridX, gridY);
+                s_ctx->hero->TeleportTo(target);
+                s_ctx->hero->ClearPendingPickup();
               }
             }
-          } else if (skillId == 8 || skillId == 9 || skillId == 10 || skillId == 12 || skillId == 14) {
-            // Twister/Evil Spirit/Hellfire/Flash — AoE: cast from caster toward click direction
+          } else if (skillId == 8 || skillId == 9 || skillId == 10 || skillId == 12 || skillId == 14
+                     || skillId == 41 || skillId == 42 || skillId == 43) {
+            // AoE skills: DW spells + DK melee AoE (Twisting Slash, Rageful Blow, Death Stab)
             // GCD blocks spam, but allow interrupting normal melee attacks
             bool gcdReady = s_ctx->hero->GetGlobalCooldown() <= 0.0f ||
                             s_ctx->hero->GetActiveSkillId() == 0;
@@ -294,26 +435,27 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
                 MonsterInfo info = s_ctx->monsterMgr->GetMonsterInfo(monHit);
                 s_ctx->hero->SkillAttackMonster(monHit, info.position, skillId);
               } else {
-                glm::vec3 groundTarget;
-                if (RayPicker::ScreenToTerrain(window, mx, my, groundTarget)) {
-                  s_ctx->hero->CastSelfAoE(skillId, groundTarget);
-                  // Evil Spirit: caster-centered AoE, send player position
-                  // Twister: directional, send click position for line path
-                  glm::vec3 heroPos = s_ctx->hero->GetPosition();
-                  // Evil Spirit/Hellfire: caster-centered, Twister: directional
-                  // Evil Spirit/Hellfire: caster-centered, Twister/Flash: directional
-                  float atkX = (skillId == 9 || skillId == 10 || skillId == 14) ? heroPos.x : groundTarget.x;
-                  float atkZ = (skillId == 9 || skillId == 10 || skillId == 14) ? heroPos.z : groundTarget.z;
-                  if (skillId == 12) {
-                    // Flash: delay damage until beam spawns at frame 7.0
-                    s_ctx->hero->SetPendingAquaPacket(0xFFFF, skillId, atkX, atkZ);
-                  } else {
-                    s_ctx->server->SendSkillAttack(0xFFFF, skillId, atkX, atkZ);
-                  }
-                  // Optimistically deduct mana to prevent spam before server reply
-                  if (isDK && s_ctx->serverAG) *s_ctx->serverAG -= cost;
-                  else if (s_ctx->serverMP) *s_ctx->serverMP -= cost;
+                glm::vec3 heroPos = s_ctx->hero->GetPosition();
+                // DK melee AoE: always caster-centered
+                bool isMeleeAoE = (skillId == 41 || skillId == 42 || skillId == 43);
+                glm::vec3 groundTarget = heroPos;
+                if (!isMeleeAoE)
+                  RayPicker::ScreenToTerrain(window, mx, my, groundTarget);
+                s_ctx->hero->CastSelfAoE(skillId, isMeleeAoE ? heroPos : groundTarget);
+                // Caster-centered: Evil Spirit/Hellfire/Inferno/DK melee AoE
+                // Directional: Twister/Flash
+                bool casterCentered = (skillId == 9 || skillId == 10 || skillId == 14 || isMeleeAoE);
+                float atkX = casterCentered ? heroPos.x : groundTarget.x;
+                float atkZ = casterCentered ? heroPos.z : groundTarget.z;
+                if (skillId == 12) {
+                  // Flash: delay damage until beam spawns at frame 7.0
+                  s_ctx->hero->SetPendingAquaPacket(0xFFFF, skillId, atkX, atkZ);
+                } else {
+                  s_ctx->server->SendSkillAttack(0xFFFF, skillId, atkX, atkZ);
                 }
+                // Optimistically deduct resource to prevent spam before server reply
+                if (isDK && s_ctx->serverAG) *s_ctx->serverAG -= cost;
+                else if (s_ctx->serverMP) *s_ctx->serverMP -= cost;
               }
             }
             s_ctx->hero->ClearPendingPickup();
@@ -361,6 +503,19 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
       *s_ctx->showSkillWindow = !*s_ctx->showSkillWindow;
       SoundManager::Play(SOUND_INTERFACE01);
     }
+    if (key == GLFW_KEY_T) {
+      if (s_ctx->teleportingToTown && !*s_ctx->teleportingToTown) {
+        if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
+          InventoryUI::ShowNotification("Already in town!");
+          SoundManager::Play(SOUND_ERROR01);
+        } else {
+          s_ctx->hero->StopMoving();
+          *s_ctx->teleportingToTown = true;
+          *s_ctx->teleportTimer = s_ctx->teleportCastTime;
+          SoundManager::Play(SOUND_SUMMON);
+        }
+      }
+    }
     if (key == GLFW_KEY_Q)
       InventoryUI::ConsumeQuickSlotItem(0);
     if (key == GLFW_KEY_W)
@@ -385,13 +540,28 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
         // Menu already open — close it
         *s_ctx->showGameMenu = false;
       } else {
-        // Close all panels, then open Game Menu
-        *s_ctx->shopOpen = false;
-        *s_ctx->selectedNpc = -1;
-        *s_ctx->showCharInfo = false;
-        *s_ctx->showInventory = false;
-        *s_ctx->showSkillWindow = false;
-        *s_ctx->showGameMenu = true;
+        // First close any open panels; only open game menu if nothing was open
+        bool closedSomething = false;
+        if (*s_ctx->shopOpen) {
+          *s_ctx->shopOpen = false;
+          *s_ctx->selectedNpc = -1;
+          closedSomething = true;
+        }
+        if (*s_ctx->showCharInfo) {
+          *s_ctx->showCharInfo = false;
+          closedSomething = true;
+        }
+        if (*s_ctx->showInventory) {
+          *s_ctx->showInventory = false;
+          closedSomething = true;
+        }
+        if (*s_ctx->showSkillWindow) {
+          *s_ctx->showSkillWindow = false;
+          closedSomething = true;
+        }
+        if (!closedSomething) {
+          *s_ctx->showGameMenu = true;
+        }
       }
     }
   }
@@ -412,10 +582,29 @@ void InputHandler::Init(const InputContext &ctx) {
 void InputHandler::RegisterCallbacks(GLFWwindow *window) {
   s_window = window;
 
-  // Create hover cursors (Main 5.2: sword cursor for attack, hand for interact)
-  s_cursorArrow = glfwCreateStandardCursor(GLFW_ARROW_CURSOR);
-  s_cursorAttack = glfwCreateStandardCursor(GLFW_CROSSHAIR_CURSOR);
-  s_cursorInteract = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
+  // Load Main 5.2 custom cursors from OZT files
+  std::string ifDir = s_ctx->dataPath + "/Interface/";
+  s_cursorDefault = LoadOZTCursor(ifDir + "Cursor.ozt");
+  s_cursorAttack = LoadOZTCursor(ifDir + "CursorAttack.ozt");
+  s_cursorGet = LoadOZTCursor(ifDir + "CursorGet.ozt");
+  s_cursorSitDown = LoadOZTCursor(ifDir + "CursorSitDown.ozt");
+  s_cursorLeanAgainst = LoadOZTCursor(ifDir + "CursorLeanAgainst.ozt");
+  s_cursorTalk = LoadOZTCursor(ifDir + "CursorTalk.ozt");
+  s_cursorDontMove = LoadOZTCursor(ifDir + "CursorDontMove.OZT");
+  s_cursorPush = LoadOZTCursor(ifDir + "CursorPush.ozt");
+  s_cursorEye = LoadOZTCursor(ifDir + "CursorEye.ozt");
+  s_cursorRepair = LoadOZTCursor(ifDir + "CursorRepair.OZT");
+  s_cursorAddIn = LoadOZTCursor(ifDir + "CursorAddIn.OZT");
+  // Standard arrow as fallback if OZT loading fails
+  s_cursorFallback = glfwCreateStandardCursor(GLFW_ARROW_CURSOR);
+  if (!s_cursorDefault)
+    s_cursorDefault = s_cursorFallback;
+  if (!s_cursorAttack)
+    s_cursorAttack = glfwCreateStandardCursor(GLFW_CROSSHAIR_CURSOR);
+  if (!s_cursorTalk)
+    s_cursorTalk = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
+  if (!s_cursorGet)
+    s_cursorGet = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
 
   glfwSetCursorPosCallback(window, mouse_callback);
   glfwSetScrollCallback(window, scroll_callback);
@@ -458,6 +647,27 @@ void InputHandler::ProcessInput(GLFWwindow *window, float deltaTime) {
     if (dist < NPC_INTERACT_RANGE) {
       s_ctx->server->SendShopOpen(info.type);
       s_pendingNpcIdx = -1;
+    }
+  }
+
+  // Pending interactive object: trigger sit/pose when hero reaches the object
+  if (s_pendingInteractIdx >= 0 && s_ctx->objectRenderer) {
+    const auto &objs = s_ctx->objectRenderer->GetInteractiveObjects();
+    if (s_pendingInteractIdx < (int)objs.size()) {
+      const auto &obj = objs[s_pendingInteractIdx];
+      float dist =
+          glm::distance(s_ctx->hero->GetPosition(), obj.worldPos);
+      if (dist < INTERACT_TRIGGER_RANGE) {
+        bool isSit = (obj.action == ObjectRenderer::InteractType::SIT);
+        s_ctx->hero->StartSitPose(isSit, obj.facingAngle,
+                                  obj.alignToObject, obj.worldPos);
+        s_pendingInteractIdx = -1;
+      } else if (!s_ctx->hero->IsMoving()) {
+        // Stopped moving but didn't reach — cancel
+        s_pendingInteractIdx = -1;
+      }
+    } else {
+      s_pendingInteractIdx = -1;
     }
   }
 

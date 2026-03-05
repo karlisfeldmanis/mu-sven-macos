@@ -176,7 +176,21 @@ static size_t s_lastShopItemCount = 0; // Detect new SHOP_LIST arrivals
 // Screen notification (center of screen, fades out)
 static std::string s_notifyText;
 static float s_notifyTimer = 0.0f;
-static constexpr float NOTIFY_DURATION = 2.0f;
+static constexpr float NOTIFY_DURATION = 1.0f;
+
+// Region name display (Main 5.2: CUIMapName 4-state machine)
+enum class RegionNameState { HIDE, FADEIN, SHOW, FADEOUT };
+static RegionNameState s_regionState = RegionNameState::HIDE;
+static std::string s_regionName;
+static float s_regionAlpha = 0.0f;
+static float s_regionShowTimer = 0.0f;
+// Main 5.2: UIMN_ALPHA_VARIATION = 0.015 per frame at 25fps
+static constexpr float REGION_FADEIN_SPEED = 0.375f;   // ~2.7s fade in
+static constexpr float REGION_FADEOUT_SPEED = 2.0f;      // ~0.5s fade out
+static constexpr float REGION_SHOW_TIME = 2.0f;         // 2 seconds hold
+// Main 5.2: UIMN_IMG_WIDTH=166, UIMN_IMG_HEIGHT=90 (OZT pre-rendered map name image)
+static GLuint s_mapNameTexture = 0;
+static int s_mapNameTexW = 0, s_mapNameTexH = 0;
 
 // ─── Internal helpers (unnamed namespace) ───────────────────────────────────
 
@@ -512,6 +526,20 @@ namespace InventoryUI {
 void Init(const InventoryUIContext &ctx) {
   s_ctxStore = ctx;
   s_ctx = &s_ctxStore;
+
+  // Load map name OZT images (Main 5.2: Local/[Language]/ImgsMapName/)
+  if (s_mapNameTexture == 0) {
+    s_mapNameTexture = TextureLoader::LoadOZT("Data/Local/Eng/ImgsMapName/lorencia.OZT");
+    if (s_mapNameTexture) {
+      glBindTexture(GL_TEXTURE_2D, s_mapNameTexture);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &s_mapNameTexW);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &s_mapNameTexH);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      std::cout << "[UI] Loaded map name image: " << s_mapNameTexW << "x"
+                << s_mapNameTexH << std::endl;
+    }
+  }
 }
 
 void ClearBagItem(int slot) {
@@ -757,22 +785,74 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
   // Potion healing/mana info
   int potionHeal = 0;
   int potionMana = 0;
+  const char *potionEffect = nullptr; // For antidote/ale/town portal
   if (def->category == 14) {
-    if ((defIndex % 32) == 0)
+    uint8_t pidx = (uint8_t)(defIndex % 32);
+    if (pidx == 0)
       potionHeal = 10;
-    else if ((defIndex % 32) == 1)
+    else if (pidx == 1)
       potionHeal = 20;
-    else if ((defIndex % 32) == 2)
+    else if (pidx == 2)
       potionHeal = 50;
-    else if ((defIndex % 32) == 3)
+    else if (pidx == 3)
       potionHeal = 100;
-    else if ((defIndex % 32) == 4)
+    else if (pidx == 4)
       potionMana = 20;
-    else if ((defIndex % 32) == 5)
+    else if (pidx == 5)
       potionMana = 50;
-    else if ((defIndex % 32) == 6)
+    else if (pidx == 6)
       potionMana = 100;
-    if (potionHeal > 0 || potionMana > 0)
+    else if (pidx == 8)
+      potionEffect = "Cures Poison";
+    else if (pidx == 9)
+      potionEffect = "Restores 10 HP";
+    else if (pidx == 10)
+      potionEffect = "Teleport to Town";
+    if (potionHeal > 0 || potionMana > 0 || potionEffect)
+      th += lineH;
+  }
+
+  // Ring/Pendant/Pet effect info
+  const char *accessoryEffect = nullptr;
+  const char *accessoryEffect2 = nullptr;
+  const char *accessorySlot = nullptr;
+  if (def->category == 13) {
+    uint8_t aidx = (uint8_t)(defIndex % 32);
+    if (aidx == 0) {
+      accessoryEffect = "+50 Max HP";
+      accessoryEffect2 = "20% Damage Reduction";
+      accessorySlot = "Pet";
+    } else if (aidx == 1) {
+      accessoryEffect = "30% Attack Damage Increase";
+      accessorySlot = "Pet";
+    } else if (aidx == 2) {
+      accessoryEffect = "Rideable Mount";
+      accessorySlot = "Pet";
+    } else if (aidx == 3) {
+      accessoryEffect = "15% Attack Damage Increase";
+      accessoryEffect2 = "10% Damage Reduction";
+      accessorySlot = "Pet";
+    } else if (aidx == 8) {
+      accessoryEffect = "+50 Ice Resistance";
+      accessorySlot = "Ring";
+    } else if (aidx == 9) {
+      accessoryEffect = "+50 Poison Resistance";
+      accessorySlot = "Ring";
+    } else if (aidx == 10) {
+      accessoryEffect = "Transform into Monsters";
+      accessorySlot = "Ring";
+    } else if (aidx == 12) {
+      accessoryEffect = "+50 Lightning Resistance";
+      accessorySlot = "Pendant";
+    } else if (aidx == 13) {
+      accessoryEffect = "+50 Fire Resistance";
+      accessorySlot = "Pendant";
+    }
+    if (accessorySlot)
+      th += lineH;
+    if (accessoryEffect)
+      th += lineH;
+    if (accessoryEffect2)
       th += lineH;
   }
 
@@ -938,6 +1018,17 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
     snprintf(manaBuf, sizeof(manaBuf), "Restores %d Mana", potionMana);
     AddPendingTooltipLine(IM_COL32(100, 150, 255, 255), manaBuf);
   }
+  if (potionEffect) {
+    AddPendingTooltipLine(IM_COL32(80, 255, 80, 255), potionEffect);
+  }
+
+  // Ring/Pendant/Pet slot + effect
+  if (accessorySlot)
+    AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), accessorySlot);
+  if (accessoryEffect)
+    AddPendingTooltipLine(IM_COL32(100, 200, 255, 255), accessoryEffect);
+  if (accessoryEffect2)
+    AddPendingTooltipLine(IM_COL32(100, 200, 255, 255), accessoryEffect2);
 
   if (def->category <= 5) {
     if (def->twoHanded)
@@ -1119,7 +1210,7 @@ void UpdateAndRenderNotification(float deltaTime) {
     ImGui::PushFont(s_ctx->fontDefault);
   ImVec2 textSize = ImGui::CalcTextSize(s_notifyText.c_str());
   float px = (displaySize.x - textSize.x) * 0.5f;
-  float py = displaySize.y * 0.35f;
+  float py = displaySize.y * 0.65f; // Above HUD bar
 
   // Background box
   float pad = 8.0f;
@@ -1149,6 +1240,89 @@ int GetSkillAGCost(uint8_t skillId) { return GetSkillResourceCost(skillId); }
 void ShowNotification(const char *msg) {
   s_notifyText = msg;
   s_notifyTimer = NOTIFY_DURATION;
+}
+
+bool HasActiveNotification() {
+  return s_notifyTimer > 0.0f;
+}
+
+// ─── Region Name Display (Main 5.2: CUIMapName) ─────────────────────────────
+
+void ShowRegionName(const char *name) {
+  s_regionName = name;
+  s_regionState = RegionNameState::FADEIN;
+  s_regionAlpha = 0.0f;
+  s_regionShowTimer = 0.0f;
+}
+
+bool HasActiveRegionName() {
+  return s_regionState != RegionNameState::HIDE;
+}
+
+void UpdateAndRenderRegionName(float deltaTime) {
+  if (s_regionState == RegionNameState::HIDE)
+    return;
+
+  // State machine (Main 5.2: HIDE → FADEIN → SHOW → FADEOUT → HIDE)
+  switch (s_regionState) {
+  case RegionNameState::FADEIN:
+    s_regionAlpha += REGION_FADEIN_SPEED * deltaTime;
+    if (s_regionAlpha >= 1.0f) {
+      s_regionAlpha = 1.0f;
+      s_regionState = RegionNameState::SHOW;
+      s_regionShowTimer = REGION_SHOW_TIME;
+    }
+    break;
+  case RegionNameState::SHOW:
+    s_regionShowTimer -= deltaTime;
+    if (s_regionShowTimer <= 0.0f) {
+      s_regionState = RegionNameState::FADEOUT;
+    }
+    break;
+  case RegionNameState::FADEOUT:
+    s_regionAlpha -= REGION_FADEOUT_SPEED * deltaTime;
+    if (s_regionAlpha <= 0.0f) {
+      s_regionAlpha = 0.0f;
+      s_regionState = RegionNameState::HIDE;
+      return;
+    }
+    break;
+  default:
+    return;
+  }
+
+  // Render — Main 5.2: pre-rendered OZT image centered, alpha-blended
+  ImDrawList *dl = ImGui::GetForegroundDrawList();
+  ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+  uint8_t a = (uint8_t)(s_regionAlpha * 255);
+
+  if (s_mapNameTexture && s_mapNameTexW > 0 && s_mapNameTexH > 0) {
+    // Main 5.2: UIMN_IMG_WIDTH=166, UIMN_IMG_HEIGHT=90
+    float scale = displaySize.x / 1400.0f;
+    float imgW = (float)s_mapNameTexW * scale;
+    float imgH = (float)s_mapNameTexH * scale;
+    float px = (displaySize.x - imgW) * 0.5f;
+    // Just above HUD
+    float py = displaySize.y * 0.80f - imgH;
+
+    ImVec4 tintCol(1.0f, 1.0f, 1.0f, s_regionAlpha);
+    dl->AddImage(
+        (ImTextureID)(intptr_t)s_mapNameTexture,
+        ImVec2(px, py), ImVec2(px + imgW, py + imgH),
+        ImVec2(0, 0), ImVec2(1, 1),
+        ImGui::ColorConvertFloat4ToU32(tintCol));
+  } else {
+    // Fallback: text rendering if OZT not loaded
+    ImFont *font = s_ctx->fontRegion ? s_ctx->fontRegion : s_ctx->fontDefault;
+    if (font)
+      ImGui::PushFont(font);
+    ImVec2 textSize = ImGui::CalcTextSize(s_regionName.c_str());
+    float px = (displaySize.x - textSize.x) * 0.5f;
+    float py = displaySize.y * 0.72f - textSize.y;
+    dl->AddText(ImVec2(px, py), IM_COL32(255, 220, 160, a), s_regionName.c_str());
+    if (font)
+      ImGui::PopFont();
+  }
 }
 
 void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
@@ -1307,11 +1481,12 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   snprintf(buf, sizeof(buf), "Atk Rate: %d", atkRate);
   DrawPanelText(dl, c, px, py, 15, 375, buf, colValue);
 
-  // HP / MP Bars
+  // HP / MP Bars (DK uses AG instead of MP)
   int curHP = s_ctx->hero->GetHP();
   int maxHP = s_ctx->hero->GetMaxHP();
-  int curMP = s_ctx->hero->GetMana();
-  int maxMP = s_ctx->hero->GetMaxMana();
+  bool isDKBars = (s_ctx->hero->GetClass() == 16);
+  int curMP = isDKBars ? s_ctx->hero->GetAG() : s_ctx->hero->GetMana();
+  int maxMP = isDKBars ? s_ctx->hero->GetMaxAG() : s_ctx->hero->GetMaxMana();
 
   float hpFrac = (maxHP > 0) ? (float)curHP / maxHP : 0.0f;
   float mpFrac = (maxMP > 0) ? (float)curMP / maxMP : 0.0f;
@@ -1399,7 +1574,8 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
     if (!s_ctx->equipSlots[ep.slot].equipped &&
         g_slotBackgrounds[ep.slot] != 0) {
       dl->AddImage((ImTextureID)(intptr_t)g_slotBackgrounds[ep.slot], sMin,
-                   sMax);
+                   sMax, ImVec2(0, 0), ImVec2(1, 1),
+                   IM_COL32(255, 255, 255, 200));
     }
 
     dl->AddRect(sMin, sMax, hoverSlot && g_isDragging ? colDragHi : colSlotBr,
@@ -2055,15 +2231,23 @@ bool HandlePanelClick(float vx, float vy) {
     for (int i = 0; i < 3; i++) {
       float bx = menuStartX + i * (HUD_BTN + HUD_BTN_GAP);
       if (vx >= bx && vx <= bx + HUD_BTN) {
-        if (i == 0 && s_ctx->showCharInfo)
+        if (i == 0) {
           *s_ctx->showCharInfo = !*s_ctx->showCharInfo;
-        else if (i == 1 && s_ctx->showInventory)
+          SoundManager::Play(SOUND_INTERFACE01);
+        } else if (i == 1) {
           *s_ctx->showInventory = !*s_ctx->showInventory;
-        else if (i == 2 && s_ctx->teleportingToTown &&
+          SoundManager::Play(SOUND_INTERFACE01);
+        } else if (i == 2 && s_ctx->teleportingToTown &&
                  !*s_ctx->teleportingToTown) {
-          *s_ctx->teleportingToTown = true;
-          *s_ctx->teleportTimer = s_ctx->teleportCastTime;
-          SoundManager::Play(SOUND_SUMMON);
+          // Don't allow teleport if already in safe zone (city)
+          if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
+            ShowNotification("Already in town!");
+            SoundManager::Play(SOUND_ERROR01);
+          } else {
+            *s_ctx->teleportingToTown = true;
+            *s_ctx->teleportTimer = s_ctx->teleportCastTime;
+            SoundManager::Play(SOUND_SUMMON);
+          }
         }
         return true;
       }
@@ -2441,6 +2625,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
             s_ctx->hero->EquipWeapon(info);
           if (ep.slot == 1)
             s_ctx->hero->EquipShield(info);
+          if (ep.slot == 8 && cat == 13 && (idx == 0 || idx == 1))
+            s_ctx->hero->EquipPet(idx);
 
           // Body part equipment (Helm/Armor/Pants/Gloves/Boots)
           int bodyPart = ItemDatabase::GetBodyPartIndex(cat);
@@ -2560,6 +2746,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
               s_ctx->hero->EquipWeapon(info);
             if (g_dragFromEquipSlot == 1)
               s_ctx->hero->EquipShield(info);
+            if (g_dragFromEquipSlot == 8)
+              s_ctx->hero->UnequipPet();
 
             if (g_dragFromEquipSlot >= 2 && g_dragFromEquipSlot <= 6) {
               int partIdx = g_dragFromEquipSlot - 2;
@@ -2572,6 +2760,7 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
                   *s_ctx->heroCharacterId,
                   static_cast<uint8_t>(g_dragFromEquipSlot));
 
+            SoundManager::Play(SOUND_GET_ITEM01);
             std::cout << "[UI] Unequipped item to Inv " << targetSlot
                       << std::endl;
             RecalcEquipmentStats();
@@ -2826,8 +3015,9 @@ void RenderRmcSlot(ImDrawList *dl, float screenX, float screenY, float size) {
 
   ImVec2 p0(screenX, screenY);
   ImVec2 p1(screenX + size, screenY + size);
-
-  DrawStyledSlot(dl, p0, p1);
+  ImVec2 mpos = ImGui::GetIO().MousePos;
+  bool hov = mpos.x >= p0.x && mpos.x < p1.x && mpos.y >= p0.y && mpos.y < p1.y;
+  DrawStyledSlot(dl, p0, p1, hov);
 
   if (skillId >= 0 && g_texSkillIcons != 0) {
     int ic = skillId % SKILL_ICON_COLS;
@@ -2851,6 +3041,33 @@ void RenderRmcSlot(ImDrawList *dl, float screenX, float screenY, float size) {
   // "RMC" label
   dl->AddText(ImVec2(screenX + 2, screenY + 1), IM_COL32(255, 255, 255, 180),
               "RMC");
+
+  // RMC slot tooltip
+  if (hov && skillId > 0) {
+    uint8_t classCode = s_ctx->hero ? s_ctx->hero->GetClass() : 16;
+    bool isDKClass3 = (classCode == 16);
+    const char *resLabel = isDKClass3 ? "AG" : "Mana";
+    int skillCount3 = 0;
+    const SkillDef *skills = GetClassSkills(classCode, skillCount3);
+    const SkillDef *found = nullptr;
+    for (int j = 0; j < skillCount3; j++) {
+      if (skills[j].skillId == (uint8_t)skillId) {
+        found = &skills[j];
+        break;
+      }
+    }
+    if (found) {
+      char buf[64];
+      BeginPendingTooltip(200, 18 * 4 + 10);
+      AddPendingTooltipLine(IM_COL32(255, 210, 80, 255), found->name);
+      snprintf(buf, sizeof(buf), "%s Cost: %d", resLabel,
+               found->resourceCost);
+      AddPendingTooltipLine(IM_COL32(100, 180, 255, 255), buf);
+      snprintf(buf, sizeof(buf), "Damage: +%d", found->damageBonus);
+      AddPendingTooltipLine(IM_COL32(255, 200, 100, 255), buf);
+      AddPendingTooltipLine(IM_COL32(170, 170, 190, 255), found->desc);
+    }
+  }
 }
 
 // Helper: render a filled bar with text overlay
@@ -2966,6 +3183,7 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
   }
 
   // ── Potion slots (Q, W, E, R) ──
+  ImVec2 mp = ImGui::GetIO().MousePos;
   const char *potLabels[] = {"Q", "W", "E", "R"};
   for (int i = 0; i < 4; i++) {
     float vx = curVX;
@@ -2975,7 +3193,8 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
     float sz = c.ToScreenX(vx + SLOT) - sx;
 
     ImVec2 p0(sx, sy), p1(sx + sz, sy + sz);
-    DrawStyledSlot(dl, p0, p1);
+    bool slotHov = mp.x >= p0.x && mp.x < p1.x && mp.y >= p0.y && mp.y < p1.y;
+    DrawStyledSlot(dl, p0, p1, slotHov);
     DrawShadowText(dl, ImVec2(sx + 2, sy + 1),
                    IM_COL32(255, 255, 255, 180), potLabels[i]);
 
@@ -3011,6 +3230,27 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
                (int)ceil(*s_ctx->potionCooldown));
       g_deferredCooldowns.push_back(cd);
     }
+
+    // Potion slot tooltip
+    if (slotHov && defIdx != -1) {
+      auto it = ItemDatabase::GetItemDefs().find(defIdx);
+      if (it != ItemDatabase::GetItemDefs().end()) {
+        int count = 0;
+        for (int slot = 0; slot < INVENTORY_SLOTS; slot++) {
+          if (s_ctx->inventory[slot].occupied &&
+              s_ctx->inventory[slot].primary &&
+              s_ctx->inventory[slot].defIndex == defIdx)
+            count += s_ctx->inventory[slot].quantity;
+        }
+        char buf[64];
+        BeginPendingTooltip(180, 18 * 2 + 10);
+        AddPendingTooltipLine(IM_COL32(255, 210, 80, 255),
+                              it->second.name);
+        snprintf(buf, sizeof(buf), "Quantity: %d", count);
+        AddPendingTooltipLine(IM_COL32(170, 170, 190, 255), buf);
+      }
+    }
+
     curVX += SLOT + GAP;
   }
   curVX += GAP; // Extra gap between potion and skill groups
@@ -3025,7 +3265,8 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
     float sz = c.ToScreenX(vx + SLOT) - sx;
 
     ImVec2 p0(sx, sy), p1(sx + sz, sy + sz);
-    DrawStyledSlot(dl, p0, p1);
+    bool slotHov = mp.x >= p0.x && mp.x < p1.x && mp.y >= p0.y && mp.y < p1.y;
+    DrawStyledSlot(dl, p0, p1, slotHov);
     DrawShadowText(dl, ImVec2(sx + 2, sy + 1),
                    IM_COL32(255, 255, 255, 180), skillLabels[i]);
 
@@ -3052,6 +3293,35 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
                           IM_COL32(10, 10, 10, 180), 3.0f);
       }
     }
+
+    // Skill slot tooltip
+    if (slotHov && sid > 0) {
+      uint8_t classCode = s_ctx->hero ? s_ctx->hero->GetClass() : 16;
+      bool isDKClass2 = (classCode == 16);
+      const char *resourceLabel = isDKClass2 ? "AG" : "Mana";
+      int skillCount2 = 0;
+      const SkillDef *skills = GetClassSkills(classCode, skillCount2);
+      const SkillDef *found = nullptr;
+      for (int j = 0; j < skillCount2; j++) {
+        if (skills[j].skillId == (uint8_t)sid) {
+          found = &skills[j];
+          break;
+        }
+      }
+      if (found) {
+        char buf[64];
+        int numLines = 4;
+        BeginPendingTooltip(200, 18 * numLines + 10);
+        AddPendingTooltipLine(IM_COL32(255, 210, 80, 255), found->name);
+        snprintf(buf, sizeof(buf), "%s Cost: %d", resourceLabel,
+                 found->resourceCost);
+        AddPendingTooltipLine(IM_COL32(100, 180, 255, 255), buf);
+        snprintf(buf, sizeof(buf), "Damage: +%d", found->damageBonus);
+        AddPendingTooltipLine(IM_COL32(255, 200, 100, 255), buf);
+        AddPendingTooltipLine(IM_COL32(170, 170, 190, 255), found->desc);
+      }
+    }
+
     curVX += SLOT + GAP;
   }
   curVX += GAP;
@@ -3095,7 +3365,7 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
   {
     curVX += GAP;
     const char *btnLabels[] = {"C", "I", "T"};
-    ImVec2 mp = ImGui::GetIO().MousePos;
+    bool tDisabled = (s_ctx->hero && s_ctx->hero->IsInSafeZone());
     for (int i = 0; i < 3; i++) {
       float bx = c.ToScreenX(curVX);
       float by = c.ToScreenY(ROW_VY + (SLOT - BTN) * 0.5f);
@@ -3103,20 +3373,26 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
       ImVec2 bp0(bx, by), bp1(bx + bs, by + bs);
       bool hov = mp.x >= bp0.x && mp.x < bp1.x &&
                  mp.y >= bp0.y && mp.y < bp1.y;
+      bool disabled = (i == 2 && tDisabled); // T button disabled in safe zone
       // Gradient fill
-      ImU32 topFill = hov ? IM_COL32(35, 35, 55, 230)
-                          : IM_COL32(20, 20, 35, 220);
-      ImU32 botFill = hov ? IM_COL32(25, 25, 42, 230)
-                          : IM_COL32(14, 14, 26, 220);
+      ImU32 topFill = disabled ? IM_COL32(15, 15, 20, 200)
+                     : hov     ? IM_COL32(35, 35, 55, 230)
+                               : IM_COL32(20, 20, 35, 220);
+      ImU32 botFill = disabled ? IM_COL32(10, 10, 16, 200)
+                     : hov     ? IM_COL32(25, 25, 42, 230)
+                               : IM_COL32(14, 14, 26, 220);
       dl->AddRectFilledMultiColor(bp0, bp1, topFill, topFill, botFill, botFill);
-      // Border: gold-tinted, brighter on hover
-      ImU32 borderCol = hov ? IM_COL32(180, 160, 90, 220)
-                            : IM_COL32(65, 60, 45, 180);
+      // Border: gold-tinted, brighter on hover, dimmer when disabled
+      ImU32 borderCol = disabled ? IM_COL32(40, 35, 25, 120)
+                       : hov     ? IM_COL32(180, 160, 90, 220)
+                                 : IM_COL32(65, 60, 45, 180);
       dl->AddRect(bp0, bp1, borderCol, 4.0f);
       ImVec2 tsz = ImGui::CalcTextSize(btnLabels[i]);
+      ImU32 textCol = disabled ? IM_COL32(100, 95, 80, 140)
+                               : IM_COL32(220, 215, 200, 240);
       DrawShadowText(dl,
           ImVec2(bx + (bs - tsz.x) * 0.5f, by + (bs - tsz.y) * 0.5f),
-          IM_COL32(220, 215, 200, 240), btnLabels[i]);
+          textCol, btnLabels[i]);
       curVX += BTN + BTN_GAP;
     }
   }
@@ -3389,6 +3665,86 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
     dl->AddText(ImVec2(fx + 1, fy + 1), IM_COL32(0, 0, 0, 180), buf);
     dl->AddText(ImVec2(fx, fy), colLabel, buf);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ── Cast Bar (centered on screen) ─────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+static const char *GetSkillName(uint8_t skillId) {
+  for (int i = 0; i < NUM_DK_SKILLS; i++)
+    if (g_dkSkills[i].skillId == skillId) return g_dkSkills[i].name;
+  for (int i = 0; i < NUM_DW_SPELLS; i++)
+    if (g_dwSpells[i].skillId == skillId) return g_dwSpells[i].name;
+  return nullptr;
+}
+
+void RenderCastBar(ImDrawList *dl) {
+  if (!s_ctx) return;
+
+  bool isTeleport = s_ctx->teleportingToTown && *s_ctx->teleportingToTown;
+  bool isLearning = s_ctx->isLearningSkill && *s_ctx->isLearningSkill;
+  if (!isTeleport && !isLearning) return;
+
+  // Build label and progress
+  char label[64];
+  float progress = 0.0f;
+  float remaining = 0.0f;
+
+  if (isLearning) {
+    const char *name = GetSkillName(*s_ctx->learningSkillId);
+    snprintf(label, sizeof(label), "Learning %s", name ? name : "Skill");
+    float elapsed = *s_ctx->learnSkillTimer;
+    float duration = s_ctx->learnSkillDuration;
+    progress = std::clamp(elapsed / duration, 0.0f, 1.0f);
+    remaining = std::max(0.0f, duration - elapsed);
+  } else {
+    snprintf(label, sizeof(label), "Teleporting to Lorencia");
+    float timer = *s_ctx->teleportTimer;
+    float duration = s_ctx->teleportCastTime;
+    progress = std::clamp(1.0f - timer / duration, 0.0f, 1.0f);
+    remaining = std::max(0.0f, timer);
+  }
+
+  // Minimal layout: narrow bar centered on screen
+  ImVec2 disp = ImGui::GetIO().DisplaySize;
+  float barW = 220.0f;
+  float barH = 14.0f;
+  float bx = (disp.x - barW) * 0.5f;
+  float by = disp.y * 0.68f; // Above HUD bar
+
+  // Label above bar
+  ImVec2 labelSz = ImGui::CalcTextSize(label);
+  float lx = bx + (barW - labelSz.x) * 0.5f;
+  float ly = by - labelSz.y - 3.0f;
+  dl->AddText(ImVec2(lx + 1, ly + 1), IM_COL32(0, 0, 0, 200), label);
+  dl->AddText(ImVec2(lx, ly), IM_COL32(220, 210, 180, 240), label);
+
+  // Bar background
+  dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + barW, by + barH),
+                    IM_COL32(0, 0, 0, 160), 2.0f);
+
+  // Fill
+  if (progress > 0.01f) {
+    float fillW = barW * progress;
+    dl->AddRectFilledMultiColor(
+        ImVec2(bx, by), ImVec2(bx + fillW, by + barH),
+        IM_COL32(190, 165, 55, 220), IM_COL32(190, 165, 55, 220),
+        IM_COL32(130, 105, 30, 220), IM_COL32(130, 105, 30, 220));
+  }
+
+  // Thin border
+  dl->AddRect(ImVec2(bx, by), ImVec2(bx + barW, by + barH),
+              IM_COL32(80, 70, 45, 180), 2.0f);
+
+  // Time right-aligned inside bar
+  char timeBuf[8];
+  snprintf(timeBuf, sizeof(timeBuf), "%.1fs", remaining);
+  ImVec2 tsz = ImGui::CalcTextSize(timeBuf);
+  float tx = bx + barW - tsz.x - 4.0f;
+  float ty = by + (barH - tsz.y) * 0.5f;
+  dl->AddText(ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 200), timeBuf);
+  dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 220), timeBuf);
 }
 
 } // namespace InventoryUI

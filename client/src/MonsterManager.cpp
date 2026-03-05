@@ -1969,8 +1969,9 @@ void MonsterManager::TriggerAttackAnimation(int index) {
     case 4: // Elite Bull Fighter (Wizard sounds)
       SoundManager::Play3D(SOUND_MONSTER_WIZARDATTACK1 + rand() % 2, px, py, pz);
       break;
-    case 6: // Lich — attack reuses idle sounds (mLarva1/2)
+    case 6: // Lich — idle sound + Main 5.2: SOUND_THUNDER01 on lightning cast
       SoundManager::Play3D(SOUND_MONSTER_LARVA1 + rand() % 2, px, py, pz);
+      SoundManager::Play3D(SOUND_LICH_THUNDER, px, py, pz);
       break;
     case 7: // Giant
       SoundManager::Play3D(SOUND_MONSTER_GIANTATTACK1 + rand() % 2, px, py, pz);

@@ -138,6 +138,11 @@ static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
       damage = (damage * 120) / 100;
     }
 
+    // Imp pet attack bonus (30% increase)
+    if (session.petAttackMultiplier > 1.0f) {
+      damage = (int)(damage * session.petAttackMultiplier);
+    }
+
     // Skill damage bonus (flat addition before defense)
     damage += bonusDamage;
 
@@ -245,7 +250,8 @@ static void ApplyDamageToMonster(Session &session, MonsterInstance *mon,
           session.levelUpPoints += StatCalculator::GetLevelUpPoints(charCls2);
 
           session.maxHp = StatCalculator::CalculateMaxHP(
-              charCls2, session.level, session.vitality);
+              charCls2, session.level, session.vitality) +
+              session.petBonusMaxHp;
           session.maxMana = StatCalculator::CalculateMaxMP(
               charCls2, session.level, session.energy);
           session.maxAg = StatCalculator::CalculateMaxAG(

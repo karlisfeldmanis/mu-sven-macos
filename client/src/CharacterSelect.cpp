@@ -7,6 +7,7 @@
 #include "ItemModelManager.hpp"
 #include "ObjectRenderer.hpp"
 #include "PacketDefs.hpp"
+#include "SoundManager.hpp"
 #include "TextureLoader.hpp"
 #include "imgui.h"
 #include <GL/glew.h>
@@ -1709,11 +1710,12 @@ void Render(int windowWidth, int windowHeight) {
   ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.31f, 0.27f, 0.18f, 0.7f));
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.86f, 0.84f, 0.78f, 0.94f));
 
-  // Left button: [Create]
+  // Left buttons: [Create] [Exit]
   ImGui::SetNextWindowPos(ImVec2(10, btnY - 5));
-  ImGui::SetNextWindowSize(ImVec2(btnW + 20, btnH + 10));
+  ImGui::SetNextWindowSize(ImVec2(btnW * 2 + btnGap + 20, btnH + 10));
   ImGui::Begin("##CSBtnLeft", nullptr, kBtnFlags);
   if (ImGui::Button("Create", ImVec2(btnW, btnH))) {
+    SoundManager::Play(SOUND_CLICK01);
     int count = 0;
     for (int i = 0; i < MAX_SLOTS; i++)
       if (s_slots[i].occupied)
@@ -1724,9 +1726,16 @@ void Render(int windowWidth, int windowHeight) {
       s_createClass = CLASS_DK;
       RebuildFaceMeshes(ClassToIndex(CLASS_DK));
     } else {
+      SoundManager::Play(SOUND_ERROR01);
       snprintf(s_statusMsg, sizeof(s_statusMsg), "Maximum 5 characters");
       s_statusTimer = 2.0f;
     }
+  }
+  ImGui::SameLine(0, btnGap);
+  if (ImGui::Button("Exit", ImVec2(btnW, btnH))) {
+    SoundManager::Play(SOUND_CLICK01);
+    if (s_ctx.onExit)
+      s_ctx.onExit();
   }
   ImGui::End();
 
@@ -1738,6 +1747,7 @@ void Render(int windowWidth, int windowHeight) {
     ImGui::SetNextWindowSize(ImVec2(btnW * 2 + btnGap + 20, btnH + 10));
     ImGui::Begin("##CSBtnRight", nullptr, kBtnFlags);
     if (ImGui::Button("Connect", ImVec2(btnW, btnH))) {
+      SoundManager::Play(SOUND_CLICK01);
       if (s_ctx.server) {
         s_ctx.server->SendCharSelect(s_slots[s_selectedSlot].name);
         if (s_ctx.onCharSelected)
@@ -1746,6 +1756,7 @@ void Render(int windowWidth, int windowHeight) {
     }
     ImGui::SameLine(0, btnGap);
     if (ImGui::Button("Delete", ImVec2(btnW, btnH))) {
+      SoundManager::Play(SOUND_CLICK01);
       s_deleteConfirm = true;
     }
     ImGui::End();
@@ -1947,6 +1958,7 @@ void Render(int windowWidth, int windowHeight) {
         char btnId[32];
         snprintf(btnId, sizeof(btnId), "%s##cls%d", classNames[i], i);
         if (ImGui::Button(btnId, ImVec2(cbW, cbH))) {
+          SoundManager::Play(SOUND_CLICK01);
           s_createClass = classCodes[i];
         }
 
@@ -2026,10 +2038,12 @@ void Render(int windowWidth, int windowHeight) {
 
       ImGui::SetCursorPos(ImVec2(okX, okY));
       if (ImGui::Button("OK##create", ImVec2(obW, obH))) {
+        SoundManager::Play(SOUND_CLICK01);
         int nameLen = (int)strlen(s_createName);
         if (nameLen >= 4 && nameLen <= 10) {
           s_ctx.server->SendCharCreate(s_createName, s_createClass);
         } else {
+          SoundManager::Play(SOUND_ERROR01);
           snprintf(s_statusMsg, sizeof(s_statusMsg),
                    "Name must be 4-10 characters");
           s_statusTimer = 2.0f;
@@ -2037,6 +2051,7 @@ void Render(int windowWidth, int windowHeight) {
       }
       ImGui::SameLine(0.0f, obGap);
       if (ImGui::Button("Cancel##create", ImVec2(obW, obH))) {
+        SoundManager::Play(SOUND_CLICK01);
         s_createOpen = false;
       }
       ImGui::PopStyleColor(5);
@@ -2085,11 +2100,13 @@ void Render(int windowWidth, int windowHeight) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.14f, 0.13f, 0.10f, 0.95f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.22f, 0.18f, 0.12f, 1.0f));
     if (ImGui::Button("Yes, Delete", ImVec2(120, 30))) {
+      SoundManager::Play(SOUND_CLICK01);
       s_ctx.server->SendCharDelete(
           s_selectedSlot, s_slots[s_selectedSlot].name);
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120, 30))) {
+      SoundManager::Play(SOUND_CLICK01);
       s_deleteConfirm = false;
     }
     ImGui::PopStyleColor(3);
@@ -2127,6 +2144,7 @@ void OnMouseClick(double screenX, double screenY, int windowWidth,
     float dist = sqrtf((float)(screenX - sx) * (float)(screenX - sx) +
                        (float)(screenY - sy) * (float)(screenY - sy));
     if (dist < 80.0f) { // Click radius in pixels
+      SoundManager::Play(SOUND_CLICK01);
       s_selectedSlot = i;
       printf("[CharSelect] Selected slot %d: '%s'\n", i, s_slots[i].name);
       return;
@@ -2138,12 +2156,14 @@ void OnKeyPress(int key) {
   if (key == GLFW_KEY_ENTER && !s_createOpen) {
     // Enter = connect with selected character
     if (s_selectedSlot >= 0 && s_slots[s_selectedSlot].occupied && s_ctx.server) {
+      SoundManager::Play(SOUND_CLICK01);
       s_ctx.server->SendCharSelect(s_slots[s_selectedSlot].name);
       if (s_ctx.onCharSelected)
         s_ctx.onCharSelected();
     }
   }
   if (key == GLFW_KEY_ESCAPE) {
+    SoundManager::Play(SOUND_CLICK01);
     if (s_createOpen)
       s_createOpen = false;
     else if (s_deleteConfirm)
@@ -2155,6 +2175,7 @@ void OnKeyPress(int key) {
     for (int j = 1; j < MAX_SLOTS; j++) {
       int idx = (s_selectedSlot + dir * j + MAX_SLOTS) % MAX_SLOTS;
       if (s_slots[idx].occupied) {
+        SoundManager::Play(SOUND_CLICK01);
         s_selectedSlot = idx;
         break;
       }

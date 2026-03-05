@@ -348,12 +348,11 @@ void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
 
 void RenderShadows(GroundItem *items, int maxItems, const glm::mat4 &view,
                    const glm::mat4 &proj) {
-  // GL state for shadow pass (same as monsters/NPCs/hero)
+  // GL state for shadow pass (same as hero — depth test OFF so shadow renders on terrain)
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glDepthMask(GL_FALSE);
-  glEnable(GL_POLYGON_OFFSET_FILL);
-  glPolygonOffset(-1.0f, -1.0f);
+  glDisable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
   glEnable(GL_STENCIL_TEST);
 
@@ -372,13 +371,13 @@ void RenderShadows(GroundItem *items, int maxItems, const glm::mat4 &view,
     glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
 
     ItemModelManager::RenderItemWorldShadow(modelFile, gi.position, view, proj,
-                                            gi.scale, gi.angle);
+                                            gi.scale, gi.angle, gi.defIndex);
   }
 
   // Restore GL state
   glBindVertexArray(0);
   glDisable(GL_STENCIL_TEST);
-  glDisable(GL_POLYGON_OFFSET_FILL);
+  glEnable(GL_DEPTH_TEST);
   glDepthMask(GL_TRUE);
   glEnable(GL_CULL_FACE);
 }

@@ -55,6 +55,11 @@ public:
   bool hasBow = false;
   bool hasTwoHandedWeapon = false;
 
+  // Pet companion bonuses (applied when category 13 pet is in slot 8)
+  int petBonusMaxHp = 0;           // +50 for Guardian Angel
+  float petDamageReduction = 0.0f; // 0.2 for Guardian Angel (20%)
+  float petAttackMultiplier = 1.0f; // 1.3 for Imp (30% increase)
+
   // Server-authoritative HP tracking (monsters stop attacking dead players)
   int hp = 0;
   int maxHp = 0;

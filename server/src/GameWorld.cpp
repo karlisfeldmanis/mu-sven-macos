@@ -834,6 +834,10 @@ void GameWorld::processAttacking(MonsterInstance &mon, float dt,
       if (reduction > 60) reduction = 60;
       dmg = std::max(1, dmg * (100 - reduction) / 100);
     }
+    // Pet damage reduction (Guardian Angel: 20%)
+    if (target->petDamageReduction > 0.0f && dmg > 0) {
+      dmg = std::max(1, (int)(dmg * (1.0f - target->petDamageReduction)));
+    }
   }
 
   printf("[AI] Mon %d (type %d) -> Player fd=%d: ATK %d - DEF %d (Rate %d/%d) "

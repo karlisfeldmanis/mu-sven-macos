@@ -79,8 +79,12 @@ static std::map<uint16_t, std::vector<std::pair<uint8_t, uint8_t>>> s_shops = {
       {9, 3},
       {10, 3},
       {11, 3}}},
-    // Lumen (255) - Barmaid
-    {255, {{14, 9}, {14, 10}}}};
+    // Lumen (255) - Barmaid: Potions, Rings, Pendants & Pets
+    {255,
+     {{14, 9},  {14, 10},              // Potions (Ale, Town Portal)
+      {13, 0},  {13, 1},  {13, 2},  {13, 3},  // Guardian Angel, Imp, Uniria, Dinorant
+      {13, 8},  {13, 9},  {13, 10},    // Ring of Ice, Poison, Transformation
+      {13, 12}, {13, 13}}}};           // Pendant of Lighting, Fire
 
 void HandleShopOpen(Session &session, const std::vector<uint8_t> &packet,
                     Database &db) {
@@ -107,8 +111,11 @@ void HandleShopOpen(Session &session, const std::vector<uint8_t> &packet,
       si.itemLevel = 0;
       si.buyPrice = def.buyPrice;
       shopItems.push_back(si);
+    } else {
+      printf("[Shop] WARN: item (%d,%d) not found in DB\n", it.first, it.second);
     }
   }
+  printf("[Shop] NPC %d: sending %zu items\n", npcType, shopItems.size());
 
   uint16_t packetSize =
       sizeof(PWMSG_HEAD) + 1 + shopItems.size() * sizeof(PMSG_SHOP_ITEM);

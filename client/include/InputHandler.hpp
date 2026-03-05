@@ -2,6 +2,7 @@
 #define MU_INPUT_HANDLER_HPP
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 struct GLFWwindow;
@@ -11,6 +12,7 @@ class ServerConnection;
 class ClickEffect;
 class NpcManager;
 class MonsterManager;
+class ObjectRenderer;
 struct GroundItem;
 struct UICoords;
 
@@ -21,6 +23,7 @@ struct InputContext {
   ServerConnection *server;
   MonsterManager *monsterMgr;
   NpcManager *npcMgr;
+  ObjectRenderer *objectRenderer;
   GroundItem *groundItems;
   int maxGroundItems;
   UICoords *hudCoords;
@@ -42,6 +45,10 @@ struct InputContext {
   std::vector<uint8_t> *learnedSkills;
   bool *rightMouseHeld;
   bool *showGameMenu;
+  bool *teleportingToTown;
+  float *teleportTimer;
+  float teleportCastTime;
+  std::string dataPath;
 };
 
 namespace InputHandler {

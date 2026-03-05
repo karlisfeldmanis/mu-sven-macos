@@ -44,7 +44,8 @@ void SendCharStats(Session &session, Database &db, int characterId) {
   CharacterClass charCls = static_cast<CharacterClass>(c.charClass);
   session.classCode = c.charClass;
 
-  session.maxHp = StatCalculator::CalculateMaxHP(charCls, c.level, c.vitality);
+  session.maxHp = StatCalculator::CalculateMaxHP(charCls, c.level, c.vitality) +
+                  session.petBonusMaxHp;
   session.hp = std::min(static_cast<int>(c.life), session.maxHp);
   session.maxMana = StatCalculator::CalculateMaxMP(charCls, c.level, c.energy);
   session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
@@ -267,6 +268,24 @@ void RefreshCombatStats(Session &session, Database &db, int characterId) {
   } else {
     session.weaponDamageMin = rightDmgMin + leftDmgMin;
     session.weaponDamageMax = rightDmgMax + leftDmgMax;
+  }
+
+  // Pet bonuses (slot 8, category 13)
+  session.petBonusMaxHp = 0;
+  session.petDamageReduction = 0.0f;
+  session.petAttackMultiplier = 1.0f;
+  for (auto &slot : equip) {
+    if (slot.slot == 8 && slot.category == 13) {
+      if (slot.itemIndex == 0) { // Guardian Angel: +50 HP, 20% dmg reduction
+        session.petBonusMaxHp = 50;
+        session.petDamageReduction = 0.2f;
+      } else if (slot.itemIndex == 1) { // Imp: 30% attack increase
+        session.petAttackMultiplier = 1.3f;
+      } else if (slot.itemIndex == 3) { // Dinorant: 15% atk, 10% dmg reduction
+        session.petAttackMultiplier = 1.15f;
+        session.petDamageReduction = 0.1f;
+      }
+    }
   }
 }
 
@@ -718,7 +737,8 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
 
   CharacterClass charCls = static_cast<CharacterClass>(session.classCode);
   session.maxHp =
-      StatCalculator::CalculateMaxHP(charCls, session.level, session.vitality);
+      StatCalculator::CalculateMaxHP(charCls, session.level, session.vitality) +
+      session.petBonusMaxHp;
   session.maxMana = StatCalculator::CalculateMaxManaOrAG(
       charCls, session.level, session.strength, session.dexterity,
       session.vitality, session.energy);

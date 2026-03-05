@@ -60,6 +60,7 @@ struct InventoryUIContext {
   bool *teleportingToTown;
   float *teleportTimer;
   float teleportCastTime;
+  float learnSkillDuration;
 
   int *heroCharacterId;
   char *characterName;
@@ -67,6 +68,7 @@ struct InventoryUIContext {
   ServerConnection *server;
   UICoords *hudCoords;
   ImFont *fontDefault;
+  ImFont *fontRegion;   // Large font for region name display
 };
 
 namespace InventoryUI {
@@ -129,9 +131,18 @@ bool IsPointInPanel(float vx, float vy, float panelX);
 int GetSkillResourceCost(uint8_t skillId);
 int GetSkillAGCost(uint8_t skillId);
 
+// Cast bar (centered, for teleport + skill learning)
+void RenderCastBar(ImDrawList *dl);
+
 // Notifications
 void UpdateAndRenderNotification(float deltaTime);
 void ShowNotification(const char *msg);
+bool HasActiveNotification();
+
+// Region name display (Main 5.2: CUIMapName)
+void ShowRegionName(const char *name);
+void UpdateAndRenderRegionName(float deltaTime);
+bool HasActiveRegionName();
 
 } // namespace InventoryUI
 

@@ -41,6 +41,21 @@ public:
   int GetInstanceCount() const { return (int)instances.size(); }
   int GetModelCount() const { return (int)modelCache.size(); }
 
+  // Interactive objects (sittable chairs, pose boxes) — Main 5.2 OPERATE system
+  enum class InteractType { SIT, POSE };
+  struct InteractiveObject {
+    int type;             // Object type ID
+    glm::vec3 worldPos;   // World position (extracted from model matrix)
+    float facingAngle;    // MU angle in degrees (for character alignment)
+    bool alignToObject;   // Whether character should face the object's angle
+    InteractType action;  // SIT or POSE
+    float radius;         // Picking radius
+    float height;         // Picking height
+  };
+  const std::vector<InteractiveObject> &GetInteractiveObjects() const {
+    return m_interactiveObjects;
+  }
+
   struct ObjectInstance {
     int type;
     glm::mat4 modelMatrix;
@@ -84,6 +99,7 @@ private:
   float m_fogNear = 1500.0f;
   float m_fogFar = 3500.0f;
   std::vector<int> m_typeFilter; // If non-empty, only render these types
+  std::vector<InteractiveObject> m_interactiveObjects;
 
   // Bilinear sample terrain lightmap at world position
   glm::vec3 SampleTerrainLight(const glm::vec3 &worldPos) const;

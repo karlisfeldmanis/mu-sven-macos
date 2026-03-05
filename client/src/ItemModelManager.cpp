@@ -33,7 +33,7 @@ static const ItemDisplayPose kItemPoses[] = {
     {0.f, 90.f, 20.f},     //  3 Spears
     {0.f, 270.f, 15.f},    //  4 Bows
     {180.f, 270.f, 25.f},  //  5 Staffs
-    {270.f, 270.f, 0.f},   //  6 Shields
+    {270.f, 270.f, 0.f},   //  6 Shields — Main 5.2: Vector(270,270,0)
     {-90.f, 0.f, 0.f},     //  7 Helms
     {-90.f, 0.f, 0.f},     //  8 Armor
     {-90.f, 0.f, 0.f},     //  9 Pants
@@ -64,8 +64,21 @@ static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
   MeshBuffers mb;
   mb.isDynamic = false;
 
-  // Resolve texture
+  // Resolve texture — try primary dir, then fallback to Item/ and Skill/
+  // (pets in Player/ reference textures in Item/, Dinorant horn in Skill/)
   auto texInfo = TextureLoader::ResolveWithInfo(texPath, mesh.TextureName);
+  if (!texInfo.textureID && texPath.find("/Player/") != std::string::npos) {
+    std::string itemPath = texPath;
+    auto p = itemPath.find("/Player/");
+    itemPath.replace(p, 8, "/Item/");
+    texInfo = TextureLoader::ResolveWithInfo(itemPath, mesh.TextureName);
+    if (!texInfo.textureID) {
+      std::string skillPath = texPath;
+      p = skillPath.find("/Player/");
+      skillPath.replace(p, 8, "/Skill/");
+      texInfo = TextureLoader::ResolveWithInfo(skillPath, mesh.TextureName);
+    }
+  }
   mb.texture = texInfo.textureID;
   mb.hasAlpha = texInfo.hasAlpha;
 
@@ -364,15 +377,15 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
     }
 
     // Apply per-category display pose from Main 5.2 RenderObjectScreen()
-    // MU models are Z-up; our UI camera looks down -Z with Y-up.
-    // MU AngleMatrix applies: pitch(X) → yaw(Y) → roll(Z) in MU local space.
-    // We first convert MU→GL coords (-90°X), then apply MU angles.
+    // Main 5.2 AngleMatrix (ZzzMathLib.cpp:194) applies ZYX Euler order:
+    //   matrix = Rz(roll) * Ry(yaw) * Rx(pitch)
+    // angles[0]=pitch→X, angles[1]=yaw→Y, angles[2]=roll→Z
     const auto &pose = (category < kItemPoseCount)
                            ? kItemPoses[category]
                            : kItemPoses[7]; // fallback = helm pose
-    mod = glm::rotate(mod, glm::radians(pose.pitch), glm::vec3(1, 0, 0));
-    mod = glm::rotate(mod, glm::radians(pose.yaw), glm::vec3(0, 1, 0));
     mod = glm::rotate(mod, glm::radians(pose.roll), glm::vec3(0, 0, 1));
+    mod = glm::rotate(mod, glm::radians(pose.yaw), glm::vec3(0, 1, 0));
+    mod = glm::rotate(mod, glm::radians(pose.pitch), glm::vec3(1, 0, 0));
   } else {
     // Zen/Default: Use helm pose
     mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(1, 0, 0));
@@ -450,8 +463,9 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
     shader->setBool("useTexture", true);
     shader->setVec3("colorTint", glm::vec3(1));
 
-    // Main 5.2: ItemLight — glow mesh renders additively with pulsing brightness
-    bool isGlowMesh = (blendMeshIdx >= 0 && mi == blendMeshIdx);
+    // Main 5.2: ItemLight — BlendMesh=N means mesh with Texture==N renders additive
+    bool isGlowMesh = (blendMeshIdx >= 0 && mi < (int)model->bmd->Meshes.size() &&
+                        model->bmd->Meshes[mi].Texture == blendMeshIdx);
 
     if (isGlowMesh) {
       float pulseLight = sinf((float)glfwGetTime() * 4.0f) * 0.3f + 0.7f;
@@ -539,7 +553,9 @@ void ItemModelManager::RenderItemWorld(const std::string &filename,
     shader->setInt("diffuseMap", 0);
     shader->setBool("useTexture", true);
 
-    bool isGlowMesh = (blendMeshIdx >= 0 && mi == blendMeshIdx);
+    // Main 5.2: BlendMesh=N means mesh with Texture==N renders additive
+    bool isGlowMesh = (blendMeshIdx >= 0 && mi < (int)model->bmd->Meshes.size() &&
+                        model->bmd->Meshes[mi].Texture == blendMeshIdx);
 
     if (isGlowMesh) {
       float pulseLight = sinf((float)glfwGetTime() * 4.0f) * 0.3f + 0.7f;
@@ -573,16 +589,20 @@ void ItemModelManager::RenderItemWorldShadow(const std::string &filename,
                                               const glm::mat4 &view,
                                               const glm::mat4 &proj,
                                               float scale,
-                                              glm::vec3 rotation) {
+                                              glm::vec3 rotation,
+                                              int16_t defIndex) {
   if (!s_shadowShader)
     return;
   LoadedItemModel *model = Get(filename);
   if (!model || !model->bmd)
     return;
 
-  // Shadow model matrix: translate + MU coordinate basis (no item rotation --
-  // rotation is baked into vertices before shadow projection, same as hero
-  // facing)
+  // Determine BlendMesh so glow meshes are excluded from shadow
+  int category = (defIndex >= 0) ? (defIndex / 32) : -1;
+  int itemIdx = (defIndex >= 0) ? (defIndex % 32) : -1;
+  int blendMeshIdx = (category >= 0) ? GetItemBlendMesh(category, itemIdx) : -1;
+
+  // Shadow model matrix: translate to world position + MU coordinate basis
   glm::mat4 mod = glm::translate(glm::mat4(1.0f), pos);
   mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(0, 0, 1));
   mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(0, 1, 0));
@@ -592,9 +612,7 @@ void ItemModelManager::RenderItemWorldShadow(const std::string &filename,
   s_shadowShader->setMat4("view", view);
   s_shadowShader->setMat4("model", mod);
 
-  // Build rotation matrix for item resting angle (applied to vertices in
-  // MU-local space before shadow projection, same as facing is applied for
-  // characters)
+  // Build rotation matrix for item resting angle
   glm::vec3 tCenter = (model->transformedMin + model->transformedMax) * 0.5f;
   glm::mat4 rotMat(1.0f);
   if (rotation.x != 0)
@@ -620,40 +638,48 @@ void ItemModelManager::RenderItemWorldShadow(const std::string &filename,
       continue;
 
     auto &mesh = model->bmd->Meshes[mi];
+
+    // For items with BlendMesh: render ONLY the glow mesh as shadow
+    // (body mesh is too thin, glow mesh wraps around weapon = wider shadow)
+    // For items without BlendMesh: render all meshes
+    if (blendMeshIdx >= 0 && mesh.Texture != blendMeshIdx)
+      continue;
     std::vector<glm::vec3> shadowVerts;
     shadowVerts.reserve(sm.vertexCount);
 
     auto projectVertex = [&](int vertIdx) {
       auto &srcVert = mesh.Vertices[vertIdx];
-      glm::vec3 pos = srcVert.Position;
+      glm::vec3 p = srcVert.Position;
 
       // Apply bone transform (bind pose)
       int boneIdx = srcVert.Node;
       if (boneIdx >= 0 && boneIdx < (int)bones.size()) {
-        pos = MuMath::TransformPoint(
-            (const float(*)[4])bones[boneIdx].data(), pos);
+        p = MuMath::TransformPoint(
+            (const float(*)[4])bones[boneIdx].data(), p);
       }
 
       // Center, scale, then apply resting rotation (in MU-local space)
-      pos -= tCenter;
-      pos = glm::vec3(scaleMat * glm::vec4(pos, 1.0f));
-      pos = glm::vec3(rotMat * glm::vec4(pos, 1.0f));
+      p -= tCenter;
+      p = glm::vec3(scaleMat * glm::vec4(p, 1.0f));
+      p = glm::vec3(rotMat * glm::vec4(p, 1.0f));
 
-      // Flatten shadow to ground (items lie flat, so simple projection
-      // avoids perspective distortion from extreme rotation angles)
-      pos.z = 5.0f;
-      shadowVerts.push_back(pos);
+      // Shadow projection (same as hero — perspective spread from light above)
+      if (p.z < sy) {
+        float factor = 1.0f / (p.z - sy);
+        p.x += p.z * (p.x + sx) * factor;
+        p.y += p.z * (p.y + sx) * factor;
+      }
+      p.z = 5.0f;
+      shadowVerts.push_back(p);
     };
 
     for (int i = 0; i < mesh.NumTriangles; ++i) {
       auto &tri = mesh.Triangles[i];
       int steps = (tri.Polygon == 3) ? 3 : 4;
 
-      // First triangle (0,1,2)
       for (int v = 0; v < 3; ++v)
         projectVertex(tri.VertexIndex[v]);
 
-      // Second triangle for quads (0,2,3)
       if (steps == 4) {
         int quadIndices[3] = {0, 2, 3};
         for (int v : quadIndices)

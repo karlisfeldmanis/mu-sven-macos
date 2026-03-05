@@ -102,6 +102,15 @@ public:
   void EquipWeapon(const WeaponEquipInfo &weapon);
   void EquipShield(const WeaponEquipInfo &shield);
 
+  // Pet companion (Guardian Angel / Imp — floating orbit)
+  void EquipPet(uint8_t itemIndex);
+  void UnequipPet();
+  void EquipMount(uint8_t itemIndex);
+  void UnequipMount();
+  bool IsMounted() const { return m_mount.active; }
+  // Main 5.2: mount stays loaded in safe zone (alpha=0), but player uses ground anims
+  bool isMountRiding() const { return m_mount.active && !m_inSafeZone; }
+
   // Body part replacement (0=Helm, 1=Armor, 2=Pants, 3=Gloves, 4=Boots)
   // Pass empty modelFile to revert to default naked part
   void EquipBodyPart(int partIndex, const std::string &modelFile);
@@ -128,6 +137,13 @@ public:
   const std::vector<BoneWorldMatrix> &GetCachedBones() const {
     return m_cachedBones;
   }
+
+  // Weapon blur trail (Main 5.2: BlurType 1 for DK skills 19-23)
+  bool IsWeaponTrailActive() const { return m_weaponTrailActive; }
+  bool HasValidTrailPoints() const { return m_weaponTrailValid; }
+  glm::vec3 GetWeaponTrailTip() const { return m_weaponTrailTip; }
+  glm::vec3 GetWeaponTrailBase() const { return m_weaponTrailBase; }
+  uint8_t GetWeaponLevel() const { return m_weaponInfo.itemLevel; }
 
   // HP and damage
   void TakeDamage(int damage);
@@ -194,6 +210,12 @@ public:
   void SetPendingPickup(int dropIndex) { m_pendingPickupIndex = dropIndex; }
   int GetPendingPickup() const { return m_pendingPickupIndex; }
   void ClearPendingPickup() { m_pendingPickupIndex = -1; }
+
+  // Sit/Pose system (Main 5.2 OPERATE)
+  void StartSitPose(bool isSit, float facingAngleDeg, bool alignToObject,
+                    const glm::vec3 &snapPos);
+  void CancelSitPose();
+  bool IsSittingOrPosing() const { return m_sittingOrPosing; }
 
   // Flash delayed damage packet — store on cast, send when beam spawns at frame 7.0
   void SetPendingAquaPacket(uint16_t target, uint8_t skill, float x, float z) {
@@ -320,6 +342,23 @@ private:
   static constexpr int ACTION_SKILL_HELL = 154;      // Hell Fire
   static constexpr int ACTION_SKILL_HELL_BEGIN = 72;  // Hell Fire (cast begin)
   static constexpr int ACTION_SKILL_HELL_START = 73;  // Hell Fire (charge hold)
+
+  // Mount riding actions (_enum.h)
+  static constexpr int ACTION_STOP_RIDE = 13;
+  static constexpr int ACTION_STOP_RIDE_WEAPON = 14;
+  static constexpr int ACTION_RUN_RIDE = 36;
+  static constexpr int ACTION_RUN_RIDE_WEAPON = 37;
+  static constexpr int ACTION_ATTACK_RIDE_SWORD = 54;
+  static constexpr int ACTION_ATTACK_RIDE_TWO_HAND_SWORD = 55;
+  static constexpr int ACTION_ATTACK_RIDE_SPEAR = 56;
+  static constexpr int ACTION_ATTACK_RIDE_SCYTHE = 57;
+  static constexpr int ACTION_ATTACK_RIDE_BOW = 58;
+  static constexpr int ACTION_ATTACK_RIDE_CROSSBOW = 59;
+
+  // Sit/Pose actions (_enum.h: PLAYER_SIT1=233, PLAYER_POSE1=239)
+  static constexpr int ACTION_SIT1 = 233;
+  static constexpr int ACTION_SIT2 = 234;
+  static constexpr int ACTION_POSE1 = 239;
 
   // Hit/death actions (CharViewer: Shock=230, Die1=231, Die2=232)
   static constexpr int ACTION_SHOCK = 230;
@@ -466,9 +505,76 @@ private:
   std::vector<ShadowMesh> m_shieldShadowMeshes;
   std::vector<BoneWorldMatrix> m_shieldLocalBones; // Cached static bind-pose
 
+  // Pet companion (Guardian Angel / Imp — Main 5.2 GOBoid.cpp Direction-vector movement)
+  struct PetCompanion {
+    bool active = false;
+    uint8_t itemIndex = 0;          // 0=Guardian Angel, 1=Imp
+    std::unique_ptr<BMDData> bmd;
+    std::vector<MeshBuffers> meshBuffers;
+    glm::vec3 pos{0.0f};           // Current world position
+    float alpha = 0.0f;            // Fade-in alpha (0→1, exponential smoothing)
+    float animFrame = 0.0f;        // BMD animation frame
+    float sparkTimer = 0.0f;       // Spark particle spawn timer
+    int blendMesh = -1;            // Additive mesh Texture index (wings)
+    // Main 5.2 GOBoid.cpp: Direction-vector movement
+    float dirAngle = 0.0f;         // Current movement direction (radians)
+    float speed = 0.0f;            // Current forward speed (units/tick)
+    float heightVel = 0.0f;        // Vertical velocity for bobbing
+    float facing = 0.0f;           // Visual facing angle (yaw, radians)
+    float pitch = 0.0f;            // Vertical tilt toward character head (radians)
+    float tickAccum = 0.0f;        // Accumulates dt for tick-based logic
+    glm::vec3 lastOwnerPos{0.0f};  // Previous frame owner position (for follow delta)
+    float followDelay = 0.0f;      // Reaction delay before chasing (seconds)
+    bool wasOwnerMoving = false;    // Previous frame owner movement state
+  };
+  PetCompanion m_pet;
+
+  // Mount (Uniria / Dinorant — character rides on mount model)
+  struct MountData {
+    bool active = false;
+    uint8_t itemIndex = 0;          // 2=Uniria, 3=Dinorant
+    std::unique_ptr<BMDData> bmd;
+    std::vector<MeshBuffers> meshBuffers;
+    int blendMesh = -1;             // Additive mesh Texture index
+    float animFrame = 0.0f;         // Mount walk/idle animation frame
+    float alpha = 0.0f;             // Fade-in alpha
+    int rootBone = 0;               // Skeleton root bone index (0=Rider01, 1=Rider02)
+  };
+  MountData m_mount;
+  uint8_t m_mountEquippedIndex = 0xFF; // Persists across safe zone dismount (0xFF = none)
+
+  // Weapon blur trail — computed each frame during Render() when active
+  bool m_weaponTrailActive = false;  // Trail capture active
+  bool m_weaponTrailValid = false;   // Trail points computed this frame
+  glm::vec3 m_weaponTrailTip{0.0f};  // World-space weapon tip
+  glm::vec3 m_weaponTrailBase{0.0f}; // World-space weapon base
+
+  // Twisting Slash ghost weapon effect (Main 5.2: MODEL_SKILL_WHEEL2)
+  struct WheelGhost {
+    float orbitAngle = 0.0f;   // Orbital position (degrees)
+    float spinAngle = 0.0f;    // Self-rotation (degrees)
+    float spinVelocity = 0.0f; // Accelerating spin (degrees/sec)
+    float alpha = 0.0f;        // Transparency (0.6, 0.5, 0.4, 0.3)
+    float lifetime = 0.0f;     // Remaining seconds
+    bool active = false;
+  };
+  static constexpr int MAX_WHEEL_GHOSTS = 5;
+  WheelGhost m_wheelGhosts[MAX_WHEEL_GHOSTS]{};
+  bool m_twistingSlashActive = false;
+  float m_wheelSpawnTimer = 0.0f;
+  int m_wheelSpawnCount = 0;
+  float m_wheelSmokeTimer = 0.0f; // Per-tick smoke particle spawning
+  std::vector<MeshBuffers> m_ghostWeaponMeshBuffers; // Static bind-pose copy
+
+  void StartTwistingSlash();
+  void UpdateTwistingSlash(float dt);
+
   // Shadow rendering
   std::unique_ptr<Shader> m_shadowShader;
   std::vector<BoneWorldMatrix> m_cachedBones; // cached from last Render()
+
+  // Sit/Pose state (Main 5.2 OPERATE)
+  bool m_sittingOrPosing = false;
 
   // External data (non-owning)
   int m_pendingPickupIndex = -1;

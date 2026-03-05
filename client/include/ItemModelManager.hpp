@@ -44,7 +44,8 @@ public:
                                     const glm::vec3 &pos,
                                     const glm::mat4 &view,
                                     const glm::mat4 &proj, float scale = 1.0f,
-                                    glm::vec3 rotation = glm::vec3(0));
+                                    glm::vec3 rotation = glm::vec3(0),
+                                    int16_t defIndex = -1);
 
 private:
   static std::map<std::string, LoadedItemModel> s_cache;

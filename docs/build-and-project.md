@@ -86,11 +86,11 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `GrassRenderer.hpp` | Billboard grass system: wind animation, ball-push displacement, 3 texture layers. |
 | `Sky.hpp` | Sky dome: gradient hemisphere rendered behind scene. |
 | `FireEffect.hpp` | Particle-based fire system for Lorencia torches/bonfires/lights. GPU instancing + billboarding. |
-| `VFXManager.hpp` | Visual effects: particle bursts (blood/fire/energy/spark/smoke), ribbon trails (lightning), 3D model effects (meteor falling fireball, lightning bolt, poison cloud), GPU instanced billboards. |
+| `VFXManager.hpp` | Visual effects: particle bursts (blood/fire/energy/spark/smoke), ribbon trails (lightning/Death Stab spiral), 3D model effects (meteor, lightning bolt, poison cloud, Rageful Blow EQ cracks, stone debris), weapon blur trails, camera shake. |
 | **Sound** | |
 | `SoundManager.hpp` | `namespace SoundManager`: OpenAL sound engine. `SoundId` enum (Main 5.2 IDs), `Play/Play3D/PlayPitched/PlayLoop/Stop`, MP3 music via minimp3 (`PlayMusic/StopMusic`). |
 | **Characters & Entities** | |
-| `HeroCharacter.hpp` | Player character: 5-part DK model, click-to-move, combat, weapon attachment (bone 33/42/47), equipment visuals, blob shadow. |
+| `HeroCharacter.hpp` | Player character: 5-part DK model, click-to-move, combat, weapon attachment (bone 33/42/47), equipment visuals, blob shadow, pet companions, mount system, weapon blur trail, sit/pose. |
 | `MonsterManager.hpp` | Monster system: multi-type rendering, server-driven state machine (7 states), skeleton weapon attachment, arrow projectiles, debris, nameplate rendering. |
 | `NpcManager.hpp` | NPC rendering, name labels, two-phase init (models then server-spawned instances). |
 | `ClickEffect.hpp` | Click-to-move visual feedback: animated ring effect at click position. |
@@ -123,14 +123,14 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | **World Rendering** | |
 | `Terrain.cpp` | Terrain vertex grid generation, texture array loading, shader-based 4-tap blending. |
 | `TerrainParser.cpp` | Decrypts and parses terrain files: heightmap, mapping, attributes, objects, lightmap. |
-| `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ instances with BlendMesh, terrain lightmap. |
+| `ObjectRenderer.cpp` | Loads BMD models by type ID, caches GPU meshes, renders 2870+ instances with BlendMesh, terrain lightmap, interactive object catalog (sit/pose). |
 | `GrassRenderer.cpp` | 42k grass billboards with GPU vertex shader wind and ball-push displacement. |
 | `Sky.cpp` | Sky dome rendering. |
 | `FireEffect.cpp` | Fire particle system: emitter management, GPU instanced billboards. |
-| `VFXManager.cpp` | VFX: particle bursts (10+ types), ribbon trails (lightning skill), 3D model effects (MeteorBolt with Fire01.bmd, LightningBolt with Blast01.bmd, PoisonCloud with Poison01.bmd), per-monster combat effects (Budge fire, Lich lightning, Spider web), level-up effects. Main 5.2 1:1 migration. |
-| `SoundManager.cpp` | OpenAL init/shutdown, WAV loader (PCM 16-bit), multi-channel source pooling, 3D positional audio, random pitch variation, MP3 music (minimp3 decode to OpenAL buffer). |
+| `VFXManager.cpp` | VFX: particle bursts (15+ types), ribbon trails (lightning, Death Stab spirals), 3D model effects (MeteorBolt, LightningBolt, PoisonCloud, Rageful Blow EQ cracks, stone debris), weapon blur trails, per-monster combat effects, level-up, camera shake. Main 5.2 1:1 migration. |
+| `SoundManager.cpp` | OpenAL init/shutdown, WAV loader (PCM 16-bit), multi-channel source pooling, 3D positional audio, random pitch variation, MP3 music (minimp3 decode to OpenAL buffer), music crossfade system (fade out/in with state machine). |
 | **Characters & Entities** | |
-| `HeroCharacter.cpp` | DK character: 5-part body, skeletal animation, click-to-move, weapon bone attachment (safe zone/combat), blob shadow with stencil buffer, attack state machine with GCD (global cooldown). |
+| `HeroCharacter.cpp` | DK character: 5-part body, skeletal animation, click-to-move, weapon bone attachment (safe zone/combat), blob shadow with stencil buffer, attack state machine with GCD, pet companions (GOBoid direction-vector movement), mount system (Uniria/Dinorant with ride animations), weapon blur trail capture, Twisting Slash ghost weapon orbit, sit/pose system. |
 | `MonsterManager.cpp` | Monster rendering, state machine, skeleton weapons (Sword/Shield/Bow/Axe via RetransformMeshWithBones), arrow projectiles (Arrow01.bmd), death debris, nameplates. |
 | `NpcManager.cpp` | NPC models, animation, name label overlays. |
 | `ClickEffect.cpp` | Click-to-move ring effect. |
@@ -138,13 +138,13 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `ItemDatabase.cpp` | 293 item definitions (addDef calls), all lookup functions, body part mapping, category names. |
 | `ItemModelManager.cpp` | BMD item model cache with GPU upload, viewport-based UI rendering, world-space rendering. |
 | `GroundItemRenderer.cpp` | Ground item physics (gravity/bounce), zen pile rendering, floating damage update/render, ground item labels/tooltips. |
-| `InventoryUI.cpp` | Full inventory/equipment UI: panel rendering with WoW-style design system (gradient backgrounds, double borders, gold-tinted accents), drag-drop state machine, tooltip system, equipment stats, stat allocation, quickbar with styled resource bars. |
+| `InventoryUI.cpp` | Full inventory/equipment UI: WoW-style panels, drag-drop, tooltips (items + skills + potions), equipment stats, stat allocation, quickbar with resource bars, cast bar (teleport/skill learn), region name display, notification system. |
 | **Networking** | |
 | `NetworkClient.cpp` | TCP socket management, packet framing. |
 | `ServerConnection.cpp` | Typed packet builders for all client->server messages. |
 | `ClientPacketHandler.cpp` | Packet dispatch: initial sync (NPCs, monsters, equipment, stats) + game loop (combat, drops, movement, level-up). |
 | **Input & UI** | |
-| `InputHandler.cpp` | GLFW callbacks: mouse movement, scroll zoom, left/right click dispatch, keyboard hotkeys (C/I/Q/Esc), `processInput()` for held keys. |
+| `InputHandler.cpp` | GLFW callbacks: mouse movement, scroll zoom, left/right click dispatch, keyboard hotkeys (C/I/Q/T/Esc), `processInput()` for held keys, custom OZT cursors (11 types), sit/pose interaction, ESC progressive panel closing. |
 | `RayPicker.cpp` | Ray-terrain intersection (binary search), ray-cylinder NPC/monster picking, ray-sphere ground item picking. |
 | `GameUI.cpp` | UI texture and widget helpers. |
 | `UITexture.cpp` | UI texture loading. |
@@ -168,8 +168,8 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `server/src/GameWorld.cpp` | Game world: terrain attributes, safe zones, monster AI state machine, A* pathfinding. |
 | `server/src/PathFinder.cpp` | A* pathfinding on 256x256 terrain grid. |
 | `server/src/StatCalculator.cpp` | DK stat formulas: HP, damage, defense, XP. |
-| `server/src/handlers/CharacterHandler.cpp` | Character creation, stat allocation, save/load, quickslot sync. |
-| `server/src/handlers/CombatHandler.cpp` | Attack resolution, skill damage, death/XP, monster aggro/pack assist. |
+| `server/src/handlers/CharacterHandler.cpp` | Character creation, stat allocation, save/load, quickslot sync, pet/mount combat bonus calculation. |
+| `server/src/handlers/CombatHandler.cpp` | Attack resolution, skill damage, death/XP, monster aggro/pack assist, pet attack multiplier. |
 | `server/src/handlers/InventoryHandler.cpp` | Item pickup, equip/unequip, inventory moves, consumption. |
 | `server/src/handlers/WorldHandler.cpp` | Position sync, monster AI, NPC viewport. |
 | `server/src/handlers/ShopHandler.cpp` | NPC shop: buy/sell with zen validation, inventory slot management. |
@@ -195,7 +195,9 @@ main.cpp (orchestrator: init, render loop, shutdown)
   - `Item/` -- Item BMD models
   - `Sound/` -- WAV sound effects (1155 files, PCM 16-bit)
   - `Music/` -- MP3 music tracks (72 files)
-  - `Skill/` -- Skill effect BMD models + textures
+  - `Skill/` -- Skill effect BMD models + textures (EarthQuake, Rider01/02, GroundStone)
+  - `Interface/` -- UI cursors (OZT), skill icon sheet (Skill.OZJ)
+  - `Local/Eng/ImgsMapName/` -- Region name display images (OZT)
 - Server database: `server/build/mu_server.db` (SQLite, auto-created on first run)
 
 ## Key Constants

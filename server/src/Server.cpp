@@ -176,6 +176,7 @@ void Server::Run() {
         pt.life = s->hp;
         pt.dead = s->dead;
         pt.level = s->level;
+        pt.petDamageReduction = s->petDamageReduction;
         targets.push_back(pt);
       }
       std::vector<GameWorld::MonsterMoveUpdate> moves;
@@ -280,7 +281,8 @@ void Server::Run() {
                 static_cast<CharacterClass>(attacker->classCode);
             attacker->levelUpPoints += StatCalculator::GetLevelUpPoints(cls);
             attacker->maxHp = StatCalculator::CalculateMaxHP(
-                cls, attacker->level, attacker->vitality);
+                cls, attacker->level, attacker->vitality) +
+                attacker->petBonusMaxHp;
             attacker->maxMana = StatCalculator::CalculateMaxMP(
                 cls, attacker->level, attacker->energy);
             attacker->maxAg = StatCalculator::CalculateMaxAG(

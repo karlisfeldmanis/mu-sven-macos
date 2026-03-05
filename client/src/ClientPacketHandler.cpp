@@ -20,6 +20,22 @@ static void ApplyEquipToHero(uint8_t slot, const WeaponEquipInfo &weapon) {
     g_state->hero->EquipWeapon(weapon);
   } else if (slot == 1) {
     g_state->hero->EquipShield(weapon);
+  } else if (slot == 8) {
+    // Pet/Mount slot (category 13)
+    if (weapon.category == 13) {
+      if (weapon.itemIndex == 0 || weapon.itemIndex == 1) {
+        // Floating companions (Guardian Angel, Imp)
+        g_state->hero->UnequipMount();
+        g_state->hero->EquipPet(weapon.itemIndex);
+      } else if (weapon.itemIndex == 2 || weapon.itemIndex == 3) {
+        // Mounts (Uniria, Dinorant)
+        g_state->hero->UnequipPet();
+        g_state->hero->EquipMount(weapon.itemIndex);
+      }
+    } else {
+      g_state->hero->UnequipPet();
+      g_state->hero->UnequipMount();
+    }
   } else if (weapon.category == 0xFF) {
     // Unequipped: revert to default naked body part (slots 2-6 → parts 0-4)
     int bodyPart = (int)slot - 2;
@@ -577,6 +593,7 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
           gi.angle.y += (float)(rand() % 360);
 
           gi.active = true;
+          SoundManager::Play(SOUND_DROP_ITEM01);
           break;
         }
       }
@@ -647,7 +664,7 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
         pktSize >= (int)sizeof(PMSG_SHOP_BUY_RESULT_SEND)) {
       auto *p = reinterpret_cast<const PMSG_SHOP_BUY_RESULT_SEND *>(pkt);
       if (p->result) {
-        SoundManager::Play(SOUND_DROP_GOLD01);
+        SoundManager::Play(SOUND_GET_ITEM01);
         std::cout << "[Shop] Bought item defIndex=" << p->defIndex
                   << " qty=" << (int)p->quantity << "\n";
       } else {

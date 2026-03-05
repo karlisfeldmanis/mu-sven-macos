@@ -143,16 +143,106 @@ Attack state: `NONE → APPROACHING → SWINGING → COOLDOWN → NONE`
 - HUD quickslot skill icons show a dark sweep overlay proportional to remaining GCD
 - Rendered via ImDrawList in InventoryUI
 
+## Pet Companions (Guardian Angel / Imp)
+
+Category 13 items equipped in slot 8 (Pet/Helper slot). Floating orbit companions that follow the player with Main 5.2 GOBoid.cpp direction-vector movement.
+
+| Item | Index | Model | Bonus |
+|------|-------|-------|-------|
+| Guardian Angel | 0 | Helper01.bmd | +50 Max HP, 20% Damage Reduction |
+| Imp | 1 | Helper02.bmd | 30% Attack Damage Increase |
+
+- **Tick-based AI**: Idle wandering (smooth random orbit, radius 100), follow mode (lateral weave, ramp-up delay, max distance 180)
+- **Sparkle VFX**: `PET_SPARKLE` (white dots) for Angel, `IMP_SPARKLE` (dark red embers) for Imp
+- **Two-pass rendering**: Body meshes normal alpha, wing meshes additive blend
+- **Body exclusion**: Soft spring pushes pet away from character body
+- **Fade-in**: Exponential smoothing alpha from 0→1 on equip
+
+## Mount System (Uniria / Dinorant)
+
+Category 13 items equipped in slot 8. Player rides the mount model; character uses riding animations.
+
+| Item | Index | Ride Model | Bonus |
+|------|-------|------------|-------|
+| Horn of Uniria | 2 | Rider01.bmd (Skill/) | None |
+| Horn of Dinorant | 3 | Rider02.bmd (Skill/) | 15% Attack, 10% Damage Reduction |
+
+### Ride Model Details
+
+| Property | Rider01 (Uniria) | Rider02 (Dinorant) |
+|----------|-------------------|---------------------|
+| Bones | 24 (bone 0 = Bip01, animated) | 73 (bone 0 = Box01 static, bone 1 = Bip01 animated) |
+| Actions | 4 (idle/walk/attack) | 8 (ground + fly pairs) |
+| Textures | Item/ (unicon.jpg) | Skill/ (RDgon.jpg, RDgonW.tga) |
+| Player height offset | 0 | +30 (normal maps) |
+| Render scale | 1.0 (Main 5.2 RenderMount override) | 1.0 |
+
+### Mount Action Mapping (Ground Maps)
+
+| State | Uniria | Dinorant |
+|-------|--------|----------|
+| Idle | 0 | 0 |
+| Walk | 2 | 2 |
+| Attack | 3 | 4 |
+| Skill | — | 6 |
+
+### Player Ride Actions (_enum.h)
+
+| Action | Index | Use |
+|--------|-------|-----|
+| STOP_RIDE | 13 | Idle on mount, no weapon |
+| STOP_RIDE_WEAPON | 14 | Idle on mount, with weapon |
+| RUN_RIDE | 36 | Walk on mount, no weapon |
+| RUN_RIDE_WEAPON | 37 | Walk on mount, with weapon |
+| ATTACK_RIDE_SWORD | 54 | Sword attack while riding |
+| ATTACK_RIDE_TWO_HAND_SWORD | 55 | 2H sword attack |
+| ATTACK_RIDE_SPEAR | 56 | Spear attack |
+| ATTACK_RIDE_SCYTHE | 57 | Scythe attack |
+| ATTACK_RIDE_BOW | 58 | Bow attack |
+| ATTACK_RIDE_CROSSBOW | 59 | Crossbow attack |
+
+### Mount Technical Notes
+
+- **`isMountRiding()`**: Returns `m_mount.active && !m_inSafeZone`. Controls ride animation selection.
+- **Root bone detection**: `EquipMount` finds first bone named "Bip01" for root motion removal. Rider01 = bone 0, Rider02 = bone 1.
+- **Root motion**: Horizontal (XY) always stripped when mounted; vertical (Z) bounce preserved.
+- **Animation sync**: Mount animation frame synced to player ride frame via `fmod(m_animFrame, mountWrapKeys)` to prevent Z oscillation phase drift.
+- **Safe zone**: Mount stays loaded (`m_mount.active=true`), alpha fades to 0. Player uses ground animations. Auto-restores alpha when leaving.
+- **Ride PlaySpeeds** (Main 5.2): idle 0.28 (7.0fps), walk 0.30 (7.5fps). Mount velocity: 0.34 (8.5fps).
+- **No shadow**: Main 5.2 suppresses player shadow when riding.
+- **No shock**: Main 5.2 suppresses hit stagger animation when riding.
+
+### Mutual Exclusion
+
+Pet and mount are mutually exclusive in slot 8:
+- Equipping a mount calls `UnequipPet()` first
+- Equipping a pet calls `UnequipMount()` first
+
+## Weapon Blur Trail
+
+- **WeaponTrail**: 30-point tip/base position history captured during attack animations
+- Two blur modes: `blur01.OZJ` for regular attacks (level-based color), `motion_blur_r.OZJ` for skills (white)
+- Auto-stops on swing end or attack cancel, fades out over 0.3s
+
+## Sit / Pose System
+
+Interactive world objects (type 6=Tree07, 133=PoseBox, 145/146=Furniture) support sit/pose animations:
+- `ACTION_SIT1` (233), `ACTION_SIT2` (234), `ACTION_POSE1` (239)
+- Walk-to-then-interact if too far; cancel on any world click
+
 ## Movement
 
 - Click-to-move: `MoveTo(target)` sets destination
 - `ProcessMovement(dt)` interpolates position with terrain height tracking
-- Player MoveSpeed: base 10, run 12-15, wings/fenrir 15-19 (units per tick)
+- Player MoveSpeed: base 10, run 12-15, mounts 15 (units per tick)
 - At 25fps: 250-375 world units/sec
 
 ## Reference Code
 
 - `ZzzCharacter.cpp:CreateCharacterPointer()` -- Weapon rendering config
+- `ZzzCharacter.cpp:6263` -- Dinorant rider height offset (+30/+90)
+- `GOBoid.cpp:495-596` -- Mount MoveMount action mapping
+- `GOBoid.cpp:66-132` -- CreateMountSub (scale, blendMesh)
 - `ZzzOpenData.cpp:329-451` -- Player PlaySpeed table
 - `_enum.h` -- Action index enum (PLAYER_SET=0)
 - `DefaultClassInfo.txt` -- Class starting stats

@@ -250,6 +250,7 @@ static ClientEquipSlot g_equipSlots[12] = {};
 // UI fonts
 static ImFont *g_fontDefault = nullptr;
 static ImFont *g_fontBold = nullptr;
+static ImFont *g_fontRegion = nullptr;
 
 static UICoords g_hudCoords; // File-scope for mouse callback access
 
@@ -459,11 +460,14 @@ int main(int argc, char **argv) {
       g_fontDefault =
           io.Fonts->AddFontFromFileTTF(fontPath, 13.0f * contentScale);
       g_fontBold = io.Fonts->AddFontFromFileTTF(fontPath, 15.0f * contentScale);
+      g_fontRegion = io.Fonts->AddFontFromFileTTF(fontPath, 26.0f * contentScale);
     }
     if (!g_fontDefault)
       g_fontDefault = io.Fonts->AddFontDefault(&cfg);
     if (!g_fontBold)
       g_fontBold = g_fontDefault;
+    if (!g_fontRegion)
+      g_fontRegion = g_fontBold;
 
     io.Fonts->Build();
   }
@@ -551,7 +555,7 @@ int main(int argc, char **argv) {
   // Make terrain data accessible for movement/height
   g_terrainDataPtr = &terrainData;
   RayPicker::Init(&terrainData, &g_camera, &g_npcManager, &g_monsterManager,
-                  g_groundItems, MAX_GROUND_ITEMS);
+                  g_groundItems, MAX_GROUND_ITEMS, &g_objectRenderer);
 
   g_terrain.Load(terrainData, 1, data_path);
   std::cout << "Loaded Map 1 (Lorencia): " << terrainData.heightmap.size()
@@ -582,6 +586,8 @@ int main(int argc, char **argv) {
   g_vfxManager.Init(data_path);
   g_vfxManager.SetTerrainHeightFunc(
       [](float x, float z) -> float { return g_terrain.GetHeight(x, z); });
+  g_vfxManager.SetPlaySoundFunc(
+      [](int soundId) { SoundManager::Play(soundId); });
   g_boidManager.Init(data_path);
   g_boidManager.SetTerrainData(&terrainData);
   checkGLError("fire init");
@@ -697,10 +703,12 @@ int main(int argc, char **argv) {
     ctx.teleportingToTown = &g_teleportingToTown;
     ctx.teleportTimer = &g_teleportTimer;
     ctx.teleportCastTime = TELEPORT_CAST_TIME;
+    ctx.learnSkillDuration = LEARN_SKILL_DURATION;
     ctx.hero = &g_hero;
     ctx.server = &g_server;
     ctx.hudCoords = &g_hudCoords;
     ctx.fontDefault = g_fontDefault;
+    ctx.fontRegion = g_fontRegion;
     InventoryUI::Init(ctx);
   }
 
@@ -717,6 +725,7 @@ int main(int argc, char **argv) {
     inputCtx.server = &g_server;
     inputCtx.monsterMgr = &g_monsterManager;
     inputCtx.npcMgr = &g_npcManager;
+    inputCtx.objectRenderer = &g_objectRenderer;
     inputCtx.groundItems = g_groundItems;
     inputCtx.maxGroundItems = MAX_GROUND_ITEMS;
     inputCtx.hudCoords = &g_hudCoords;
@@ -738,6 +747,10 @@ int main(int argc, char **argv) {
     inputCtx.heroCharacterId = &g_heroCharacterId;
     inputCtx.rightMouseHeld = &g_rightMouseHeld;
     inputCtx.showGameMenu = &g_showGameMenu;
+    inputCtx.teleportingToTown = &g_teleportingToTown;
+    inputCtx.teleportTimer = &g_teleportTimer;
+    inputCtx.teleportCastTime = TELEPORT_CAST_TIME;
+    inputCtx.dataPath = data_path;
     InputHandler::Init(inputCtx);
     InputHandler::RegisterCallbacks(window);
   }
@@ -989,20 +1002,6 @@ int main(int argc, char **argv) {
     // ── CHAR_SELECT state: update and render character select scene ──
     if (g_gameState == GameState::CHAR_SELECT ||
         g_gameState == GameState::CONNECTING) {
-      // Poll mouse clicks for character slot selection
-      {
-        static bool prevMouseDown = false;
-        bool mouseDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        if (mouseDown && !prevMouseDown && !ImGui::GetIO().WantCaptureMouse) {
-          double mx, my;
-          glfwGetCursorPos(window, &mx, &my);
-          int ww, wh;
-          glfwGetWindowSize(window, &ww, &wh);
-          CharacterSelect::OnMouseClick(mx, my, ww, wh);
-        }
-        prevMouseDown = mouseDown;
-      }
-
       CharacterSelect::Update(deltaTime);
 
       int fbW, fbH;
@@ -1021,6 +1020,19 @@ int main(int argc, char **argv) {
 
       ImGui::Render();
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+      // Poll mouse clicks for character slot selection AFTER ImGui render
+      // so WantCaptureMouse is accurate (prevents button clicks selecting slots)
+      {
+        static bool prevMouseDown = false;
+        bool mouseDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        if (mouseDown && !prevMouseDown && !ImGui::GetIO().WantCaptureMouse) {
+          double mx, my;
+          glfwGetCursorPos(window, &mx, &my);
+          CharacterSelect::OnMouseClick(mx, my, winW, winH);
+        }
+        prevMouseDown = mouseDown;
+      }
 
       glfwSwapBuffers(window);
       continue; // Skip game world rendering
@@ -1266,7 +1278,7 @@ int main(int argc, char **argv) {
     // Skill learning: play heal animation over 3 seconds, then return to idle
     if (g_isLearningSkill) {
       if (g_learnSkillTimer == 0.0f)
-        SoundManager::Play(SOUND_JEWEL01); // eGem.wav on learn start
+        SoundManager::Play(SOUND_SUMMON); // eSummon.wav on learn start
       g_learnSkillTimer += deltaTime;
       // Stop movement/attack only when needed (StopMoving resets action/frame)
       if (g_hero.IsMoving())
@@ -1329,6 +1341,7 @@ int main(int argc, char **argv) {
         g_hero.SetAction(1); // Back to idle
         g_camera.SetPosition(g_hero.GetPosition());
         g_server.SendPrecisePosition(spawnPos.x, spawnPos.z);
+        InventoryUI::ShowRegionName("Lorencia");
       }
     }
 
@@ -1449,12 +1462,15 @@ int main(int argc, char **argv) {
       // Music: MuTheme in safe zone, stop outside
       if (nowInSafeZone && !wasInSafeZone) {
         SoundManager::Stop(SOUND_WIND01);
-        SoundManager::PlayMusic(g_dataPath + "/Music/MuTheme.mp3");
+        SoundManager::CrossfadeTo(g_dataPath + "/Music/MuTheme.mp3");
       } else if (!nowInSafeZone && wasInSafeZone) {
         SoundManager::PlayLoop(SOUND_WIND01);
-        SoundManager::StopMusic();
+        SoundManager::FadeOut();
       }
     }
+
+    // Update music fade transitions
+    SoundManager::UpdateMusic(deltaTime);
 
     // Auto-screenshot/diagnostic camera override
     if ((autoScreenshot || autoDiag) && diagFrame == 60) {
@@ -1486,6 +1502,13 @@ int main(int argc, char **argv) {
         g_camera.GetProjectionMatrix((float)winW, (float)winH);
     glm::mat4 view = g_camera.GetViewMatrix();
     glm::vec3 camPos = g_camera.GetPosition();
+
+    // Main 5.2: EarthQuake variable — camera shake from Rageful Blow
+    float cameraShake = g_vfxManager.GetCameraShake();
+    if (std::abs(cameraShake) > 0.001f) {
+      glm::vec3 shakeOffset(cameraShake * 5.0f, cameraShake * 3.0f, 0.0f);
+      view = glm::translate(view, shakeOffset);
+    }
 
     // Sky renders first (behind everything, no depth write)
     g_sky.Render(view, projection, camPos);
@@ -1561,8 +1584,16 @@ int main(int argc, char **argv) {
       }
     }
 
-    // Evil Spirit: StormTime is server-authoritative (applied in DAMAGE packet)
-    // No client-side proximity check — beams travel farther than server AoE range
+    // Evil Spirit: StormTime spin on nearby monsters (Main 5.2: same as Twister)
+    if (g_vfxManager.HasActiveSpiritBeams()) {
+      int monCount = g_monsterManager.GetMonsterCount();
+      for (int mi = 0; mi < monCount; ++mi) {
+        MonsterInfo info = g_monsterManager.GetMonsterInfo(mi);
+        if (info.hp <= 0) continue;
+        if (g_vfxManager.CheckSpiritBeamHit(info.serverIndex, info.position))
+          g_monsterManager.ApplyStormTime(info.serverIndex, 10);
+      }
+    }
 
     g_boidManager.Update(deltaTime, g_hero.GetPosition(), 0, currentFrame);
     g_fireEffect.Render(view, projection);
@@ -1620,6 +1651,12 @@ int main(int argc, char **argv) {
       g_vfxManager.SetHeroBonePositions(boneWorldPos);
     }
 
+    // Feed weapon blur trail points to VFX (Main 5.2: per-frame capture)
+    if (g_hero.IsWeaponTrailActive() && g_hero.HasValidTrailPoints()) {
+      g_vfxManager.AddWeaponTrailPoint(g_hero.GetWeaponTrailTip(),
+                                        g_hero.GetWeaponTrailBase());
+    }
+
     // Render VFX (after all characters so particles layer on top)
     g_vfxManager.Render(view, projection);
 
@@ -1665,6 +1702,7 @@ int main(int argc, char **argv) {
       }
 
       InventoryUI::RenderQuickbar(dl, g_hudCoords);
+      InventoryUI::RenderCastBar(dl);
 
       // ── Floating damage numbers ──
       FloatingDamageRenderer::UpdateAndRender(
@@ -1842,7 +1880,9 @@ int main(int argc, char **argv) {
     // items
     if (InventoryUI::HasPendingTooltip() ||
         InventoryUI::HasDeferredOverlays() ||
-        InventoryUI::HasDeferredCooldowns()) {
+        InventoryUI::HasDeferredCooldowns() ||
+        InventoryUI::HasActiveNotification() ||
+        InventoryUI::HasActiveRegionName()) {
       ImGui_ImplOpenGL3_NewFrame();
       ImGui_ImplGlfw_NewFrame();
       ImGui::NewFrame();
@@ -1860,6 +1900,7 @@ int main(int argc, char **argv) {
       }
 
       InventoryUI::UpdateAndRenderNotification(deltaTime);
+      InventoryUI::UpdateAndRenderRegionName(deltaTime);
 
       ImGui::Render();
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -2010,12 +2051,16 @@ static void InitGameWorld(ServerData &serverData) {
     g_npcManager.Init(data_path);
   }
 
-  // Equip weapon + shield + armor from server equipment data (DB-driven)
+  // Equip weapon + shield + armor + pet from server equipment data (DB-driven)
   for (auto &eq : serverData.equipment) {
     if (eq.slot == 0) {
       g_hero.EquipWeapon(eq.info);
     } else if (eq.slot == 1) {
       g_hero.EquipShield(eq.info);
+    } else if (eq.slot == 8 && eq.info.category == 13 &&
+               (eq.info.itemIndex == 0 || eq.info.itemIndex == 1)) {
+      // Pet slot: Guardian Angel (0) or Imp (1)
+      g_hero.EquipPet(eq.info.itemIndex);
     }
     int bodyPart = ItemDatabase::GetBodyPartIndex(eq.info.category);
     if (bodyPart >= 0) {
@@ -2029,10 +2074,10 @@ static void InitGameWorld(ServerData &serverData) {
   }
 
   g_syncDone = true;
-  // Stop char select music, start Lorencia town music + ambient wind
+  // Stop char select music — actual game music chosen after spawn position is known
   SoundManager::StopMusic();
-  SoundManager::PlayMusic(g_dataPath + "/Music/MuTheme.mp3");
-  SoundManager::PlayLoop(SOUND_WIND01);
+  // Show region name (Main 5.2: CUIMapName on map enter)
+  InventoryUI::ShowRegionName("Lorencia");
   g_npcManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
   g_npcManager.SetVFXManager(&g_vfxManager);
   InventoryUI::RecalcEquipmentStats();
@@ -2107,6 +2152,22 @@ static void InitGameWorld(ServerData &serverData) {
     }
   }
   g_camera.SetPosition(g_hero.GetPosition());
+
+  // Choose music based on spawn position terrain attribute
+  {
+    glm::vec3 heroPos = g_hero.GetPosition();
+    const int S = TerrainParser::TERRAIN_SIZE;
+    int gz = (int)(heroPos.x / 100.0f);
+    int gx = (int)(heroPos.z / 100.0f);
+    bool inSafeZone = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
+                      (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x01) != 0;
+    g_hero.SetInSafeZone(inSafeZone);
+    if (inSafeZone) {
+      SoundManager::PlayMusic(g_dataPath + "/Music/MuTheme.mp3");
+    } else {
+      SoundManager::PlayLoop(SOUND_WIND01);
+    }
+  }
 
   // Pass point lights to renderers
   {

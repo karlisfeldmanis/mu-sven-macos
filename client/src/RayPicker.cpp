@@ -2,6 +2,7 @@
 #include "Camera.hpp"
 #include "MonsterManager.hpp"
 #include "NpcManager.hpp"
+#include "ObjectRenderer.hpp"
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cmath>
@@ -15,19 +16,21 @@ NpcManager *s_npcs = nullptr;
 MonsterManager *s_monsters = nullptr;
 GroundItem *s_groundItems = nullptr;
 int s_maxGroundItems = 0;
+ObjectRenderer *s_objRenderer = nullptr;
 } // namespace
 
 namespace RayPicker {
 
 void Init(const TerrainData *td, Camera *cam, NpcManager *npcs,
           MonsterManager *monsters, GroundItem *groundItems,
-          int maxGroundItems) {
+          int maxGroundItems, ObjectRenderer *objRenderer) {
   s_td = td;
   s_cam = cam;
   s_npcs = npcs;
   s_monsters = monsters;
   s_groundItems = groundItems;
   s_maxGroundItems = maxGroundItems;
+  s_objRenderer = objRenderer;
 }
 
 float GetTerrainHeight(float worldX, float worldZ) {
@@ -290,6 +293,67 @@ int PickGroundItem(GLFWwindow *window, double mouseX, double mouseY) {
     if (t > 0 && t < bestT) {
       bestT = t;
       bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+int PickInteractiveObject(GLFWwindow *window, double mouseX, double mouseY) {
+  if (!s_objRenderer)
+    return -1;
+  const auto &objects = s_objRenderer->GetInteractiveObjects();
+  if (objects.empty())
+    return -1;
+
+  int winW, winH;
+  glfwGetWindowSize(window, &winW, &winH);
+
+  float ndcX = (float)(2.0 * mouseX / winW - 1.0);
+  float ndcY = (float)(1.0 - 2.0 * mouseY / winH);
+
+  glm::mat4 proj = s_cam->GetProjectionMatrix((float)winW, (float)winH);
+  glm::mat4 view = s_cam->GetViewMatrix();
+  glm::mat4 invVP = glm::inverse(proj * view);
+
+  glm::vec4 nearPt = invVP * glm::vec4(ndcX, ndcY, -1.0f, 1.0f);
+  glm::vec4 farPt = invVP * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+  nearPt /= nearPt.w;
+  farPt /= farPt.w;
+
+  glm::vec3 rayO = glm::vec3(nearPt);
+  glm::vec3 rayD = glm::normalize(glm::vec3(farPt) - rayO);
+
+  int bestIdx = -1;
+  float bestT = 1e9f;
+
+  for (int i = 0; i < (int)objects.size(); ++i) {
+    const auto &obj = objects[i];
+    float r = obj.radius;
+    float yMin = obj.worldPos.y;
+    float yMax = obj.worldPos.y + obj.height;
+
+    // Ray-cylinder intersection in XZ plane
+    float dx = rayO.x - obj.worldPos.x;
+    float dz = rayO.z - obj.worldPos.z;
+    float a = rayD.x * rayD.x + rayD.z * rayD.z;
+    float b = 2.0f * (dx * rayD.x + dz * rayD.z);
+    float c = dx * dx + dz * dz - r * r;
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0)
+      continue;
+
+    float sqrtDisc = sqrtf(disc);
+    float t0 = (-b - sqrtDisc) / (2.0f * a);
+    float t1 = (-b + sqrtDisc) / (2.0f * a);
+
+    for (float t : {t0, t1}) {
+      if (t < 0)
+        continue;
+      float hitY = rayO.y + rayD.y * t;
+      if (hitY >= yMin && hitY <= yMax && t < bestT) {
+        bestT = t;
+        bestIdx = i;
+      }
     }
   }
   return bestIdx;

@@ -30,6 +30,8 @@ enum SoundId {
   SOUND_HIT3 = 72,
   SOUND_HIT4 = 73,
   SOUND_HIT5 = 74,
+  // Main 5.2: SOUND_THUNDER01 — lightning spell impact
+  SOUND_THUNDER01 = 80,
   SOUND_LEVEL_UP = 83,
   // Player death (Main 5.2: SOUND_HUMAN_SCREAM04)
   SOUND_MALE_DIE = 108,
@@ -56,6 +58,8 @@ enum SoundId {
   // Lich / Larva (type 6) — attack reuses idle, death=mLarva2
   SOUND_MONSTER_LARVA1 = 210,
   SOUND_MONSTER_LARVA2 = 211,
+  // Lich thunder attack (Main 5.2: Naipin-Thunder.wav)
+  SOUND_LICH_THUNDER = 240,
   // Giant (type 7)
   SOUND_MONSTER_GIANT1 = 212,
   SOUND_MONSTER_GIANT2 = 213,
@@ -103,6 +107,12 @@ void PlayMusic(const std::string &filename);
 void StopMusic();
 void SetMusicVolume(float vol); // 0.0 - 1.0
 bool IsMusicPlaying();
+// Crossfade: fade out current track, then fade in new track
+void CrossfadeTo(const std::string &filename, float fadeSeconds = 1.5f);
+// Fade out current track and stop
+void FadeOut(float fadeSeconds = 1.5f);
+// Call every frame to process fade transitions
+void UpdateMusic(float deltaTime);
 } // namespace SoundManager
 
 #endif // MU_SOUND_MANAGER_HPP

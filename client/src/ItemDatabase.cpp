@@ -680,7 +680,7 @@ void Init() {
   addDef(801, 13, 1, "Imp", "Helper02.bmd", 1, 1, 0, 0, 0, 0, 28, 15);
   addDef(802, 13, 2, "Horn of Uniria", "Helper03.bmd", 1, 1, 0, 0, 0, 0, 25,
          15);
-  addDef(803, 13, 3, "Horn of Dinorant", "Pet04.bmd", 1, 1, 0, 0, 0, 0, 110,
+  addDef(803, 13, 3, "Horn of Dinorant", "Helper04.bmd", 1, 1, 0, 0, 0, 0, 110,
          15);
   addDef(808, 13, 8, "Ring of Ice", "Ring01.bmd", 1, 1, 0, 0, 0, 0, 20, 15);
   addDef(809, 13, 9, "Ring of Poison", "Ring02.bmd", 1, 1, 0, 0, 0, 0, 17, 15);

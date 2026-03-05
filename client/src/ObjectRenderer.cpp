@@ -384,11 +384,57 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
     glm::vec3 tLight = SampleTerrainLight(worldPos);
 
     instances.push_back({obj.type, model, tLight});
+
+    // Collect interactive objects for sit/pose system (Main 5.2 OPERATE)
+    // Lorencia: type 6=Tree07 (sit), 133=PoseBox (pose), 145=Furniture06 (sit),
+    // 146=Furniture07 (sit)
+    InteractType iact = InteractType::SIT;
+    bool isInteractive = false;
+    bool alignAngle = false;
+    float pickRadius = 30.0f;
+    float pickHeight = 100.0f;
+    switch (obj.type) {
+    case 6:   // MODEL_TREE01+6 — sit, no angle
+      iact = InteractType::SIT;
+      isInteractive = true;
+      pickRadius = 40.0f;
+      pickHeight = 120.0f;
+      break;
+    case 133: // MODEL_POSE_BOX — pose, with angle
+      iact = InteractType::POSE;
+      isInteractive = true;
+      alignAngle = true;
+      pickRadius = 20.0f;
+      pickHeight = 100.0f;
+      break;
+    case 145: // MODEL_FURNITURE01+5 — sit, with angle
+      iact = InteractType::SIT;
+      isInteractive = true;
+      break;
+    case 146: // MODEL_FURNITURE01+6 — sit, no angle
+      iact = InteractType::SIT;
+      isInteractive = true;
+      break;
+    default:
+      break;
+    }
+    if (isInteractive) {
+      InteractiveObject io;
+      io.type = obj.type;
+      io.worldPos = worldPos;
+      io.facingAngle = obj.mu_angle_raw.z; // MU Z rotation in degrees
+      io.alignToObject = alignAngle;
+      io.action = iact;
+      io.radius = pickRadius;
+      io.height = pickHeight;
+      m_interactiveObjects.push_back(io);
+    }
   }
 
   std::cout << "[ObjectRenderer] Loaded " << instances.size()
             << " object instances, " << modelCache.size()
-            << " unique models, skipped " << skipped << std::endl;
+            << " unique models, " << m_interactiveObjects.size()
+            << " interactive objects, skipped " << skipped << std::endl;
 }
 
 void ObjectRenderer::LoadObjectsGeneric(

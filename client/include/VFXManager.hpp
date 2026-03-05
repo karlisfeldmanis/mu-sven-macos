@@ -26,7 +26,8 @@ enum class ParticleType {
   SKILL_SLASH,   // White-blue slash sparks (Sword1-5)
   SKILL_CYCLONE, // Cyan spinning spark ring (Cyclone/Twisting Slash)
   SKILL_FURY,    // Orange-red ground burst (Rageful Blow)
-  SKILL_STAB,    // Dark red piercing sparks (Death Stab)
+  SKILL_STAB,    // Dark red piercing sparks (Death Stab impact)
+  DEATHSTAB_SPARK,  // Main 5.2: BITMAP_JOINT_THUNDER target sparks — cyan
   // DW Spell effects
   SPELL_ENERGY,    // Blue-white energy burst (Energy Ball)
   SPELL_FIRE,      // Orange-yellow fire burst (Fire Ball, Hellfire)
@@ -44,6 +45,9 @@ enum class ParticleType {
   INFERNO_FIRE,      // Dedicated inferno fire (inferno.OZJ texture)
   // Main 5.2: BITMAP_ENERGY orb (Thunder01.jpg, full-texture, rotating)
   SPELL_ENERGY_ORB, // Energy Ball core glow — uses Thunder01 texture at full UV
+  // Main 5.2: BITMAP_SPARK SubType 1 — pet companion sparkle (stationary, fading)
+  PET_SPARKLE,
+  IMP_SPARKLE, // Imp companion — dark red/orange ember motes
 };
 
 class VFXManager {
@@ -63,7 +67,8 @@ public:
   void UpdateLevelUpCenter(const glm::vec3 &position);
 
   // Spawn skill cast VFX at hero position (Main 5.2: BITMAP_SHINY+2 sparkle)
-  void SpawnSkillCast(uint8_t skillId, const glm::vec3 &heroPos, float facing);
+  void SpawnSkillCast(uint8_t skillId, const glm::vec3 &heroPos, float facing,
+                      const glm::vec3 &targetPos = glm::vec3(0));
 
   // Spawn skill impact VFX at monster position (skill-specific particles)
   void SpawnSkillImpact(uint8_t skillId, const glm::vec3 &monsterPos);
@@ -116,6 +121,19 @@ public:
   // Main 5.2: AT_SKILL_FLASH (Aqua Beam) — 20-segment laser beam from caster forward
   void SpawnAquaBeam(const glm::vec3 &casterPos, float facing);
 
+  // Main 5.2: MODEL_SKILL_FURY_STRIKE — Rageful Blow ground VFX (EarthQuake cracks)
+  void SpawnRagefulBlow(const glm::vec3 &casterPos, float facing);
+
+  // Main 5.2: AT_SKILL_ONETOONE — Death Stab caster-side VFX (converging energy + flares)
+  void SpawnDeathStab(const glm::vec3 &heroPos, float facing,
+                      const glm::vec3 &targetPos);
+
+  // Main 5.2: m_byHurtByOneToOne — Death Stab target electrocution (lightning arcs)
+  void SpawnDeathStabShock(const glm::vec3 &targetPos);
+
+  // Camera shake magnitude (applied by main.cpp each frame)
+  float GetCameraShake() const { return m_cameraShake; }
+
   // Kill all active aqua beams (called when casting animation ends)
   void KillAquaBeams();
 
@@ -125,6 +143,13 @@ public:
 
   // Called when Hellfire transitions from charge to blast phase
   void EndHellfireCharge();
+
+  // Main 5.2: ZzzEffectBlurSpark.cpp — Weapon blur trail for DK melee skills
+  // isSkill=true → BlurMapping 2 (motion_blur_r.OZJ, white)
+  // isSkill=false → BlurMapping 0 (blur01.OZJ, level-based color)
+  void StartWeaponTrail(const glm::vec3 &color, bool isSkill = false);
+  void StopWeaponTrail();
+  void AddWeaponTrailPoint(const glm::vec3 &tip, const glm::vec3 &base);
 
   // Per-frame hero bone world positions (for bone-attached particles)
   void SetHeroBonePositions(const std::vector<glm::vec3> &positions);
@@ -157,6 +182,11 @@ public:
   // Terrain height callback (set from main.cpp for ground collision)
   void SetTerrainHeightFunc(std::function<float(float, float)> fn) {
     m_getTerrainHeight = std::move(fn);
+  }
+
+  // Sound playback callback (set from main.cpp — VFXManager doesn't link SoundManager)
+  void SetPlaySoundFunc(std::function<void(int)> fn) {
+    m_playSound = std::move(fn);
   }
 
 private:
@@ -430,6 +460,110 @@ private:
     float smokeTimer;
   };
 
+  // Main 5.2: EarthQuake01-08.bmd — ground crack decals for Rageful Blow (Fury Strike)
+  struct EarthQuakeCrack {
+    glm::vec3 position;
+    float angle;          // Z rotation in degrees (random on spawn)
+    float scale;          // Model scale (0.4-1.5 depending on type)
+    float lifetime;       // Ticks remaining (Main 5.2 LifeTime, counts down)
+    float maxLifetime;    // Initial lifetime
+    int eqType;           // 1-8 (which EarthQuake BMD model)
+    float blendMeshLight; // Computed each tick (brightness/alpha control)
+    float texCoordU;      // UV scroll offset for EQ02/05/08
+    bool addTerrainLight; // true for EQ02, EQ05, EQ08 (emits red light)
+  };
+
+  // Main 5.2: MODEL_STONE1/STONE2 — flying stone debris from Rageful Blow
+  struct StoneDebris {
+    glm::vec3 position;
+    glm::vec3 velocity; // Outward + upward
+    float gravity;       // Upward velocity, decreases (like IceShard)
+    float angleX;        // Tumble rotation
+    float angleY;        // Second axis rotation
+    float scale;         // 0.6-1.2
+    float lifetime;
+    bool useStone2;      // false = stone1, true = stone2
+  };
+
+  // Main 5.2: MODEL_SKILL_FURY_STRIKE — Rageful Blow orchestrator
+  // Spawns EarthQuake cracks on tick 9 (center+arms) and tick 10 (branches)
+  struct FuryStrikeEffect {
+    glm::vec3 casterPos;     // Caster world position at cast time
+    float casterFacing;       // Caster facing angle (radians)
+    glm::vec3 impactPos;     // Ground impact point (offset from caster)
+    float tickTimer = 0.0f;   // Accumulator for 40ms ticks
+    int ticksElapsed = 0;     // Tick counter (maps to LifeTime 20→0 countdown)
+    bool phase1Done = false;  // Tick 9 (=LifeTime 11): center cluster + 5 arms
+    bool phase2Done = false;  // Tick 10 (=LifeTime 10): branching chains
+    float totalLifetime;      // Seconds remaining (for cleanup)
+    int randomOffset = 0;     // SubType random offset for arm distribution
+  };
+
+  // Main 5.2: AT_SKILL_ONETOONE — Death Stab lightning arc on target body
+  struct DeathStabArc {
+    glm::vec3 start;
+    glm::vec3 end;
+    float scale;         // Half-width for quad rendering
+    float lifetime;
+    float maxLifetime;
+  };
+
+  // Main 5.2: m_byHurtByOneToOne = 35 — target electrocution effect
+  // BITMAP_JOINT_THUNDER arcs between bone pairs for 35 ticks (~1.4s)
+  struct DeathStabShock {
+    glm::vec3 position;      // Target center (ground level)
+    float lifetime;           // 1.4s (35 ticks)
+    float maxLifetime;
+    float tickTimer = 0.0f;   // Accumulator for 40ms tick-rate arc spawning
+  };
+
+  // Main 5.2: MODEL_SPEARSKILL SubType 2 — persistent spiraling energy element
+  // Recalculates position each frame along GetMagicScrew path, converging on weapon
+  // Renders as ribbon trail (MaxTails=5) with BITMAP_FLARE_FORCE texture
+  struct DeathStabSpiral {
+    glm::vec3 origin;       // Spawn point (above caster + random XZ spread)
+    glm::vec3 swordPos;     // Target: weapon position
+    glm::vec3 position;     // Current rendered position (recomputed each frame)
+    int spiralSeed;         // Per-object seed for GetMagicScrewPos
+    int frameCounter = 0;   // Evolving frame offset (increments each frame)
+    float lifetime;         // Remaining seconds (starts 0.8s)
+    float maxLifetime;      // 0.8s (20 ticks)
+    float scale;            // Trail width (Main 5.2: LifeTime * 3.0)
+    float alpha;            // Opacity
+    float tailTimer = 0.0f;     // Accumulator for tick-rate tail creation
+    static constexpr int MAX_TAILS = 5;
+    glm::vec3 tails[MAX_TAILS]; // Position history (newest at [0])
+    int numTails = 0;           // Current tail count
+  };
+
+  // Main 5.2: AT_SKILL_ONETOONE tick timeline orchestrator
+  // Phase 1 (ticks 2-8): converging spirals from above
+  // Phase 2 (ticks 6-12): forward flare trail along weapon extension
+  struct DeathStabEffect {
+    glm::vec3 casterPos;
+    glm::vec3 targetPos;      // Monster position (convergence target)
+    float casterFacing;       // Radians
+    float tickTimer = 0.0f;
+    int ticksElapsed = 0;
+    float totalLifetime;      // ~0.6s total activity
+  };
+
+  // Main 5.2: BLUR struct (ZzzEffectBlurSpark.cpp) — weapon motion blur trail
+  struct WeaponTrail {
+    bool active = false;
+    bool fading = false;       // Attack ended, trail shrinking
+    float fadeTimer = 0.0f;    // Seconds remaining in fade-out
+    static constexpr int MAX_POINTS = 30;
+    static constexpr float MAX_FADE_TIME = 0.3f; // Fast fade-out after swing ends
+    glm::vec3 tip[MAX_POINTS];   // Weapon tip world positions (newest at [0])
+    glm::vec3 base[MAX_POINTS];  // Weapon base world positions (newest at [0])
+    int numPoints = 0;
+    glm::vec3 color{0.8f, 0.8f, 0.8f};
+    float shrinkAccum = 0.0f;  // Accumulator for tick-rate point removal
+    bool isSkill = false;       // true=BlurMapping 2 (motion_blur_r), false=BlurMapping 0 (blur01)
+  };
+  WeaponTrail m_weaponTrail;
+
   std::vector<Particle> m_particles;
   std::vector<Ribbon> m_ribbons;
   std::vector<GroundCircle> m_groundCircles;
@@ -448,6 +582,13 @@ private:
   std::vector<LaserFlash> m_laserFlashes;
   std::vector<AquaBeam> m_aquaBeams;
   std::vector<InfernoEffect> m_infernoEffects;
+  std::vector<EarthQuakeCrack> m_earthQuakeCracks;
+  std::vector<StoneDebris> m_stoneDebris;
+  std::vector<FuryStrikeEffect> m_furyStrikeEffects;
+  std::vector<DeathStabEffect> m_deathStabEffects;
+  std::vector<DeathStabShock> m_deathStabShocks;
+  std::vector<DeathStabArc> m_deathStabArcs;
+  std::vector<DeathStabSpiral> m_deathStabSpirals;
 
   // Per-frame hero bone world positions (for bone-attached particles)
   std::vector<glm::vec3> m_heroBoneWorldPositions;
@@ -474,6 +615,10 @@ private:
   GLuint m_infernoFireTexture = 0; // Main 5.2: Inferno fire (inferno.OZJ)
   GLuint m_hellfireCircleTex = 0;   // Main 5.2: Circle01.bmd texture (Skill/magic_a01.OZJ)
   GLuint m_hellfireLightTex = 0;    // Main 5.2: Circle02.bmd texture (Skill/magic_a02.OZJ)
+  GLuint m_blurTexture = 0;         // Main 5.2: BITMAP_BLUR (Effect/blur01.OZJ) — regular attack
+  GLuint m_motionBlurTexture = 0;   // Main 5.2: BITMAP_BLUR+2 (Effect/motion_blur_r.OZJ) — skill
+  GLuint m_spark2Texture = 0;       // Main 5.2: BITMAP_SPARK (Effect/Spark02.OZJ) — hit sparks
+  GLuint m_flareForceTexture = 0;   // Main 5.2: BITMAP_FLARE_FORCE (Effect/NSkill.OZJ) — Death Stab spiral
 
   std::unique_ptr<Shader> m_shader;
   std::unique_ptr<Shader> m_lineShader;
@@ -517,8 +662,25 @@ private:
   std::unique_ptr<BMDData> m_laserBmd;
   std::vector<MeshBuffers> m_laserMeshes;
 
+  // Rageful Blow: EarthQuake01-08.bmd (Main 5.2: MODEL_SKILL_FURY_STRIKE+1..+8)
+  // Indexed 1-8, slot 0 unused. Types 6 reuses 4's meshes.
+  std::unique_ptr<BMDData> m_eqBmd[9];        // [1]-[8]
+  std::vector<MeshBuffers> m_eqMeshes[9];     // [1]-[8]
+
+  // Stone debris (Main 5.2: MODEL_GROUND_STONE / MODEL_GROUND_STONE2)
+  std::unique_ptr<BMDData> m_stone1Bmd;
+  std::vector<MeshBuffers> m_stone1Meshes;
+  std::unique_ptr<BMDData> m_stone2Bmd;
+  std::vector<MeshBuffers> m_stone2Meshes;
+
+  // Camera shake from Rageful Blow EQ01 (Main 5.2: EarthQuake variable)
+  float m_cameraShake = 0.0f;
+
   // Terrain height callback for ground collision
   std::function<float(float, float)> m_getTerrainHeight;
+
+  // Sound playback callback (avoids linking SoundManager in viewer targets)
+  std::function<void(int)> m_playSound;
 
   // Billboard particle buffers
   GLuint m_quadVAO = 0, m_quadVBO = 0, m_quadEBO = 0;
@@ -567,6 +729,18 @@ private:
   void renderLaserFlashes(const glm::mat4 &view, const glm::mat4 &projection);
   void updateAquaBeams(float dt);
   void renderAquaBeams(const glm::mat4 &view, const glm::mat4 &projection);
+  void updateWeaponTrail(float dt);
+  void renderWeaponTrail(const glm::mat4 &view, const glm::mat4 &projection);
+  void updateFuryStrikeEffects(float dt);
+  void updateEarthQuakeCracks(float dt);
+  void renderEarthQuakeCracks(const glm::mat4 &view, const glm::mat4 &projection);
+  void updateStoneDebris(float dt);
+  void renderStoneDebris(const glm::mat4 &view, const glm::mat4 &projection);
+  void updateDeathStabEffects(float dt);
+  void updateDeathStabShocks(float dt);
+  void updateDeathStabSpirals(float dt);
+  void renderDeathStabShocks(const glm::mat4 &view, const glm::mat4 &projection);
+  void renderDeathStabSpirals(const glm::mat4 &view, const glm::mat4 &projection);
 };
 
 #endif // VFX_MANAGER_HPP

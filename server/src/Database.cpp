@@ -241,8 +241,8 @@ void Database::CreateDefaultAccount() {
         "INSERT INTO characters (account_id, slot, name, class, level, "
         "strength, dexterity, vitality, energy, life, max_life, mana, "
         "max_mana, money, level_up_points, skill_bar, potion_bar) "
-        "VALUES (%d, 0, 'RealPlayer', 16, 1, 28, 20, 25, 10, 110, 110, 20, "
-        "20, 1000000, 0, NULL, NULL)",
+        "VALUES (%d, 0, 'RealPlayer', 16, 50, 28, 20, 25, 10, 208, 208, 20, "
+        "20, 1000000, 245, NULL, NULL)",
         accountId);
     sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
     printf("[DB] Created RealPlayer character for account %d\n", accountId);
@@ -965,7 +965,7 @@ void Database::SeedItemDefinitions() {
             (13, 0, 'Guardian Angel', 'Helper01.bmd', 23, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (13, 1, 'Imp', 'Helper02.bmd', 28, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (13, 2, 'Horn of Uniria', 'Helper03.bmd', 25, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
-            (13, 3, 'Horn of Dinorant', 'Pet04.bmd', 110, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
+            (13, 3, 'Horn of Dinorant', 'Helper04.bmd', 110, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (13, 8, 'Ring of Ice', 'Ring01.bmd', 20, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (13, 9, 'Ring of Poison', 'Ring02.bmd', 17, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),
             (13, 10, 'Transformation Ring', 'Ring01.bmd', 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 15),

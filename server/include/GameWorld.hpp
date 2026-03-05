@@ -170,6 +170,7 @@ public:
     int life;
     bool dead;
     uint16_t level;
+    float petDamageReduction = 0.0f; // Guardian Angel: 0.2 (20%)
   };
 
   // Monster attack result to broadcast

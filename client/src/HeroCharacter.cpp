@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 
@@ -172,12 +173,15 @@ void HeroCharacter::Heal(int amount) {
 void HeroCharacter::SetWeaponBonus(int dmin, int dmax) {
   m_weaponDamageMin = dmin;
   m_weaponDamageMax = dmax;
-  RecalcStats();
+  // Only recalc damage — don't call RecalcStats which clobbers server-authoritative HP/AG
+  m_damageMin = std::max(1, (int)m_strength / 6 + m_weaponDamageMin);
+  m_damageMax = std::max(m_damageMin, (int)m_strength / 4 + m_weaponDamageMax);
 }
 
 void HeroCharacter::SetDefenseBonus(int def) {
   m_equipDefenseBonus = def;
-  RecalcStats();
+  // Only recalc defense — don't call RecalcStats which clobbers server-authoritative HP/AG
+  m_defense = (int)m_dexterity / 3 + m_equipDefenseBonus;
 }
 
 DamageResult HeroCharacter::RollAttack(int targetDefense,
@@ -269,6 +273,9 @@ bool HeroCharacter::isDualWielding() const {
 }
 
 int HeroCharacter::weaponIdleAction() const {
+  if (isMountRiding())
+    return m_weaponBmd ? ACTION_STOP_RIDE_WEAPON : ACTION_STOP_RIDE;
+
   if (!m_weaponBmd)
     return ACTION_STOP_MALE;
 
@@ -296,6 +303,10 @@ int HeroCharacter::weaponIdleAction() const {
 }
 
 int HeroCharacter::weaponWalkAction() const {
+  // Both mounts bounce — character uses running ride animation
+  if (isMountRiding())
+    return m_weaponBmd ? ACTION_RUN_RIDE_WEAPON : ACTION_RUN_RIDE;
+
   if (!m_weaponBmd)
     return ACTION_WALK_MALE;
 
@@ -323,6 +334,23 @@ int HeroCharacter::weaponWalkAction() const {
 }
 
 int HeroCharacter::nextAttackAction() {
+  if (isMountRiding()) {
+    if (!m_weaponBmd) return ACTION_ATTACK_RIDE_SWORD;
+    uint8_t rideCat = m_weaponInfo.category;
+    switch (rideCat) {
+    case 0: case 1: case 2:
+      return m_weaponInfo.twoHanded ? ACTION_ATTACK_RIDE_TWO_HAND_SWORD
+                                    : ACTION_ATTACK_RIDE_SWORD;
+    case 3:
+      return (m_weaponInfo.itemIndex >= 7) ? ACTION_ATTACK_RIDE_SCYTHE
+                                           : ACTION_ATTACK_RIDE_SPEAR;
+    case 4:
+      return (m_weaponInfo.itemIndex >= 8) ? ACTION_ATTACK_RIDE_CROSSBOW
+                                           : ACTION_ATTACK_RIDE_BOW;
+    default: return ACTION_ATTACK_RIDE_SWORD;
+    }
+  }
+
   if (!m_weaponBmd) {
     return ACTION_ATTACK_FIST;
   }
@@ -484,6 +512,8 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
   if (!m_skeleton || !m_shader)
     return;
 
+  m_weaponTrailValid = false; // Reset each frame
+
   // Advance animation
   int numKeys = 1;
   bool lockPos = false;
@@ -501,14 +531,23 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     if (isHealAnim)
       clampAnim = true;
     // Scale attack animations faster with agility (OpenMU: DEX/15 for DK)
-    bool isAttacking = (m_action >= 38 && m_action <= 51) ||
+    bool isAttacking = (m_action >= 38 && m_action <= 59) ||
                        (m_action >= 60 && m_action <= 71) ||
                        (m_action >= 146 && m_action <= 154);
+    // Main 5.2 ride PlaySpeeds: idle 0.28 (7.0fps), walk 0.3 (7.5fps)
+    bool isRideIdle = (m_action == ACTION_STOP_RIDE ||
+                       m_action == ACTION_STOP_RIDE_WEAPON);
+    bool isRideWalk = (m_action == ACTION_RUN_RIDE ||
+                       m_action == ACTION_RUN_RIDE_WEAPON);
     float speed;
     if (isHealAnim)
       speed = (float)numKeys / m_slowAnimDuration; // Stretch to fit duration
     else if (isAttacking)
       speed = ANIM_SPEED * attackSpeedMultiplier();
+    else if (isRideIdle)
+      speed = 7.0f;  // Main 5.2: PlaySpeed 0.28 * 25fps
+    else if (isRideWalk)
+      speed = 7.5f;  // Main 5.2: PlaySpeed 0.3 * 25fps
     else
       speed = ANIM_SPEED;
     // Main 5.2: Flash animation slowdown during gathering phase (frames 1.0-3.0)
@@ -597,12 +636,14 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     float dx = 0.0f, dy = 0.0f;
 
     if (m_isBlending && m_priorAction != -1) {
-      // Blend root offsets from both actions if they have lockPos
-      bool lock1 = false, lock2 = false;
+      // Blend root offsets from both actions if they have lockPos.
+      // When mounted: force lock for all actions to keep player on mount.
+      bool mounted = isMountRiding();
+      bool lock1 = mounted, lock2 = mounted;
       if (m_priorAction < (int)m_skeleton->Actions.size())
-        lock1 = m_skeleton->Actions[m_priorAction].LockPositions;
+        lock1 = lock1 || m_skeleton->Actions[m_priorAction].LockPositions;
       if (m_action < (int)m_skeleton->Actions.size())
-        lock2 = m_skeleton->Actions[m_action].LockPositions;
+        lock2 = lock2 || m_skeleton->Actions[m_action].LockPositions;
 
       float dx1 = 0.0f, dy1 = 0.0f, dx2 = 0.0f, dy2 = 0.0f;
 
@@ -634,8 +675,10 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       // Final blended offset
       dx = dx1 * (1.0f - m_blendAlpha) + dx2 * m_blendAlpha;
       dy = dy1 * (1.0f - m_blendAlpha) + dy2 * m_blendAlpha;
-    } else if (lockPos) {
-      // Standard single-action lock
+    } else if (lockPos || isMountRiding()) {
+      // Standard single-action lock.
+      // When mounted: always strip XY root motion to keep player aligned with mount,
+      // even if ride actions don't have LockPositions set in BMD.
       auto &bm = m_skeleton->Bones[i].BoneMatrixes[m_action];
       if (!bm.Position.empty()) {
         dx = bones[i][0][3] - bm.Position[0].x;
@@ -649,6 +692,7 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
         bones[b][1][3] -= dy;
       }
     }
+
   }
 
   // Cache bones for shadow rendering
@@ -676,7 +720,12 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
   }
 
   // Build model matrix: translate -> MU->GL coord conversion -> facing rotation
-  glm::mat4 model = glm::translate(glm::mat4(1.0f), m_pos);
+  // Main 5.2: when riding Dinorant, player is elevated +30 above terrain (sits on mount).
+  // Uniria: no height offset (unicorn is smaller).
+  glm::vec3 renderPos = m_pos;
+  if (isMountRiding() && m_mount.itemIndex == 3) // Dinorant
+    renderPos.y += 30.0f;
+  glm::mat4 model = glm::translate(glm::mat4(1.0f), renderPos);
   model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
   model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
   model = glm::rotate(model, m_facing, glm::vec3(0, 0, 1));
@@ -782,6 +831,27 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
                                (const float(*)[4])wLocalBones[bi].data(),
                                (float(*)[4])wFinalBones[bi].data());
+    }
+
+    // Compute weapon blur trail points (Main 5.2: BlurType 1)
+    // Weapon-local offsets transformed through parentMat → BMD-local → world
+    if (m_weaponTrailActive && !m_inSafeZone) {
+      glm::vec3 tipLocal(0.f, -20.f, 0.f);    // Blade tip (BlurType 1)
+      glm::vec3 baseLocal(0.f, -120.f, 0.f);   // Blade base
+      glm::vec3 tipBmd = MuMath::TransformPoint(
+          (const float(*)[4])parentMat.data(), tipLocal);
+      glm::vec3 baseBmd = MuMath::TransformPoint(
+          (const float(*)[4])parentMat.data(), baseLocal);
+      // Apply character model transform: rotZ(facing) → rotY(-90) → rotZ(-90)
+      float cosF = cosf(m_facing), sinF = sinf(m_facing);
+      auto toWorld = [&](const glm::vec3 &bmd) -> glm::vec3 {
+        float rx = bmd.x * cosF - bmd.y * sinF;
+        float ry = bmd.x * sinF + bmd.y * cosF;
+        return m_pos + glm::vec3(ry, bmd.z, rx);
+      };
+      m_weaponTrailTip = toWorld(tipBmd);
+      m_weaponTrailBase = toWorld(baseBmd);
+      m_weaponTrailValid = true;
     }
 
     // Re-skin weapon vertices using final bone matrices
@@ -942,6 +1012,519 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       glBindVertexArray(mb.vao);
       glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
     }
+  }
+
+  // ── Twisting Slash: render ghost weapon copies orbiting the hero ──
+  if (m_twistingSlashActive && !m_ghostWeaponMeshBuffers.empty()) {
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE); // Additive blend for ghostly glow
+    glDepthMask(GL_FALSE);
+
+    for (int i = 0; i < MAX_WHEEL_GHOSTS; ++i) {
+      const auto &g = m_wheelGhosts[i];
+      if (!g.active)
+        continue;
+
+      // Ghost world position: orbit around hero at radius 150, height +100
+      float orbitRad = glm::radians(g.orbitAngle);
+      glm::vec3 ghostPos =
+          m_pos + glm::vec3(sinf(orbitRad) * 150.0f, 100.0f,
+                            cosf(orbitRad) * 150.0f);
+
+      // Build model matrix:
+      // 1. Translate to ghost position
+      // 2. Standard BMD coordinate conversion (-90Z, -90Y)
+      // 3. Face along orbit tangent (orbitAngle + 90°)
+      // 4. Horizontal tilt (weapon blade parallel to ground)
+      // 5. Self-spin (accelerating rotation)
+      glm::mat4 ghostModel = glm::translate(glm::mat4(1.0f), ghostPos);
+      ghostModel = glm::rotate(ghostModel, glm::radians(-90.0f),
+                                glm::vec3(0, 0, 1));
+      ghostModel = glm::rotate(ghostModel, glm::radians(-90.0f),
+                                glm::vec3(0, 1, 0));
+      // Orbital facing: tangent direction
+      ghostModel = glm::rotate(ghostModel, glm::radians(g.orbitAngle),
+                                glm::vec3(0, 0, 1));
+      // Main 5.2: Angle[1] = 90 → horizontal tilt
+      ghostModel = glm::rotate(ghostModel, glm::radians(90.0f),
+                                glm::vec3(0, 1, 0));
+      // Accelerating self-spin
+      ghostModel = glm::rotate(ghostModel, glm::radians(g.spinAngle),
+                                glm::vec3(0, 0, 1));
+      // Main 5.2: ItemObjectAttribute sets Scale=0.8 for weapon items
+      ghostModel = glm::scale(ghostModel, glm::vec3(0.8f));
+
+      m_shader->setMat4("model", ghostModel);
+      m_shader->setFloat("objectAlpha", g.alpha);
+      m_shader->setFloat("blendMeshLight", 1.0f);
+
+      for (auto &mb : m_ghostWeaponMeshBuffers) {
+        if (mb.indexCount == 0)
+          continue;
+        glBindTexture(GL_TEXTURE_2D, mb.texture);
+        glBindVertexArray(mb.vao);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+      }
+    }
+
+    glDepthMask(GL_TRUE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // Restore the character's model matrix and objectAlpha for subsequent renders
+    m_shader->setFloat("objectAlpha", 1.0f);
+    glm::mat4 charModel = glm::translate(glm::mat4(1.0f), renderPos);
+    charModel = glm::rotate(charModel, glm::radians(-90.0f),
+                             glm::vec3(0, 0, 1));
+    charModel = glm::rotate(charModel, glm::radians(-90.0f),
+                             glm::vec3(0, 1, 0));
+    charModel =
+        glm::rotate(charModel, m_facing, glm::vec3(0, 0, 1));
+    m_shader->setMat4("model", charModel);
+  }
+
+  // ── Mount rendering (Uniria / Dinorant) ──
+  // Main 5.2 GOBoid.cpp: mount renders at player position with Z offset.
+  // Mount and player have independent animation frames (both ~0.34f/tick).
+  if (m_mount.active && m_mount.bmd && !m_mount.meshBuffers.empty()) {
+    // Main 5.2: alpha fades to 0 in safe zone, 1 outside
+    float targetAlpha = m_inSafeZone ? 0.0f : 1.0f;
+    m_mount.alpha += (targetAlpha - m_mount.alpha) * glm::clamp(deltaTime * 4.0f, 0.0f, 1.0f);
+    if (m_mount.alpha > 0.99f) m_mount.alpha = 1.0f;
+    if (m_mount.alpha < 0.01f) m_mount.alpha = 0.0f;
+
+    // Mount animation: action mapping based on owner's state.
+    // Rider01 (Uniria): idle=0, walk=2, attack=3  (4 actions)
+    // Rider02 (Dinorant): idle=0, walk=2, attack=4 (8 actions, ground maps)
+    // Main 5.2 GOBoid.cpp: mount action set based on owner's current action
+    bool isRideAttack = (m_action >= ACTION_ATTACK_RIDE_SWORD &&
+                         m_action <= ACTION_ATTACK_RIDE_CROSSBOW);
+    int mountAction;
+    if (isRideAttack) {
+      mountAction = (m_mount.itemIndex == 3) ? 4 : 3; // Dinorant=4, Uniria=3
+    } else {
+      mountAction = m_moving ? 2 : 0;
+    }
+    if (mountAction >= (int)m_mount.bmd->Actions.size())
+      mountAction = 0;
+
+    // Sync mount animation frame to player's ride animation frame.
+    // Both Player.bmd ride actions and Rider01/02.bmd walk actions have matching
+    // key counts (7 for walk, 6 for idle) and identical 2-beat gallop Z patterns.
+    // Independent frames cause visible rider/mount Z separation (~25 unit bounce).
+    int mountNumKeys = m_mount.bmd->Actions[mountAction].NumAnimationKeys;
+    bool mountLockPos = m_mount.bmd->Actions[mountAction].LockPositions;
+    int mountWrapKeys = mountLockPos ? (mountNumKeys - 1) : mountNumKeys;
+    if (mountWrapKeys > 0) {
+      m_mount.animFrame = std::fmod(m_animFrame, (float)mountWrapKeys);
+    }
+
+    // Compute mount bones and re-skin meshes
+    auto mountBones = ComputeBoneMatricesInterpolated(m_mount.bmd.get(), mountAction,
+                                                       m_mount.animFrame);
+    // Remove HORIZONTAL root motion only — vertical bounce preserved in bones.
+    // Use m_mount.rootBone (0 for Rider01/Uniria, 1 for Rider02/Dinorant)
+    // because Rider02's bone 0 is a static Box01 helper, not the animated root.
+    int rb = m_mount.rootBone;
+    if (!mountBones.empty() && rb < (int)mountBones.size()) {
+      glm::vec3 idlePos, curPos;
+      glm::vec4 dummyQ;
+      GetInterpolatedBoneData(m_mount.bmd.get(), 0, 0.0f, rb, idlePos, dummyQ);
+      GetInterpolatedBoneData(m_mount.bmd.get(), mountAction, m_mount.animFrame,
+                              rb, curPos, dummyQ);
+      float dx = curPos.x - idlePos.x;
+      float dy = curPos.y - idlePos.y;
+      for (auto &bone : mountBones) {
+        bone[0][3] -= dx;
+        bone[1][3] -= dy;
+      }
+    }
+    for (int mi = 0; mi < (int)m_mount.meshBuffers.size() &&
+                     mi < (int)m_mount.bmd->Meshes.size(); ++mi) {
+      RetransformMeshWithBones(m_mount.bmd->Meshes[mi], mountBones,
+                               m_mount.meshBuffers[mi]);
+    }
+
+    // Skip GPU rendering when fully faded (safe zone), but animation stays updated
+    if (m_mount.alpha > 0.0f) {
+      // Main 5.2 GOBoid.cpp: mount at player pos, Dinorant offset -30 Z (ground level)
+      // Player is elevated +30 (set above in renderPos), mount stays at terrain.
+      glm::mat4 mountModel = glm::translate(glm::mat4(1.0f), m_pos);
+      mountModel = glm::rotate(mountModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+      mountModel = glm::rotate(mountModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+      mountModel = glm::rotate(mountModel, m_facing, glm::vec3(0, 0, 1));
+      // Main 5.2 RenderMount: overrides creation scale to 1.0 for in-game rendering
+      // (0.9 during CreateMountSub, but 1.0 in RenderMount for all non-Fenrir mounts)
+      mountModel = glm::scale(mountModel, glm::vec3(1.0f));
+
+      m_shader->setMat4("model", mountModel);
+      m_shader->setFloat("objectAlpha", m_mount.alpha);
+      m_shader->setFloat("blendMeshLight", 1.0f);
+      m_shader->setVec3("terrainLight", tLight);
+
+      glDisable(GL_CULL_FACE);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+      // Pass 1: Normal (non-blend) meshes
+      for (int mi = 0; mi < (int)m_mount.meshBuffers.size() &&
+                       mi < (int)m_mount.bmd->Meshes.size(); ++mi) {
+        auto &mb = m_mount.meshBuffers[mi];
+        if (mb.indexCount == 0 || mb.hidden) continue;
+        int bmdTex = m_mount.bmd->Meshes[mi].Texture;
+        if (bmdTex == m_mount.blendMesh || mb.bright) continue;
+        glBindTexture(GL_TEXTURE_2D, mb.texture);
+        glBindVertexArray(mb.vao);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+      }
+
+      // Pass 2: Additive blend meshes (glow/wings)
+      if (m_mount.blendMesh >= 0) {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        m_shader->setFloat("blendMeshLight", 1.5f);
+        for (int mi = 0; mi < (int)m_mount.meshBuffers.size() &&
+                         mi < (int)m_mount.bmd->Meshes.size(); ++mi) {
+          auto &mb = m_mount.meshBuffers[mi];
+          if (mb.indexCount == 0 || mb.hidden) continue;
+          int bmdTex = m_mount.bmd->Meshes[mi].Texture;
+          if (bmdTex != m_mount.blendMesh && !mb.bright) continue;
+          glBindTexture(GL_TEXTURE_2D, mb.texture);
+          glBindVertexArray(mb.vao);
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        }
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        m_shader->setFloat("blendMeshLight", 1.0f);
+      }
+
+      glEnable(GL_CULL_FACE);
+
+      // Restore shader state for subsequent rendering
+      m_shader->setFloat("objectAlpha", 1.0f);
+      glm::mat4 restoreModel = glm::translate(glm::mat4(1.0f), m_pos);
+      restoreModel = glm::rotate(restoreModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+      restoreModel = glm::rotate(restoreModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+      restoreModel = glm::rotate(restoreModel, m_facing, glm::vec3(0, 0, 1));
+      m_shader->setMat4("model", restoreModel);
+    }
+  }
+
+  // ── Pet companion: update + render (Guardian Angel / Imp) ──
+  // Main 5.2 GOBoid.cpp: Direction-vector movement with random wandering
+  if (m_pet.active && m_pet.bmd && !m_pet.meshBuffers.empty()) {
+    constexpr float FLY_RANGE = 100.0f;         // Max wander distance from owner
+    constexpr float MAX_DIST = 180.0f;           // Hard leash — teleport back if exceeded
+    constexpr float TICK_INTERVAL = 0.04f;       // 25fps tick rate
+    constexpr float MAX_TURN_PER_TICK = 20.0f;   // Degrees per tick
+    constexpr float MIN_HEIGHT = 100.0f;         // Above owner
+    constexpr float MAX_HEIGHT = 200.0f;         // Above owner
+
+    // ── Teleport pet to owner if too far (login, teleport, initial spawn at origin) ──
+    float petDistX = m_pet.pos.x - m_pos.x;
+    float petDistZ = m_pet.pos.z - m_pos.z;
+    float petDistSq = petDistX * petDistX + petDistZ * petDistZ;
+    if (petDistSq > MAX_DIST * MAX_DIST) {
+      m_pet.pos = m_pos + glm::vec3(
+          (float)(rand() % 100 - 50), MIN_HEIGHT + (float)(rand() % 50),
+          (float)(rand() % 100 - 50));
+      m_pet.lastOwnerPos = m_pos;
+      m_pet.dirAngle = glm::radians((float)(rand() % 360));
+      m_pet.speed = 0.5f;
+      m_pet.heightVel = 0.0f;
+      m_pet.tickAccum = 0.0f;
+      m_pet.followDelay = 0.0f;
+      m_pet.wasOwnerMoving = false;
+    }
+
+    // ── Detect if owner is moving ──
+    glm::vec3 ownerDelta = m_pos - m_pet.lastOwnerPos;
+    float ownerMoveSq = ownerDelta.x * ownerDelta.x + ownerDelta.z * ownerDelta.z;
+    bool ownerMoving = ownerMoveSq > 0.5f; // Threshold to avoid float noise
+    m_pet.lastOwnerPos = m_pos;
+
+    // Accumulate time for tick-based logic
+    m_pet.tickAccum += deltaTime;
+
+    // Follow ramp: when character just started moving, angel lerp starts slow and accelerates
+    if (ownerMoving && !m_pet.wasOwnerMoving) {
+      m_pet.followDelay = 0.0f; // Reset ramp timer on movement start
+    }
+    // When character just stopped, seed idle wander from current position
+    if (!ownerMoving && m_pet.wasOwnerMoving) {
+      float edx = m_pet.pos.x - m_pos.x;
+      float edz = m_pet.pos.z - m_pos.z;
+      m_pet.dirAngle = atan2f(edz, edx); // Continue moving in current direction
+      m_pet.speed = 0.3f;                // Slow drift, not a snap
+      m_pet.heightVel *= 0.5f;           // Dampen vertical momentum
+      m_pet.tickAccum = 0.0f;            // Prevent burst of accumulated ticks
+    }
+    if (ownerMoving) {
+      m_pet.followDelay += deltaTime; // Ramps up from 0
+    } else {
+      m_pet.followDelay = 0.0f;
+    }
+    m_pet.wasOwnerMoving = ownerMoving;
+
+    if (ownerMoving) {
+      // ── MOVING: angel trails behind character, facing same direction ──
+      constexpr float TRAIL_DIST = 60.0f;
+      constexpr float RAMP_DURATION = 0.5f; // Time to reach full follow speed
+      float behindX = m_pos.x - cosf(m_facing) * TRAIL_DIST;
+      float behindZ = m_pos.z - sinf(m_facing) * TRAIL_DIST;
+
+      // Lateral weave: dirAngle is repurposed as smooth lateral offset during MOVING
+      // Perpendicular to character facing — adds organic sway to follow path
+      float perpX = -sinf(m_facing);
+      float perpZ =  cosf(m_facing);
+      behindX += perpX * m_pet.dirAngle;
+      behindZ += perpZ * m_pet.dirAngle;
+
+      // Lerp rate ramps from ~0.5 to 5.0 over RAMP_DURATION seconds
+      float ramp = glm::clamp(m_pet.followDelay / RAMP_DURATION, 0.0f, 1.0f);
+      float speed = 0.5f + ramp * 4.5f; // 0.5 → 5.0
+      float lerpRate = glm::clamp(deltaTime * speed, 0.0f, 1.0f);
+      m_pet.pos.x += (behindX - m_pet.pos.x) * lerpRate;
+      m_pet.pos.z += (behindZ - m_pet.pos.z) * lerpRate;
+
+      // Smoothly lerp facing toward character's direction (also ramps)
+      float targetFacing = m_facing;
+      float facingDiff = targetFacing - m_pet.facing;
+      while (facingDiff > M_PI) facingDiff -= 2.0f * M_PI;
+      while (facingDiff < -M_PI) facingDiff += 2.0f * M_PI;
+      float facingSpeed = 1.0f + ramp * 3.0f; // 1.0 → 4.0
+      m_pet.facing += facingDiff * glm::clamp(deltaTime * facingSpeed, 0.0f, 1.0f);
+      constexpr float MOVE_HEAD_HEIGHT = 120.0f;
+      float mdy = (m_pos.y + MOVE_HEAD_HEIGHT) - m_pet.pos.y;
+      float mdx = m_pet.pos.x - m_pos.x;
+      float mdz = m_pet.pos.z - m_pos.z;
+      float mhDist = sqrtf(mdx * mdx + mdz * mdz);
+      m_pet.pitch = atan2f(mdy, std::max(mhDist, 1.0f));
+
+      // Vertical + lateral: smooth toward target height with gentle bobbing
+      while (m_pet.tickAccum >= TICK_INTERVAL) {
+        m_pet.tickAccum -= TICK_INTERVAL;
+        m_pet.pos.y += m_pet.heightVel;
+        m_pet.heightVel += ((float)(rand() % 10 - 5)) * 0.1f; // Gentle random nudge
+        if (m_pet.pos.y < m_pos.y + MIN_HEIGHT) m_pet.heightVel += 1.0f;
+        if (m_pet.pos.y > m_pos.y + MAX_HEIGHT) m_pet.heightVel -= 1.0f;
+        m_pet.heightVel *= 0.92f;
+
+        // Lateral weave: random drift ±25 units perpendicular to path
+        m_pet.dirAngle += ((float)(rand() % 10 - 5)) * 0.4f;
+        m_pet.dirAngle *= 0.93f; // Decay toward center
+
+        // Sparkle — angel gets white dots, imp gets red-orange embers
+        if (m_vfxManager && rand() % 4 == 0) {
+          glm::vec3 sparkPos = m_pet.pos + glm::vec3(
+              (float)(rand() % 16 - 8), (float)(rand() % 16 - 8), (float)(rand() % 16 - 8));
+          auto sparkType = m_pet.itemIndex == 1 ? ParticleType::IMP_SPARKLE
+                                                : ParticleType::PET_SPARKLE;
+          m_vfxManager->SpawnBurst(sparkType, sparkPos, 1);
+        }
+      }
+    } else {
+      // ── IDLE: wander smoothly around owner, always face toward character ──
+      while (m_pet.tickAccum >= TICK_INTERVAL) {
+        m_pet.tickAccum -= TICK_INTERVAL;
+
+        // Smooth turn toward target direction (max 8° per tick)
+        constexpr float MAX_TURN = glm::radians(8.0f);
+        float angleDiff = m_pet.dirAngle - atan2f(
+            sinf(m_pet.dirAngle) * m_pet.speed,
+            cosf(m_pet.dirAngle) * m_pet.speed);
+        // dirAngle is the target — smoothly steer current movement
+        float curMoveAngle = atan2f(sinf(m_pet.dirAngle), cosf(m_pet.dirAngle));
+
+        // Apply smooth movement
+        m_pet.pos.x += cosf(m_pet.dirAngle) * m_pet.speed;
+        m_pet.pos.z += sinf(m_pet.dirAngle) * m_pet.speed;
+        m_pet.pos.y += m_pet.heightVel;
+
+        // Body exclusion: gently push pet away if too close (soft spring, no snap)
+        constexpr float MIN_RADIUS = 40.0f;
+        float edx = m_pet.pos.x - m_pos.x;
+        float edz = m_pet.pos.z - m_pos.z;
+        float eDist = sqrtf(edx * edx + edz * edz);
+        if (eDist < MIN_RADIUS && eDist > 0.01f) {
+          float pushStr = (MIN_RADIUS - eDist) * 0.15f; // Soft push
+          m_pet.pos.x += (edx / eDist) * pushStr;
+          m_pet.pos.z += (edz / eDist) * pushStr;
+        } else if (eDist < 0.01f) {
+          m_pet.pos.x += cosf(m_pet.dirAngle) * 0.5f;
+          m_pet.pos.z += sinf(m_pet.dirAngle) * 0.5f;
+        }
+
+        // Gentle random direction drift: ~1.5% chance per tick, small angle change
+        if (rand() % 64 == 0) {
+          // New target direction: small random offset from current (±60°)
+          float angleOffset = glm::radians((float)(rand() % 120 - 60));
+          m_pet.dirAngle += angleOffset;
+          m_pet.speed = 0.5f + (float)(rand() % 15) * 0.1f; // 0.5-2.0 units/tick
+          m_pet.heightVel += ((float)(rand() % 20 - 10)) * 0.05f; // Gentle nudge
+        }
+
+        // Soft wander radius — pull back gradually, never snap
+        edx = m_pet.pos.x - m_pos.x;
+        edz = m_pet.pos.z - m_pos.z;
+        float wanderDist = sqrtf(edx * edx + edz * edz);
+        if (wanderDist > FLY_RANGE && wanderDist > 0.01f) {
+          float overshoot = wanderDist - FLY_RANGE;
+          float pullStr = std::min(overshoot * 0.1f, 2.0f); // Gradual pull
+          m_pet.pos.x -= (edx / wanderDist) * pullStr;
+          m_pet.pos.z -= (edz / wanderDist) * pullStr;
+          // Steer direction back toward owner
+          m_pet.dirAngle = atan2f(-edz, -edx) + glm::radians((float)(rand() % 60 - 30));
+          m_pet.speed = std::min(m_pet.speed, 1.0f);
+        }
+
+        // Height constraints — gentle spring
+        float targetY = m_pos.y + (MIN_HEIGHT + MAX_HEIGHT) * 0.5f; // Center of range
+        float heightErr = targetY - m_pet.pos.y;
+        m_pet.heightVel += heightErr * 0.02f; // Soft spring
+        if (m_pet.pos.y < m_pos.y + MIN_HEIGHT) m_pet.heightVel += 0.5f;
+        if (m_pet.pos.y > m_pos.y + MAX_HEIGHT) m_pet.heightVel -= 0.5f;
+        m_pet.heightVel *= 0.92f; // Strong damping for smooth bobbing
+
+        // Sparkle — angel gets white dots, imp gets red-orange embers
+        if (m_vfxManager && rand() % 4 == 0) {
+          glm::vec3 sparkPos = m_pet.pos + glm::vec3(
+              (float)(rand() % 16 - 8), (float)(rand() % 16 - 8), (float)(rand() % 16 - 8));
+          auto sparkType = m_pet.itemIndex == 1 ? ParticleType::IMP_SPARKLE
+                                                : ParticleType::PET_SPARKLE;
+          m_vfxManager->SpawnBurst(sparkType, sparkPos, 1);
+        }
+      }
+      // Update facing AFTER movement so angel always looks at character head
+      constexpr float HEAD_HEIGHT = 120.0f; // Approximate character head height
+      float dx = m_pos.x - m_pet.pos.x;
+      float dy = (m_pos.y + HEAD_HEIGHT) - m_pet.pos.y;
+      float dz = m_pos.z - m_pet.pos.z;
+      float hDist = sqrtf(dx * dx + dz * dz);
+      float rawAngle = atan2f(dz, dx);
+      float targetFacing = rawAngle + glm::half_pi<float>(); // +90° offset for Helper BMD front
+      // Smoothly lerp facing toward target
+      float facingDiff = targetFacing - m_pet.facing;
+      while (facingDiff > M_PI) facingDiff -= 2.0f * M_PI;
+      while (facingDiff < -M_PI) facingDiff += 2.0f * M_PI;
+      m_pet.facing += facingDiff * glm::clamp(deltaTime * 3.0f, 0.0f, 1.0f);
+      m_pet.pitch = atan2f(dy, std::max(hDist, 1.0f));
+    }
+
+    // ── Alpha: exponential smoothing (Main 5.2: Alpha += (AlphaTarget - Alpha) * 0.1f per tick) ──
+    // Adapted for delta-time: alpha approaches 1.0 with ~10% convergence per tick
+    if (m_pet.alpha < 0.99f) {
+      float ticksThisFrame = deltaTime / TICK_INTERVAL;
+      m_pet.alpha += (1.0f - m_pet.alpha) * (1.0f - powf(0.9f, ticksThisFrame));
+      if (m_pet.alpha > 0.99f) m_pet.alpha = 1.0f;
+    }
+
+    // Advance wing flap animation — slow gentle flap (Main 5.2: helpers are graceful)
+    int petNumKeys = 1;
+    if (!m_pet.bmd->Actions.empty())
+      petNumKeys = m_pet.bmd->Actions[0].NumAnimationKeys;
+    if (petNumKeys > 1) {
+      m_pet.animFrame += 14.0f * deltaTime; // Wing flap speed
+      if (m_pet.animFrame >= (float)petNumKeys)
+        m_pet.animFrame = std::fmod(m_pet.animFrame, (float)petNumKeys);
+    }
+
+    // Compute pet bones — blend toward bind pose to reduce leg/body shake
+    // while preserving wing flap at full speed (14fps frequency, reduced amplitude)
+    auto petBones = ComputeBoneMatricesInterpolated(m_pet.bmd.get(), 0,
+                                                     m_pet.animFrame);
+    auto bindBones = ComputeBoneMatricesInterpolated(m_pet.bmd.get(), 0, 0.0f);
+    constexpr float ANIM_STRENGTH = 0.6f; // Keep 60% of animation motion
+    for (size_t b = 0; b < petBones.size() && b < bindBones.size(); ++b) {
+      for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c)
+          petBones[b][r][c] = bindBones[b][r][c] +
+              (petBones[b][r][c] - bindBones[b][r][c]) * ANIM_STRENGTH;
+    }
+
+    // Re-skin pet mesh vertices
+    for (int mi = 0; mi < (int)m_pet.meshBuffers.size() &&
+                     mi < (int)m_pet.bmd->Meshes.size(); ++mi) {
+      RetransformMeshWithBones(m_pet.bmd->Meshes[mi], petBones,
+                               m_pet.meshBuffers[mi]);
+    }
+
+    // Build pet model matrix: translate to pet.pos, scale 0.7 (Main 5.2: o->Scale = 0.7f)
+    glm::mat4 petModel = glm::translate(glm::mat4(1.0f), m_pet.pos);
+    petModel = glm::rotate(petModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+    petModel = glm::rotate(petModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+    petModel = glm::rotate(petModel, m_pet.facing, glm::vec3(0, 0, 1));
+    petModel = glm::scale(petModel, glm::vec3(0.55f));
+
+    m_shader->setMat4("model", petModel);
+    m_shader->setFloat("objectAlpha", m_pet.alpha);
+    m_shader->setFloat("blendMeshLight", 1.0f);
+
+    // Self-illumination — brighter than surroundings for ethereal glow
+    glm::vec3 petTLight = sampleTerrainLightAt(m_pet.pos);
+    petTLight = glm::clamp(petTLight * 2.0f, 0.5f, 1.5f);
+    m_shader->setVec3("terrainLight", petTLight);
+
+    glDisable(GL_CULL_FACE); // Double-sided wing meshes
+
+    // Render body mesh first (normal alpha blend), then wings (additive)
+    // Main 5.2: BlendMesh compares mesh's Texture index, not mesh array index
+    for (int mi = 0; mi < (int)m_pet.meshBuffers.size() &&
+                     mi < (int)m_pet.bmd->Meshes.size(); ++mi) {
+      auto &mb = m_pet.meshBuffers[mi];
+      if (mb.indexCount == 0 || mb.hidden)
+        continue;
+
+      bool isBlendMesh = (m_pet.bmd->Meshes[mi].Texture == m_pet.blendMesh)
+                         || mb.bright;
+      if (isBlendMesh)
+        continue;
+
+      glBindTexture(GL_TEXTURE_2D, mb.texture);
+      glBindVertexArray(mb.vao);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+    }
+
+    // Second pass: wing meshes — standard alpha blend with brightness boost
+    // Additive (GL_ONE) washes out brights while leaving darks invisible;
+    // standard blend gives consistent opacity from texture alpha.
+    for (int mi = 0; mi < (int)m_pet.meshBuffers.size() &&
+                     mi < (int)m_pet.bmd->Meshes.size(); ++mi) {
+      auto &mb = m_pet.meshBuffers[mi];
+      if (mb.indexCount == 0 || mb.hidden)
+        continue;
+
+      bool isBlendMesh = (m_pet.bmd->Meshes[mi].Texture == m_pet.blendMesh)
+                         || mb.bright;
+      if (!isBlendMesh)
+        continue;
+
+      glBindTexture(GL_TEXTURE_2D, mb.texture);
+      glBindVertexArray(mb.vao);
+      glDepthMask(GL_FALSE);
+      if (m_pet.itemIndex == 0) {
+        // Angel: additive blend for ethereal transparent wings
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        m_shader->setFloat("blendMeshLight", m_pet.alpha);
+      } else {
+        // Imp: standard alpha blend with brightness boost
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        m_shader->setFloat("blendMeshLight", 1.5f * m_pet.alpha);
+      }
+      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+      glDepthMask(GL_TRUE);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      m_shader->setFloat("blendMeshLight", 1.0f);
+    }
+
+    glEnable(GL_CULL_FACE);
+
+    // Restore shader state
+    m_shader->setFloat("objectAlpha", 1.0f);
+    m_shader->setVec3("terrainLight", tLight);
+    glm::mat4 restoreModel = glm::translate(glm::mat4(1.0f), m_pos);
+    restoreModel = glm::rotate(restoreModel, glm::radians(-90.0f),
+                               glm::vec3(0, 0, 1));
+    restoreModel = glm::rotate(restoreModel, glm::radians(-90.0f),
+                               glm::vec3(0, 1, 0));
+    restoreModel = glm::rotate(restoreModel, m_facing, glm::vec3(0, 0, 1));
+    m_shader->setMat4("model", restoreModel);
   }
 }
 
@@ -1192,9 +1775,16 @@ void HeroCharacter::ProcessMovement(float deltaTime) {
              (m_terrainData->mapping.attributes[tgz * S + tgx] & 0x04) == 0;
     };
 
+    // If currently on an unwalkable tile (e.g. snapped to chair), allow escape
+    bool currentWalkable = isWalkableAt(m_pos.x, m_pos.z);
+
     // Wall sliding: try full move, then X-only, then Z-only
     // (Main 5.2 MapPath.cpp: direction fallback when diagonal is blocked)
     if (isWalkableAt(newPos.x, newPos.z)) {
+      m_pos.x = newPos.x;
+      m_pos.z = newPos.z;
+    } else if (!currentWalkable) {
+      // Stuck on unwalkable tile — force move toward target to escape
       m_pos.x = newPos.x;
       m_pos.z = newPos.z;
     } else if (std::abs(step.x) > 0.01f &&
@@ -1214,10 +1804,13 @@ void HeroCharacter::ProcessMovement(float deltaTime) {
 void HeroCharacter::MoveTo(const glm::vec3 &target) {
   if (IsDead())
     return;
+  if (m_sittingOrPosing)
+    CancelSitPose();
   m_target = target;
   // Only reset walk animation if not already walking
-  int walkAction =
-      (!m_inSafeZone && m_weaponBmd) ? weaponWalkAction() : ACTION_WALK_MALE;
+  int walkAction = (isMountRiding() || (!m_inSafeZone && m_weaponBmd))
+                       ? weaponWalkAction()
+                       : ACTION_WALK_MALE;
   if (!m_moving || m_action != walkAction) {
     SetAction(walkAction);
     m_animFrame = 0.0f;
@@ -1231,8 +1824,53 @@ void HeroCharacter::MoveTo(const glm::vec3 &target) {
 
 void HeroCharacter::StopMoving() {
   m_moving = false;
-  // Use weapon-specific idle action when outside SafeZone with weapon
-  if (!m_inSafeZone && m_weaponBmd) {
+  // Use weapon/mount-specific idle action
+  if (isMountRiding() || (!m_inSafeZone && m_weaponBmd)) {
+    SetAction(weaponIdleAction());
+  } else {
+    SetAction(ACTION_STOP_MALE);
+  }
+  m_animFrame = 0.0f;
+}
+
+void HeroCharacter::StartSitPose(bool isSit, float facingAngleDeg,
+                                 bool alignToObject,
+                                 const glm::vec3 &snapPos) {
+  if (IsDead())
+    return;
+  SoundManager::Play(SOUND_DROP_ITEM01); // Main 5.2: PlayBuffer(SOUND_DROP_ITEM01)
+  m_moving = false;
+  CancelAttack();
+  ClearPendingPickup();
+  m_sittingOrPosing = true;
+
+  // Snap character to the object's world position
+  // Always snap — the object is the sit/pose target regardless of tile walkability
+  m_pos = snapPos;
+  m_target = snapPos;
+  SnapToTerrain();
+
+  if (alignToObject) {
+    // Main 5.2: Object.Angle[2] is the raw MU Z rotation in degrees
+    // Convert to our facing angle in radians
+    m_facing = facingAngleDeg * (float)(M_PI / 180.0);
+    m_targetFacing = m_facing;
+  }
+
+  if (isSit) {
+    SetAction(ACTION_SIT1);
+  } else {
+    SetAction(ACTION_POSE1);
+  }
+  m_animFrame = 0.0f;
+}
+
+void HeroCharacter::CancelSitPose() {
+  if (!m_sittingOrPosing)
+    return;
+  m_sittingOrPosing = false;
+  // Return to idle
+  if (isMountRiding() || (!m_inSafeZone && m_weaponBmd)) {
     SetAction(weaponIdleAction());
   } else {
     SetAction(ACTION_STOP_MALE);
@@ -1244,23 +1882,29 @@ void HeroCharacter::SetInSafeZone(bool safe) {
   if (m_inSafeZone == safe)
     return;
   m_inSafeZone = safe;
-  // Original MU: weapon model is ALWAYS rendered when equipped.
-  // SafeZone only changes animation stance (unarmed vs combat).
+  // Main 5.2: mount stays loaded in safe zone, alpha fades to 0.
+  // Player uses ground animations. Mount auto-restores when leaving.
+  // isMountRiding() handles the safe zone check for animation selection.
 
-  // Switch animation to match new state
+  // Switch animation: isMountRiding() returns false in safe zone,
+  // so weaponIdleAction/weaponWalkAction will return ground animations.
   if (m_moving) {
-    SetAction((!safe && m_weaponBmd) ? weaponWalkAction() : ACTION_WALK_MALE);
+    SetAction((isMountRiding() || (!safe && m_weaponBmd)) ? weaponWalkAction()
+                                                          : ACTION_WALK_MALE);
   } else {
-    SetAction((!safe && m_weaponBmd) ? weaponIdleAction() : ACTION_STOP_MALE);
+    SetAction((isMountRiding() || (!safe && m_weaponBmd)) ? weaponIdleAction()
+                                                          : ACTION_STOP_MALE);
   }
 
   std::cout << "[Hero] " << (safe ? "Entered SafeZone" : "Left SafeZone")
-            << ", action=" << m_action << std::endl;
+            << ", action=" << m_action
+            << (m_mount.active ? " (mount fading)" : "") << std::endl;
 }
 
 void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
   // Cleanup old weapon
   CleanupMeshBuffers(m_weaponMeshBuffers);
+  CleanupMeshBuffers(m_ghostWeaponMeshBuffers);
   for (auto &sm : m_weaponShadowMeshes) {
     if (sm.vao)
       glDeleteVertexArrays(1, &sm.vao);
@@ -1268,6 +1912,7 @@ void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
       glDeleteBuffers(1, &sm.vbo);
   }
   m_weaponShadowMeshes.clear();
+  m_twistingSlashActive = false;
 
   if (weapon.category == 0xFF) {
     m_weaponBmd.reset();
@@ -1289,6 +1934,13 @@ void HeroCharacter::EquipWeapon(const WeaponEquipInfo &weapon) {
   for (auto &mesh : bmd->Meshes) {
     UploadMeshWithBones(mesh, m_dataPath + "/Item/", {}, m_weaponMeshBuffers,
                         weaponAABB, false);
+  }
+
+  // Ghost weapon mesh buffers for Twisting Slash VFX (static bind-pose copy)
+  AABB ghostAABB{};
+  for (auto &mesh : bmd->Meshes) {
+    UploadMeshWithBones(mesh, m_dataPath + "/Item/", {}, m_ghostWeaponMeshBuffers,
+                        ghostAABB, false);
   }
 
   // Shadow meshes for weapon
@@ -1561,6 +2213,8 @@ void HeroCharacter::AttackMonster(int monsterIndex,
                                   const glm::vec3 &monsterPos) {
   if (IsDead())
     return;
+  if (m_sittingOrPosing)
+    CancelSitPose();
   if (m_globalAttackCooldown > 0.0f)
     return; // Still on cooldown from cancelled attack
 
@@ -1594,13 +2248,29 @@ void HeroCharacter::AttackMonster(int monsterIndex,
     // Weapon-type-specific attack animation (Main 5.2 SwordCount cycle)
     int act = nextAttackAction();
     SetAction(act);
-    // Main 5.2: weapon-type-specific swing sound (ZzzCharacter.cpp:1190-1204)
-    // Spears (cat 3) → eSwingLightSword; all other melee → random eSwingWeapon1/2
+    // Main 5.2: weapon-type-specific swing sound (ZzzCharacter.cpp:1199-1204)
+    // Light Saber (sword 10) + spears (cat 3) → eSwingLightSword; others → random
     if (HasWeapon()) {
-      if (m_weaponInfo.category == 3)
+      if (m_weaponInfo.category == 3 ||
+          (m_weaponInfo.category == 0 && m_weaponInfo.itemIndex == 10))
         SoundManager::Play(SOUND_SWING_LIGHT);
       else
         SoundManager::Play(SOUND_SWING1 + rand() % 2);
+    }
+
+    // Normal melee: weapon blur trail (Main 5.2: BlurType 1, BlurMapping 0)
+    // BlurMapping 0 = blur01.OZJ texture, level-based color
+    if (HasWeapon() && m_vfxManager) {
+      glm::vec3 trailColor(0.5f, 0.5f, 0.5f); // Default gray
+      uint8_t wlvl = m_weaponInfo.itemLevel;
+      if (wlvl >= 7)
+        trailColor = glm::vec3(1.0f, 0.6f, 0.2f);  // Orange
+      else if (wlvl >= 5)
+        trailColor = glm::vec3(0.2f, 0.4f, 1.0f);   // Blue
+      else if (wlvl >= 3)
+        trailColor = glm::vec3(1.0f, 0.2f, 0.2f);   // Red
+      m_weaponTrailActive = true;
+      m_vfxManager->StartWeaponTrail(trailColor, false);
     }
 
     // Set GCD = full attack cycle (animation + cooldown)
@@ -1619,6 +2289,9 @@ void HeroCharacter::AttackMonster(int monsterIndex,
 }
 
 void HeroCharacter::UpdateAttack(float deltaTime) {
+  // Update Twisting Slash ghost weapon effect
+  UpdateTwistingSlash(deltaTime);
+
   // Tick global cooldown (persists after cancel to prevent exploit)
   if (m_globalAttackCooldown > 0.0f) {
     m_globalAttackCooldown -= deltaTime;
@@ -1657,6 +2330,7 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
         case 21: SoundManager::Play(SOUND_KNIGHT_SKILL3); break;
         case 22: SoundManager::Play(SOUND_KNIGHT_SKILL4); break;
         case 23: SoundManager::Play(SOUND_KNIGHT_SKILL4); break;
+        case 41: SoundManager::Play(SOUND_KNIGHT_SKILL4); break; // Twisting Slash
         case 42: SoundManager::Play(SOUND_RAGE_BLOW1); break;
         case 43: SoundManager::Play(SOUND_KNIGHT_SKILL2); break;
         default:
@@ -1665,7 +2339,10 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
           break;
         }
         if (m_vfxManager) {
-          m_vfxManager->SpawnSkillCast(m_activeSkillId, m_pos, m_facing);
+          m_vfxManager->SpawnSkillCast(m_activeSkillId, m_pos, m_facing, m_attackTargetPos);
+          // Twisting Slash: spawn ghost weapon orbit on approach arrival
+          if (m_activeSkillId == 41)
+            StartTwistingSlash();
           // Spell VFX dispatch (same as SkillAttackMonster in-range path)
           switch (m_activeSkillId) {
           case 17: // Energy Ball
@@ -1690,6 +2367,7 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
             m_vfxManager->SpawnRibbon(castPos, hitPos, 10.0f,
                                       glm::vec3(0.6f, 0.8f, 1.0f), 0.5f);
             m_vfxManager->SpawnBurst(ParticleType::SPELL_LIGHTNING, hitPos, 15);
+            SoundManager::Play(SOUND_THUNDER01); // Main 5.2: PlayBuffer(SOUND_THUNDER01)
             break;
           }
           case 13: // Cometfall: AT_SKILL_BLAST — sky-strike at target
@@ -1718,7 +2396,8 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
         SetAction(nextAttackAction());
         // Normal attack swing sound on approach arrival
         if (HasWeapon()) {
-          if (m_weaponInfo.category == 3)
+          if (m_weaponInfo.category == 3 ||
+              (m_weaponInfo.category == 0 && m_weaponInfo.itemIndex == 10))
             SoundManager::Play(SOUND_SWING_LIGHT);
           else
             SoundManager::Play(SOUND_SWING1 + rand() % 2);
@@ -1747,6 +2426,11 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
         : (m_attackAnimTimer >= animDuration);
 
     if (swingDone) {
+      // Stop weapon blur trail on swing end
+      if (m_weaponTrailActive && m_vfxManager) {
+        m_weaponTrailActive = false;
+        m_vfxManager->StopWeaponTrail();
+      }
       // Swing finished — go to cooldown (also scaled by attack speed)
       m_attackState = AttackState::COOLDOWN;
       // Spells have shorter cooldown (0.2s base) for smoother casting flow
@@ -1766,8 +2450,9 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
         m_vfxManager->KillAquaBeams();
       }
 
-      // Return to combat idle (weapon stance or unarmed)
-      SetAction(m_weaponBmd ? weaponIdleAction() : ACTION_STOP_MALE);
+      // Return to combat idle (weapon/mount stance or unarmed)
+      SetAction((isMountRiding() || m_weaponBmd) ? weaponIdleAction()
+                                                 : ACTION_STOP_MALE);
     }
     break;
   }
@@ -1818,6 +2503,12 @@ bool HeroCharacter::CheckAttackHit() {
 void HeroCharacter::CancelAttack() {
   // GCD already set when swing started — don't reduce it on cancel
 
+  // Stop weapon blur trail if active
+  if (m_weaponTrailActive && m_vfxManager) {
+    m_weaponTrailActive = false;
+    m_vfxManager->StopWeaponTrail();
+  }
+
   m_attackState = AttackState::NONE;
   m_attackTargetMonster = -1;
   m_activeSkillId = 0;
@@ -1827,7 +2518,7 @@ void HeroCharacter::CancelAttack() {
   m_aquaBeamSpawned = false;
   m_aquaPacketReady = false; // Don't send damage if cancelled
   // Return to appropriate idle
-  if (!m_inSafeZone && m_weaponBmd) {
+  if (isMountRiding() || (!m_inSafeZone && m_weaponBmd)) {
     SetAction(weaponIdleAction());
   } else {
     SetAction(ACTION_STOP_MALE);
@@ -1901,6 +2592,8 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
                                        uint8_t skillId) {
   if (IsDead())
     return;
+  if (m_sittingOrPosing)
+    CancelSitPose();
   // Allow spell to interrupt normal melee attacks
   if (m_globalAttackCooldown > 0.0f) {
     if (m_activeSkillId > 0)
@@ -1946,6 +2639,7 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
     case 21: SoundManager::Play(SOUND_KNIGHT_SKILL3); break; // Uppercut
     case 22: SoundManager::Play(SOUND_KNIGHT_SKILL4); break; // Cyclone
     case 23: SoundManager::Play(SOUND_KNIGHT_SKILL4); break; // Slash (same as Cyclone)
+    case 41: SoundManager::Play(SOUND_KNIGHT_SKILL4); break; // Twisting Slash
     case 42: SoundManager::Play(SOUND_RAGE_BLOW1); break;    // Rageful Blow
     case 43: SoundManager::Play(SOUND_KNIGHT_SKILL2); break; // Death Stab (same as Lunge)
     default:
@@ -1967,7 +2661,21 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
     m_globalAttackCooldownMax = m_globalAttackCooldown;
 
     if (m_vfxManager) {
-      m_vfxManager->SpawnSkillCast(skillId, m_pos, m_facing);
+      m_vfxManager->SpawnSkillCast(skillId, m_pos, m_facing, monsterPos);
+
+      // DK melee skills: weapon blur trail (Main 5.2: BlurType 1, BlurMapping 2)
+      // BlurMapping 2 = motion_blur_r.OZJ texture, WHITE color (1,1,1)
+      // Note: Twisting Slash (41) has NO weapon trail in Main 5.2
+      if (skillId >= 19 && skillId <= 23) {
+        if (HasWeapon()) {
+          m_weaponTrailActive = true;
+          m_vfxManager->StartWeaponTrail(glm::vec3(1.0f, 1.0f, 1.0f), true);
+        }
+      }
+      // Twisting Slash: spawn ghost weapon orbit effect
+      if (skillId == 41)
+        StartTwistingSlash();
+
       // Spell VFX: dispatch by skill ID (not class — server authorizes skills)
       switch (skillId) {
       case 17: // Energy Ball: traveling BITMAP_ENERGY projectile
@@ -1991,6 +2699,7 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
         m_vfxManager->SpawnRibbon(castPos, hitPos, 10.0f,
                                   glm::vec3(0.6f, 0.8f, 1.0f), 0.5f);
         m_vfxManager->SpawnBurst(ParticleType::SPELL_LIGHTNING, hitPos, 15);
+        SoundManager::Play(SOUND_THUNDER01); // Main 5.2: PlayBuffer(SOUND_THUNDER01)
         break;
       }
       case 13: // Cometfall: AT_SKILL_BLAST — sky-strike at target
@@ -2075,9 +2784,14 @@ void HeroCharacter::CastSelfAoE(uint8_t skillId, const glm::vec3 &targetPos) {
   m_globalAttackCooldown = animDur + cd;
   m_globalAttackCooldownMax = m_globalAttackCooldown;
 
-  // Spawn VFX — tornado travels from caster toward target
+  // Spawn VFX
   if (m_vfxManager) {
-    m_vfxManager->SpawnSkillCast(skillId, m_pos, m_facing);
+    m_vfxManager->SpawnSkillCast(skillId, m_pos, m_facing, targetPos);
+
+    // Twisting Slash: ghost weapon orbit (Main 5.2: no weapon trail, just ghosts)
+    if (skillId == 41 && HasWeapon())
+      StartTwistingSlash();
+
     switch (skillId) {
     case 8: // Twister — tornado travels toward click direction
       m_vfxManager->SpawnTwisterStorm(m_pos, targetPos - m_pos);
@@ -2112,6 +2826,8 @@ void HeroCharacter::TeleportTo(const glm::vec3 &target) {
   // Cancel any in-progress attack/movement
   CancelAttack();
   m_moving = false;
+
+  // Main 5.2: teleport does NOT dismount. Mount persists, just teleports with player.
 
   // VFX: white rising sparks at origin and destination (Main 5.2)
   if (m_vfxManager) {
@@ -2170,6 +2886,83 @@ void HeroCharacter::ForceDie() {
             << (m_skeleton ? (int)m_skeleton->Actions.size() : 0) << std::endl;
 }
 
+// ── Twisting Slash ghost weapon effect (Main 5.2: MODEL_SKILL_WHEEL) ──
+
+void HeroCharacter::StartTwistingSlash() {
+  if (m_ghostWeaponMeshBuffers.empty())
+    return; // No weapon equipped
+  m_twistingSlashActive = true;
+  m_wheelSpawnTimer = 0.0f;
+  m_wheelSpawnCount = 0;
+  m_wheelSmokeTimer = 0.0f;
+  for (int i = 0; i < MAX_WHEEL_GHOSTS; ++i)
+    m_wheelGhosts[i].active = false;
+}
+
+void HeroCharacter::UpdateTwistingSlash(float dt) {
+  if (!m_twistingSlashActive)
+    return;
+
+  // Main 5.2: WHEEL1 lives 5 ticks, spawns 1 WHEEL2 per tick with SubType=4-LifeTime
+  // SubType 0 has no alpha case (first spawn), SubType 1-4 = 0.6, 0.5, 0.4, 0.3
+  m_wheelSpawnTimer += dt;
+  while (m_wheelSpawnTimer >= 0.04f && m_wheelSpawnCount < MAX_WHEEL_GHOSTS) {
+    m_wheelSpawnTimer -= 0.04f;
+    auto &g = m_wheelGhosts[m_wheelSpawnCount];
+    g.active = true;
+    // Main 5.2: all WHEEL2 inherit same initial angle from WHEEL1 (= player facing).
+    // Natural 18° stagger emerges from time-staggered spawning + 450°/sec rotation.
+    g.orbitAngle = 0.0f;
+    g.spinAngle = 0.0f;
+    g.spinVelocity = 0.0f;
+    // Main 5.2: SubType = 4-LifeTime → spawns -1,0,1,2,3
+    // SubType -1,0 have no alpha case → default 1.0 (fully opaque)
+    // SubType 1=0.6, 2=0.5, 3=0.4
+    static constexpr float alphas[5] = {1.0f, 1.0f, 0.6f, 0.5f, 0.4f};
+    g.alpha = alphas[m_wheelSpawnCount];
+    g.lifetime = 1.0f; // 25 ticks at 25fps
+    m_wheelSpawnCount++;
+  }
+
+  // Update each active ghost
+  bool anyActive = false;
+  m_wheelSmokeTimer += dt;
+  bool spawnParticles = m_wheelSmokeTimer >= 0.04f;
+  for (int i = 0; i < MAX_WHEEL_GHOSTS; ++i) {
+    auto &g = m_wheelGhosts[i];
+    if (!g.active)
+      continue;
+    g.lifetime -= dt;
+    if (g.lifetime <= 0.0f) {
+      g.active = false;
+      continue;
+    }
+    anyActive = true;
+    // Main 5.2: orbital rotation = Angle[2] -= 18 per tick = 450°/sec
+    g.orbitAngle -= 450.0f * dt;
+    // Main 5.2: RenderWheelWeapon does Direction[2] -= 30 per render frame (cumulative)
+    // This is acceleration: 30°/frame * 25fps = 750°/sec² acceleration
+    g.spinVelocity -= 750.0f * dt;
+    g.spinAngle += g.spinVelocity * dt;
+
+    if (m_vfxManager && spawnParticles) {
+      float orbitRad = glm::radians(g.orbitAngle);
+      glm::vec3 ghostPos = m_pos + glm::vec3(sinf(orbitRad) * 150.0f, 100.0f,
+                                               cosf(orbitRad) * 150.0f);
+      // Main 5.2: CreateParticle(BITMAP_SMOKE) + 4x JOINT_SPARK + 1x SPARK
+      // + CreateSprite(BITMAP_LIGHT) warm glow per tick per ghost
+      m_vfxManager->SpawnBurst(ParticleType::SMOKE, ghostPos, 1);
+      m_vfxManager->SpawnBurst(ParticleType::HIT_SPARK, ghostPos, 3);
+      m_vfxManager->SpawnBurst(ParticleType::FLARE, ghostPos, 1);
+    }
+  }
+  if (spawnParticles)
+    m_wheelSmokeTimer -= 0.04f;
+
+  if (!anyActive && m_wheelSpawnCount >= MAX_WHEEL_GHOSTS)
+    m_twistingSlashActive = false;
+}
+
 void HeroCharacter::UpdateState(float deltaTime) {
   switch (m_heroState) {
   case HeroState::ALIVE:
@@ -2193,9 +2986,10 @@ void HeroCharacter::UpdateState(float deltaTime) {
     m_stateTimer -= deltaTime;
     if (m_stateTimer <= 0.0f) {
       m_heroState = HeroState::ALIVE;
-      // Return to appropriate idle if not attacking/moving
-      if (m_attackState == AttackState::NONE && !m_moving) {
-        if (!m_inSafeZone && m_weaponBmd) {
+      // Return to appropriate idle if not attacking/moving/sitting
+      if (m_attackState == AttackState::NONE && !m_moving &&
+          !m_sittingOrPosing) {
+        if (isMountRiding() || (!m_inSafeZone && m_weaponBmd)) {
           SetAction(weaponIdleAction());
         } else {
           SetAction(ACTION_STOP_MALE);
@@ -2246,7 +3040,7 @@ void HeroCharacter::Respawn(const glm::vec3 &spawnPos) {
   m_attackState = AttackState::NONE;
   m_attackTargetMonster = -1;
   // Return to idle
-  if (!m_inSafeZone && m_weaponBmd) {
+  if (isMountRiding() || (!m_inSafeZone && m_weaponBmd)) {
     SetAction(weaponIdleAction());
   } else {
     SetAction(ACTION_STOP_MALE);
@@ -2300,7 +3094,15 @@ void HeroCharacter::SetAction(int newAction) {
                     (newAction >= 146 && newAction <= 154);
   bool isIdleToSkill = (isCurrentStop && isNewSkill);
 
-  if (involvesFists || isStopping || isAttackToIdle || isIdleToSkill) {
+  // Mount transitions (mounting/dismounting — blend between normal and ride poses)
+  bool isMountTransition =
+      (newAction == ACTION_STOP_RIDE || newAction == ACTION_STOP_RIDE_WEAPON ||
+       newAction == ACTION_RUN_RIDE || newAction == ACTION_RUN_RIDE_WEAPON ||
+       m_action == ACTION_STOP_RIDE || m_action == ACTION_STOP_RIDE_WEAPON ||
+       m_action == ACTION_RUN_RIDE || m_action == ACTION_RUN_RIDE_WEAPON);
+
+  if (involvesFists || isStopping || isAttackToIdle || isIdleToSkill ||
+      isMountTransition) {
     m_priorAction = m_action;
     m_priorAnimFrame = m_animFrame;
     m_isBlending = true;
@@ -2313,6 +3115,171 @@ void HeroCharacter::SetAction(int newAction) {
   m_action = newAction;
   m_animFrame = 0.0f;
 
+}
+
+void HeroCharacter::EquipPet(uint8_t itemIndex) {
+  UnequipPet(); // Clear any existing pet
+
+  // Helper01.bmd = Guardian Angel, Helper02.bmd = Imp
+  std::string bmdFile = m_dataPath + "/Player/Helper0" +
+                         std::to_string(itemIndex + 1) + ".bmd";
+  auto bmd = BMDParser::Parse(bmdFile);
+  if (!bmd) {
+    std::cerr << "[Hero] Failed to load pet model: " << bmdFile << std::endl;
+    return;
+  }
+
+  m_pet.itemIndex = itemIndex;
+
+  // Main 5.2 GOBoid.cpp: BlendMesh=1 — mesh with Texture==1 renders additive
+  // BlendMesh compares against the mesh's Texture INDEX, not the mesh array index
+  m_pet.blendMesh = 1; // Standard for all helpers
+
+  // Upload mesh buffers with per-mesh texture resolution
+  // Helper BMDs are in Player/ but textures are in Item/
+  AABB petAABB{};
+  auto petBones = ComputeBoneMatrices(bmd.get());
+  for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
+    auto &mesh = bmd->Meshes[mi];
+
+    // Try Player/ first, then Item/ fallback for this specific mesh's texture
+    UploadMeshWithBones(mesh, m_dataPath + "/Player/", petBones,
+                        m_pet.meshBuffers, petAABB, true);
+
+    // Check if the just-uploaded mesh buffer got a valid texture
+    auto &mb = m_pet.meshBuffers.back();
+    if (mb.texture == 0) {
+      // Fallback: resolve THIS mesh's texture from Item/ directory
+      auto texInfo = TextureLoader::ResolveWithInfo(
+          m_dataPath + "/Item/", mesh.TextureName);
+      if (texInfo.textureID) {
+        mb.texture = texInfo.textureID;
+        std::cout << "[Hero] Pet mesh " << mi << ": texture '"
+                  << mesh.TextureName << "' resolved from Item/" << std::endl;
+      }
+    }
+  }
+
+  m_pet.bmd = std::move(bmd);
+  m_pet.active = true;
+  m_pet.alpha = 0.0f; // Start transparent, exponential fade in
+  m_pet.animFrame = 0.0f;
+  m_pet.sparkTimer = 0.0f;
+  // Direction-vector movement init (Main 5.2 GOBoid.cpp)
+  // Main 5.2: spawn at random offset ±256 XY, +128-256 Z from owner
+  m_pet.dirAngle = glm::radians((float)(rand() % 360));
+  m_pet.speed = (16.0f + (float)(rand() % 64)) * 0.1f; // Initial idle speed
+  m_pet.heightVel = ((float)(rand() % 64 - 32)) * 0.1f;
+  m_pet.facing = m_pet.dirAngle;
+  m_pet.tickAccum = 0.0f;
+  m_pet.lastOwnerPos = m_pos;
+  m_pet.pos = m_pos + glm::vec3(
+      (float)(rand() % 200 - 100), 128.0f + (float)(rand() % 128),
+      (float)(rand() % 200 - 100));
+
+  std::cout << "[Hero] Pet companion equipped: Helper0"
+            << (int)(itemIndex + 1) << ".bmd ("
+            << m_pet.meshBuffers.size() << " meshes, blendMesh="
+            << m_pet.blendMesh << ")" << std::endl;
+}
+
+void HeroCharacter::UnequipPet() {
+  if (!m_pet.active && m_pet.meshBuffers.empty())
+    return;
+  CleanupMeshBuffers(m_pet.meshBuffers);
+  m_pet.bmd.reset();
+  m_pet.active = false;
+  m_pet.alpha = 0.0f;
+  std::cout << "[Hero] Pet companion unequipped" << std::endl;
+}
+
+void HeroCharacter::EquipMount(uint8_t itemIndex) {
+  UnequipPet();    // Can't have pet + mount simultaneously
+  UnequipMount();  // Clear previous mount
+
+  // Main 5.2 ZzzOpenData.cpp: ride models are in Data/Skill/
+  //   AccessModel(MODEL_UNICON,  "Data\\Skill\\", "Rider", 1)  → Rider01.bmd (Uniria)
+  //   AccessModel(MODEL_PEGASUS, "Data\\Skill\\", "Rider", 2)  → Rider02.bmd (Dinorant)
+  int riderIndex = (itemIndex == 2) ? 1 : 2;
+  std::string bmdFile = m_dataPath + "/Skill/Rider0" +
+                         std::to_string(riderIndex) + ".bmd";
+  auto bmd = BMDParser::Parse(bmdFile);
+  if (!bmd) {
+    std::cerr << "[Hero] Failed to load mount model: " << bmdFile << std::endl;
+    return;
+  }
+
+  m_mount.itemIndex = itemIndex;
+  m_mount.blendMesh = -1;
+
+  // Rider01.bmd (Uniria): bone 0 = Bip01 (animated root)
+  // Rider02.bmd (Dinorant): bone 0 = Box01 (STATIC helper), bone 1 = Bip01 (animated root)
+  // Find first bone named "Bip01" as the skeleton root for root motion removal.
+  m_mount.rootBone = 0;
+  for (int bi = 0; bi < (int)bmd->Bones.size(); ++bi) {
+    if (std::strcmp(bmd->Bones[bi].Name, "Bip01") == 0) {
+      m_mount.rootBone = bi;
+      break;
+    }
+  }
+
+  // Texture directory: Uniria textures in Item/, Dinorant textures in Skill/
+  // Main 5.2: OpenTexture(MODEL_UNICON, "Item\\"), OpenTexture(MODEL_PEGASUS, "Skill\\")
+  std::string texDir = m_dataPath + ((itemIndex == 2) ? "/Item/" : "/Skill/");
+
+  AABB mountAABB{};
+  auto mountBones = ComputeBoneMatrices(bmd.get());
+  for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
+    auto &mesh = bmd->Meshes[mi];
+    UploadMeshWithBones(mesh, texDir, mountBones,
+                        m_mount.meshBuffers, mountAABB, true);
+
+    auto &mb = m_mount.meshBuffers.back();
+    if (mb.texture == 0) {
+      // Fallback: try the other directory
+      std::string fallbackDir = m_dataPath +
+          ((itemIndex == 2) ? "/Skill/" : "/Item/");
+      auto texInfo = TextureLoader::ResolveWithInfo(fallbackDir, mesh.TextureName);
+      if (texInfo.textureID) {
+        mb.texture = texInfo.textureID;
+      }
+    }
+  }
+
+  m_mount.bmd = std::move(bmd);
+  m_mount.active = true;
+  m_mount.alpha = 0.0f;
+  m_mount.animFrame = 0.0f;
+  m_mountEquippedIndex = itemIndex;
+
+  // Switch player to riding animation
+  if (m_moving) {
+    SetAction(weaponWalkAction());
+  } else {
+    SetAction(weaponIdleAction());
+  }
+
+  std::cout << "[Hero] Mount equipped: Rider0" << riderIndex << ".bmd ("
+            << m_mount.meshBuffers.size() << " meshes, "
+            << m_mount.bmd->Bones.size() << " bones, "
+            << m_mount.bmd->Actions.size() << " actions)" << std::endl;
+}
+
+void HeroCharacter::UnequipMount() {
+  if (!m_mount.active && m_mount.meshBuffers.empty())
+    return;
+  CleanupMeshBuffers(m_mount.meshBuffers);
+  m_mount.bmd.reset();
+  m_mount.active = false;
+  m_mount.alpha = 0.0f;
+
+  // Switch back to normal animation
+  if (m_moving) {
+    SetAction(m_weaponBmd ? weaponWalkAction() : ACTION_WALK_MALE);
+  } else {
+    SetAction(m_weaponBmd ? weaponIdleAction() : ACTION_STOP_MALE);
+  }
+  std::cout << "[Hero] Mount unequipped" << std::endl;
 }
 
 void HeroCharacter::Cleanup() {
@@ -2335,12 +3302,18 @@ void HeroCharacter::Cleanup() {
   m_baseHead.bmd.reset();
 
   CleanupMeshBuffers(m_weaponMeshBuffers);
+  CleanupMeshBuffers(m_ghostWeaponMeshBuffers);
   cleanupShadows(m_weaponShadowMeshes);
   m_weaponBmd.reset();
 
   CleanupMeshBuffers(m_shieldMeshBuffers);
   cleanupShadows(m_shieldShadowMeshes);
   m_shieldBmd.reset();
+
+  // Pet companion
+  CleanupMeshBuffers(m_pet.meshBuffers);
+  m_pet.bmd.reset();
+  m_pet.active = false;
 
   m_shader.reset();
   m_shadowShader.reset();
