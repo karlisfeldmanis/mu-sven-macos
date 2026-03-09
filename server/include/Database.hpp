@@ -96,6 +96,7 @@ struct ItemDefinition {
   uint16_t reqEnergy = 0;
   uint32_t classFlags = 0xFFFFFFFF;
   uint32_t buyPrice = 0;
+  uint16_t magicPower = 0;  // Staff Rise base value (OpenMU Weapons.cs)
 };
 
 struct EquipmentSlot {
@@ -143,8 +144,8 @@ public:
                          uint16_t maxMana, uint16_t ag, uint16_t maxAg,
                          uint16_t levelUpPoints, uint64_t experience,
                          uint32_t money, uint8_t posX, uint8_t posY,
-                         const int8_t *skillBar, const int16_t *potionBar,
-                         int8_t rmcSkillId);
+                         uint8_t mapId, const int8_t *skillBar,
+                         const int16_t *potionBar, int8_t rmcSkillId);
   void CreateDefaultAccount();
 
   // NPC spawns
@@ -191,6 +192,28 @@ public:
   std::vector<uint8_t> GetCharacterSkills(int characterId);
   void LearnSkill(int characterId, uint8_t skillId);
   bool HasSkill(int characterId, uint8_t skillId);
+  void SetRmcSkillId(int characterId, int8_t skillId);
+
+  // Quest system
+  struct QuestState {
+    int questIndex = 0;
+    int killCount0 = 0;
+    int killCount1 = 0;
+    int killCount2 = 0;
+    bool accepted = false;
+  };
+  QuestState LoadQuestState(int characterId);
+  void SaveQuestState(int characterId, int questIndex, int kc0, int kc1, int kc2, bool accepted);
+
+  // Chat log persistence
+  struct ChatLogEntry {
+    uint8_t category;
+    uint32_t color;
+    std::string message;
+  };
+  void SaveChatMessage(int characterId, uint8_t category, uint32_t color,
+                       const std::string &message);
+  std::vector<ChatLogEntry> GetChatHistory(int characterId, int limit = 200);
 
 private:
   void CreateTables();

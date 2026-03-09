@@ -55,6 +55,16 @@ void ServerConnection::SendTeleport(uint8_t gridX, uint8_t gridY) {
   m_client.Send(&pkt, sizeof(pkt));
 }
 
+void ServerConnection::SendWarpCommand(uint8_t mapId, uint8_t spawnX,
+                                       uint8_t spawnY) {
+  PMSG_WARP_COMMAND_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::WARP_COMMAND);
+  pkt.mapId = mapId;
+  pkt.spawnX = spawnX;
+  pkt.spawnY = spawnY;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
 void ServerConnection::SendPickup(uint16_t dropIndex) {
   PMSG_PICKUP_RECV pkt{};
   pkt.h = MakeC1Header(sizeof(pkt), Opcode::PICKUP);
@@ -178,6 +188,34 @@ void ServerConnection::SendCharListRequest() {
   // Request character list — server will save current character first
   PSBMSG_HEAD pkt = MakeC1SubHeader(sizeof(pkt), Opcode::CHARSELECT,
                                      Opcode::SUB_CHARLIST);
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendNpcInteract(uint16_t npcType, bool open) {
+  PMSG_NPC_INTERACT_RECV pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::NPC_INTERACT);
+  pkt.npcType = npcType;
+  pkt.action = open ? 1 : 0;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendQuestAccept(uint16_t guardNpcType) {
+  PMSG_QUEST_ACCEPT_RECV pkt{};
+  pkt.h = MakeC1SubHeader(sizeof(pkt), Opcode::QUEST, Opcode::SUB_QUEST_ACCEPT);
+  pkt.guardNpcType = guardNpcType;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendQuestComplete(uint16_t guardNpcType) {
+  PMSG_QUEST_COMPLETE_RECV pkt{};
+  pkt.h = MakeC1SubHeader(sizeof(pkt), Opcode::QUEST, Opcode::SUB_QUEST_COMPLETE);
+  pkt.guardNpcType = guardNpcType;
+  m_client.Send(&pkt, sizeof(pkt));
+}
+
+void ServerConnection::SendQuestAbandon() {
+  PSBMSG_HEAD pkt{};
+  pkt = MakeC1SubHeader(sizeof(pkt), Opcode::QUEST, Opcode::SUB_QUEST_ABANDON);
   m_client.Send(&pkt, sizeof(pkt));
 }
 

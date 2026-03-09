@@ -17,6 +17,23 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <unordered_map>
+
+static const char *GetMonsterName(uint16_t type) {
+  static const std::unordered_map<uint16_t, const char *> names = {
+      {0, "Bull Fighter"},     {1, "Hound"},
+      {2, "Budge Dragon"},     {3, "Spider"},
+      {4, "Elite Bull Fighter"},{5, "Hell Hound"},
+      {6, "Lich"},             {7, "Giant"},
+      {8, "Poison Bull"},      {9, "Thunder Lich"},
+      {10, "Dark Knight"},     {11, "Ghost"},
+      {12, "Larva"},           {13, "Hell Spider"},
+      {14, "Skeleton Warrior"},{15, "Skeleton Archer"},
+      {16, "Elite Skeleton"},  {17, "Cyclops"},
+      {18, "Gorgon"}};
+  auto it = names.find(type);
+  return it != names.end() ? it->second : "Monster";
+}
 
 static volatile bool g_sigint = false;
 static void sigHandler(int) { g_sigint = true; }
@@ -34,11 +51,11 @@ bool Server::Start(uint16_t port) {
 
   // No longer seeding default equipment by name; use DB status
 
-  // Load terrain attributes for walkability checks (monster AI)
+  // Load terrain attributes for both maps (walkability checks / monster AI)
   // CMake symlinks client/Data/ into server/build/Data/
-  if (!m_world.LoadTerrainAttributes("Data/World1/EncTerrain1.att")) {
-    printf("[Server] Failed to load terrain attributes\n");
-  }
+  m_world.LoadTerrainAttributesForMap(0, "Data/World1/EncTerrain1.att");
+  m_world.LoadTerrainAttributesForMap(1, "Data/World2/EncTerrain2.att");
+  m_world.SetActiveMap(0);
 
   // Load NPC and monster data from database
   m_world.LoadNpcsFromDB(m_db, 0); // map 0 = Lorencia
@@ -222,6 +239,21 @@ void Server::Run() {
             pkt.damage = atk.damage;
             pkt.remainingHp = static_cast<float>(s->hp);
             s->Send(&pkt, sizeof(pkt));
+
+            // Save monster→player damage to chat log
+            {
+              auto *atkMon = m_world.FindMonster(atk.monsterIndex);
+              char chatBuf[128];
+              const char *mName = atkMon
+                  ? GetMonsterName(atkMon->type) : "Monster";
+              if (atk.damage > 0)
+                snprintf(chatBuf, sizeof(chatBuf), "%s hits you for %d damage.",
+                         mName, atk.damage);
+              else
+                snprintf(chatBuf, sizeof(chatBuf), "%s misses you.", mName);
+              // color: 0xFF8C8CFF = IM_COL32(255, 140, 140, 255) (light red)
+              m_db.SaveChatMessage(s->characterId, 1, 0xFF8C8CFF, chatBuf);
+            }
             break;
           }
         }
@@ -255,14 +287,7 @@ void Server::Run() {
       auto *mon = m_world.FindMonster(tick.monsterIndex);
       if (mon && mon->aiState == MonsterInstance::AIState::DYING &&
           mon->hp <= 0 && attacker) {
-        double baseXP = (mon->level + 25.0) * mon->level / 3.0;
-        if (attacker->level > mon->level + 10) {
-          baseXP *= (double)(mon->level + 10) / attacker->level;
-        }
-        if (mon->level >= 65) {
-          baseXP += (mon->level - 64) * (mon->level / 4);
-        }
-        int xp = std::max(1, (int)(baseXP * 1.25 * ServerConfig::XP_MULTIPLIER));
+        int xp = ServerConfig::CalculateXP(attacker->level, mon->level);
 
         PMSG_MONSTER_DEATH_SEND deathPkt{};
         deathPkt.h = MakeC1Header(sizeof(deathPkt), Opcode::MON_DEATH);
@@ -366,6 +391,32 @@ void Server::Run() {
         if (session->potionCooldown < 0.0f)
           session->potionCooldown = 0.0f;
       }
+      if (session->attackCooldown > 0.0f) {
+        session->attackCooldown -= dt;
+        if (session->attackCooldown < 0.0f)
+          session->attackCooldown = 0.0f;
+      }
+      if (session->gateTransitionCooldown > 0.0f) {
+        session->gateTransitionCooldown -= dt;
+        if (session->gateTransitionCooldown < 0.0f)
+          session->gateTransitionCooldown = 0.0f;
+      }
+
+      // Deferred viewport send after map transition
+      // (gives client time to process MAP_CHANGE and reload terrain)
+      if (session->pendingViewportDelay > 0.0f) {
+        session->pendingViewportDelay -= dt;
+        if (session->pendingViewportDelay <= 0.0f) {
+          session->pendingViewportDelay = 0.0f;
+          WorldHandler::SendNpcViewport(*session, m_world);
+          auto v2pkt = m_world.BuildMonsterViewportV2Packet();
+          if (!v2pkt.empty())
+            session->Send(v2pkt.data(), v2pkt.size());
+          printf("[Server] Deferred viewport sent: %zu NPCs, %zu monsters\n",
+                 m_world.GetNpcs().size(),
+                 m_world.GetMonsterInstances().size());
+        }
+      }
 
       // Safe Zone HP Regeneration (~2% per second)
       // Works while walking — don't reset accumulator on brief boundary flicker
@@ -446,6 +497,10 @@ void Server::Run() {
         for (auto &pkt : packets) {
           HandlePacket(*session, pkt);
         }
+        // Check if player walked into a gate zone (after position updates)
+        if (session->inWorld && session->IsAlive()) {
+          CheckGateZones(*session);
+        }
       }
 
       if (pfd.revents & POLLOUT) {
@@ -460,6 +515,7 @@ void Server::Run() {
                          if (!s->IsAlive()) {
                            if (s->inWorld)
                              SaveSession(*s);
+                           m_world.ClearGuardInteractionsForPlayer(s->GetFd());
                            printf("[Server] Client fd=%d disconnected\n",
                                   s->GetFd());
                            return true;
@@ -485,7 +541,7 @@ void Server::SaveSession(Session &session) {
   uint8_t posX = static_cast<uint8_t>(session.worldZ / 100.0f);
   uint8_t posY = static_cast<uint8_t>(session.worldX / 100.0f);
 
-  // Save stats, HP, mana, position, money
+  // Save stats, HP, mana, position, money, map
   m_db.SaveCharacterFull(session.characterId, session.level, session.strength,
                          session.dexterity, session.vitality, session.energy,
                          static_cast<uint16_t>(std::max(session.hp, 0)),
@@ -495,7 +551,7 @@ void Server::SaveSession(Session &session) {
                          static_cast<uint16_t>(std::max(session.ag, 0)),
                          static_cast<uint16_t>(session.maxAg),
                          session.levelUpPoints, session.experience, session.zen,
-                         posX, posY, session.skillBar,
+                         posX, posY, session.mapId, session.skillBar,
                          session.potionBar, session.rmcSkillId);
 
   // Save full inventory (clear + rewrite all occupied slots)
@@ -594,4 +650,59 @@ void Server::BroadcastExcept(int excludeFd, const void *data, size_t len) {
       s->Send(data, len);
     }
   }
+}
+
+void Server::CheckGateZones(Session &session) {
+  // Don't check gates right after a transition (prevents instant re-warp)
+  if (session.gateTransitionCooldown > 0.0f)
+    return;
+
+  uint8_t gx = static_cast<uint8_t>(session.worldZ / 100.0f);
+  uint8_t gy = static_cast<uint8_t>(session.worldX / 100.0f);
+
+  if (session.mapId == 0 && gx >= 121 && gx <= 123 && gy >= 232 && gy <= 233) {
+    // Lorencia → Dungeon (gate at south Lorencia near cobra gate)
+    // OpenMU: maps[0].EnterGate(1, target=2, 121,232,123,233)
+    TransitionMap(session, 1, 108, 247);
+  } else if (session.mapId == 1 && gx >= 108 && gx <= 109 && gy >= 248 && gy <= 249) {
+    // Dungeon → Lorencia (return near cobra gate entrance)
+    TransitionMap(session, 0, 121, 228);
+  }
+}
+
+void Server::TransitionMap(Session &session, uint8_t newMapId,
+                           uint8_t spawnX, uint8_t spawnY) {
+  printf("[Server] Map transition: fd=%d map %d -> %d spawn (%d,%d)\n",
+         session.GetFd(), session.mapId, newMapId, spawnX, spawnY);
+
+  // Update session
+  session.mapId = newMapId;
+  session.gateTransitionCooldown = 3.0f; // 3 second cooldown
+  session.worldX = spawnY * 100.0f;
+  session.worldZ = spawnX * 100.0f;
+
+  // Save position to DB immediately
+  m_db.UpdatePosition(session.characterId, spawnX, spawnY);
+
+  // Reload world data for new map
+  m_world.ClearWorldData();
+  m_world.SetActiveMap(newMapId);
+  m_world.LoadNpcsFromDB(m_db, newMapId);
+  m_world.LoadMonstersFromDB(m_db, newMapId);
+
+  // Send map change packet to client
+  PMSG_MAP_CHANGE_SEND pkt{};
+  pkt.h = MakeC1Header(sizeof(pkt), Opcode::MAP_CHANGE);
+  pkt.mapId = newMapId;
+  pkt.spawnX = spawnX;
+  pkt.spawnY = spawnY;
+  session.Send(&pkt, sizeof(pkt));
+
+  // Defer NPC/monster viewport sending — client needs time to process MAP_CHANGE
+  // and reload terrain before receiving monster positions
+  session.pendingViewportDelay = 0.15f; // 150ms delay
+
+  printf("[Server] Map %d loaded: %zu NPCs, %zu monsters (viewport deferred)\n",
+         newMapId, m_world.GetNpcs().size(),
+         m_world.GetMonsterInstances().size());
 }

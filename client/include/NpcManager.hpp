@@ -48,6 +48,7 @@ public:
   void InitModels(const std::string &dataPath);
   void AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY, uint8_t dir,
                     uint16_t serverIndex = 0);
+  void ClearSpawnedNpcs() { m_npcs.clear(); }
 
   void Render(const glm::mat4 &view, const glm::mat4 &proj,
               const glm::vec3 &camPos, float deltaTime);
@@ -69,12 +70,21 @@ public:
     m_pointLights = lights;
   }
   void SetLuminosity(float l) { m_luminosity = l; }
+  void SetMapId(int mapId) { m_mapId = mapId; }
   void SetVFXManager(VFXManager *vfx) { m_vfxManager = vfx; }
   int GetNpcCount() const { return (int)m_npcs.size(); }
   NpcInfo GetNpcInfo(int index) const;
 
+  // Quest marker state (set from main.cpp each frame)
+  void SetQuestState(int questIndex, const int *killCount, const int *required,
+                     int targetCount);
+
   // Server-driven NPC movement (guard patrol)
   void SetNpcMoveTarget(uint16_t serverIndex, float worldX, float worldZ);
+
+  // Guard interaction: pass player position and which NPC is being interacted with
+  void SetPlayerPosition(const glm::vec3 &pos) { m_playerPos = pos; }
+  void SetInteractingNpc(int npcIndex) { m_interactingNpc = npcIndex; }
 
 private:
   // Shared model data (loaded once per NPC model type)
@@ -94,6 +104,7 @@ private:
     int modelIdx;       // Index into m_models
     glm::vec3 position;
     float facing;
+    float spawnFacing;  // Original facing direction from spawn data
     float animFrame = 0.0f;
     int action = 0;
     float scale = 1.0f;
@@ -102,10 +113,11 @@ private:
     std::string name;
 
 
-    // Guard patrol movement (server-driven)
+    // Guard movement (server-driven via 0x14 NPC_MOVE packets)
     bool isMoving = false;
     glm::vec3 moveTarget{0.0f};
     int walkAction = 0; // BMD action for walking (1 for player model)
+    bool isGuard = false;     // true for types 247, 249
 
     // Per-instance mesh buffers (for CPU re-skinning)
     struct BodyPart {
@@ -145,13 +157,24 @@ private:
   std::vector<PointLight> m_pointLights;
   static constexpr int MAX_POINT_LIGHTS = 64;
   float m_luminosity = 1.0f;
+  int m_mapId = 0;
   VFXManager *m_vfxManager = nullptr;
+
+  // Chrome/metal textures for guard +7 armor enhancement glow (Main 5.2)
+  GLuint m_chromeTexture = 0;   // Chrome01.OZJ
+  GLuint m_chrome2Texture = 0;  // Chrome02.OZJ
+  GLuint m_shinyTexture = 0;    // Shiny01.OZJ
 
   // NPC type → model index mapping (for server-spawned NPCs)
   std::unordered_map<uint16_t, int> m_typeToModel;
   // NPC type → scale overrides
   std::unordered_map<uint16_t, float> m_typeScale;
   bool m_modelsLoaded = false;
+
+  // Guard interaction state
+  glm::vec3 m_playerPos{0.0f};
+  int m_interactingNpc = -1; // NPC index with open quest dialog
+  int m_prevInteractingNpc = -1; // Previous frame's interacting NPC (for detecting close)
 
   // Helpers
   int loadModel(const std::string &npcPath, const std::string &skeletonFile,
@@ -160,6 +183,12 @@ private:
   void addNpc(int modelIdx, int gridX, int gridY, int dir, float scale = 1.0f);
   float snapToTerrain(float worldX, float worldZ);
   glm::vec3 sampleTerrainLightAt(const glm::vec3 &worldPos) const;
+  // Quest marker state
+  int m_questIndex = 0;
+  int m_questKillCount[3] = {};
+  int m_questRequired[3] = {};
+  int m_questTargetCount = 0;
+
   // Main 5.2: default NPC PlaySpeed = 0.25 per tick at 25fps = 6.25 fps
   static constexpr float ANIM_SPEED = 6.25f;
 };

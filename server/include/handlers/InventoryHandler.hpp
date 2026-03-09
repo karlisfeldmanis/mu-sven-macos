@@ -17,6 +17,9 @@ void SendInventorySync(Session &session);
 // Load inventory from DB into session bag
 void LoadInventory(Session &session, Database &db, int characterId);
 
+// Find empty space in inventory grid for an item of given dimensions
+bool FindEmptySpace(Session &session, uint8_t w, uint8_t h, uint8_t &outSlot);
+
 // Packet handlers
 void HandleInventoryMove(Session &session, const std::vector<uint8_t> &packet,
                          Database &db);

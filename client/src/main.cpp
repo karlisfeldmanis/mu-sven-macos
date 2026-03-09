@@ -24,6 +24,7 @@
 #include "Shader.hpp"
 #include "Sky.hpp"
 #include "SoundManager.hpp"
+#include "SystemMessageLog.hpp"
 #include "Terrain.hpp"
 #include "TerrainParser.hpp"
 #include "UICoords.hpp"
@@ -167,6 +168,11 @@ BoidManager g_boidManager;
 static const int MAX_POINT_LIGHTS = 64;
 static std::vector<PointLight> g_pointLights;
 
+// Day/night cycle (Main 5.2: luminosity = sin(WorldTime*0.004)*0.15 + 0.6)
+// WorldTime ticks at 25fps (40ms per tick) in original; we use real seconds * 25
+static float g_worldTime = 0.0f;
+static float g_luminosity = 1.0f;
+
 // Hero character and click-to-move effect
 static HeroCharacter g_hero;
 static ClickEffect g_clickEffect;
@@ -189,6 +195,11 @@ static FloatingDamage g_floatingDmg[MAX_FLOATING_DAMAGE] = {};
 // Ground item drops (type in ClientTypes.hpp)
 static GroundItem g_groundItems[MAX_GROUND_ITEMS] = {};
 static const std::string g_dataPath = "Data";
+
+// Current map ID (0=Lorencia, 1=Dungeon). File world = mapId + 1.
+static int g_currentMapId = 0;
+// Per-map clear color (Main 5.2 ZzzScene.cpp:2059)
+static ImVec4 g_clearColor = ImVec4(10.0f / 256.0f, 20.0f / 256.0f, 14.0f / 256.0f, 1.0f);
 
 // Server-received character stats for HUD
 static int g_serverLevel = 1;
@@ -219,6 +230,208 @@ static constexpr float POTION_COOLDOWN_TIME = 30.0f;
 static bool g_shopOpen = false;
 static bool g_showGameMenu = false;
 static std::vector<ShopItem> g_shopItems;
+static bool g_questDialogOpen = false;
+static bool g_questDialogWasOpen = false; // Track previous frame to detect fresh open
+static bool g_questDialogJustOpened = false; // Skip clicks on first frame
+static int g_questDialogNpcIndex = -1;
+static int g_questDialogSelected = -1; // -1 = quest list view, 0-4 = viewing specific quest
+static bool g_showQuestLog = false; // L key quest log window
+static bool g_mouseOverUIPanel = false; // Set each frame: true if cursor is over any UI panel
+static bool g_showCommandTerminal = false;
+static char g_commandBuffer[128] = {};
+static bool g_commandFocusNeeded = false; // Set true when terminal opens to grab focus
+// Stored panel bounds for quest dialog and quest log (updated during render)
+static float g_qdPanelRect[4] = {}; // x, y, w, h
+static float g_qlPanelRect[4] = {}; // x, y, w, h
+
+// Quest system state (synced from server)
+static int g_questIndex = 0;
+static int g_questKillCount[3] = {};
+static int g_questRequired[3] = {};
+static int g_questTargetCount = 0;
+static bool g_questAccepted = false;
+
+// Quest definitions (client mirror of server QuestHandler data)
+// 9 quests: 5 kill + 4 travel, linear chain across 5 guards
+struct QuestTarget { uint8_t monType; uint8_t killsReq; const char *name; };
+struct QuestRewardItem { int16_t defIndex; uint8_t itemLevel; }; // -1 = no item
+struct QuestClientInfo {
+  uint16_t guardType;
+  uint8_t questType;   // 0=kill, 1=travel
+  int targetCount;
+  QuestTarget targets[3];
+  const char *loreText;
+  const char *questName;
+  uint32_t zenReward;
+  uint32_t xpReward;
+  QuestRewardItem dkReward; // DK weapon reward
+  QuestRewardItem dwReward; // DW weapon reward
+  QuestRewardItem orbReward;    // DK skill orb
+  QuestRewardItem scrollReward; // DW spell scroll
+};
+static constexpr int QUEST_COUNT = 9;
+static const QuestClientInfo g_questDefs[QUEST_COUNT] = {
+  // Quest 0 (Kill): Lieutenant Kael — Spider + Budge Dragon
+  // DK: Kris +0, DW: Skull Staff +0, Orb: Falling Slash, Scroll: Fire Ball
+  {248, 0, 2, {{3, 10, "Spider"}, {2, 5, "Budge Dragon"}, {}},
+   "Welcome, adventurer. Spiders crawl\n"
+   "through the sewers and Budge Dragons\n"
+   "terrorize the farmers. Clear out 10\n"
+   "Spiders and 5 Budge Dragons, and I'll\n"
+   "see you're properly equipped.",
+   "Clearing the Outskirts", 5000, 60000, {0, 0}, {160, 0}, {404, 0}, {483, 0}},
+  // Quest 1 (Travel): → Corporal Brynn
+  {246, 1, 0, {{}, {}, {}},
+   "Well done. Take these weapons — you've\n"
+   "earned them. Head to Corporal Brynn\n"
+   "near the potion shop. She's dealing\n"
+   "with bigger threats.",
+   "Report to Corporal Brynn", 3000, 30000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
+  // Quest 2 (Kill): Corporal Brynn — Bull Fighter + Hound
+  // DK: Short Sword +2, DW: Skull Staff +2, Orb: Lunge, Scroll: Lightning
+  {246, 0, 2, {{0, 8, "Bull Fighter"}, {1, 6, "Hound"}, {}},
+   "Kael sent you? Good. Bull Fighters\n"
+   "block the eastern road and Hounds\n"
+   "roam the plains at night. Slay 8 Bull\n"
+   "Fighters and 6 Hounds to secure the area.",
+   "Defending the Roads", 10000, 100000, {1, 2}, {160, 2}, {405, 0}, {482, 0}},
+  // Quest 3 (Travel): → Sergeant Dorian
+  {247, 1, 0, {{}, {}, {}},
+   "Impressive work. Sergeant Dorian in\n"
+   "the center of town needs help. Tell\n"
+   "him Brynn sent you.",
+   "Report to Sergeant Dorian", 5000, 50000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
+  // Quest 4 (Kill): Sergeant Dorian — Elite BF + Lich
+  // DK: Rapier +0, DW: Skull Staff +4, Orb: Uppercut, Scroll: Teleport
+  {247, 0, 2, {{4, 6, "Elite Bull Fighter"}, {6, 5, "Lich"}, {}},
+   "Brynn's recruit? Let's see what you've\n"
+   "got. Elite Bull Fighters lead raiding\n"
+   "parties and Liches strike from the\n"
+   "ruins. Eliminate 6 Elite Bull Fighters\n"
+   "and 5 Liches.",
+   "The Elite Vanguard", 15000, 130000, {2, 0}, {160, 4}, {406, 0}, {485, 0}},
+  // Quest 5 (Travel): → Warden Aldric
+  {245, 1, 0, {{}, {}, {}},
+   "You fight well. Warden Aldric on\n"
+   "the west wall guards the frontier.\n"
+   "Go lend him your blade.",
+   "Report to Warden Aldric", 8000, 80000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
+  // Quest 6 (Kill): Warden Aldric — Giant
+  // DK: Katana +0, DW: Angelic Staff +0, Orb: Cyclone, Scroll: Meteorite
+  {245, 0, 1, {{7, 5, "Giant"}, {}, {}},
+   "Dorian speaks highly of you. Giants\n"
+   "crush our watchtowers. Their strength\n"
+   "is immense. Fell 5 of them before they\n"
+   "reach the walls.",
+   "Watchtower Defense", 25000, 200000, {3, 0}, {161, 0}, {407, 0}, {481, 0}},
+  // Quest 7 (Travel): → Captain Marcus
+  {249, 1, 0, {{}, {}, {}},
+   "You're stronger than most soldiers.\n"
+   "Captain Marcus at the south gate tracks\n"
+   "the undead command. Report to him.",
+   "Report to Captain Marcus", 10000, 100000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
+  // Quest 8 (Kill): Captain Marcus — Skeleton Warrior + Lich
+  // DK: Gladius +0, DW: Angelic Staff +3, Orb: Slash, Scroll: Ice
+  {249, 0, 2, {{14, 5, "Skeleton Warrior"}, {6, 4, "Lich"}, {}},
+   "So you're the one clearing the roads.\n"
+   "Skeleton Warriors march from the\n"
+   "cemetery and Liches command them from\n"
+   "the ruins. Destroy 5 Warriors and 4\n"
+   "Liches, and I'll give you the finest\n"
+   "weapons in our armory.",
+   "The Final Stand", 50000, 350000, {6, 0}, {161, 3}, {408, 0}, {486, 0}},
+};
+
+// Guard name lookup by NPC type
+static const char *GetGuardName(uint16_t type) {
+  switch (type) {
+    case 245: return "Warden Aldric";
+    case 246: return "Corporal Brynn";
+    case 247: return "Sergeant Dorian";
+    case 248: return "Lieutenant Kael";
+    case 249: return "Captain Marcus";
+    default: return "Guard";
+  }
+}
+
+// Find the kill quest index owned by a specific guard type (-1 if none)
+static int GetGuardKillQuest(uint16_t guardType) {
+  for (int i = 0; i < QUEST_COUNT; i++) {
+    if (g_questDefs[i].guardType == guardType && g_questDefs[i].questType == 0)
+      return i;
+  }
+  return -1;
+}
+
+// Find the travel quest index that targets a specific guard type (-1 if none)
+static int GetTravelQuestTo(uint16_t guardType) {
+  for (int i = 0; i < QUEST_COUNT; i++) {
+    if (g_questDefs[i].guardType == guardType && g_questDefs[i].questType == 1)
+      return i;
+  }
+  return -1;
+}
+
+// Draw a weapon reward item box with 3D model + name label
+// Returns the height consumed (0 if no valid reward)
+static float DrawQuestRewardItem(ImDrawList *dl, float px, float cy,
+                                 float panelW, const QuestRewardItem &reward,
+                                 const char *classLabel) {
+  if (reward.defIndex < 0) return 0;
+  auto &itemDefs = ItemDatabase::GetItemDefs();
+  auto it = itemDefs.find(reward.defIndex);
+  if (it == itemDefs.end()) return 0;
+
+  const auto &def = it->second;
+  float boxSize = 44.0f;
+  float boxX = px + 22;
+  float boxY = cy;
+
+  // Hover detection
+  ImVec2 mPos = ImGui::GetIO().MousePos;
+  bool hovered = mPos.x >= boxX && mPos.x <= boxX + boxSize &&
+                 mPos.y >= boxY && mPos.y <= boxY + boxSize;
+
+  // Dark slot background with hover highlight
+  dl->AddRectFilled(ImVec2(boxX, boxY), ImVec2(boxX + boxSize, boxY + boxSize),
+                    hovered ? IM_COL32(35, 32, 25, 220) : IM_COL32(20, 18, 14, 200),
+                    3.0f);
+  dl->AddRect(ImVec2(boxX, boxY), ImVec2(boxX + boxSize, boxY + boxSize),
+              hovered ? IM_COL32(100, 90, 60, 220) : IM_COL32(60, 55, 40, 180),
+              3.0f, 0, 1.0f);
+
+  // Queue 3D model render job (hovered = spin)
+  const char *modelName = def.modelFile.empty()
+                              ? ItemDatabase::GetDropModelName(reward.defIndex)
+                              : def.modelFile.c_str();
+  if (modelName && modelName[0]) {
+    int winH = (int)ImGui::GetIO().DisplaySize.y;
+    InventoryUI::AddRenderJob({modelName, reward.defIndex,
+                               (int)boxX, winH - (int)(boxY + boxSize),
+                               (int)boxSize, (int)boxSize, hovered});
+  }
+
+  // Tooltip on hover
+  if (hovered)
+    InventoryUI::AddPendingItemTooltip(reward.defIndex, reward.itemLevel);
+
+  // Item name + level text to the right of the box
+  float textX = boxX + boxSize + 10;
+  float textY = boxY + 6;
+  char nameBuf[64];
+  if (reward.itemLevel > 0)
+    snprintf(nameBuf, sizeof(nameBuf), "%s +%d", def.name.c_str(), reward.itemLevel);
+  else
+    snprintf(nameBuf, sizeof(nameBuf), "%s", def.name.c_str());
+  dl->AddText(ImVec2(textX, textY),
+              hovered ? IM_COL32(140, 230, 255, 255) : IM_COL32(100, 200, 255, 255),
+              nameBuf);
+
+  // Class label beneath name
+  dl->AddText(ImVec2(textX, textY + 16), IM_COL32(140, 135, 120, 200), classLabel);
+
+  return boxSize + 4; // height consumed
+}
 
 // Skill learning state
 static bool g_isLearningSkill = false;
@@ -236,6 +449,11 @@ static bool g_rightMouseHeld = false;
 static bool g_teleportingToTown = false;
 static float g_teleportTimer = 0.0f;
 static constexpr float TELEPORT_CAST_TIME = 2.5f; // Seconds of heal anim
+
+// Mount toggle state (M key)
+static bool g_mountToggling = false;
+static float g_mountToggleTimer = 0.0f;
+static constexpr float MOUNT_TOGGLE_TIME = 1.0f; // 1 second preloader
 
 // Client-side inventory (synced from server via 0x36)
 // ClientInventoryItem defined in ClientTypes.hpp
@@ -266,6 +484,7 @@ static UICoords g_hudCoords; // File-scope for mouse callback access
 // (see src/ClientPacketHandler.cpp)
 
 static const TerrainData *g_terrainDataPtr = nullptr;
+static std::unique_ptr<TerrainData> g_terrainDataOwned; // Owns terrain data (heap for ChangeMap)
 
 // Roof hiding: types 125 (HouseWall05) and 126 (HouseWall06) fade when
 // hero stands on layer1 tile == 4 (building interior). Original:
@@ -286,11 +505,180 @@ static bool g_worldInitialized = false; // True once game world is set up
 static int g_loadingFrames = 0;         // Frames spent in LOADING state
 static GLuint g_loadingTex = 0;         // Loading screen texture
 
+// ── Post-processing (bloom + vignette + color grading) ──
+struct PostProcessState {
+  bool enabled = false;
+  int width = 0, height = 0; // Current FBO dimensions (framebuffer pixels)
+
+  // Main scene FBO (HDR)
+  GLuint sceneFBO = 0;
+  GLuint sceneColorTex = 0; // GL_RGBA16F
+  GLuint sceneDepthRBO = 0;
+
+  // Bloom ping-pong FBOs (half resolution)
+  GLuint bloomFBO[2] = {0, 0};
+  GLuint bloomTex[2] = {0, 0};
+  int bloomW = 0, bloomH = 0;
+
+  // Fullscreen quad
+  GLuint quadVAO = 0, quadVBO = 0;
+
+  // Shaders
+  std::unique_ptr<Shader> brightExtract;
+  std::unique_ptr<Shader> blur;
+  std::unique_ptr<Shader> composite;
+
+  // Per-map parameters
+  float bloomIntensity = 0.5f;
+  float vignetteStrength = 0.15f;
+  glm::vec3 colorTint = glm::vec3(1.02f, 1.0f, 0.96f);
+  float bloomThreshold = 0.35f;
+};
+static PostProcessState g_postProcess;
+
+static void InitPostProcess() {
+  auto &pp = g_postProcess;
+
+  // Load shaders (Shader::Load resolves shaders/ vs ../shaders/ path)
+  pp.brightExtract = Shader::Load("postprocess.vert", "bright_extract.frag");
+  pp.blur = Shader::Load("postprocess.vert", "blur.frag");
+  pp.composite = Shader::Load("postprocess.vert", "postprocess.frag");
+
+  if (!pp.brightExtract || !pp.blur || !pp.composite) {
+    std::cerr << "[PostProcess] Failed to load shaders, disabling\n";
+    pp.enabled = false;
+    return;
+  }
+
+  // Fullscreen quad (NDC positions + tex coords)
+  float quadVerts[] = {
+    // pos        // uv
+    -1.0f,  1.0f, 0.0f, 1.0f,
+    -1.0f, -1.0f, 0.0f, 0.0f,
+     1.0f, -1.0f, 1.0f, 0.0f,
+    -1.0f,  1.0f, 0.0f, 1.0f,
+     1.0f, -1.0f, 1.0f, 0.0f,
+     1.0f,  1.0f, 1.0f, 1.0f,
+  };
+  glGenVertexArrays(1, &pp.quadVAO);
+  glGenBuffers(1, &pp.quadVBO);
+  glBindVertexArray(pp.quadVAO);
+  glBindBuffer(GL_ARRAY_BUFFER, pp.quadVBO);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(quadVerts), quadVerts, GL_STATIC_DRAW);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+  glEnableVertexAttribArray(1);
+  glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                        (void *)(2 * sizeof(float)));
+  glBindVertexArray(0);
+
+  pp.enabled = true;
+  std::cout << "[PostProcess] Initialized (bloom + vignette + color grading)\n";
+}
+
+static void ResizePostProcessFBOs(int fbW, int fbH) {
+  auto &pp = g_postProcess;
+  if (!pp.enabled || (pp.width == fbW && pp.height == fbH))
+    return;
+
+  pp.width = fbW;
+  pp.height = fbH;
+  pp.bloomW = fbW / 2;
+  pp.bloomH = fbH / 2;
+
+  // Cleanup old FBOs
+  if (pp.sceneFBO) {
+    glDeleteFramebuffers(1, &pp.sceneFBO);
+    glDeleteTextures(1, &pp.sceneColorTex);
+    glDeleteRenderbuffers(1, &pp.sceneDepthRBO);
+  }
+  if (pp.bloomFBO[0]) {
+    glDeleteFramebuffers(2, pp.bloomFBO);
+    glDeleteTextures(2, pp.bloomTex);
+  }
+
+  // Main scene FBO (HDR, full resolution)
+  glGenFramebuffers(1, &pp.sceneFBO);
+  glBindFramebuffer(GL_FRAMEBUFFER, pp.sceneFBO);
+
+  glGenTextures(1, &pp.sceneColorTex);
+  glBindTexture(GL_TEXTURE_2D, pp.sceneColorTex);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, fbW, fbH, 0, GL_RGBA,
+               GL_UNSIGNED_BYTE, nullptr);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                         pp.sceneColorTex, 0);
+
+  glGenRenderbuffers(1, &pp.sceneDepthRBO);
+  glBindRenderbuffer(GL_RENDERBUFFER, pp.sceneDepthRBO);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, fbW, fbH);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                            GL_RENDERBUFFER, pp.sceneDepthRBO);
+
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    std::cerr << "[PostProcess] Scene FBO incomplete!\n";
+    pp.enabled = false;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return;
+  }
+
+  // Bloom ping-pong FBOs (half resolution)
+  glGenFramebuffers(2, pp.bloomFBO);
+  glGenTextures(2, pp.bloomTex);
+  for (int i = 0; i < 2; ++i) {
+    glBindFramebuffer(GL_FRAMEBUFFER, pp.bloomFBO[i]);
+    glBindTexture(GL_TEXTURE_2D, pp.bloomTex[i]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pp.bloomW, pp.bloomH, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           pp.bloomTex[i], 0);
+  }
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  std::cout << "[PostProcess] FBOs resized to " << fbW << "x" << fbH
+            << " (bloom " << pp.bloomW << "x" << pp.bloomH << ")\n";
+}
+
+static void RenderFullscreenQuad(const PostProcessState &pp) {
+  glBindVertexArray(pp.quadVAO);
+  glDrawArrays(GL_TRIANGLES, 0, 6);
+  glBindVertexArray(0);
+}
+
 struct LightTemplate {
   glm::vec3 color;
   float range;
   float heightOffset; // Y offset above object base for emission point
 };
+
+// Build object occupancy grid for grass exclusion
+static std::vector<bool> BuildObjectOccupancy(
+    const std::vector<ObjectRenderer::ObjectInstance> &insts) {
+  std::vector<bool> occ(256 * 256, false);
+  for (auto &inst : insts) {
+    glm::vec3 p = glm::vec3(inst.modelMatrix[3]);
+    int cx = (int)(p.x / 100.0f);
+    int cz = (int)(p.z / 100.0f);
+    int r = 1;
+    if (inst.type >= 115 && inst.type <= 129) r = 3; // Buildings/walls
+    else if (inst.type >= 30 && inst.type <= 46) r = 2; // Stones/statues/tombs
+    else if (inst.type >= 65 && inst.type <= 85) r = 2; // Walls/bridges/fences
+    for (int dz = -r; dz <= r; ++dz)
+      for (int dx = -r; dx <= r; ++dx) {
+        int gz = cz + dz, gx = cx + dx;
+        if (gz >= 0 && gz < 256 && gx >= 0 && gx < 256)
+          occ[gz * 256 + gx] = true;
+      }
+  }
+  return occ;
+}
 
 // Returns light properties for a given object type, or nullptr if not a light
 static const LightTemplate *GetLightProperties(int type) {
@@ -302,14 +690,24 @@ static const LightTemplate *GetLightProperties(int type) {
                                           200.0f};
   static const LightTemplate bridgeProps = {glm::vec3(1.2f, 0.7f, 0.4f), 700.0f,
                                             50.0f};
-  static const LightTemplate streetLightProps = {glm::vec3(1.5f, 1.2f, 0.75f),
-                                                 800.0f, 250.0f};
+  static const LightTemplate streetLightProps = {glm::vec3(0.8f, 0.65f, 0.4f),
+                                                 450.0f, 250.0f};
   static const LightTemplate candleProps = {glm::vec3(1.2f, 0.7f, 0.3f), 600.0f,
                                             80.0f};
   static const LightTemplate lightFixtureProps = {glm::vec3(1.2f, 0.85f, 0.5f),
                                                   700.0f, 150.0f};
 
+  // Dungeon torches (Main 5.2: tall fire stand + standard lantern)
+  static const LightTemplate dungeonTorchProps = {glm::vec3(1.4f, 0.8f, 0.4f),
+                                                   700.0f, 200.0f};
+  // Lance Trap (type 100): blue lightning glow (Main 5.2: BITMAP_LIGHTNING)
+  static const LightTemplate lanceTrapProps = {glm::vec3(0.4f, 0.6f, 1.5f),
+                                                500.0f, 50.0f};
+
   switch (type) {
+  case 41:
+  case 42:
+    return &dungeonTorchProps;
   case 50:
   case 51:
     return &fireLightProps;
@@ -321,10 +719,14 @@ static const LightTemplate *GetLightProperties(int type) {
     return &bridgeProps;
   case 90:
     return &streetLightProps;
+  case 98: // Carriage01 — town lantern (near fountain/fences)
+    return &streetLightProps;
   case 130:
   case 131:
   case 132:
     return &lightFixtureProps;
+  case 39: // Lance Trap (dungeon) — blue lightning glow
+    return &lanceTrapProps;
   case 150:
     return &candleProps;
   default:
@@ -335,6 +737,7 @@ static const LightTemplate *GetLightProperties(int type) {
 // ── Game world initialization (called after character select) ──
 // Forward declared, defined after main() helpers
 static void InitGameWorld(ServerData &serverData);
+static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY);
 
 // Input handling (mouse, keyboard, click-to-move, processInput) delegated
 // to InputHandler module (see src/InputHandler.cpp)
@@ -343,6 +746,14 @@ static void InitGameWorld(ServerData &serverData);
 // all delegated to InventoryUI module (see src/InventoryUI.cpp)
 
 int main(int argc, char **argv) {
+  // Require launch via launch.sh (sets MU_LAUNCHED env var)
+  if (!getenv("MU_LAUNCHED")) {
+    fprintf(stderr,
+            "ERROR: Please use launch.sh to start the game.\n"
+            "  Usage: ./launch.sh\n");
+    return 1;
+  }
+
   // Open client.log — tee all cout/cerr to both console and file
   std::ofstream logFile("client.log", std::ios::trunc);
   TeeStreambuf *coutTee = nullptr, *cerrTee = nullptr;
@@ -390,6 +801,7 @@ int main(int argc, char **argv) {
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
   glfwWindowHint(GLFW_STENCIL_BITS, 8);
+  glfwWindowHint(GLFW_SAMPLES, 4); // 4x MSAA anti-aliasing
 
   GLFWwindow *window = glfwCreateWindow(
       1366, 768, "Mu Online Remaster (Native macOS C++)", nullptr, nullptr);
@@ -409,6 +821,7 @@ int main(int argc, char **argv) {
     std::cerr << "Failed to initialize GLEW" << std::endl;
     return -1;
   }
+  glEnable(GL_MULTISAMPLE); // Enable 4x MSAA
   ItemDatabase::Init();
 
   // Enable OpenGL debug output if available (ARB_debug_output)
@@ -485,7 +898,8 @@ int main(int argc, char **argv) {
 
   // Load Terrain for testing
   std::string data_path = g_dataPath;
-  TerrainData terrainData = TerrainParser::LoadWorld(1, data_path);
+  g_terrainDataOwned = std::make_unique<TerrainData>(TerrainParser::LoadWorld(1, data_path));
+  TerrainData &terrainData = *g_terrainDataOwned;
 
   // Reconstruct TW_NOGROUND for bridge cells.
   // The .att file for this data version lacks these flags (verified: 0
@@ -574,12 +988,17 @@ int main(int argc, char **argv) {
             << " object instances, " << g_objectRenderer.GetModelCount()
             << " unique models" << std::endl;
   g_grass.Init();
-  g_grass.Load(terrainData, 1, data_path);
+  auto occupancy = BuildObjectOccupancy(g_objectRenderer.GetInstances());
+  g_grass.Load(terrainData, 1, data_path, &occupancy);
   checkGLError("grass load");
 
   // Initialize sky
   g_sky.Init(data_path + "/");
   checkGLError("sky init");
+
+  // Initialize post-processing (bloom + vignette + color grading)
+  InitPostProcess();
+  checkGLError("postprocess init");
 
   // Initialize fire effects and register emitters from fire-type objects
   g_fireEffect.Init(data_path + "/Effect");
@@ -642,9 +1061,6 @@ int main(int argc, char **argv) {
     light.objectType = inst.type;
     g_pointLights.push_back(light);
   }
-  // Cap at shader maximum
-  if ((int)g_pointLights.size() > MAX_POINT_LIGHTS)
-    g_pointLights.resize(MAX_POINT_LIGHTS);
   std::cout << "[Lights] Collected " << g_pointLights.size()
             << " point lights from world objects" << std::endl;
 
@@ -675,6 +1091,7 @@ int main(int argc, char **argv) {
     ctx.showCharInfo = &g_showCharInfo;
     ctx.showInventory = &g_showInventory;
     ctx.showSkillWindow = &g_showSkillWindow;
+    ctx.showQuestLog = &g_showQuestLog;
     ctx.learnedSkills = &g_learnedSkills;
     ctx.potionBar = g_potionBar;
     ctx.skillBar = g_skillBar;
@@ -704,6 +1121,9 @@ int main(int argc, char **argv) {
     ctx.teleportTimer = &g_teleportTimer;
     ctx.teleportCastTime = TELEPORT_CAST_TIME;
     ctx.learnSkillDuration = LEARN_SKILL_DURATION;
+    ctx.mountToggling = &g_mountToggling;
+    ctx.mountToggleTimer = &g_mountToggleTimer;
+    ctx.mountToggleTime = MOUNT_TOGGLE_TIME;
     ctx.hero = &g_hero;
     ctx.server = &g_server;
     ctx.hudCoords = &g_hudCoords;
@@ -750,6 +1170,15 @@ int main(int argc, char **argv) {
     inputCtx.teleportingToTown = &g_teleportingToTown;
     inputCtx.teleportTimer = &g_teleportTimer;
     inputCtx.teleportCastTime = TELEPORT_CAST_TIME;
+    inputCtx.mountToggling = &g_mountToggling;
+    inputCtx.mountToggleTimer = &g_mountToggleTimer;
+    inputCtx.mountToggleTime = MOUNT_TOGGLE_TIME;
+    inputCtx.questDialogOpen = &g_questDialogOpen;
+    inputCtx.questDialogNpcIndex = &g_questDialogNpcIndex;
+    inputCtx.questDialogSelected = &g_questDialogSelected;
+    inputCtx.showQuestLog = &g_showQuestLog;
+    inputCtx.mouseOverUIPanel = &g_mouseOverUIPanel;
+    inputCtx.showCommandTerminal = &g_showCommandTerminal;
     inputCtx.dataPath = data_path;
     InputHandler::Init(inputCtx);
     InputHandler::RegisterCallbacks(window);
@@ -797,6 +1226,10 @@ int main(int argc, char **argv) {
     gameState.rmcSkillId = &g_rmcSkillId;
     gameState.heroCharacterId = &g_heroCharacterId;
     gameState.learnedSkills = &g_learnedSkills;
+    gameState.questIndex = &g_questIndex;
+    gameState.questKillCount = g_questKillCount;
+    gameState.questRequired = g_questRequired;
+    gameState.questTargetCount = &g_questTargetCount;
     gameState.spawnDamageNumber = [](const glm::vec3 &pos, int dmg,
                                      uint8_t type) {
       FloatingDamageRenderer::Spawn(pos, dmg, type, g_floatingDmg,
@@ -919,6 +1352,7 @@ int main(int argc, char **argv) {
 
   // Initialize sound engine before any playback calls
   SoundManager::Init(g_dataPath);
+  SystemMessageLog::Init();
 
   g_gameState = GameState::CHAR_SELECT;
   SoundManager::PlayMusic(g_dataPath + "/Music/main_theme.mp3");
@@ -938,8 +1372,7 @@ int main(int argc, char **argv) {
   glEnable(GL_DEPTH_TEST);
   glDepthFunc(GL_LEQUAL);
 
-  ImVec4 clear_color = ImVec4(
-      0.0f, 0.0f, 0.0f, 1.00f); // Black: matches edge fog at map boundaries
+  ImVec4 &clear_color = g_clearColor;
   float lastFrame = 0.0f;
   while (!glfwWindowShouldClose(window)) {
     float currentFrame = glfwGetTime();
@@ -1006,18 +1439,89 @@ int main(int argc, char **argv) {
 
       int fbW, fbH;
       glfwGetFramebufferSize(window, &fbW, &fbH);
+
+      // Post-processing: render char select scene to FBO
+      if (g_postProcess.enabled) {
+        ResizePostProcessFBOs(fbW, fbH);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_postProcess.sceneFBO);
+      }
       glViewport(0, 0, fbW, fbH);
 
       int winW, winH;
       glfwGetWindowSize(window, &winW, &winH);
 
-      // ImGui frame for CharSelect UI
+      // ImGui frame — must be started before CharacterSelect::Render() because
+      // Render() queues ImGui draw commands (buttons, text). Actual GL draw
+      // happens at ImGui_ImplOpenGL3_RenderDrawData() after post-processing.
       ImGui_ImplOpenGL3_NewFrame();
       ImGui_ImplGlfw_NewFrame();
       ImGui::NewFrame();
 
       CharacterSelect::Render(winW, winH);
 
+      // Post-processing resolve: bloom + tone mapping + vignette
+      if (g_postProcess.enabled) {
+        auto &pp = g_postProcess;
+        GLboolean wasBlend = glIsEnabled(GL_BLEND);
+        GLboolean wasCull = glIsEnabled(GL_CULL_FACE);
+        GLboolean wasStencil = glIsEnabled(GL_STENCIL_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_DEPTH_TEST);
+
+        // Bright extract → bloomTex[0]
+        glBindFramebuffer(GL_FRAMEBUFFER, pp.bloomFBO[0]);
+        glViewport(0, 0, pp.bloomW, pp.bloomH);
+        glClear(GL_COLOR_BUFFER_BIT);
+        pp.brightExtract->use();
+        pp.brightExtract->setInt("uScene", 0);
+        pp.brightExtract->setFloat("uThreshold", pp.bloomThreshold);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, pp.sceneColorTex);
+        RenderFullscreenQuad(pp);
+
+        // Two-pass Gaussian blur
+        pp.blur->use();
+        pp.blur->setInt("uImage", 0);
+        for (int pass = 0; pass < 4; ++pass) {
+          bool horizontal = (pass % 2 == 0);
+          int srcIdx = horizontal ? 0 : 1;
+          int dstIdx = horizontal ? 1 : 0;
+          glBindFramebuffer(GL_FRAMEBUFFER, pp.bloomFBO[dstIdx]);
+          glClear(GL_COLOR_BUFFER_BIT);
+          pp.blur->setBool("uHorizontal", horizontal);
+          pp.blur->setFloat("uTexelSize",
+                            horizontal ? (1.0f / pp.bloomW) : (1.0f / pp.bloomH));
+          glBindTexture(GL_TEXTURE_2D, pp.bloomTex[srcIdx]);
+          RenderFullscreenQuad(pp);
+        }
+
+        // Composite scene + bloom to screen
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, fbW, fbH);
+        glClear(GL_COLOR_BUFFER_BIT);
+        pp.composite->use();
+        pp.composite->setInt("uScene", 0);
+        pp.composite->setInt("uBloom", 1);
+        pp.composite->setFloat("uBloomIntensity", pp.bloomIntensity);
+        pp.composite->setFloat("uVignetteStrength", pp.vignetteStrength);
+        pp.composite->setVec3("uColorTint", pp.colorTint);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, pp.sceneColorTex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, pp.bloomTex[0]);
+        RenderFullscreenQuad(pp);
+        glActiveTexture(GL_TEXTURE0);
+
+        // Restore GL state
+        glEnable(GL_DEPTH_TEST);
+        if (wasBlend) glEnable(GL_BLEND);
+        if (wasCull) glEnable(GL_CULL_FACE);
+        if (wasStencil) glEnable(GL_STENCIL_TEST);
+      }
+
+      // Draw ImGui UI on top of post-processed scene (sharp, unaffected by bloom)
       ImGui::Render();
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -1081,8 +1585,32 @@ int main(int argc, char **argv) {
     // ═══════════════════════════════════════════════
     // INGAME state: normal game world update + render
     // ═══════════════════════════════════════════════
+
+    // Check for pending map change from server
+    {
+      auto &mc = ClientPacketHandler::GetPendingMapChange();
+      if (mc.pending) {
+        mc.pending = false;
+        ChangeMap(mc.mapId, mc.spawnX, mc.spawnY);
+      }
+    }
+
     InputHandler::ProcessInput(window, deltaTime);
     g_camera.Update(deltaTime);
+
+    // Main 5.2 Lorencia uses static daylight (no day/night cycle)
+    g_worldTime += deltaTime * 25.0f; // Still tick for chrome/sun animation
+    // Per-map luminosity: Lorencia=1.0, Dungeon=1.2 (dark lightmap needs boost)
+    g_luminosity = (g_currentMapId == 1) ? 1.2f : 1.0f;
+
+    // Push luminosity to all renderers
+    g_terrain.SetLuminosity(g_luminosity);
+    g_objectRenderer.SetLuminosity(g_luminosity);
+    g_hero.SetLuminosity(g_luminosity);
+    g_npcManager.SetLuminosity(g_luminosity);
+    g_monsterManager.SetLuminosity(g_luminosity);
+    g_boidManager.SetLuminosity(g_luminosity);
+    g_grass.SetLuminosity(g_luminosity);
 
     // Send player position to server periodically (~4Hz)
     {
@@ -1113,12 +1641,40 @@ int main(int argc, char **argv) {
     {
       glm::vec3 lp = g_hero.GetPosition();
       SoundManager::UpdateListener(lp.x, lp.y, lp.z);
+
+      // 3D ambient wind — orbits slowly around the player (Lorencia only)
+      static bool windStarted = false;
+      static float windAngle = 0.0f;
+      if (g_currentMapId == 0) {
+        if (!windStarted) {
+          float wx = lp.x + 200.0f;
+          SoundManager::Play3DLoop(SOUND_WIND01, wx, lp.y + 50.0f, lp.z, 0.4f);
+          windStarted = true;
+        }
+        windAngle += deltaTime * 0.3f; // ~0.3 rad/s = full circle in ~21s
+        float windDist = 200.0f;
+        float wx = lp.x + cosf(windAngle) * windDist;
+        float wz = lp.z + sinf(windAngle) * windDist;
+        SoundManager::UpdateSource3D(SOUND_WIND01, wx, lp.y + 50.0f, wz);
+      } else {
+        windStarted = false; // Reset so wind restarts when returning to Lorencia
+      }
     }
 
     // Update monster manager (state machines, animation)
     g_monsterManager.SetPlayerPosition(g_hero.GetPosition());
     g_monsterManager.SetPlayerDead(g_hero.IsDead());
     g_monsterManager.Update(deltaTime);
+
+    // Teleport cooldown ticks regardless of safe zone
+    g_hero.TickTeleportCooldown(deltaTime);
+
+    // Validate right-mouse held state against actual GLFW state each frame
+    // (prevents stuck state if release event was missed during focus loss)
+    if (g_rightMouseHeld &&
+        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) != GLFW_PRESS) {
+      g_rightMouseHeld = false;
+    }
 
     // Hero combat: update attack state machine, send attack packet on hit
     // Block all combat in safe zone — but don't stop movement
@@ -1198,16 +1754,21 @@ int main(int argc, char **argv) {
                     InventoryUI::ShowNotification(
                         isDK ? "Not enough AG!" : "Not enough Mana!");
                     g_hero.CancelAttack();
+                    g_hero.ClearGlobalCooldown();
                   }
                 } else {
                   g_hero.CancelAttack();
+                  g_hero.ClearGlobalCooldown();
                 }
               } else {
                 g_hero.CancelAttack();
+                g_hero.ClearGlobalCooldown();
               }
             } else if (targetDead) {
-              // Target died, no RMC — clear
+              // Target died, no RMC — clear attack and GCD so player can
+              // immediately click a new target without double-clicking
               g_hero.CancelAttack();
+              g_hero.ClearGlobalCooldown();
             } else if (g_rightMouseHeld && g_rmcSkillId >= 0) {
               // RMC held + target alive — check if hovered a different monster
               int nextTarget = targetIdx;
@@ -1240,35 +1801,37 @@ int main(int argc, char **argv) {
           }
         }
 
-        // Self-AoE continuous casting (Twister/Evil Spirit/Hellfire): re-cast when GCD expires + RMB held
+        // Self-AoE continuous casting: re-cast when GCD expires + RMB held
+        bool isAoESkill = (g_rmcSkillId == 8 || g_rmcSkillId == 9 || g_rmcSkillId == 10 ||
+                           g_rmcSkillId == 12 || g_rmcSkillId == 14 ||
+                           g_rmcSkillId == 41 || g_rmcSkillId == 42 || g_rmcSkillId == 43);
         if (g_hero.GetAttackState() == AttackState::NONE &&
             g_hero.GetAttackTarget() < 0 && g_rightMouseHeld &&
-            (g_rmcSkillId == 8 || g_rmcSkillId == 9 || g_rmcSkillId == 10) &&
-            g_hero.GetGlobalCooldown() <= 0.0f) {
+            isAoESkill && g_hero.GetGlobalCooldown() <= 0.0f) {
           uint8_t skillId = (uint8_t)g_rmcSkillId;
           int cost = InventoryUI::GetSkillResourceCost(skillId);
           bool isDK = (g_hero.GetClass() == 16);
           int curResource = isDK ? g_serverAG : g_serverMP;
           if (curResource >= cost) {
-            double mx, my;
-            glfwGetCursorPos(window, &mx, &my);
-            glm::vec3 groundTarget;
-            if (RayPicker::ScreenToTerrain(window, mx, my, groundTarget)) {
-              g_hero.CastSelfAoE(skillId, groundTarget);
-              // Evil Spirit: caster-centered AoE, send player position
-              // Twister: directional, send click position for line path
-              glm::vec3 heroPos = g_hero.GetPosition();
-              // Evil Spirit/Hellfire: caster-centered, Twister: directional
-              float atkX = (skillId == 9 || skillId == 10) ? heroPos.x : groundTarget.x;
-              float atkZ = (skillId == 9 || skillId == 10) ? heroPos.z : groundTarget.z;
-              if (skillId == 12) {
-                g_hero.SetPendingAquaPacket(0xFFFF, skillId, atkX, atkZ);
-              } else {
-                g_server.SendSkillAttack(0xFFFF, skillId, atkX, atkZ);
-              }
-              // Optimistically deduct mana to prevent spam before server reply
-              if (isDK) g_serverAG -= cost; else g_serverMP -= cost;
+            glm::vec3 heroPos = g_hero.GetPosition();
+            bool isMeleeAoE = (skillId == 41 || skillId == 42 || skillId == 43);
+            bool casterCentered = (skillId == 9 || skillId == 10 || skillId == 14 || isMeleeAoE);
+            glm::vec3 groundTarget = heroPos;
+            if (!isMeleeAoE) {
+              double mx, my;
+              glfwGetCursorPos(window, &mx, &my);
+              RayPicker::ScreenToTerrain(window, mx, my, groundTarget);
             }
+            g_hero.CastSelfAoE(skillId, isMeleeAoE ? heroPos : groundTarget);
+            float atkX = casterCentered ? heroPos.x : groundTarget.x;
+            float atkZ = casterCentered ? heroPos.z : groundTarget.z;
+            if (skillId == 12) {
+              g_hero.SetPendingAquaPacket(0xFFFF, skillId, atkX, atkZ);
+            } else {
+              g_server.SendSkillAttack(0xFFFF, skillId, atkX, atkZ);
+            }
+            // Optimistically deduct resource to prevent spam before server reply
+            if (isDK) g_serverAG -= cost; else g_serverMP -= cost;
           }
         }
       }
@@ -1302,46 +1865,84 @@ int main(int argc, char **argv) {
     }
 
     // Town teleport: play heal animation, then warp to Lorencia safe zone
+    if (g_teleportingToTown && g_hero.IsDead()) {
+      g_teleportingToTown = false; // Cancel teleport if hero died during cast
+    }
     if (g_teleportingToTown) {
       g_teleportTimer -= deltaTime;
       g_hero.SetSlowAnimDuration(TELEPORT_CAST_TIME);
       g_hero.SetAction(HeroCharacter::ACTION_SKILL_VITALITY);
       if (g_teleportTimer <= 0.0f) {
         g_teleportingToTown = false;
-        // Teleport to Lorencia safe zone (grid 125,125)
-        const int S = TerrainParser::TERRAIN_SIZE;
-        int startGX = 125, startGZ = 125;
-        glm::vec3 spawnPos(12500.0f, 0.0f, 12500.0f);
-        for (int radius = 0; radius < 30; radius++) {
-          bool found = false;
-          for (int dy = -radius; dy <= radius && !found; dy++) {
-            for (int dx = -radius; dx <= radius && !found; dx++) {
-              if (radius > 0 && std::abs(dx) != radius &&
-                  std::abs(dy) != radius)
-                continue;
-              int cx = startGX + dx, cz = startGZ + dy;
-              if (cx < 1 || cz < 1 || cx >= S - 1 || cz >= S - 1)
-                continue;
-              uint8_t attr = g_terrainDataPtr->mapping.attributes[cz * S + cx];
-              if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
-                spawnPos =
-                    glm::vec3((float)cz * 100.0f, 0.0f, (float)cx * 100.0f);
-                found = true;
+        g_hero.SetSlowAnimDuration(0.0f);
+
+        // Dismount before teleporting
+        if (g_hero.IsMounted())
+          g_hero.UnequipMount();
+
+        // If in dungeon, trigger server-side map transition by sending
+        // position to the dungeon exit gate zone (grid 108,248)
+        if (g_currentMapId != 0) {
+          float gateWorldX = 248.0f * 100.0f;
+          float gateWorldZ = 108.0f * 100.0f;
+          SoundManager::StopAll();
+          g_server.SendPrecisePosition(gateWorldX, gateWorldZ);
+          g_hero.SetAction(1);
+          g_hero.SetTeleportCooldown();
+        } else {
+          // Already on Lorencia — teleport to city center (grid 137,126)
+          const int S = TerrainParser::TERRAIN_SIZE;
+          int startGX = 137, startGZ = 126;
+          glm::vec3 spawnPos(12600.0f, 0.0f, 13700.0f);
+          for (int radius = 0; radius < 30; radius++) {
+            bool found = false;
+            for (int dy = -radius; dy <= radius && !found; dy++) {
+              for (int dx = -radius; dx <= radius && !found; dx++) {
+                if (radius > 0 && std::abs(dx) != radius &&
+                    std::abs(dy) != radius)
+                  continue;
+                int cx = startGX + dx, cz = startGZ + dy;
+                if (cx < 1 || cz < 1 || cx >= S - 1 || cz >= S - 1)
+                  continue;
+                uint8_t attr =
+                    g_terrainDataPtr->mapping.attributes[cz * S + cx];
+                if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
+                  spawnPos =
+                      glm::vec3((float)cz * 100.0f, 0.0f, (float)cx * 100.0f);
+                  found = true;
+                }
               }
             }
+            if (found)
+              break;
           }
-          if (found)
-            break;
+          SoundManager::StopAll();
+          g_hero.SetPosition(spawnPos);
+          g_hero.SnapToTerrain();
+          g_hero.SetAction(1);
+          g_camera.SetPosition(g_hero.GetPosition());
+          g_server.SendPrecisePosition(spawnPos.x, spawnPos.z);
+          InventoryUI::ShowRegionName("Lorencia");
+          g_hero.SetTeleportCooldown();
         }
-        // Stop all sounds on teleport (prevents 3D bleed from old location)
-        SoundManager::StopAll();
-        g_hero.SetPosition(spawnPos);
-        g_hero.SnapToTerrain();
-        g_hero.SetSlowAnimDuration(0.0f);
-        g_hero.SetAction(1); // Back to idle
-        g_camera.SetPosition(g_hero.GetPosition());
-        g_server.SendPrecisePosition(spawnPos.x, spawnPos.z);
-        InventoryUI::ShowRegionName("Lorencia");
+      }
+    }
+
+    // Mount toggle: 1-second preloader, then mount/dismount
+    if (g_mountToggling) {
+      g_mountToggleTimer -= deltaTime;
+      // Block movement while mounting
+      if (g_hero.IsMoving())
+        g_hero.StopMoving();
+      if (g_mountToggleTimer <= 0.0f) {
+        g_mountToggling = false;
+        if (g_hero.IsMounted()) {
+          // Dismount
+          g_hero.UnequipMount();
+        } else if (g_hero.HasMountEquipped()) {
+          // Mount
+          g_hero.EquipMount(g_hero.GetMountItemIndex());
+        }
       }
     }
 
@@ -1379,7 +1980,7 @@ int main(int argc, char **argv) {
 
       // Notify server that player is alive (clears session.dead)
       g_server.SendCharSave(
-          1, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
+          (uint16_t)g_heroCharacterId, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
           (uint16_t)g_serverDex, (uint16_t)g_serverVit, (uint16_t)g_serverEne,
           (uint16_t)g_serverMaxHP, (uint16_t)g_serverMaxHP,
           (uint16_t)g_serverMaxMP, (uint16_t)g_serverMaxMP,
@@ -1393,7 +1994,7 @@ int main(int argc, char **argv) {
     if (g_autoSaveTimer >= AUTOSAVE_INTERVAL && !g_hero.IsDead()) {
       g_autoSaveTimer = 0.0f;
       g_server.SendCharSave(
-          1, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
+          (uint16_t)g_heroCharacterId, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
           (uint16_t)g_serverDex, (uint16_t)g_serverVit, (uint16_t)g_serverEne,
           (uint16_t)g_serverHP, (uint16_t)g_serverMaxHP, (uint16_t)g_serverMP,
           (uint16_t)g_serverMaxMP, (uint16_t)g_serverAG,
@@ -1458,14 +2059,15 @@ int main(int argc, char **argv) {
       bool wasInSafeZone = g_hero.IsInSafeZone();
       bool nowInSafeZone = (heroAttr & 0x01) != 0;
       g_hero.SetInSafeZone(nowInSafeZone);
-      // Main 5.2: stop wind in safe zone, restart outside
-      // Music: MuTheme in safe zone, stop outside
-      if (nowInSafeZone && !wasInSafeZone) {
-        SoundManager::Stop(SOUND_WIND01);
-        SoundManager::CrossfadeTo(g_dataPath + "/Music/MuTheme.mp3");
-      } else if (!nowInSafeZone && wasInSafeZone) {
-        SoundManager::PlayLoop(SOUND_WIND01);
-        SoundManager::FadeOut();
+      // Main 5.2: stop wind in safe zone, restart outside (Lorencia only)
+      if (g_currentMapId == 0) {
+        if (nowInSafeZone && !wasInSafeZone) {
+          SoundManager::Stop(SOUND_WIND01);
+          SoundManager::CrossfadeTo(g_dataPath + "/Music/MuTheme.mp3");
+        } else if (!nowInSafeZone && wasInSafeZone) {
+          SoundManager::PlayLoop(SOUND_WIND01);
+          SoundManager::FadeOut();
+        }
       }
     }
 
@@ -1493,8 +2095,15 @@ int main(int argc, char **argv) {
     glfwGetFramebufferSize(window, &fbW, &fbH);
     glViewport(0, 0, fbW, fbH);
 
+    // Post-processing: render to HDR framebuffer instead of screen
+    if (g_postProcess.enabled) {
+      ResizePostProcessFBOs(fbW, fbH);
+      glBindFramebuffer(GL_FRAMEBUFFER, g_postProcess.sceneFBO);
+      glViewport(0, 0, fbW, fbH);
+    }
+
     glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
     int winW, winH;
     glfwGetWindowSize(window, &winW, &winH);
@@ -1511,14 +2120,22 @@ int main(int argc, char **argv) {
     }
 
     // Sky renders first (behind everything, no depth write)
-    g_sky.Render(view, projection, camPos);
+    // Dungeon has no sky — only render for Lorencia (map 0)
+    if (g_currentMapId == 0) {
+      g_sky.Render(view, projection, camPos, g_luminosity);
+    }
 
     // Main 5.2: AddTerrainLight — merge world point lights + spell projectile lights
     // Spell lights are transient (per-frame), so rebuild the full list each frame.
+    // Static vectors reuse capacity across frames (zero heap allocs after warmup).
     {
-      std::vector<glm::vec3> lightPos, lightCol;
-      std::vector<float> lightRange;
-      std::vector<int> lightObjTypes;
+      static std::vector<glm::vec3> lightPos, lightCol;
+      static std::vector<float> lightRange;
+      static std::vector<int> lightObjTypes;
+      lightPos.clear();
+      lightCol.clear();
+      lightRange.clear();
+      lightObjTypes.clear();
       // Static world lights (fires, streetlights, candles, etc.)
       for (auto &pl : g_pointLights) {
         lightPos.push_back(pl.position);
@@ -1533,7 +2150,8 @@ int main(int argc, char **argv) {
       g_terrain.SetPointLights(lightPos, lightCol, lightRange, lightObjTypes);
       g_objectRenderer.SetPointLights(lightPos, lightCol, lightRange);
       // Update character renderers with merged PointLight list
-      std::vector<PointLight> mergedLights;
+      static std::vector<PointLight> mergedLights;
+      mergedLights.clear();
       mergedLights.reserve(lightPos.size());
       for (size_t i = 0; i < lightPos.size(); ++i) {
         mergedLights.push_back(
@@ -1555,8 +2173,8 @@ int main(int argc, char **argv) {
     g_objectRenderer.Render(view, projection, g_camera.GetPosition(),
                             currentFrame);
 
-    // Render grass billboards (after objects so grass doesn't occlude fences)
-    {
+    // Render grass billboards (Lorencia only — no grass underground)
+    if (g_currentMapId == 0) {
       std::vector<GrassRenderer::PushSource> pushSources;
       pushSources.push_back({g_hero.GetPosition(), 100.0f});
       g_grass.Render(view, projection, currentFrame, camPos, pushSources);
@@ -1571,6 +2189,29 @@ int main(int argc, char **argv) {
     // Update effects (VFX rendered after characters for correct layering)
     g_fireEffect.Update(deltaTime);
     g_vfxManager.UpdateLevelUpCenter(g_hero.GetPosition());
+
+    // Dungeon trap VFX (Main 5.2: types 39=lance, 40=blade, 51=fire)
+    // HiddenMesh=-2, VFX-only — spawned continuously in CharacterAnimation
+    if (g_currentMapId == 1) {
+      static float trapVfxTimer = 0.0f;
+      trapVfxTimer += deltaTime;
+      if (trapVfxTimer >= 0.15f) { // ~7 bursts/sec
+        trapVfxTimer -= 0.15f;
+        for (auto &inst : g_objectRenderer.GetInstances()) {
+          glm::vec3 pos = glm::vec3(inst.modelMatrix[3]);
+          if (inst.type == 39) {
+            // Lance Trap: lightning sprites (Main 5.2: MODEL_SAW + SOUND_TRAP01)
+            pos.y += 30.0f + (float)(rand() % 40);
+            g_vfxManager.SpawnBurst(ParticleType::SPELL_LIGHTNING, pos, 2);
+          } else if (inst.type == 51) {
+            // Fire Trap: fire sprites (Main 5.2: BITMAP_FIRE+1 + SOUND_FLAME)
+            pos.y += 20.0f + (float)(rand() % 30);
+            g_vfxManager.SpawnBurst(ParticleType::FIRE, pos, 1);
+          }
+        }
+      }
+    }
+
     g_vfxManager.Update(deltaTime);
 
     // Twister proximity: apply StormTime spin when tornado VFX reaches a monster
@@ -1595,13 +2236,21 @@ int main(int argc, char **argv) {
       }
     }
 
+    // Boids — birds in Lorencia, bats in Dungeon (BoidManager handles map logic)
     g_boidManager.Update(deltaTime, g_hero.GetPosition(), 0, currentFrame);
     g_fireEffect.Render(view, projection);
 
-    // Render ambient creatures (birds/fish) before characters
+    // Render ambient creatures (birds/fish/bats/leaves)
     g_boidManager.RenderShadows(view, projection);
     g_boidManager.Render(view, projection, camPos);
-    g_boidManager.RenderLeaves(view, projection);
+    if (g_currentMapId == 0)
+      g_boidManager.RenderLeaves(view, projection);
+
+    // Update NPC interaction state (guard faces player only when quest dialog is open)
+    g_npcManager.SetPlayerPosition(g_hero.GetPosition());
+    g_npcManager.SetInteractingNpc(g_questDialogOpen ? g_questDialogNpcIndex : -1);
+    g_npcManager.SetQuestState(g_questIndex, g_questKillCount, g_questRequired,
+                               g_questTargetCount);
 
     // Render NPC characters with shadows
     g_npcManager.RenderShadows(view, projection);
@@ -1660,6 +2309,70 @@ int main(int argc, char **argv) {
     // Render VFX (after all characters so particles layer on top)
     g_vfxManager.Render(view, projection);
 
+    // ── Post-processing resolve: bloom + vignette + color grading ──
+    if (g_postProcess.enabled) {
+      auto &pp = g_postProcess;
+
+      // Save GL state that scene rendering may have changed
+      GLboolean wasBlend = glIsEnabled(GL_BLEND);
+      GLboolean wasCull = glIsEnabled(GL_CULL_FACE);
+      GLboolean wasStencil = glIsEnabled(GL_STENCIL_TEST);
+      glDisable(GL_BLEND);
+      glDisable(GL_CULL_FACE);
+      glDisable(GL_STENCIL_TEST);
+      glDisable(GL_DEPTH_TEST);
+
+      // Step 1: Extract bright pixels from scene → bloomTex[0]
+      glBindFramebuffer(GL_FRAMEBUFFER, pp.bloomFBO[0]);
+      glViewport(0, 0, pp.bloomW, pp.bloomH);
+      glClear(GL_COLOR_BUFFER_BIT);
+      pp.brightExtract->use();
+      pp.brightExtract->setInt("uScene", 0);
+      pp.brightExtract->setFloat("uThreshold", pp.bloomThreshold);
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, pp.sceneColorTex);
+      RenderFullscreenQuad(pp);
+
+      // Step 2: Two-pass Gaussian blur (ping-pong between bloomFBO[0] and [1])
+      pp.blur->use();
+      pp.blur->setInt("uImage", 0);
+      for (int pass = 0; pass < 4; ++pass) { // 2 full iterations
+        bool horizontal = (pass % 2 == 0);
+        int srcIdx = horizontal ? 0 : 1;
+        int dstIdx = horizontal ? 1 : 0;
+        glBindFramebuffer(GL_FRAMEBUFFER, pp.bloomFBO[dstIdx]);
+        glClear(GL_COLOR_BUFFER_BIT);
+        pp.blur->setBool("uHorizontal", horizontal);
+        pp.blur->setFloat("uTexelSize",
+                          horizontal ? (1.0f / pp.bloomW) : (1.0f / pp.bloomH));
+        glBindTexture(GL_TEXTURE_2D, pp.bloomTex[srcIdx]);
+        RenderFullscreenQuad(pp);
+      }
+
+      // Step 3: Composite scene + bloom to screen
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glViewport(0, 0, fbW, fbH);
+      glClear(GL_COLOR_BUFFER_BIT);
+      pp.composite->use();
+      pp.composite->setInt("uScene", 0);
+      pp.composite->setInt("uBloom", 1);
+      pp.composite->setFloat("uBloomIntensity", pp.bloomIntensity);
+      pp.composite->setFloat("uVignetteStrength", pp.vignetteStrength);
+      pp.composite->setVec3("uColorTint", pp.colorTint);
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, pp.sceneColorTex);
+      glActiveTexture(GL_TEXTURE1);
+      glBindTexture(GL_TEXTURE_2D, pp.bloomTex[0]);
+      RenderFullscreenQuad(pp);
+      glActiveTexture(GL_TEXTURE0);
+
+      // Restore GL state
+      glEnable(GL_DEPTH_TEST);
+      if (wasBlend) glEnable(GL_BLEND);
+      if (wasCull) glEnable(GL_CULL_FACE);
+      if (wasStencil) glEnable(GL_STENCIL_TEST);
+    }
+
     // Auto-GIF: capture with warmup for fire particle buildup
     // Capture BEFORE ImGui rendering so debug overlay is not in the output
     if (autoGif && !Screenshot::IsRecording() && diagFrame == 0) {
@@ -1694,10 +2407,13 @@ int main(int argc, char **argv) {
       // Unified bottom HUD bar (HP, QWER, 1234, RMC, AG, XP)
       ImDrawList *dl = ImGui::GetForegroundDrawList();
 
-      // FPS counter (top-left)
+      // FPS counter (top-left) — smoothed with exponential moving average
       {
+        static float smoothedFPS = 60.0f;
+        float instantFPS = 1.0f / std::max(deltaTime, 0.001f);
+        smoothedFPS += (instantFPS - smoothedFPS) * 0.05f; // ~20-frame smoothing
         char fpsText[16];
-        snprintf(fpsText, sizeof(fpsText), "%.0f", 1.0f / std::max(deltaTime, 0.001f));
+        snprintf(fpsText, sizeof(fpsText), "%.0f", smoothedFPS);
         dl->AddText(ImVec2(5, 4), IM_COL32(200, 200, 200, 160), fpsText);
       }
 
@@ -1709,10 +2425,21 @@ int main(int argc, char **argv) {
           g_floatingDmg, MAX_FLOATING_DAMAGE, deltaTime, dl, g_fontDefault,
           view, projection, winW, winH);
 
+      // ── System message log ──
+      SystemMessageLog::Update(deltaTime);
+      {
+        double mx, my;
+        glfwGetCursorPos(window, &mx, &my);
+        SystemMessageLog::Render(dl, g_fontDefault, (float)winW, (float)winH,
+                                 70.0f, (float)mx, (float)my);
+      }
+
       // ── Monster nameplates ──
       g_monsterManager.RenderNameplates(dl, g_fontDefault, view, projection,
                                         winW, winH, camPos, g_hoveredMonster,
-                                        g_hero.GetAttackTarget());
+                                        g_hero.GetAttackTarget(),
+                                        g_serverLevel);
+
 
       // ── Ground item 3D models + physics ──
       GroundItemRenderer::RenderModels(
@@ -1729,13 +2456,751 @@ int main(int argc, char **argv) {
     g_npcManager.RenderLabels(ImGui::GetForegroundDrawList(), view, projection,
                               winW, winH, camPos, g_hoveredNpc);
 
+    // Helper: close quest dialog and notify server
+    auto closeQuestDialog = [&]() {
+      if (g_questDialogOpen && g_questDialogNpcIndex >= 0 &&
+          g_questDialogNpcIndex < g_npcManager.GetNpcCount()) {
+        NpcInfo qi = g_npcManager.GetNpcInfo(g_questDialogNpcIndex);
+        g_server.SendNpcInteract(qi.type, false);
+      }
+      g_questDialogOpen = false;
+      g_questDialogNpcIndex = -1;
+      g_questDialogSelected = -1;
+      g_selectedNpc = -1;
+    };
+
     // NPC click interaction dialog has been replaced with direct shop opening
     // through InputHandler.cpp (SendShopOpen). Optionally we could keep
     // g_selectedNpc for highlighting purposes without rendering a dialog.
     if (g_selectedNpc >= 0) {
       // Close selection on Escape
-      if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+      if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+        closeQuestDialog();
         g_selectedNpc = -1;
+      }
+    }
+
+    // ── Quest Dialog (guard NPC overlay with quest system) ──
+    g_questDialogJustOpened = false;
+    if (g_questDialogOpen && !g_questDialogWasOpen) {
+      g_questDialogSelected = -1;
+      g_questDialogJustOpened = true;
+      SoundManager::Play(SOUND_INTERFACE01);
+    }
+    g_questDialogWasOpen = g_questDialogOpen;
+
+    if (g_questDialogOpen && g_questDialogNpcIndex >= 0 &&
+        g_questDialogNpcIndex < g_npcManager.GetNpcCount()) {
+      NpcInfo npcInfo = g_npcManager.GetNpcInfo(g_questDialogNpcIndex);
+
+      // Close if player walks too far away
+      float dist = glm::distance(g_hero.GetPosition(), npcInfo.position);
+      if (dist > 350.0f) {
+        closeQuestDialog();
+      } else {
+        ImDrawList *dl = ImGui::GetForegroundDrawList();
+        ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+        ImVec2 mousePos = ImGui::GetIO().MousePos;
+
+        uint16_t guardType = npcInfo.type;
+
+        // WoW-style colors
+        ImU32 cBg       = IM_COL32(12, 10, 8, 235);
+        ImU32 cBorder   = IM_COL32(80, 70, 50, 180);
+        ImU32 cTitle    = IM_COL32(255, 210, 80, 255);
+        ImU32 cText     = IM_COL32(200, 195, 180, 255);
+        ImU32 cTextDim  = IM_COL32(140, 135, 120, 255);
+        ImU32 cGold     = IM_COL32(255, 210, 50, 255);
+        ImU32 cGreen    = IM_COL32(80, 220, 80, 255);
+        ImU32 cSep      = IM_COL32(50, 45, 35, 120);
+
+        auto drawButton = [&](float bx, float by, float bw, float bh,
+                              const char *label, ImU32 textColor) -> bool {
+          ImVec2 bMin2(bx, by), bMax2(bx + bw, by + bh);
+          bool hov = mousePos.x >= bMin2.x && mousePos.x <= bMax2.x &&
+                     mousePos.y >= bMin2.y && mousePos.y <= bMax2.y;
+          dl->AddRectFilled(bMin2, bMax2,
+                            hov ? IM_COL32(45, 40, 28, 230) : IM_COL32(25, 22, 16, 230), 3.0f);
+          dl->AddRect(bMin2, bMax2, cBorder, 3.0f, 0, 1.0f);
+          ImVec2 ls = ImGui::CalcTextSize(label);
+          dl->AddText(ImVec2(bx + (bw - ls.x) * 0.5f, by + (bh - ls.y) * 0.5f),
+                      textColor, label);
+          return hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !g_questDialogJustOpened;
+        };
+
+        float btnW = 80.0f, btnH = 26.0f;
+
+        // Determine dialog state for this guard
+        // States: "offer_kill", "travel_accept", "in_progress", "completable",
+        //         "handoff", "done", "not_yet", "all_done"
+        const char *dialogState = "not_yet";
+        const QuestClientInfo *showQuest = nullptr;    // Quest to display info for
+        const QuestClientInfo *travelQuest = nullptr;   // Travel quest (for combined travel+accept)
+
+        if (g_questIndex >= QUEST_COUNT) {
+          dialogState = "all_done";
+        } else {
+          const auto &curQ = g_questDefs[g_questIndex];
+          if (curQ.questType == 1 && curQ.guardType == guardType) {
+            // This guard is the travel destination — show combined travel+kill accept
+            dialogState = "travel_accept";
+            travelQuest = &curQ;
+            // The next quest (kill quest) should be the one we show
+            if (g_questIndex + 1 < QUEST_COUNT)
+              showQuest = &g_questDefs[g_questIndex + 1];
+          } else if (curQ.questType == 0 && curQ.guardType == guardType) {
+            // This guard owns the current kill quest
+            bool accepted = (g_questTargetCount > 0);
+            if (!accepted) {
+              dialogState = "offer_kill";
+              showQuest = &curQ;
+            } else {
+              bool allDone = true;
+              for (int i = 0; i < g_questTargetCount; i++) {
+                if (g_questKillCount[i] < g_questRequired[i]) { allDone = false; break; }
+              }
+              if (allDone) {
+                dialogState = "completable";
+                showQuest = &curQ;
+              } else {
+                dialogState = "in_progress";
+                showQuest = &curQ;
+              }
+            }
+          } else {
+            // Not this guard's turn — check relationship
+            int myKillQuest = GetGuardKillQuest(guardType);
+            if (myKillQuest >= 0 && myKillQuest < g_questIndex) {
+              // Guard's quest is done
+              if (curQ.questType == 1) {
+                dialogState = "handoff"; // Tell player to go to next guard
+              } else {
+                dialogState = "done";
+              }
+            } else {
+              dialogState = "not_yet";
+            }
+          }
+        }
+
+        // ── Render dialog panel based on state ──
+        float panelW = 340.0f;
+        const char *npcName = npcInfo.name.c_str();
+
+        // Compute content for the panel
+        const char *dialogText = "";
+        const char *titleText = npcName;
+        bool showObjectives = false;
+        bool showRewards = false;
+        bool showAcceptBtn = false;
+        bool showCompleteBtn = false;
+        bool showCloseBtn = false;
+
+        if (strcmp(dialogState, "offer_kill") == 0 && showQuest) {
+          titleText = showQuest->questName;
+          dialogText = showQuest->loreText;
+          showObjectives = true;
+          showRewards = true;
+          showAcceptBtn = true;
+        } else if (strcmp(dialogState, "travel_accept") == 0 && showQuest) {
+          titleText = showQuest->questName;
+          // Combined travel greeting + kill quest lore
+          dialogText = showQuest->loreText;
+          showObjectives = true;
+          showRewards = true;
+          showAcceptBtn = true;
+        } else if (strcmp(dialogState, "in_progress") == 0 && showQuest) {
+          titleText = showQuest->questName;
+          dialogText = "The task is not yet complete.\nKeep fighting.";
+          showObjectives = true;
+          showCloseBtn = true;
+        } else if (strcmp(dialogState, "completable") == 0 && showQuest) {
+          titleText = showQuest->questName;
+          dialogText = "Well done! You've completed\nthe task. Here is your reward.";
+          showObjectives = true;
+          showRewards = true;
+          showCompleteBtn = true;
+        } else if (strcmp(dialogState, "handoff") == 0) {
+          // Find the travel destination guard name
+          const auto &curQ = g_questDefs[g_questIndex];
+          const char *destName = GetGuardName(curQ.guardType);
+          static char handoffBuf[128];
+          snprintf(handoffBuf, sizeof(handoffBuf),
+                   "I have no more tasks for you.\nSeek out %s.", destName);
+          dialogText = handoffBuf;
+          showCloseBtn = true;
+        } else if (strcmp(dialogState, "done") == 0) {
+          dialogText = "My tasks are complete.\nGood luck on your journey, warrior.";
+          showCloseBtn = true;
+        } else if (strcmp(dialogState, "all_done") == 0) {
+          dialogText = "Lorencia owes you a great debt,\nwarrior. Every threat has been\nvanquished by your hand. May the\nSerenity guide your path.";
+          showCloseBtn = true;
+        } else { // not_yet
+          dialogText = "I have no task for you yet.\nSpeak to the other guards first.";
+          showCloseBtn = true;
+        }
+
+        // Calculate panel height — measure everything that will be rendered
+        ImVec2 dialogSize = ImGui::CalcTextSize(dialogText);
+        float subtitleH = showQuest ? (ImGui::CalcTextSize(npcName).y + 4) : 0;
+        float objH = 0;
+        if (showObjectives && showQuest) objH = 18 + showQuest->targetCount * 18.0f;
+        int weaponCount = 0;
+        if (showRewards && showQuest && showQuest->questType == 0) {
+          if (showQuest->dkReward.defIndex >= 0) weaponCount++;
+          if (showQuest->dwReward.defIndex >= 0) weaponCount++;
+          if (showQuest->orbReward.defIndex >= 0) weaponCount++;
+          if (showQuest->scrollReward.defIndex >= 0) weaponCount++;
+        }
+        float weaponH = weaponCount > 0 ? (weaponCount * 48.0f + 4.0f) : 0;
+        float rewardsH = showRewards ? (10 + 18 + 18 + 18 + weaponH) : 0;
+        float buttonsH = btnH + 16;
+        float panelH = 14 + 20 + 6 + subtitleH + 1 + 10 + dialogSize.y + 10
+                        + objH + rewardsH + buttonsH + 14;
+        float px = (dispSize.x - panelW) * 0.5f;
+        float py = (dispSize.y - panelH) * 0.5f;
+        g_qdPanelRect[0] = px; g_qdPanelRect[1] = py;
+        g_qdPanelRect[2] = panelW; g_qdPanelRect[3] = panelH;
+
+        // Panel background with double border for parchment feel
+        dl->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), cBg, 5.0f);
+        dl->AddRect(ImVec2(px + 1, py + 1), ImVec2(px + panelW - 1, py + panelH - 1),
+                    IM_COL32(40, 35, 25, 100), 4.0f, 0, 1.0f);
+        dl->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), cBorder, 5.0f, 0, 1.5f);
+
+        float contentY = py + 14;
+
+        // Title
+        {
+          ImVec2 ts = ImGui::CalcTextSize(titleText);
+          dl->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, contentY), cTitle, titleText);
+          contentY += ts.y + 6;
+        }
+
+        // Guard name subtitle (if title is quest name)
+        if (showQuest) {
+          ImVec2 gs = ImGui::CalcTextSize(npcName);
+          dl->AddText(ImVec2(px + (panelW - gs.x) * 0.5f, contentY), cTextDim, npcName);
+          contentY += gs.y + 4;
+        }
+
+        dl->AddLine(ImVec2(px + 16, contentY), ImVec2(px + panelW - 16, contentY), cSep);
+        contentY += 10;
+
+        // Dialog text
+        dl->AddText(ImVec2(px + 20, contentY), cText, dialogText);
+        contentY += dialogSize.y + 10;
+
+        // Objectives
+        if (showObjectives && showQuest) {
+          dl->AddText(ImVec2(px + 20, contentY), cTextDim, "Objectives");
+          contentY += 18;
+          bool inProgress = (strcmp(dialogState, "in_progress") == 0 || strcmp(dialogState, "completable") == 0);
+          for (int i = 0; i < showQuest->targetCount; i++) {
+            char objBuf[80];
+            if (inProgress) {
+              snprintf(objBuf, sizeof(objBuf), "  %s  %d / %d",
+                       showQuest->targets[i].name, g_questKillCount[i],
+                       (int)showQuest->targets[i].killsReq);
+              bool done = g_questKillCount[i] >= showQuest->targets[i].killsReq;
+              dl->AddText(ImVec2(px + 22, contentY), done ? cGreen : cText, objBuf);
+            } else {
+              snprintf(objBuf, sizeof(objBuf), "  Slay %d %s",
+                       showQuest->targets[i].killsReq, showQuest->targets[i].name);
+              dl->AddText(ImVec2(px + 22, contentY), cText, objBuf);
+            }
+            contentY += 18;
+          }
+        }
+
+        // Rewards
+        if (showRewards && showQuest) {
+          contentY += 4;
+          dl->AddLine(ImVec2(px + 16, contentY), ImVec2(px + panelW - 16, contentY), cSep);
+          contentY += 6;
+          dl->AddText(ImVec2(px + 20, contentY), cTextDim, "Rewards");
+          contentY += 18;
+          // Include travel quest rewards if applicable
+          uint32_t totalZen = showQuest->zenReward;
+          uint32_t totalXp = showQuest->xpReward;
+          if (travelQuest) { totalZen += travelQuest->zenReward; totalXp += travelQuest->xpReward; }
+
+          std::string zenStr = std::to_string(totalZen);
+          int n = (int)zenStr.length() - 3;
+          while (n > 0) { zenStr.insert(n, ","); n -= 3; }
+          char rwBuf[64];
+          snprintf(rwBuf, sizeof(rwBuf), "  %s Zen", zenStr.c_str());
+          dl->AddText(ImVec2(px + 22, contentY), cGold, rwBuf);
+          contentY += 18;
+          std::string xpStr = std::to_string(totalXp);
+          n = (int)xpStr.length() - 3;
+          while (n > 0) { xpStr.insert(n, ","); n -= 3; }
+          snprintf(rwBuf, sizeof(rwBuf), "  %s Experience", xpStr.c_str());
+          dl->AddText(ImVec2(px + 22, contentY), IM_COL32(180, 140, 255, 255), rwBuf);
+          contentY += 18;
+          // Item reward 3D models
+          if (showQuest->questType == 0) {
+            contentY += 4;
+            float h1 = DrawQuestRewardItem(dl, px, contentY, panelW,
+                                           showQuest->dkReward, "Dark Knight");
+            contentY += h1;
+            float h2 = DrawQuestRewardItem(dl, px, contentY, panelW,
+                                           showQuest->dwReward, "Dark Wizard");
+            contentY += h2;
+            float h3 = DrawQuestRewardItem(dl, px, contentY, panelW,
+                                           showQuest->orbReward, "DK Skill Orb");
+            contentY += h3;
+            float h4 = DrawQuestRewardItem(dl, px, contentY, panelW,
+                                           showQuest->scrollReward, "DW Spell Scroll");
+            contentY += h4;
+          }
+        }
+
+        // Separator before buttons
+        contentY += 2;
+        dl->AddLine(ImVec2(px + 16, contentY), ImVec2(px + panelW - 16, contentY), cSep);
+
+        // Buttons
+        float btnY = py + panelH - btnH - 12.0f;
+        if (showAcceptBtn) {
+          float gap = 16.0f;
+          float bx1 = px + (panelW - btnW * 2 - gap) * 0.5f;
+          float bx2 = bx1 + btnW + gap;
+          if (drawButton(bx1, btnY, btnW, btnH, "Accept", cGreen)) {
+            g_server.SendQuestAccept(guardType);
+            SoundManager::Play3D(SOUND_QUEST_ACCEPT, npcInfo.position.x,
+                                 npcInfo.position.y, npcInfo.position.z);
+            closeQuestDialog();
+          }
+          if (drawButton(bx2, btnY, btnW, btnH, "Close", cTextDim)) {
+            SoundManager::Play(SOUND_CLICK01);
+            closeQuestDialog();
+          }
+        } else if (showCompleteBtn) {
+          float gap = 16.0f;
+          float bx1 = px + (panelW - btnW * 2 - gap) * 0.5f;
+          float bx2 = bx1 + btnW + gap;
+          if (drawButton(bx1, btnY, btnW, btnH, "Complete", cGold)) {
+            SoundManager::Play3D(SOUND_QUEST_ACCEPT, npcInfo.position.x,
+                                 npcInfo.position.y, npcInfo.position.z);
+            g_server.SendQuestComplete(guardType);
+            closeQuestDialog();
+          }
+          if (drawButton(bx2, btnY, btnW, btnH, "Close", cTextDim)) {
+            SoundManager::Play(SOUND_CLICK01);
+            closeQuestDialog();
+          }
+        } else {
+          if (drawButton(px + (panelW - btnW) * 0.5f, btnY, btnW, btnH,
+                         "Close", cTextDim)) {
+            SoundManager::Play(SOUND_CLICK01);
+            closeQuestDialog();
+          }
+        }
+      }
+    }
+
+    // ── Quest Tracker HUD (top-right, minimal) ──
+    if (g_questIndex < QUEST_COUNT) {
+      const auto &curQ = g_questDefs[g_questIndex];
+      bool showTracker = false;
+
+      if (curQ.questType == 1) {
+        // Travel quest — show "Report to [guard name]"
+        showTracker = true;
+        ImDrawList *dl = ImGui::GetForegroundDrawList();
+        ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+        float lineH = 15.0f;
+        float trackerW = 200.0f;
+        float trackerH = 20.0f + lineH;
+        float tx = dispSize.x - trackerW - 12.0f;
+        float ty = 60.0f;
+        dl->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + trackerW, ty + trackerH),
+                          IM_COL32(0, 0, 0, 120), 3.0f);
+        float cy = ty + 4;
+        dl->AddText(ImVec2(tx + 6, cy), IM_COL32(220, 185, 50, 220), curQ.questName);
+        cy += lineH + 2;
+        char buf[64];
+        snprintf(buf, sizeof(buf), " Find %s", GetGuardName(curQ.guardType));
+        dl->AddText(ImVec2(tx + 6, cy), IM_COL32(180, 180, 180, 200), buf);
+      } else if (g_questTargetCount > 0) {
+        // Kill quest with accepted targets
+        showTracker = true;
+        ImDrawList *dl = ImGui::GetForegroundDrawList();
+        ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+        float lineH = 15.0f;
+        bool allDone = true;
+        for (int i = 0; i < g_questTargetCount; i++) {
+          if (g_questKillCount[i] < g_questRequired[i]) { allDone = false; break; }
+        }
+        float trackerW = 200.0f;
+        float trackerH = 20.0f + g_questTargetCount * lineH + (allDone ? lineH : 0);
+        float tx = dispSize.x - trackerW - 12.0f;
+        float ty = 60.0f;
+        dl->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + trackerW, ty + trackerH),
+                          IM_COL32(0, 0, 0, 120), 3.0f);
+        float cy = ty + 4;
+        dl->AddText(ImVec2(tx + 6, cy), IM_COL32(220, 185, 50, 220), curQ.questName);
+        cy += lineH + 2;
+        for (int i = 0; i < g_questTargetCount; i++) {
+          char buf[48];
+          bool done = g_questKillCount[i] >= g_questRequired[i];
+          snprintf(buf, sizeof(buf), " %s  %d/%d",
+                   curQ.targets[i].name,
+                   g_questKillCount[i], g_questRequired[i]);
+          dl->AddText(ImVec2(tx + 6, cy),
+                      done ? IM_COL32(80, 210, 80, 200) : IM_COL32(180, 180, 180, 200),
+                      buf);
+          cy += lineH;
+        }
+        if (allDone) {
+          char turnIn[64];
+          snprintf(turnIn, sizeof(turnIn), "Return to %s", GetGuardName(curQ.guardType));
+          dl->AddText(ImVec2(tx + 6, cy), IM_COL32(220, 185, 50, 220), turnIn);
+        }
+      }
+      (void)showTracker;
+    }
+
+    // ── Quest Log Window (L key) — right side, active quests only ──
+    if (g_showQuestLog) {
+      ImDrawList *ql = ImGui::GetForegroundDrawList();
+      ImVec2 dispSz = ImGui::GetIO().DisplaySize;
+      ImVec2 mPos = ImGui::GetIO().MousePos;
+
+      // WoW-style colors
+      ImU32 qlBg      = IM_COL32(12, 10, 8, 240);
+      ImU32 qlBorder  = IM_COL32(80, 70, 50, 180);
+      ImU32 qlTitle   = IM_COL32(255, 210, 80, 255);
+      ImU32 qlText    = IM_COL32(200, 195, 180, 255);
+      ImU32 qlDim     = IM_COL32(140, 135, 120, 255);
+      ImU32 qlGold    = IM_COL32(255, 210, 50, 255);
+      ImU32 qlGreen   = IM_COL32(80, 220, 80, 255);
+      ImU32 qlSep     = IM_COL32(50, 45, 35, 120);
+      ImU32 qlRowHov  = IM_COL32(40, 35, 25, 200);
+      ImU32 qlPurple  = IM_COL32(180, 140, 255, 255);
+      ImU32 qlRed     = IM_COL32(220, 80, 80, 255);
+
+      static int qlSelectedQuest = -1; // -1 = list view
+
+      float panelW = 340.0f;
+
+      // Quest status: 0=locked, 1=available, 2=in progress, 3=complete, 4=done
+      auto qlStatus = [&](int qi) -> int {
+        if (qi < g_questIndex) return 4; // already completed
+        if (qi > g_questIndex) return 0; // locked
+        // Current quest
+        const auto &q = g_questDefs[qi];
+        if (q.questType == 1) return 2; // travel quest = always in progress
+        // Kill quest: check if accepted (server sends targets when accepted)
+        if (g_questTargetCount == 0) return 1; // not accepted yet
+        bool allDone = true;
+        for (int i = 0; i < g_questTargetCount; i++)
+          if (g_questKillCount[i] < g_questRequired[i]) { allDone = false; break; }
+        return allDone ? 3 : 2;
+      };
+
+      // Collect active quests (status 2=in progress, 3=ready to turn in)
+      int activeQuests[QUEST_COUNT];
+      int activeCount = 0;
+      for (int qi = 0; qi < QUEST_COUNT; qi++) {
+        int st = qlStatus(qi);
+        if (st == 2 || st == 3)
+          activeQuests[activeCount++] = qi;
+      }
+
+      // Reset selected if it's no longer active
+      if (qlSelectedQuest >= 0) {
+        int st = qlStatus(qlSelectedQuest);
+        if (st != 2 && st != 3) qlSelectedQuest = -1;
+      }
+
+      // Right side positioning
+      float px = dispSz.x - panelW - 20.0f;
+
+      if (qlSelectedQuest >= 0 && qlSelectedQuest < QUEST_COUNT) {
+        // ── QUEST DETAIL VIEW ──
+        const auto &q = g_questDefs[qlSelectedQuest];
+        int st = qlStatus(qlSelectedQuest);
+
+        ImVec2 loreSize = ImGui::CalcTextSize(q.loreText);
+        bool isTravel = (q.questType == 1);
+        float objH = isTravel ? 18.0f : q.targetCount * 18.0f;
+        int qlWeaponCount = 0;
+        if (!isTravel) {
+          if (q.dkReward.defIndex >= 0) qlWeaponCount++;
+          if (q.dwReward.defIndex >= 0) qlWeaponCount++;
+        }
+        float qlWeaponH = qlWeaponCount > 0 ? (qlWeaponCount * 48.0f + 4.0f) : 0;
+        float rewardsH = 10 + 18 + 18 + 18 + qlWeaponH;
+        // Guard name subtitle
+        float qlSubtitleH = ImGui::CalcTextSize(GetGuardName(q.guardType)).y + 4;
+        float hintH = (st == 3 || isTravel) ? 24.0f : 6.0f;
+        float abandonH = (st == 2 && !isTravel) ? 34.0f : 0.0f;
+        float panelH = 12 + 20 + 6 + qlSubtitleH + 1 + 10 + loreSize.y + 10 + 18 + objH +
+                       rewardsH + hintH + abandonH + 26 + 12 + 14;
+        float py = (dispSz.y - panelH) * 0.5f;
+        g_qlPanelRect[0] = px; g_qlPanelRect[1] = py;
+        g_qlPanelRect[2] = panelW; g_qlPanelRect[3] = panelH;
+
+        ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBg, 4.0f);
+        ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBorder, 4.0f, 0, 1.0f);
+
+        float cy = py + 12;
+        {
+          ImVec2 ts = ImGui::CalcTextSize(q.questName);
+          ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle, q.questName);
+          cy += ts.y + 6;
+        }
+
+        // Guard name
+        const char *guardName = GetGuardName(q.guardType);
+        {
+          ImVec2 gs = ImGui::CalcTextSize(guardName);
+          ql->AddText(ImVec2(px + (panelW - gs.x) * 0.5f, cy), qlDim, guardName);
+          cy += gs.y + 4;
+        }
+
+        ql->AddLine(ImVec2(px + 16, cy), ImVec2(px + panelW - 16, cy), qlSep);
+        cy += 10;
+
+        ql->AddText(ImVec2(px + 18, cy), qlText, q.loreText);
+        cy += loreSize.y + 10;
+
+        // Objectives
+        ql->AddText(ImVec2(px + 18, cy), qlDim, "Objective");
+        cy += 18;
+
+        if (isTravel) {
+          char objBuf[80];
+          snprintf(objBuf, sizeof(objBuf), "  Report to %s", GetGuardName(q.guardType));
+          ql->AddText(ImVec2(px + 20, cy), qlText, objBuf);
+          cy += 18;
+        } else {
+          for (int i = 0; i < q.targetCount; i++) {
+            char objBuf[80];
+            snprintf(objBuf, sizeof(objBuf), "  %s  %d / %d",
+                     q.targets[i].name, g_questKillCount[i], (int)q.targets[i].killsReq);
+            bool done = g_questKillCount[i] >= q.targets[i].killsReq;
+            ql->AddText(ImVec2(px + 20, cy), done ? qlGreen : qlText, objBuf);
+            cy += 18;
+          }
+        }
+
+        // Rewards
+        cy += 4;
+        ql->AddLine(ImVec2(px + 16, cy), ImVec2(px + panelW - 16, cy), qlSep);
+        cy += 6;
+        ql->AddText(ImVec2(px + 18, cy), qlDim, "Rewards");
+        cy += 18;
+        {
+          std::string zenStr = std::to_string(q.zenReward);
+          int n = (int)zenStr.length() - 3;
+          while (n > 0) { zenStr.insert(n, ","); n -= 3; }
+          char rwBuf[64];
+          snprintf(rwBuf, sizeof(rwBuf), "  %s Zen", zenStr.c_str());
+          ql->AddText(ImVec2(px + 20, cy), qlGold, rwBuf);
+          cy += 18;
+          std::string xpStr = std::to_string(q.xpReward);
+          n = (int)xpStr.length() - 3;
+          while (n > 0) { xpStr.insert(n, ","); n -= 3; }
+          snprintf(rwBuf, sizeof(rwBuf), "  %s Experience", xpStr.c_str());
+          ql->AddText(ImVec2(px + 20, cy), qlPurple, rwBuf);
+          cy += 18;
+        }
+
+        // Item reward 3D models
+        if (!isTravel) {
+          cy += 4;
+          float h1 = DrawQuestRewardItem(ql, px, cy, panelW,
+                                         q.dkReward, "Dark Knight");
+          cy += h1;
+          float h2 = DrawQuestRewardItem(ql, px, cy, panelW,
+                                         q.dwReward, "Dark Wizard");
+          cy += h2;
+          float h3 = DrawQuestRewardItem(ql, px, cy, panelW,
+                                         q.orbReward, "DK Skill Orb");
+          cy += h3;
+          float h4 = DrawQuestRewardItem(ql, px, cy, panelW,
+                                         q.scrollReward, "DW Spell Scroll");
+          cy += h4;
+        }
+
+        // Status hint
+        cy += 6;
+        if (isTravel)
+          ql->AddText(ImVec2(px + 18, cy), qlGold, "Travel to the next guard.");
+        else if (st == 3)
+          ql->AddText(ImVec2(px + 18, cy), qlGold, "Return to complete this quest.");
+
+        // Buttons row: Back + Abandon (if kill quest in progress)
+        float btnY2 = py + panelH - 26 - 12;
+        float bh = 26;
+        if (st == 2 && !isTravel) {
+          // Two buttons: Back and Abandon
+          float bw = 80;
+          float gap = 16.0f;
+          float totalW = bw * 2 + gap;
+          float bx1 = px + (panelW - totalW) * 0.5f;
+          float bx2 = bx1 + bw + gap;
+
+          // Back button
+          {
+            ImVec2 bMin(bx1, btnY2), bMax(bx1 + bw, btnY2 + bh);
+            bool hov = mPos.x >= bMin.x && mPos.x <= bMax.x &&
+                       mPos.y >= bMin.y && mPos.y <= bMax.y;
+            ql->AddRectFilled(bMin, bMax,
+                              hov ? IM_COL32(45, 40, 28, 230) : IM_COL32(25, 22, 16, 230), 3.0f);
+            ql->AddRect(bMin, bMax, qlBorder, 3.0f, 0, 1.0f);
+            ImVec2 ls = ImGui::CalcTextSize("Back");
+            ql->AddText(ImVec2(bx1 + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f), qlDim, "Back");
+            if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+              SoundManager::Play(SOUND_CLICK01);
+              qlSelectedQuest = -1;
+            }
+          }
+
+          // Abandon button
+          {
+            ImVec2 bMin(bx2, btnY2), bMax(bx2 + bw, btnY2 + bh);
+            bool hov = mPos.x >= bMin.x && mPos.x <= bMax.x &&
+                       mPos.y >= bMin.y && mPos.y <= bMax.y;
+            ql->AddRectFilled(bMin, bMax,
+                              hov ? IM_COL32(80, 25, 25, 230) : IM_COL32(45, 15, 15, 230), 3.0f);
+            ql->AddRect(bMin, bMax, hov ? qlRed : IM_COL32(120, 50, 50, 180), 3.0f, 0, 1.0f);
+            ImVec2 ls = ImGui::CalcTextSize("Abandon");
+            ql->AddText(ImVec2(bx2 + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f),
+                        hov ? qlRed : IM_COL32(180, 100, 100, 255), "Abandon");
+            if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+              SoundManager::Play(SOUND_CLICK01);
+              g_server.SendQuestAbandon();
+              qlSelectedQuest = -1;
+            }
+          }
+        } else {
+          // Single Back button
+          float bw = 80;
+          float bx = px + (panelW - bw) * 0.5f;
+          ImVec2 bMin(bx, btnY2), bMax(bx + bw, btnY2 + bh);
+          bool hov = mPos.x >= bMin.x && mPos.x <= bMax.x &&
+                     mPos.y >= bMin.y && mPos.y <= bMax.y;
+          ql->AddRectFilled(bMin, bMax,
+                            hov ? IM_COL32(45, 40, 28, 230) : IM_COL32(25, 22, 16, 230), 3.0f);
+          ql->AddRect(bMin, bMax, qlBorder, 3.0f, 0, 1.0f);
+          ImVec2 ls = ImGui::CalcTextSize("Back");
+          ql->AddText(ImVec2(bx + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f), qlDim, "Back");
+          if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            SoundManager::Play(SOUND_CLICK01);
+            qlSelectedQuest = -1;
+          }
+        }
+      } else {
+        // ── QUEST LIST VIEW — only active quests ──
+        float rowH = 32.0f;
+
+        if (activeCount == 0) {
+          // No active quests
+          float panelH = 80.0f;
+          float py = (dispSz.y - panelH) * 0.5f;
+          g_qlPanelRect[0] = px; g_qlPanelRect[1] = py;
+          g_qlPanelRect[2] = panelW; g_qlPanelRect[3] = panelH;
+          ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBg, 4.0f);
+          ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBorder, 4.0f, 0, 1.0f);
+          float cy = py + 12;
+          {
+            const char *title = "Quest Log";
+            ImVec2 ts = ImGui::CalcTextSize(title);
+            ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle, title);
+            cy += ts.y + 6;
+          }
+          ql->AddLine(ImVec2(px + 14, cy), ImVec2(px + panelW - 14, cy), qlSep);
+          cy += 12;
+          const char *msg = "No active quests.";
+          ImVec2 ms = ImGui::CalcTextSize(msg);
+          ql->AddText(ImVec2(px + (panelW - ms.x) * 0.5f, cy), qlDim, msg);
+        } else {
+          float listH = activeCount * rowH + 8;
+          float panelH = 40 + listH + 12;
+          float py = (dispSz.y - panelH) * 0.5f;
+          g_qlPanelRect[0] = px; g_qlPanelRect[1] = py;
+          g_qlPanelRect[2] = panelW; g_qlPanelRect[3] = panelH;
+
+          ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBg, 4.0f);
+          ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBorder, 4.0f, 0, 1.0f);
+
+          float cy = py + 12;
+          {
+            const char *title = "Quest Log";
+            ImVec2 ts = ImGui::CalcTextSize(title);
+            ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle, title);
+            cy += ts.y + 6;
+          }
+          ql->AddLine(ImVec2(px + 14, cy), ImVec2(px + panelW - 14, cy), qlSep);
+          cy += 8;
+
+          for (int a = 0; a < activeCount; a++) {
+            int qi = activeQuests[a];
+            const auto &q = g_questDefs[qi];
+            int st = qlStatus(qi);
+
+            float rowY = cy;
+            float rowX = px + 10;
+            float rowW = panelW - 20;
+            ImVec2 rMin(rowX, rowY), rMax(rowX + rowW, rowY + rowH);
+
+            bool hov = mPos.x >= rMin.x && mPos.x <= rMax.x &&
+                       mPos.y >= rMin.y && mPos.y <= rMax.y;
+            if (hov)
+              ql->AddRectFilled(rMin, rMax, qlRowHov, 2.0f);
+
+            const char *icon;
+            ImU32 iconCol, nameCol;
+            bool isTravel = (q.questType == 1);
+            if (st == 3) {
+              icon = "?"; iconCol = qlGold; nameCol = IM_COL32(230, 210, 140, 255);
+            } else if (isTravel) {
+              icon = ">"; iconCol = qlGold; nameCol = IM_COL32(230, 210, 140, 255);
+            } else {
+              icon = "..."; iconCol = qlDim; nameCol = qlText;
+            }
+
+            float textY = rowY + (rowH - ImGui::GetFontSize()) * 0.5f;
+            ql->AddText(ImVec2(rowX + 6, textY), iconCol, icon);
+            ql->AddText(ImVec2(rowX + 26, textY), nameCol, q.questName);
+
+            // Progress on right
+            if (st == 3) {
+              const char *done = "Complete";
+              ImVec2 dSz = ImGui::CalcTextSize(done);
+              ql->AddText(ImVec2(rowX + rowW - dSz.x - 6, textY), qlGold, done);
+            } else if (isTravel) {
+              const char *trav = "Travel";
+              ImVec2 tSz = ImGui::CalcTextSize(trav);
+              ql->AddText(ImVec2(rowX + rowW - tSz.x - 6, textY), qlDim, trav);
+            } else {
+              // Show first incomplete target progress
+              for (int i = 0; i < q.targetCount; i++) {
+                if (g_questKillCount[i] < q.targets[i].killsReq) {
+                  char prog[16];
+                  snprintf(prog, sizeof(prog), "%d/%d", g_questKillCount[i], (int)q.targets[i].killsReq);
+                  ImVec2 pSz = ImGui::CalcTextSize(prog);
+                  ql->AddText(ImVec2(rowX + rowW - pSz.x - 6, textY), qlDim, prog);
+                  break;
+                }
+              }
+            }
+
+            ql->AddLine(ImVec2(rowX, rowY + rowH - 1), ImVec2(rowX + rowW, rowY + rowH - 1), qlSep);
+
+            if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+              SoundManager::Play(SOUND_CLICK01);
+              qlSelectedQuest = qi;
+            }
+
+            cy += rowH;
+          }
+        }
+      }
     }
 
     // ── Character Info and Inventory panels ──
@@ -1822,6 +3287,14 @@ int main(int argc, char **argv) {
         InputHandler::ResetGameReady();
         g_gameState = GameState::CHAR_SELECT;
         g_worldInitialized = false;
+        // Reset all state to prevent bleed-through between characters
+        serverData.equipment.clear();
+        serverData.npcs.clear();
+        serverData.monsters.clear();
+        g_monsterManager.ClearMonsters();
+        g_npcManager.ClearSpawnedNpcs();
+        serverData.hasSpawnPos = false;
+        ClientPacketHandler::ResetForCharSwitch();
         // Re-init character select scene
         CharacterSelect::Context csCtx;
         csCtx.server = &g_server;
@@ -1855,6 +3328,92 @@ int main(int argc, char **argv) {
       }
     }
 
+    // ── Command Terminal ──
+    {
+      static bool prevTerminalOpen = false;
+      if (g_showCommandTerminal && !prevTerminalOpen) {
+        g_commandFocusNeeded = true; // grab keyboard focus on open
+      }
+      prevTerminalOpen = g_showCommandTerminal;
+    }
+    if (g_showCommandTerminal) {
+      ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+      float termW = 400.0f, termH = 32.0f;
+      float termX = (dispSize.x - termW) * 0.5f;
+      float termY = dispSize.y - 110.0f;
+
+      ImGui::SetNextWindowPos(ImVec2(termX, termY));
+      ImGui::SetNextWindowSize(ImVec2(termW, termH));
+      ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.75f));
+      ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.47f, 0.39f, 0.24f, 1.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 4));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 3.0f);
+      ImGui::Begin("##CommandTerminal",
+                   nullptr,
+                   ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                       ImGuiWindowFlags_NoCollapse);
+
+      ImGui::PushItemWidth(termW - 12.0f);
+      if (g_commandFocusNeeded) {
+        ImGui::SetKeyboardFocusHere();
+        g_commandFocusNeeded = false;
+      }
+      bool submitted = ImGui::InputText(
+          "##cmd", g_commandBuffer, sizeof(g_commandBuffer),
+          ImGuiInputTextFlags_EnterReturnsTrue);
+      ImGui::PopItemWidth();
+
+      if (submitted && g_commandBuffer[0] != '\0') {
+        std::string cmd(g_commandBuffer);
+        std::string cmdLower = cmd;
+        for (auto &c : cmdLower) c = (char)std::tolower((unsigned char)c);
+
+        if (cmdLower.find("/warp ") == 0 || cmdLower.find("/move ") == 0) {
+          std::string arg = cmdLower.substr(cmdLower.find(' ') + 1);
+          while (!arg.empty() && arg[0] == ' ') arg.erase(arg.begin());
+
+          uint8_t mapId = 255;
+          uint8_t sx = 0, sy = 0;
+          if (arg == "lorencia" || arg == "0") {
+            mapId = 0; sx = 125; sy = 125;
+          } else if (arg == "dungeon" || arg == "dungeon 1" || arg == "1") {
+            mapId = 1; sx = 108; sy = 247;
+          } else if (arg == "dungeon 2" || arg == "dungeon2") {
+            mapId = 1; sx = 231; sy = 126;
+          } else if (arg == "dungeon 3" || arg == "dungeon3") {
+            mapId = 1; sx = 233; sy = 23;
+          }
+
+          if (mapId != 255) {
+            g_server.SendWarpCommand(mapId, sx, sy);
+            SystemMessageLog::Log(MSG_SYSTEM, IM_COL32(100, 255, 100, 255),
+                                  "Warping to %s...", arg.c_str());
+          } else {
+            SystemMessageLog::Log(MSG_SYSTEM, IM_COL32(255, 100, 100, 255),
+                                  "Unknown map: %s", arg.c_str());
+          }
+        } else {
+          SystemMessageLog::Log(MSG_SYSTEM, IM_COL32(255, 200, 100, 255),
+                                "Unknown command: %s", cmd.c_str());
+        }
+        g_commandBuffer[0] = '\0';
+        g_showCommandTerminal = false;
+      }
+      if (submitted && g_commandBuffer[0] == '\0') {
+        // Empty submit = close terminal
+        g_showCommandTerminal = false;
+      }
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        g_commandBuffer[0] = '\0';
+        g_showCommandTerminal = false;
+      }
+
+      ImGui::End();
+      ImGui::PopStyleVar(2);
+      ImGui::PopStyleColor(2);
+    }
+
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -1872,7 +3431,7 @@ int main(int argc, char **argv) {
         int pw = (int)(job.w * scaleX);
         int ph = (int)(job.h * scaleY);
         ItemModelManager::RenderItemUI(job.modelFile, job.defIndex, px, py, pw,
-                                       ph, job.hovered);
+                                       ph, job.hovered, job.itemLevel);
       }
     }
 
@@ -1978,6 +3537,43 @@ int main(int argc, char **argv) {
     if (autoDiag || autoScreenshot || autoGif)
       diagFrame++;
 
+    // Update mouseOverUIPanel flag for cursor/hover gating in InputHandler
+    {
+      ImVec2 mp = ImGui::GetIO().MousePos;
+      float mx = mp.x, my = mp.y;
+      bool over = false;
+      if (g_showGameMenu || g_showCommandTerminal) {
+        over = true; // full-screen overlay or terminal open
+      } else {
+        // InventoryUI panels (char info, inventory, shop)
+        if (g_showCharInfo && InventoryUI::IsPointInPanel(mx, my, InventoryUI::GetCharInfoPanelX()))
+          over = true;
+        if (g_showInventory && InventoryUI::IsPointInPanel(mx, my, InventoryUI::GetInventoryPanelX()))
+          over = true;
+        if (g_shopOpen && InventoryUI::IsPointInPanel(mx, my, InventoryUI::GetShopPanelX()))
+          over = true;
+        // Skill window (centered, roughly 500x400)
+        if (g_showSkillWindow) {
+          float sw = 492.0f, sh = 400.0f; // approximate
+          float sx = (1270.0f - sw) * 0.5f, sy = (720.0f - sh) * 0.5f;
+          if (mx >= sx && mx < sx + sw && my >= sy && my < sy + sh) over = true;
+        }
+        // Quest dialog
+        if (g_questDialogOpen && g_qdPanelRect[2] > 0) {
+          if (mx >= g_qdPanelRect[0] && mx < g_qdPanelRect[0] + g_qdPanelRect[2] &&
+              my >= g_qdPanelRect[1] && my < g_qdPanelRect[1] + g_qdPanelRect[3])
+            over = true;
+        }
+        // Quest log
+        if (g_showQuestLog && g_qlPanelRect[2] > 0) {
+          if (mx >= g_qlPanelRect[0] && mx < g_qlPanelRect[0] + g_qlPanelRect[2] &&
+              my >= g_qlPanelRect[1] && my < g_qlPanelRect[1] + g_qlPanelRect[3])
+            over = true;
+        }
+      }
+      g_mouseOverUIPanel = over;
+    }
+
     // Per-frame GL error check (only first 10 frames to avoid log spam)
     {
       static int frameNum = 0;
@@ -2051,8 +3647,36 @@ static void InitGameWorld(ServerData &serverData) {
     g_npcManager.Init(data_path);
   }
 
+  // Reset hero equipment before applying new character's equipment
+  {
+    WeaponEquipInfo emptyWeapon;
+    emptyWeapon.category = 0xFF;
+    g_hero.EquipWeapon(emptyWeapon);
+    g_hero.EquipShield(emptyWeapon);
+    g_hero.UnequipPet();
+    g_hero.UnequipMount();
+    for (int bp = 0; bp < 5; bp++)
+      g_hero.EquipBodyPart(bp, ""); // revert to default naked body
+  }
+  // Reset equipment UI slots
+  for (int i = 0; i < 12; i++) {
+    g_equipSlots[i] = {};
+    g_equipSlots[i].category = 0xFF;
+  }
+
   // Equip weapon + shield + armor + pet from server equipment data (DB-driven)
   for (auto &eq : serverData.equipment) {
+    // Re-populate UI slots (they were reset above, need server data restored)
+    if (eq.slot < 12 && eq.info.category != 0xFF) {
+      g_equipSlots[eq.slot].category = eq.info.category;
+      g_equipSlots[eq.slot].itemIndex = eq.info.itemIndex;
+      g_equipSlots[eq.slot].itemLevel = eq.info.itemLevel;
+      int16_t defIdx = (int16_t)eq.info.category * 32 + (int16_t)eq.info.itemIndex;
+      const char *clientModel = ItemDatabase::GetDropModelName(defIdx);
+      g_equipSlots[eq.slot].modelFile =
+          (clientModel && clientModel[0]) ? clientModel : eq.info.modelFile;
+      g_equipSlots[eq.slot].equipped = true;
+    }
     if (eq.slot == 0) {
       g_hero.EquipWeapon(eq.info);
     } else if (eq.slot == 1) {
@@ -2067,7 +3691,7 @@ static void InitGameWorld(ServerData &serverData) {
       std::string partModel = ItemDatabase::GetBodyPartModelFile(
           eq.info.category, eq.info.itemIndex);
       if (!partModel.empty())
-        g_hero.EquipBodyPart(bodyPart, partModel);
+        g_hero.EquipBodyPart(bodyPart, partModel, eq.info.itemLevel, eq.info.itemIndex);
     }
     std::cout << "[Equip] Slot " << (int)eq.slot << ": " << eq.info.modelFile
               << " cat=" << (int)eq.info.category << std::endl;
@@ -2077,7 +3701,8 @@ static void InitGameWorld(ServerData &serverData) {
   // Stop char select music — actual game music chosen after spawn position is known
   SoundManager::StopMusic();
   // Show region name (Main 5.2: CUIMapName on map enter)
-  InventoryUI::ShowRegionName("Lorencia");
+  // Note: if char is on dungeon map, ChangeMap() will override this with "Dungeon"
+  InventoryUI::ShowRegionName(g_currentMapId == 0 ? "Lorencia" : "Dungeon");
   g_npcManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
   g_npcManager.SetVFXManager(&g_vfxManager);
   InventoryUI::RecalcEquipmentStats();
@@ -2153,7 +3778,7 @@ static void InitGameWorld(ServerData &serverData) {
   }
   g_camera.SetPosition(g_hero.GetPosition());
 
-  // Choose music based on spawn position terrain attribute
+  // Choose music based on spawn position terrain attribute (Lorencia initial load)
   {
     glm::vec3 heroPos = g_hero.GetPosition();
     const int S = TerrainParser::TERRAIN_SIZE;
@@ -2162,10 +3787,14 @@ static void InitGameWorld(ServerData &serverData) {
     bool inSafeZone = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
                       (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x01) != 0;
     g_hero.SetInSafeZone(inSafeZone);
-    if (inSafeZone) {
-      SoundManager::PlayMusic(g_dataPath + "/Music/MuTheme.mp3");
-    } else {
-      SoundManager::PlayLoop(SOUND_WIND01);
+    // Only start Lorencia-specific sounds on initial load (map 0)
+    // ChangeMap handles per-map sound setup for warps
+    if (g_currentMapId == 0) {
+      if (inSafeZone) {
+        SoundManager::PlayMusic(g_dataPath + "/Music/MuTheme.mp3");
+      } else {
+        SoundManager::PlayLoop(SOUND_WIND01);
+      }
     }
   }
 
@@ -2185,4 +3814,289 @@ static void InitGameWorld(ServerData &serverData) {
   }
 
   std::cout << "[World] Game world initialized" << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ChangeMap — called when server sends MAP_CHANGE packet (0x1C)
+// Reloads terrain, objects, grass, fire, lights for the new map.
+// ═══════════════════════════════════════════════════════════════════
+
+static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY) {
+  std::string data_path = g_dataPath;
+  int fileWorldId = mapId + 1; // map 0 → World1, map 1 → World2
+
+  std::cout << "[ChangeMap] Transitioning to map " << (int)mapId
+            << " (World" << fileWorldId << ") spawn=("
+            << (int)spawnX << "," << (int)spawnY << ")" << std::endl;
+
+  // Stop hero movement
+  g_hero.StopMoving();
+
+  // ── Phase 1: Cleanup old world data ──
+  g_monsterManager.ClearMonsters();
+  g_npcManager.ClearSpawnedNpcs();
+  g_fireEffect.ClearEmitters();
+  // Deactivate all ground items
+  for (int i = 0; i < MAX_GROUND_ITEMS; i++)
+    g_groundItems[i].active = false;
+
+  // Cleanup renderers (frees GL resources)
+  g_objectRenderer.Cleanup();
+  g_grass.Cleanup();
+
+  // ── Phase 2: Load new terrain ──
+  auto newTerrain = std::make_unique<TerrainData>(
+      TerrainParser::LoadWorld(fileWorldId, data_path));
+
+  // Bridge reconstruction for Lorencia (map 0)
+  if (mapId == 0) {
+    const int S = TerrainParser::TERRAIN_SIZE;
+    if ((int)newTerrain->mapping.attributes.size() >= S * S &&
+        (int)newTerrain->mapping.layer1.size() >= S * S) {
+      for (const auto &obj : newTerrain->objects) {
+        if (obj.type != 80) continue;
+        int gz = (int)(obj.position.x / 100.0f);
+        int gx = (int)(obj.position.z / 100.0f);
+        float angZ = std::abs(std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
+        bool spanAlongGZ = (std::abs(angZ - 90.0f) < 45.0f);
+        int rGZ = spanAlongGZ ? 4 : 2;
+        int rGX = spanAlongGZ ? 2 : 4;
+        for (int dz = -rGZ; dz <= rGZ; ++dz)
+          for (int dx = -rGX; dx <= rGX; ++dx) {
+            int cz = gz + dz, cx = gx + dx;
+            if (cz >= 0 && cz < S && cx >= 0 && cx < S)
+              newTerrain->mapping.attributes[cz * S + cx] |= 0x08;
+          }
+      }
+      // Expand to adjacent water cells
+      std::vector<uint8_t> expanded = newTerrain->mapping.attributes;
+      for (int z = 0; z < S; ++z)
+        for (int x = 0; x < S; ++x) {
+          if (!(newTerrain->mapping.attributes[z * S + x] & 0x08)) continue;
+          for (int dz = -1; dz <= 1; ++dz)
+            for (int dx = -1; dx <= 1; ++dx) {
+              int nz = z + dz, nx = x + dx;
+              if (nz >= 0 && nz < S && nx >= 0 && nx < S)
+                if (newTerrain->mapping.layer1[nz * S + nx] == 5)
+                  expanded[nz * S + nx] |= 0x08;
+            }
+        }
+      newTerrain->mapping.attributes = expanded;
+    }
+  }
+
+  // Swap terrain data (old data freed when unique_ptr is reassigned)
+  g_terrainDataOwned = std::move(newTerrain);
+  g_terrainDataPtr = g_terrainDataOwned.get();
+
+  // ── Phase 3: Reload terrain renderer ──
+  g_terrain.Load(*g_terrainDataPtr, fileWorldId, data_path);
+
+  // ── Phase 4: Reload objects ──
+  g_objectRenderer.Init();
+  g_objectRenderer.SetMapId(mapId);
+  g_objectRenderer.SetTerrainLightmap(g_terrainDataPtr->lightmap);
+  g_objectRenderer.SetTerrainMapping(&g_terrainDataPtr->mapping);
+  g_objectRenderer.SetTerrainHeightmap(g_terrainDataPtr->heightmap);
+
+  if (mapId == 0) {
+    // Lorencia: named object mapping (Object1/)
+    std::string object1_path = data_path + "/Object1";
+    g_objectRenderer.LoadObjects(g_terrainDataPtr->objects, object1_path);
+  } else {
+    // Dungeon and other maps: generic ObjectXX.bmd naming with Lorencia fallback
+    std::string objectN_path = data_path + "/Object" + std::to_string(fileWorldId);
+    std::string object1_path = data_path + "/Object1";
+    g_objectRenderer.LoadObjectsGeneric(g_terrainDataPtr->objects, objectN_path,
+                                        object1_path);
+  }
+
+  // ── Phase 5: Reload grass (Lorencia only — no grass underground) ──
+  g_grass.Init();
+  if (mapId == 0) {
+    auto occGrid = BuildObjectOccupancy(g_objectRenderer.GetInstances());
+    g_grass.Load(*g_terrainDataPtr, fileWorldId, data_path, &occGrid);
+    g_grass.SetLuminosity(g_luminosity);
+  }
+
+  // ── Phase 6: Register fire/smoke emitters from new objects ──
+  for (auto &inst : g_objectRenderer.GetInstances()) {
+    auto &offsets = GetFireOffsets(inst.type);
+    for (auto &off : offsets) {
+      glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+      glm::mat3 rot;
+      for (int c = 0; c < 3; c++)
+        rot[c] = glm::normalize(glm::vec3(inst.modelMatrix[c]));
+      g_fireEffect.AddEmitter(worldPos + rot * off);
+    }
+  }
+  for (auto &inst : g_objectRenderer.GetInstances()) {
+    auto &smokeOffsets = GetSmokeOffsets(inst.type);
+    for (auto &off : smokeOffsets) {
+      glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+      glm::mat3 rot;
+      for (int c = 0; c < 3; c++)
+        rot[c] = glm::normalize(glm::vec3(inst.modelMatrix[c]));
+      g_fireEffect.AddSmokeEmitter(worldPos + rot * off);
+    }
+    if (inst.type == 105) {
+      glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+      g_fireEffect.AddWaterSmokeEmitter(worldPos + glm::vec3(0, 180, 0));
+      g_fireEffect.AddWaterSmokeEmitter(worldPos + glm::vec3(0, 120, 0));
+    }
+  }
+
+  // ── Phase 6b: Dungeon trap VFX emitters (types 39=lance, 51=fire) ──
+  // Main 5.2: HiddenMesh=-2, VFX-only objects
+  if (mapId == 1) {
+    for (auto &inst : g_objectRenderer.GetInstances()) {
+      glm::vec3 trapPos = glm::vec3(inst.modelMatrix[3]);
+      if (inst.type == 39) {
+        // Lance trap: lightning glow base emitter
+        g_fireEffect.AddEmitter(trapPos + glm::vec3(0.0f, 50.0f, 0.0f));
+      } else if (inst.type == 51) {
+        // Fire trap: fire base emitter
+        g_fireEffect.AddEmitter(trapPos + glm::vec3(0.0f, 30.0f, 0.0f));
+      }
+    }
+  }
+
+  // ── Phase 7: Collect point lights ──
+  g_pointLights.clear();
+  for (auto &inst : g_objectRenderer.GetInstances()) {
+    const LightTemplate *props = GetLightProperties(inst.type);
+    if (!props) continue;
+    glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+    PointLight light;
+    light.position = worldPos + glm::vec3(0.0f, props->heightOffset, 0.0f);
+    light.color = props->color;
+    light.range = props->range;
+    light.objectType = inst.type;
+    g_pointLights.push_back(light);
+  }
+  // Terrain CPU lightmap uses all lights (no cap).
+  // Shader-based renderers are capped at MAX_POINT_LIGHTS in their SetPointLights.
+
+  // Push lights to all renderers
+  {
+    std::vector<glm::vec3> lightPos, lightCol;
+    std::vector<float> lightRange;
+    std::vector<int> lightObjTypes;
+    for (auto &pl : g_pointLights) {
+      lightPos.push_back(pl.position);
+      lightCol.push_back(pl.color);
+      lightRange.push_back(pl.range);
+      lightObjTypes.push_back(pl.objectType);
+    }
+    g_objectRenderer.SetPointLights(lightPos, lightCol, lightRange);
+    g_terrain.SetPointLights(lightPos, lightCol, lightRange, lightObjTypes);
+  }
+
+  // ── Phase 8: Re-point subsystems to new terrain data ──
+  g_hero.SetTerrainData(g_terrainDataPtr);
+  g_hero.SetTerrainLightmap(g_terrainDataPtr->lightmap);
+  g_hero.SetPointLights(g_pointLights);
+  g_npcManager.SetTerrainData(g_terrainDataPtr);
+  g_npcManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
+  g_npcManager.SetPointLights(g_pointLights);
+  g_monsterManager.SetTerrainData(g_terrainDataPtr);
+  g_monsterManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
+  g_monsterManager.SetPointLights(g_pointLights);
+  g_boidManager.SetTerrainData(g_terrainDataPtr);
+  g_boidManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
+  g_boidManager.SetPointLights(g_pointLights);
+  g_clickEffect.SetTerrainData(g_terrainDataPtr);
+  RayPicker::Init(g_terrainDataPtr, &g_camera, &g_npcManager, &g_monsterManager,
+                  g_groundItems, MAX_GROUND_ITEMS, &g_objectRenderer);
+
+  // ── Phase 9: Place hero at spawn position ──
+  float heroX = (float)spawnY * 100.0f;
+  float heroZ = (float)spawnX * 100.0f;
+  g_hero.SetPosition(glm::vec3(heroX, 0.0f, heroZ));
+  g_hero.SnapToTerrain();
+  g_camera.SetPosition(g_hero.GetPosition());
+
+  // ── Phase 10: Sound/music transition ──
+  SoundManager::StopAll(); // Stop ambient loops (wind, dungeon)
+  if (mapId == 0) {
+    // Lorencia: wind ambient + town theme if in safe zone
+    SoundManager::PlayLoop(SOUND_WIND01);
+    glm::vec3 hp = g_hero.GetPosition();
+    const int S = TerrainParser::TERRAIN_SIZE;
+    int gz = (int)(hp.x / 100.0f), gx = (int)(hp.z / 100.0f);
+    bool inSafe = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
+                  (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x01) != 0;
+    g_hero.SetInSafeZone(inSafe);
+    if (inSafe)
+      SoundManager::CrossfadeTo(data_path + "/Music/MuTheme.mp3");
+    else
+      SoundManager::CrossfadeTo(data_path + "/Music/main_theme.mp3");
+  } else if (mapId == 1) {
+    // Dungeon: cave ambient + dungeon music
+    SoundManager::PlayLoop(SOUND_DUNGEON01);
+    SoundManager::CrossfadeTo(data_path + "/Music/Dungeon.mp3");
+    // Bat sounds handled dynamically by BoidManager (removed static loops)
+  }
+
+  // Update map state + region name
+  g_currentMapId = mapId;
+  g_boidManager.SetMapId(mapId);
+  g_monsterManager.SetMapId(mapId);
+  g_npcManager.SetMapId(mapId);
+  g_hero.SetMapId(mapId);
+  const char *regionName = (mapId == 0) ? "Lorencia" : "Dungeon";
+  InventoryUI::ShowRegionName(regionName);
+
+  // Per-map atmosphere (Main 5.2 ZzzScene.cpp:2059)
+  // Main 5.2 has fog DISABLED globally — uses glClearColor for distance fade.
+  // We use shader fog as modern equivalent, tinted to match clear color.
+  if (mapId == 1) {
+    // Dungeon: black background, dark fog fading to black
+    g_clearColor = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+    g_objectRenderer.SetFogColor(glm::vec3(0.0f));
+    g_objectRenderer.SetFogRange(800.0f, 2500.0f);
+    g_terrain.SetFogColor(glm::vec3(0.0f));
+    g_terrain.SetFogRange(800.0f, 2500.0f);
+    // Moderate luminosity boost — dungeon lightmap is dark by design,
+    // but shader fog darkens further compared to Main 5.2's fogless rendering
+    g_luminosity = 1.2f;
+  } else {
+    // Lorencia: warm greenish-brown (Main 5.2: 10/256, 20/256, 14/256)
+    g_clearColor = ImVec4(10.0f / 256.0f, 20.0f / 256.0f, 14.0f / 256.0f, 1.0f);
+    g_objectRenderer.SetFogColor(glm::vec3(0.117f, 0.078f, 0.039f));
+    g_objectRenderer.SetFogRange(1500.0f, 3500.0f);
+    g_terrain.SetFogColor(glm::vec3(0.117f, 0.078f, 0.039f));
+    g_terrain.SetFogRange(1500.0f, 3500.0f);
+    g_luminosity = 1.0f;
+  }
+  // Propagate luminosity to all renderers
+  g_terrain.SetLuminosity(g_luminosity);
+  g_objectRenderer.SetLuminosity(g_luminosity);
+  g_hero.SetLuminosity(g_luminosity);
+  g_npcManager.SetLuminosity(g_luminosity);
+  g_monsterManager.SetLuminosity(g_luminosity);
+  g_boidManager.SetLuminosity(g_luminosity);
+  if (mapId == 0) g_grass.SetLuminosity(g_luminosity);
+
+  // Per-map post-processing atmosphere
+  if (g_postProcess.enabled) {
+    if (mapId == 1) {
+      // Dungeon: stronger bloom (fire/magic glow), heavy vignette, cool blue
+      g_postProcess.bloomIntensity = 0.7f;
+      g_postProcess.bloomThreshold = 0.25f;
+      g_postProcess.vignetteStrength = 0.4f;
+      g_postProcess.colorTint = glm::vec3(0.88f, 0.93f, 1.08f); // Cool blue
+    } else {
+      // Lorencia: warm bloom on fires/torches, subtle vignette
+      g_postProcess.bloomIntensity = 0.5f;
+      g_postProcess.bloomThreshold = 0.35f;
+      g_postProcess.vignetteStrength = 0.15f;
+      g_postProcess.colorTint = glm::vec3(1.02f, 1.0f, 0.96f); // Warm
+    }
+  }
+
+  std::cout << "[ChangeMap] Map " << (int)mapId << " loaded: "
+            << g_objectRenderer.GetInstanceCount() << " objects, "
+            << g_pointLights.size() << " lights, "
+            << g_fireEffect.GetEmitterCount() << " fire emitters" << std::endl;
 }

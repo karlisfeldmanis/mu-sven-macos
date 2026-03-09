@@ -24,6 +24,10 @@ public:
     // Save all session data to database (stats, inventory, equipment, position)
     void SaveSession(Session &session);
 
+    // Map transition: warp player to new map
+    void TransitionMap(Session &session, uint8_t newMapId, uint8_t spawnX, uint8_t spawnY);
+    void CheckGateZones(Session &session);
+
 private:
     void AcceptNewClients();
     void ProcessSessions();

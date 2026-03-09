@@ -429,10 +429,7 @@ public:
     ActivateMacOSApp();
     InitImGui(window);
 
-    std::ifstream shaderTest("shaders/model.vert");
-    shader = std::make_unique<Shader>(
-        shaderTest.good() ? "shaders/model.vert" : "../shaders/model.vert",
-        shaderTest.good() ? "shaders/model.frag" : "../shaders/model.frag");
+    shader = Shader::Load("model.vert", "model.frag");
 
     axes.Init();
     debugLines.Init();

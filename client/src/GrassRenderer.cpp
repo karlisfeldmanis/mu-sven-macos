@@ -81,6 +81,7 @@ uniform vec3 viewPos;
 uniform vec3 uFogColor;
 uniform float uFogNear;
 uniform float uFogFar;
+uniform float luminosity;
 
 void main() {
     vec4 color;
@@ -90,12 +91,12 @@ void main() {
 
     if (color.a < 0.25) discard; // Match original glAlphaFunc(GL_GREATER, 0.25)
 
-    vec3 lit = color.rgb * VertColor;
+    vec3 lit = color.rgb * VertColor * luminosity;
 
     // Fog matching terrain shader parameters
     float dist = length(FragPos - viewPos);
     float fogFactor = clamp((uFogFar - dist) / (uFogFar - uFogNear), 0.0, 1.0);
-    lit = mix(uFogColor, lit, fogFactor);
+    lit = mix(uFogColor * luminosity, lit, fogFactor);
 
     // Edge fog (same as terrain)
     float edgeWidth = 2500.0;
@@ -163,6 +164,7 @@ void GrassRenderer::setupShader() {
   u_fogColor = glGetUniformLocation(shaderProgram, "uFogColor");
   u_fogNear = glGetUniformLocation(shaderProgram, "uFogNear");
   u_fogFar = glGetUniformLocation(shaderProgram, "uFogFar");
+  u_luminosity = glGetUniformLocation(shaderProgram, "luminosity");
   u_numPushers = glGetUniformLocation(shaderProgram, "numPushers");
   for (int i = 0; i < 17; ++i) {
     char buf[32];
@@ -177,7 +179,8 @@ void GrassRenderer::setupShader() {
 }
 
 void GrassRenderer::Load(const TerrainData &data, int worldID,
-                          const std::string &dataPath) {
+                          const std::string &dataPath,
+                          const std::vector<bool> *objectOccupancy) {
   const int SIZE = TerrainParser::TERRAIN_SIZE; // 256
 
   // Load grass textures (OZT for alpha, fall back to OZJ)
@@ -245,6 +248,11 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
         }
       }
       if (steep)
+        continue;
+
+      // Skip cells occupied by world objects (buildings, rocks, statues)
+      if (objectOccupancy && idx < (int)objectOccupancy->size() &&
+          (*objectOccupancy)[idx])
         continue;
 
       // Get heightmap at SW and NE corners (diagonal billboard)
@@ -399,6 +407,7 @@ void GrassRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   glUniform3fv(u_fogColor, 1, glm::value_ptr(fogColor));
   glUniform1f(u_fogNear, fogNear);
   glUniform1f(u_fogFar, fogFar);
+  glUniform1f(u_luminosity, m_luminosity);
 
   // Upload push sources (hero + monsters)
   int count = std::min((int)pushSources.size(), 17);

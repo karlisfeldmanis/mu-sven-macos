@@ -106,6 +106,11 @@ static std::unique_ptr<Shader> s_modelShader;
 static std::unique_ptr<Shader> s_shadowShader;
 static std::unique_ptr<Shader> s_outlineShader;
 
+// Chrome/Shiny environment-map textures (Main 5.2 +7/+9/+11 glow)
+static GLuint s_chromeTexture = 0;   // Effect/Chrome01.OZJ
+static GLuint s_chrome2Texture = 0;  // Effect/Chrome02.OZJ
+static GLuint s_shinyTexture = 0;    // Effect/Shiny01.OZJ
+
 static float s_time = 0.0f;
 
 // Point lights collected from light-emitting world objects
@@ -465,6 +470,9 @@ static void RenderFaceToFBO() {
   s_modelShader->setVec2("texCoordOffset", glm::vec2(0.0f));
   s_modelShader->setFloat("outlineOffset", 0.0f);
   s_modelShader->setInt("numPointLights", 0);
+  s_modelShader->setInt("chromeMode", 0);
+  s_modelShader->setVec3("glowColor", glm::vec3(0.0f));
+  s_modelShader->setVec3("baseTint", glm::vec3(1.0f));
 
   glDisable(GL_CULL_FACE);
   for (auto &mb : s_faceMeshes) {
@@ -933,28 +941,28 @@ void Init(const Context &ctx) {
 
   // Load model shader (check shaders/ first, fall back to ../shaders/)
   {
-    std::ifstream shaderTest("shaders/model.vert");
-    std::string sp = shaderTest.good() ? "shaders/" : "../shaders/";
     try {
-      s_modelShader = std::make_unique<Shader>(
-          (sp + "model.vert").c_str(), (sp + "model.frag").c_str());
+      s_modelShader = Shader::Load("model.vert", "model.frag");
       printf("[CharSelect] Model shader loaded\n");
     } catch (...) {
       printf("[CharSelect] WARNING: Failed to load model shader\n");
     }
     try {
-      s_shadowShader = std::make_unique<Shader>(
-          (sp + "shadow.vert").c_str(), (sp + "shadow.frag").c_str());
+      s_shadowShader = Shader::Load("shadow.vert", "shadow.frag");
     } catch (...) {
       printf("[CharSelect] WARNING: Failed to load shadow shader\n");
     }
     try {
-      s_outlineShader = std::make_unique<Shader>(
-          (sp + "outline.vert").c_str(), (sp + "outline.frag").c_str());
+      s_outlineShader = Shader::Load("outline.vert", "outline.frag");
     } catch (...) {
       printf("[CharSelect] WARNING: Failed to load outline shader\n");
     }
   }
+
+  // Load chrome/shiny environment-map textures (Main 5.2 +7/+9/+11 glow)
+  s_chromeTexture = TextureLoader::LoadOZJ(s_ctx.dataPath + "/Effect/Chrome01.OZJ");
+  s_chrome2Texture = TextureLoader::LoadOZJ(s_ctx.dataPath + "/Effect/Chrome02.OZJ");
+  s_shinyTexture = TextureLoader::LoadOZJ(s_ctx.dataPath + "/Effect/Shiny01.OZJ");
 
   // Load Player.bmd skeleton + class body parts (same as main game)
   LoadPlayerModels();
@@ -1247,8 +1255,8 @@ void Render(int windowWidth, int windowHeight) {
             continue;
 
           auto &mesh = bmd->Meshes[mi];
-          std::vector<glm::vec3> shadowVerts;
-          shadowVerts.reserve(sm.vertexCount);
+          static std::vector<glm::vec3> shadowVerts;
+          shadowVerts.clear();
 
           for (int t = 0; t < mesh.NumTriangles; ++t) {
             auto &tri = mesh.Triangles[t];
@@ -1378,19 +1386,13 @@ void Render(int windowWidth, int windowHeight) {
     s_modelShader->setBool("useFog", false);
     s_modelShader->setVec2("texCoordOffset", glm::vec2(0.0f));
     s_modelShader->setFloat("outlineOffset", 0.0f);
+    s_modelShader->setInt("chromeMode", 0);
+    s_modelShader->setVec3("glowColor", glm::vec3(0.0f));
+    s_modelShader->setVec3("baseTint", glm::vec3(1.0f));
 
-    // Set point lights from nearby fire/torch world objects
+    // Set point lights from nearby fire/torch world objects (pre-cached locations)
     int numPL = (int)s_pointLights.size();
-    s_modelShader->setInt("numPointLights", numPL);
-    for (int pli = 0; pli < numPL; ++pli) {
-      std::string idx = std::to_string(pli);
-      s_modelShader->setVec3(("pointLightPos[" + idx + "]").c_str(),
-                              s_pointLights[pli].position);
-      s_modelShader->setVec3(("pointLightColor[" + idx + "]").c_str(),
-                              s_pointLights[pli].color);
-      s_modelShader->setFloat(("pointLightRange[" + idx + "]").c_str(),
-                               s_pointLights[pli].range);
-    }
+    s_modelShader->uploadPointLights(numPL, s_pointLights.data());
 
     for (int i = 0; i < MAX_SLOTS; i++) {
       if (!s_slots[i].occupied)
@@ -1492,6 +1494,96 @@ void Render(int windowWidth, int windowHeight) {
             glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
           }
           mi++;
+        }
+      }
+
+      // ── +7/+9/+11 item glow passes (Main 5.2 RENDER_CHROME|RENDER_BRIGHT) ──
+      // Binds chrome/shiny env-map textures, NOT item diffuse textures
+      {
+        float t = (float)glfwGetTime();
+        bool anyGlow = false;
+        for (int p = 0; p < PART_COUNT; p++) {
+          if (s_slots[i].equip[2 + p].itemLevel >= 7) { anyGlow = true; break; }
+        }
+        if (s_slots[i].equip[0].itemLevel >= 7) anyGlow = true;
+
+        if (anyGlow && s_chromeTexture) {
+          glBlendFunc(GL_ONE, GL_ONE);
+          glDepthMask(GL_FALSE);
+          glDisable(GL_CULL_FACE);
+
+          struct GlowPass { int chromeMode; };
+          auto getGlowPasses = [](uint8_t level, GlowPass *passes) -> int {
+            if (level >= 11) {
+              passes[0] = {2}; passes[1] = {3}; passes[2] = {1};
+              return 3;
+            } else if (level >= 9) {
+              passes[0] = {1}; passes[1] = {3};
+              return 2;
+            } else {
+              passes[0] = {1};
+              return 1;
+            }
+          };
+
+          // Armor body parts glow
+          for (int p = 0; p < PART_COUNT; p++) {
+            uint8_t lvl = s_slots[i].equip[2 + p].itemLevel;
+            if (lvl < 7) continue;
+            // Main 5.2 PartObjectColor: per-item-type glow color
+            glm::vec3 armorGlowColor = GetPartObjectColor(
+                7 + p, s_slots[i].equip[2 + p].itemIndex);
+            GlowPass passes[3];
+            int numPasses = getGlowPasses(lvl, passes);
+            for (int gp = 0; gp < numPasses; ++gp) {
+              s_modelShader->setVec3("glowColor", armorGlowColor);
+              s_modelShader->setInt("chromeMode", passes[gp].chromeMode);
+              s_modelShader->setFloat("chromeTime", t);
+              GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4) ? s_chrome2Texture
+                             : (passes[gp].chromeMode == 3) ? s_shinyTexture
+                             : s_chromeTexture;
+              glBindTexture(GL_TEXTURE_2D, glowTex);
+              for (auto &mb : s_slotRender[i].meshes[p]) {
+                if (mb.indexCount == 0 || mb.hidden) continue;
+                glBindVertexArray(mb.vao);
+                glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
+              }
+            }
+          }
+
+          // Weapon glow (equip[0])
+          uint8_t wlv = s_slots[i].equip[0].itemLevel;
+          if (wlv >= 7) {
+            // Main 5.2 PartObjectColor: per-weapon-type glow color
+            glm::vec3 weaponGlowColor = GetPartObjectColor(
+                s_slots[i].equip[0].category, s_slots[i].equip[0].itemIndex);
+            GlowPass passes[3];
+            int numPasses = getGlowPasses(wlv, passes);
+            float wPassScale = 0.7f / (float)numPasses;
+            int wBlend = s_slotRender[i].weaponBlendMesh;
+            for (int gp = 0; gp < numPasses; ++gp) {
+              s_modelShader->setVec3("glowColor", weaponGlowColor * wPassScale);
+              s_modelShader->setInt("chromeMode", passes[gp].chromeMode);
+              s_modelShader->setFloat("chromeTime", t);
+              GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4) ? s_chrome2Texture
+                             : (passes[gp].chromeMode == 3) ? s_shinyTexture
+                             : s_chromeTexture;
+              glBindTexture(GL_TEXTURE_2D, glowTex);
+              int wmi = 0;
+              for (auto &mb : s_slotRender[i].weaponMeshes) {
+                if (mb.indexCount == 0 || (wBlend >= 0 && wmi == wBlend)) { wmi++; continue; }
+                glBindVertexArray(mb.vao);
+                glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
+                wmi++;
+              }
+            }
+          }
+
+          glEnable(GL_CULL_FACE);
+          glDepthMask(GL_TRUE);
+          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+          s_modelShader->setVec3("glowColor", glm::vec3(0.0f));
+          s_modelShader->setInt("chromeMode", 0);
         }
       }
 
@@ -1747,7 +1839,7 @@ void Render(int windowWidth, int windowHeight) {
     ImGui::SetNextWindowSize(ImVec2(btnW * 2 + btnGap + 20, btnH + 10));
     ImGui::Begin("##CSBtnRight", nullptr, kBtnFlags);
     if (ImGui::Button("Connect", ImVec2(btnW, btnH))) {
-      SoundManager::Play(SOUND_CLICK01);
+      SoundManager::Play(SOUND_MENU01);
       if (s_ctx.server) {
         s_ctx.server->SendCharSelect(s_slots[s_selectedSlot].name);
         if (s_ctx.onCharSelected)
@@ -1794,8 +1886,8 @@ void Render(int windowWidth, int windowHeight) {
     float panelW = 454.0f * uiScale;
     panelW = std::min(panelW, W * 0.85f);
 
-    // Form container: fixed height for name input + description
-    float formH = 70.0f * uiScale;
+    // Form container: description + name input row
+    float formH = 90.0f * uiScale;
 
     // Right-side overlay width (stats + class buttons)
     float statOverlayW = panelW * (130.0f / 454.0f);
@@ -1986,14 +2078,30 @@ void Render(int windowWidth, int windowHeight) {
                  ImVec2(panelX + panelW - 3, formY),
                  IM_COL32(80, 70, 45, 160), 1.0f);
 
-    // ── Name input (form left side) ──
+    // ── Class description (below divider, left side) ──
     {
+      const char *classDescs[] = {
+          "Master of the arcane arts. Wields\npowerful magic fueled by Energy\nto devastate foes from afar.",
+          "A fearless warrior clad in heavy\narmor. Uses Strength and AG to\ndeliver devastating melee strikes.",
+          "A versatile archer and healer.\nSupports allies with healing magic\nand strikes from range.",
+          "Combines swordplay and sorcery.\nDraws on both Strength and Energy\nfor a versatile fighting style."};
+
+      float descY = formY + 6 * uiScale;
+      float descX = panelX + 10 * uiScale;
+      cdl->AddText(ImVec2(descX + 1, descY + 1),
+                   IM_COL32(0, 0, 0, 180), classDescs[classIdx]);
+      cdl->AddText(ImVec2(descX, descY),
+                   IM_COL32(190, 185, 170, 220), classDescs[classIdx]);
+    }
+
+    // ── Name input + Create/Back buttons (bottom row) ──
+    {
+      float rowAbsY = panelY + panelH - 34 * uiScale;
       float nameAbsX = panelX + 10 * uiScale;
-      float nameAbsY = formY + 8 * uiScale;
-      float nameW = panelW * 0.55f;
+      float nameW = panelW * 0.42f;
 
       float nameX = nameAbsX - (panelX - 5);
-      float nameY = nameAbsY - (panelY - 5);
+      float nameY = rowAbsY - (panelY - 5);
 
       ImGui::SetCursorPos(ImVec2(nameX, nameY));
       ImGui::PushStyleColor(ImGuiCol_FrameBg,
@@ -2005,26 +2113,50 @@ void Render(int windowWidth, int windowHeight) {
       ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
       ImGui::SetNextItemWidth(nameW);
       ImGui::InputTextWithHint("##createName",
-                               "Character name (4-10 chars)",
+                               "Character name (4-10)",
                                s_createName, 11);
       ImGui::PopStyleVar();
       ImGui::PopStyleColor(3);
-    }
 
-    // ── OK / Cancel buttons (form right side) ──
-    {
-      float obW = 54.0f * uiScale;
+      // Create Character + Back buttons
+      float createW = 110.0f * uiScale;
+      float backW = 60.0f * uiScale;
       float obH = 26.0f * uiScale;
       float obGap = 6.0f * uiScale;
-
-      float okAbsX = panelX + panelW - obW * 2 - obGap - 8 * uiScale;
-      float okAbsY = formY + 8 * uiScale;
-
-      float okX = okAbsX - (panelX - 5);
-      float okY = okAbsY - (panelY - 5);
+      float createAbsX = panelX + panelW - createW - backW - obGap - 10 * uiScale;
+      float createX = createAbsX - (panelX - 5);
 
       ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
       ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+
+      // Create button (gold accent)
+      ImGui::PushStyleColor(ImGuiCol_Button,
+                            ImVec4(0.14f, 0.12f, 0.06f, 0.92f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                            ImVec4(0.22f, 0.18f, 0.08f, 0.95f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                            ImVec4(0.30f, 0.24f, 0.10f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Border,
+                            ImVec4(0.55f, 0.48f, 0.25f, 0.8f));
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImVec4(1.0f, 0.88f, 0.55f, 1.0f));
+
+      ImGui::SetCursorPos(ImVec2(createX, nameY));
+      if (ImGui::Button("Create Character", ImVec2(createW, obH))) {
+        SoundManager::Play(SOUND_MENU01);
+        int nameLen = (int)strlen(s_createName);
+        if (nameLen >= 4 && nameLen <= 10) {
+          s_ctx.server->SendCharCreate(s_createName, s_createClass);
+        } else {
+          SoundManager::Play(SOUND_ERROR01);
+          snprintf(s_statusMsg, sizeof(s_statusMsg),
+                   "Name must be 4-10 characters");
+          s_statusTimer = 2.0f;
+        }
+      }
+      ImGui::PopStyleColor(5);
+
+      // Back button (neutral)
       ImGui::PushStyleColor(ImGuiCol_Button,
                             ImVec4(0.06f, 0.06f, 0.10f, 0.88f));
       ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
@@ -2036,42 +2168,13 @@ void Render(int windowWidth, int windowHeight) {
       ImGui::PushStyleColor(ImGuiCol_Text,
                             ImVec4(0.86f, 0.84f, 0.78f, 0.94f));
 
-      ImGui::SetCursorPos(ImVec2(okX, okY));
-      if (ImGui::Button("OK##create", ImVec2(obW, obH))) {
-        SoundManager::Play(SOUND_CLICK01);
-        int nameLen = (int)strlen(s_createName);
-        if (nameLen >= 4 && nameLen <= 10) {
-          s_ctx.server->SendCharCreate(s_createName, s_createClass);
-        } else {
-          SoundManager::Play(SOUND_ERROR01);
-          snprintf(s_statusMsg, sizeof(s_statusMsg),
-                   "Name must be 4-10 characters");
-          s_statusTimer = 2.0f;
-        }
-      }
       ImGui::SameLine(0.0f, obGap);
-      if (ImGui::Button("Cancel##create", ImVec2(obW, obH))) {
+      if (ImGui::Button("Back", ImVec2(backW, obH))) {
         SoundManager::Play(SOUND_CLICK01);
         s_createOpen = false;
       }
       ImGui::PopStyleColor(5);
       ImGui::PopStyleVar(2);
-    }
-
-    // ── Description text (bottom of form) ──
-    {
-      const char *classDescs[] = {
-          "The Dark Wizard commands powerful magic with high Energy.",
-          "The Dark Knight excels in close combat with superior Strength.",
-          "The Elf supports allies with healing and strikes from range.",
-          "The Magic Gladiator combines Strength and Energy for versatility."};
-
-      float descY = formY + 36 * uiScale;
-      float descX = panelX + 10 * uiScale;
-      cdl->AddText(ImVec2(descX + 1, descY + 1),
-                   IM_COL32(0, 0, 0, 180), classDescs[classIdx]);
-      cdl->AddText(ImVec2(descX, descY),
-                   IM_COL32(200, 200, 200, 220), classDescs[classIdx]);
     }
 
     ImGui::End();

@@ -27,8 +27,20 @@ static const std::vector<glm::vec3> kBridgeOffsets = {
 static const std::vector<glm::vec3> kLight01Offsets = {
     glm::vec3(0.0f, 0.0f, 0.0f)};
 
+// Dungeon torches (Main 5.2: ZzzObject.cpp case WD_1DUNGEON)
+// Type 41: tall fire stand  — CreateFire(0, o, 0, -30, 240)
+// Type 42: standard lantern — CreateFire(0, o, 0, 0, 190)
+static const std::vector<glm::vec3> kDungeonTorch41Offsets = {
+    glm::vec3(0.0f, -30.0f, 240.0f)};
+static const std::vector<glm::vec3> kDungeonTorch42Offsets = {
+    glm::vec3(0.0f, 0.0f, 190.0f)};
+
 const std::vector<glm::vec3> &GetFireOffsets(int objectType) {
   switch (objectType) {
+  case 41:
+    return kDungeonTorch41Offsets;
+  case 42:
+    return kDungeonTorch42Offsets;
   case 50:
     return kFireLight01Offsets;
   case 51:
@@ -106,17 +118,17 @@ void FireEffect::Init(const std::string &effectDataPath) {
 
   std::cout << "[FireEffect] Loaded fire texture: " << firePath << std::endl;
 
-  // Load water texture (Main 5.2: water mist for fountains)
-  std::string waterPath = effectDataPath + "/water.OZJ";
-  waterTexture = TextureLoader::LoadOZJ(waterPath);
+  // Load smoke texture (Main 5.2: BITMAP_SMOKE = smoke01.jpg for fountain spray)
+  std::string smokePath = effectDataPath + "/smoke01.OZJ";
+  waterTexture = TextureLoader::LoadOZJ(smokePath);
   if (waterTexture == 0) {
-    std::cerr << "[FireEffect] Failed to load water texture: " << waterPath
+    std::cerr << "[FireEffect] Failed to load smoke texture: " << smokePath
               << std::endl;
   } else {
     glBindTexture(GL_TEXTURE_2D, waterTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    std::cout << "[FireEffect] Loaded water texture: " << waterPath
+    std::cout << "[FireEffect] Loaded smoke texture: " << smokePath
               << std::endl;
   }
 
@@ -242,8 +254,8 @@ void FireEffect::Update(float deltaTime) {
 
   // Spawn new particles from emitters
   for (auto &emitter : emitters) {
-    // Smoke spawns slower (Main 5.2: rand()%2 == 50% chance per tick)
-    float rate = emitter.smoke ? 6.0f : SPAWN_RATE;
+    // Main 5.2: smoke = rand()%2 (50% at 25fps = 12.5/sec), water = same rate
+    float rate = emitter.water ? 12.5f : (emitter.smoke ? 6.0f : SPAWN_RATE);
     emitter.spawnAccum += rate * deltaTime;
     while (emitter.spawnAccum >= 1.0f &&
            (int)particles.size() < MAX_PARTICLES) {
@@ -255,24 +267,28 @@ void FireEffect::Update(float deltaTime) {
       p.position.y += RandFloat(-10.0f, 10.0f);
       p.position.z += RandFloat(-10.0f, 10.0f);
 
-      if (emitter.smoke) {
+      if (emitter.water) {
+        // Main 5.2: BITMAP_SMOKE from fountain bones, ±16 spread
+        p.isWater = true;
+        p.position.x += RandFloat(-16.0f, 16.0f);
+        p.position.z += RandFloat(-16.0f, 16.0f);
+        p.velocity = glm::vec3(RandFloat(-5.0f, 5.0f), RandFloat(25.0f, 50.0f),
+                               RandFloat(-5.0f, 5.0f));
+        p.scale = RandFloat(60.0f, 100.0f);
+        p.maxLifetime = 1.2f;
+        p.lifetime = 1.2f;
+        float w = RandFloat(0.7f, 1.0f);
+        p.color = glm::vec3(w, w, w);
+      } else if (emitter.smoke) {
         // Smoke: slower upward, larger, longer life
+        p.isWater = false;
         p.velocity = glm::vec3(RandFloat(-8.0f, 8.0f), RandFloat(20.0f, 45.0f),
                                RandFloat(-8.0f, 8.0f));
         p.scale = RandFloat(80.0f, 140.0f);
         p.maxLifetime = 1.8f;
         p.lifetime = 1.8f;
-        if (emitter.water) {
-          p.isWater = true;
-          // Water mist: white tint
-          float w = RandFloat(0.7f, 1.0f);
-          p.color = glm::vec3(w, w, w);
-        } else {
-          p.isWater = false;
-          // Regular smoke: gray
-          float g = RandFloat(0.3f, 0.5f);
-          p.color = glm::vec3(g, g, g);
-        }
+        float g = RandFloat(0.3f, 0.5f);
+        p.color = glm::vec3(g, g, g);
       } else {
         p.isWater = false;
         // Fire: warm orange, faster upward

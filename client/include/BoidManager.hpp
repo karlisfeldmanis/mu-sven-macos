@@ -41,6 +41,8 @@ struct Boid {
   int subType = 0;      // Bounce counter for despawn
   int lifetime = 0;
   float respawnDelay = 0.0f; // Cooldown before respawn (seconds)
+  float stuckTimer = 0.0f;   // Time spent barely moving (for stuck detection)
+  glm::vec3 prevPosition{0.0f}; // Previous position for stuck detection
 };
 
 // A single ambient fish (Lorencia water tiles)
@@ -90,14 +92,24 @@ public:
     m_pointLights = lights;
   }
   void SetLuminosity(float l) { m_luminosity = l; }
+  void SetMapId(int mapId) {
+    m_mapId = mapId;
+    // Clear all creatures on map change — prevents stale entities
+    for (auto &b : m_boids) { b.live = false; b.respawnDelay = 2.0f; }
+    for (auto &b : m_bats) { b.live = false; b.respawnDelay = 2.0f; }
+    for (auto &f : m_fishs) f.live = false;
+    for (auto &l : m_leaves) l.live = false;
+  }
 
 private:
-  static constexpr int MAX_BOIDS = 2;  // Lorencia bird count (reduced)
+  static constexpr int MAX_BOIDS = 5;  // Lorencia bird count (Main 5.2: GOBoid.cpp)
+  static constexpr int MAX_BATS = 5;   // Dungeon bat count (Main 5.2: GOBoid.cpp)
   static constexpr int MAX_FISHS = 3;  // Lorencia fish count (GOBoid.cpp:1661)
   static constexpr int MAX_LEAVES = 80; // Lorencia leaf count (ZzzEffectFireLeave.cpp)
   static constexpr int MAX_POINT_LIGHTS = 64;
 
   Boid m_boids[MAX_BOIDS];
+  Boid m_bats[MAX_BATS]; // Dungeon bats (reuse Boid struct)
   Fish m_fishs[MAX_FISHS];
   LeafParticle m_leaves[MAX_LEAVES];
 
@@ -105,6 +117,11 @@ private:
   std::unique_ptr<BMDData> m_birdBmd;
   std::vector<MeshBuffers> m_birdMeshes;
   std::vector<BoneWorldMatrix> m_birdBones;
+
+  // Bat model (Main 5.2: MODEL_BAT01 = Object2/Bat01.bmd)
+  std::unique_ptr<BMDData> m_batBmd;
+  std::vector<MeshBuffers> m_batMeshes;
+  std::vector<BoneWorldMatrix> m_batBones;
 
   // Fish model
   std::unique_ptr<BMDData> m_fishBmd;
@@ -117,6 +134,7 @@ private:
     int vertexCount = 0;
   };
   ShadowMesh m_birdShadow;
+  ShadowMesh m_batShadow;
   ShadowMesh m_fishShadow;
 
   std::unique_ptr<Shader> m_shader;
@@ -126,6 +144,7 @@ private:
   std::vector<glm::vec3> m_terrainLightmap;
   std::vector<PointLight> m_pointLights;
   float m_luminosity = 1.0f;
+  int m_mapId = 0; // 0=Lorencia, 1=Dungeon
 
   // World time accumulator (ticks at 25fps equivalent)
   float m_worldTime = 0.0f;
@@ -137,13 +156,16 @@ private:
   uint8_t getTerrainAttribute(float worldX, float worldZ) const;
 
   void updateBoids(float dt, const glm::vec3 &heroPos, int heroAction);
+  void updateBats(float dt, const glm::vec3 &heroPos);
   void updateFishs(float dt, const glm::vec3 &heroPos);
   void moveBird(Boid &b, const glm::vec3 &heroPos, int heroAction);
+  void moveBat(Boid &b, const glm::vec3 &heroPos);
   void moveBoidGroup(Boid &b);
   void moveBoidFlock(Boid &b, int selfIdx);
   void alphaFade(float &alpha, float target, float dt);
 
   void renderBoid(const Boid &b, const glm::mat4 &view, const glm::mat4 &proj);
+  void renderBat(const Boid &b, const glm::mat4 &view, const glm::mat4 &proj);
   void renderFish(const Fish &f, const glm::mat4 &view, const glm::mat4 &proj);
 
   // Falling leaves (Main 5.2: ZzzEffectFireLeave.cpp)

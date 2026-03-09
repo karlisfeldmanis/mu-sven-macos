@@ -1,4 +1,5 @@
 #include "GroundItemRenderer.hpp"
+#include "InventoryUI.hpp"
 #include "ItemDatabase.hpp"
 #include "ItemModelManager.hpp"
 #include "imgui.h"
@@ -295,53 +296,9 @@ void RenderLabels(GroundItem *items, int maxItems, ImDrawList *dl, ImFont *font,
                 label);
     dl->AddText(font, 13.0f, ImVec2(tx, ty), col, label);
 
-    // Hover tooltip
-    ImVec2 mousePos = ImGui::GetIO().MousePos;
-    float hoverRadius = std::max(ts.x * 0.5f + 10.0f, 20.0f);
-    if (std::abs(mousePos.x - sx) < hoverRadius &&
-        std::abs(mousePos.y - sy) < 20.0f) {
-      ImVec2 tPos(mousePos.x + 15, mousePos.y + 10);
-      if (tPos.x + 180 > winW)
-        tPos.x = winW - 185;
-      if (tPos.y + 80 > winH)
-        tPos.y = winH - 85;
-      dl->AddRectFilled(tPos, ImVec2(tPos.x + 180, tPos.y + 80),
-                        IM_COL32(0, 0, 0, 240), 4.0f);
-      dl->AddRect(tPos, ImVec2(tPos.x + 180, tPos.y + 80),
-                  IM_COL32(150, 150, 255, 200), 4.0f);
-      float curY = tPos.y + 8;
-      dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(255, 215, 80, 255), label);
-      curY += 18;
-      if (gi.defIndex != -1) {
-        auto dit = itemDefs.find(gi.defIndex);
-        if (dit != itemDefs.end()) {
-          const auto &dd = dit->second;
-          if (dd.reqStr > 0) {
-            char rb[32];
-            snprintf(rb, sizeof(rb), "STR: %d", dd.reqStr);
-            dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(200, 200, 200, 255),
-                        rb);
-            curY += 14;
-          }
-          if (dd.reqDex > 0) {
-            char rb[32];
-            snprintf(rb, sizeof(rb), "DEX: %d", dd.reqDex);
-            dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(200, 200, 200, 255),
-                        rb);
-            curY += 14;
-          }
-          if (dd.levelReq > 0) {
-            char rb[32];
-            snprintf(rb, sizeof(rb), "Lv: %d", dd.levelReq);
-            dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(200, 200, 200, 255),
-                        rb);
-            curY += 14;
-          }
-        }
-      } else {
-        dl->AddText(ImVec2(tPos.x + 8, curY), IM_COL32(255, 215, 0, 200),
-                    "Click to pick up");
-      }
+    // Hover tooltip — reuse full inventory tooltip system
+    if (isHovered && gi.defIndex != -1) {
+      InventoryUI::AddPendingItemTooltip(gi.defIndex, gi.itemLevel);
     }
   }
 }

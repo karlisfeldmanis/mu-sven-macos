@@ -37,6 +37,7 @@ public:
   void SetFogColor(const glm::vec3 &c) { m_fogColor = c; }
   void SetFogRange(float near_, float far_) { m_fogNear = near_; m_fogFar = far_; }
   void SetTypeFilter(const std::vector<int> &types) { m_typeFilter.assign(types.begin(), types.end()); }
+  void SetMapId(int mapId) { m_mapId = mapId; }
 
   int GetInstanceCount() const { return (int)instances.size(); }
   int GetModelCount() const { return (int)modelCache.size(); }
@@ -69,10 +70,15 @@ private:
     std::vector<BoneWorldMatrix> boneMatrices;
     int blendMeshTexId = -1; // BlendMesh texture ID for window light marking
 
-    // Animation support
+    // CPU animation support (cloth, signs, mechanical)
     bool isAnimated = false;
-    std::unique_ptr<BMDData> bmdData; // retained for re-skinning animated types
+    std::unique_ptr<BMDData> bmdData; // retained for re-skinning / GPU bone compute
     int numAnimationKeys = 0;
+
+    // GPU skeletal animation (trees — too many instances for CPU re-skinning)
+    bool isGPUAnimated = false;
+    std::vector<glm::mat4> gpuBoneMatrices; // Computed each frame, uploaded as uniforms
+
   };
   std::unordered_map<int, ModelCache> modelCache;
 
@@ -99,7 +105,9 @@ private:
   float m_fogNear = 1500.0f;
   float m_fogFar = 3500.0f;
   std::vector<int> m_typeFilter; // If non-empty, only render these types
+  int m_mapId = 0; // 0=Lorencia, 1=Dungeon
   std::vector<InteractiveObject> m_interactiveObjects;
+  GLuint m_chromeTexture = 0; // RENDER_CHROME environment map (Effect/Chrome01.OZJ)
 
   // Bilinear sample terrain lightmap at world position
   glm::vec3 SampleTerrainLight(const glm::vec3 &worldPos) const;
@@ -109,6 +117,10 @@ private:
   void UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
                   const std::vector<BoneWorldMatrix> &bones,
                   std::vector<MeshBuffers> &out, bool dynamic = false);
+
+  // GPU-skinned upload: stores RAW vertex positions + bone indices (no CPU transform)
+  void UploadMeshGPUSkinned(const Mesh_t &mesh, const std::string &baseDir,
+                            std::vector<MeshBuffers> &out);
 
   void RetransformMesh(const Mesh_t &mesh,
                        const std::vector<BoneWorldMatrix> &bones,

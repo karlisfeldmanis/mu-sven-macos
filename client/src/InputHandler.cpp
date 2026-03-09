@@ -3,6 +3,7 @@
 #include "ClickEffect.hpp"
 #include "ClientTypes.hpp"
 #include "SoundManager.hpp"
+#include "SystemMessageLog.hpp"
 #include "HeroCharacter.hpp"
 #include "InventoryUI.hpp"
 #include "MonsterManager.hpp"
@@ -41,6 +42,10 @@ static constexpr float NPC_CLOSE_RANGE = 500.0f; // Auto-close shop beyond this
 
 // Set true after first ProcessInput — prevents callbacks during early init
 static bool s_gameReady = false;
+
+// Skill quickslot toggle state (1-4 keys toggle RMC skill)
+static int8_t s_savedRmcSkillId = -1; // Original RMC before quickslot override
+static int s_activeQuickSlot = -1;    // Which slot (0-3) is active, -1=none
 
 // Main 5.2 custom cursors loaded from OZT files in Data/Interface/
 static GLFWcursor *s_cursorDefault = nullptr;     // Cursor.ozt
@@ -123,7 +128,10 @@ static void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
     return;
 
   // Update NPC, Monster, and Ground Item hover state on cursor move
-  if (!ImGui::GetIO().WantCaptureMouse) {
+  // Block hover picking only when cursor is actually over a UI panel
+  bool mouseOverUI = ImGui::GetIO().WantCaptureMouse ||
+      (s_ctx->mouseOverUIPanel && *s_ctx->mouseOverUIPanel);
+  if (!mouseOverUI) {
     *s_ctx->hoveredNpc = RayPicker::PickNpc(window, xpos, ypos);
     // Also check NPC label hover (only after game is fully initialized)
     if (*s_ctx->hoveredNpc < 0 && s_gameReady) {
@@ -158,17 +166,14 @@ static void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
   // Only use game cursors when in-game; default cursor over UI panels and char select
   if (s_window) {
     GLFWcursor *cursor = s_cursorDefault;
-    bool anyPanelOpen = *s_ctx->showCharInfo || *s_ctx->showInventory ||
-                        *s_ctx->showSkillWindow || *s_ctx->shopOpen;
-    if (s_gameReady && !ImGui::GetIO().WantCaptureMouse &&
-        !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && !anyPanelOpen) {
+    if (s_gameReady && !mouseOverUI) {
       if (*s_ctx->hoveredMonster >= 0) {
         cursor = s_cursorAttack;
       } else if (*s_ctx->hoveredNpc >= 0) {
         cursor = s_cursorTalk;
       } else if (*s_ctx->hoveredGroundItem >= 0) {
         cursor = s_cursorGet;
-      } else {
+      } else if (!s_ctx->hero || !s_ctx->hero->IsMounted()) {
         int interactHit =
             RayPicker::PickInteractiveObject(window, xpos, ypos);
         if (interactHit >= 0 && s_ctx->objectRenderer) {
@@ -193,12 +198,21 @@ static void mouse_callback(GLFWwindow *window, double xpos, double ypos) {
 static void scroll_callback(GLFWwindow *window, double xoffset,
                             double yoffset) {
   ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
+
+  // Chat log scroll: consume scroll if cursor is over the log
+  double mx, my;
+  glfwGetCursorPos(window, &mx, &my);
+  if (SystemMessageLog::HandleScroll((float)mx, (float)my, (float)yoffset))
+    return;
+
   s_ctx->camera->ProcessMouseScroll(yoffset);
 }
 
 static void HandlePickupClick(GLFWwindow *window, double mx, double my) {
-  if (*s_ctx->showInventory || *s_ctx->showCharInfo)
-    return; // UI blocks pickup
+  // Allow pickup with inventory/charInfo open (MU Online allows this)
+  // Only block if currently dragging an item
+  if (InventoryUI::IsDragging())
+    return;
 
   if (*s_ctx->hoveredGroundItem != -1) {
     int bestIdx = *s_ctx->hoveredGroundItem;
@@ -216,11 +230,30 @@ static void HandlePickupClick(GLFWwindow *window, double mx, double my) {
       s_ctx->hero->ClearPendingPickup();
     } else {
       // Too far, move to it and set pending pickup
+      s_ctx->hero->CancelAttack();
       s_ctx->hero->MoveTo(s_ctx->groundItems[bestIdx].position);
       s_ctx->hero->SetPendingPickup(bestIdx);
       std::cout << "[Pickup] Moving to item index "
                 << s_ctx->groundItems[bestIdx].dropIndex << std::endl;
     }
+  }
+}
+
+static bool IsGuardNpc(uint16_t npcType) {
+  return npcType >= 245 && npcType <= 249;
+}
+
+static void OpenNpcDialog(int npcIdx, const NpcInfo &info) {
+  if (IsGuardNpc(info.type)) {
+    // Guard NPCs open quest dialog — always start at list view
+    *s_ctx->questDialogOpen = true;
+    *s_ctx->questDialogNpcIndex = npcIdx;
+    *s_ctx->questDialogSelected = -1;
+    s_ctx->hero->StopMoving();
+    // Tell server to pause guard patrol
+    s_ctx->server->SendNpcInteract(info.type, true);
+  } else {
+    s_ctx->server->SendShopOpen(info.type);
   }
 }
 
@@ -233,7 +266,7 @@ static void HandleNpcInteraction(int npcIdx) {
   float dist = glm::distance(s_ctx->hero->GetPosition(), info.position);
 
   if (dist < NPC_INTERACT_RANGE) {
-    s_ctx->server->SendShopOpen(info.type);
+    OpenNpcDialog(npcIdx, info);
     s_pendingNpcIdx = -1;
   } else {
     // Walk to a point NPC_STOP_OFFSET away from the NPC, toward the hero
@@ -259,19 +292,46 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
   if (!s_ctxInitialized || !s_gameReady)
     return;
 
-  // Block world interactions while Game Menu, skill learning, or town teleport is active
+  // Block world interactions while Game Menu, skill learning, teleport, or mount toggle is active
   if (s_ctx->showGameMenu && *s_ctx->showGameMenu)
     return;
   if (s_ctx->isLearningSkill && *s_ctx->isLearningSkill)
     return;
   if (s_ctx->teleportingToTown && *s_ctx->teleportingToTown)
     return;
+  if (s_ctx->mountToggling && *s_ctx->mountToggling)
+    return;
+
+  // Allow HUD button clicks even when quest dialog/log is open
+  if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+    if (!ImGui::GetIO().WantCaptureMouse) {
+      double mx, my;
+      glfwGetCursorPos(window, &mx, &my);
+      float vx = s_ctx->hudCoords->ToVirtualX((float)mx);
+      float vy = s_ctx->hudCoords->ToVirtualY((float)my);
+      if (InventoryUI::HandlePanelClick(vx, vy))
+        return;
+    }
+  }
+
+  // Block world clicks while quest dialog is open (modal)
+  if (s_ctx->questDialogOpen && *s_ctx->questDialogOpen)
+    return;
+  // Quest log: only block clicks that land on the panel itself
+  if (s_ctx->showQuestLog && *s_ctx->showQuestLog) {
+    if (s_ctx->mouseOverUIPanel && *s_ctx->mouseOverUIPanel)
+      return;
+  }
 
   // Click-to-move on left click (NPC click takes priority)
   if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
     if (!ImGui::GetIO().WantCaptureMouse) {
       double mx, my;
       glfwGetCursorPos(window, &mx, &my);
+
+      // Check system message log tabs first
+      if (SystemMessageLog::HandleClick((float)mx, (float)my))
+        return;
 
       // Check if click is on a UI panel or HUD first
       float vx = s_ctx->hudCoords->ToVirtualX((float)mx);
@@ -337,8 +397,9 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
               ->ClearPendingPickup(); // Cancel pickup if attacking monster
         } else {
           // Check interactive world objects (chairs, pose boxes)
-          // Skip if already sitting/posing — click should cancel pose, not re-trigger
-          int interactHit = s_ctx->hero->IsSittingOrPosing()
+          // Skip if already sitting/posing or mounted — can't pose while riding
+          int interactHit = (s_ctx->hero->IsSittingOrPosing() ||
+                             s_ctx->hero->IsMounted())
               ? -1
               : RayPicker::PickInteractiveObject(window, mx, my);
           if (interactHit >= 0 && s_ctx->objectRenderer) {
@@ -367,7 +428,8 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
           if (s_ctx->hero->IsAttacking() && !s_ctx->hero->HasRegisteredHit()) {
             // Can't cancel before hit frame — must commit to the swing
           } else {
-            if (s_ctx->hero->IsAttacking())
+            // Cancel attack target when clicking terrain to move
+            if (s_ctx->hero->GetAttackTarget() >= 0)
               s_ctx->hero->CancelAttack();
             s_ctx->hero->ClearPendingPickup(); // Cancel pickup if manually moving
             s_pendingInteractIdx = -1;         // Cancel pending interact
@@ -411,7 +473,11 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
             InventoryUI::ShowNotification("Cannot use skills in safe zone!");
           } else if (currentResource < cost) {
             InventoryUI::ShowNotification(isDK ? "Not enough AG!" : "Not enough Mana!");
-          } else if (skillId == 6) {
+          } else {
+            // Dismount before using any skill (only autoattack allowed on mount)
+            if (s_ctx->hero->IsMounted())
+              s_ctx->hero->UnequipMount();
+            if (skillId == 6) {
             // Teleport — ground-targeted (Main 5.2: AT_SKILL_TELEPORT)
             glm::vec3 target;
             if (RayPicker::ScreenToTerrain(window, mx, my, target)) {
@@ -467,6 +533,7 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
               s_ctx->hero->ClearPendingPickup();
             }
           }
+          }
         }
       }
     }
@@ -490,6 +557,22 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
   // Note: do NOT check WantCaptureKeyboard here — it blocks game hotkeys
   // when ImGui panels have focus. Only text-input widgets need that guard.
 
+  // Don't process game hotkeys during character select
+  if (!s_gameReady)
+    return;
+
+  // Command terminal: Enter opens, Escape closes
+  if (action == GLFW_PRESS && key == GLFW_KEY_ENTER &&
+      s_ctx->showCommandTerminal && !*s_ctx->showCommandTerminal &&
+      !ImGui::GetIO().WantTextInput) {
+    *s_ctx->showCommandTerminal = true;
+    return;
+  }
+
+  // Block game hotkeys while typing in command terminal or ImGui text
+  if (ImGui::GetIO().WantTextInput)
+    return;
+
   if (action == GLFW_PRESS) {
     if (key == GLFW_KEY_C) {
       *s_ctx->showCharInfo = !*s_ctx->showCharInfo;
@@ -505,16 +588,42 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
     }
     if (key == GLFW_KEY_T) {
       if (s_ctx->teleportingToTown && !*s_ctx->teleportingToTown) {
-        if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
+        if (s_ctx->hero && s_ctx->hero->IsDead()) {
+          // Can't teleport when dead
+        } else if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
           InventoryUI::ShowNotification("Already in town!");
+          SoundManager::Play(SOUND_ERROR01);
+        } else if (s_ctx->hero && s_ctx->hero->GetTeleportCooldown() > 0.0f) {
+          char buf[64];
+          snprintf(buf, sizeof(buf), "Teleport on cooldown (%.0fs)",
+                   s_ctx->hero->GetTeleportCooldown());
+          InventoryUI::ShowNotification(buf);
           SoundManager::Play(SOUND_ERROR01);
         } else {
           s_ctx->hero->StopMoving();
+          if (s_ctx->hero->IsMounted())
+            s_ctx->hero->UnequipMount();
           *s_ctx->teleportingToTown = true;
           *s_ctx->teleportTimer = s_ctx->teleportCastTime;
           SoundManager::Play(SOUND_SUMMON);
         }
       }
+    }
+    if (key == GLFW_KEY_M) {
+      if (s_ctx->mountToggling && !*s_ctx->mountToggling) {
+        if (s_ctx->hero && s_ctx->hero->HasMountEquipped()) {
+          s_ctx->hero->StopMoving();
+          *s_ctx->mountToggling = true;
+          *s_ctx->mountToggleTimer = s_ctx->mountToggleTime;
+        } else {
+          InventoryUI::ShowNotification("No mount equipped!");
+          SoundManager::Play(SOUND_ERROR01);
+        }
+      }
+    }
+    if (key == GLFW_KEY_L) {
+      *s_ctx->showQuestLog = !*s_ctx->showQuestLog;
+      SoundManager::Play(SOUND_INTERFACE01);
     }
     if (key == GLFW_KEY_Q)
       InventoryUI::ConsumeQuickSlotItem(0);
@@ -524,8 +633,27 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
       InventoryUI::ConsumeQuickSlotItem(2);
     if (key == GLFW_KEY_R)
       InventoryUI::ConsumeQuickSlotItem(3);
-    // Skill hotkeys 1-9, 0
-    if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9) {
+    // Skill hotkeys 1-4: toggle RMC skill (press to activate, press again to restore)
+    if (key >= GLFW_KEY_1 && key <= GLFW_KEY_4) {
+      int idx = key - GLFW_KEY_1;
+      if (s_ctx->skillBar[idx] != -1) {
+        if (s_activeQuickSlot == idx) {
+          // Same slot pressed again → restore original RMC
+          *s_ctx->rmcSkillId = s_savedRmcSkillId;
+          s_activeQuickSlot = -1;
+          SoundManager::Play(SOUND_INTERFACE01);
+        } else {
+          // Different slot or first press → save original and activate
+          if (s_activeQuickSlot == -1)
+            s_savedRmcSkillId = *s_ctx->rmcSkillId;
+          *s_ctx->rmcSkillId = s_ctx->skillBar[idx];
+          s_activeQuickSlot = idx;
+          SoundManager::Play(SOUND_INTERFACE01);
+        }
+      }
+    }
+    // Skill hotkeys 5-9, 0: permanent assignment (unchanged)
+    if (key >= GLFW_KEY_5 && key <= GLFW_KEY_9) {
       int idx = key - GLFW_KEY_1;
       if (s_ctx->skillBar[idx] != -1)
         *s_ctx->rmcSkillId = s_ctx->skillBar[idx];
@@ -536,7 +664,10 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
     }
     if (key == GLFW_KEY_ESCAPE) {
       SoundManager::Play(SOUND_CLICK01);
-      if (*s_ctx->showGameMenu) {
+      // Close command terminal first if open
+      if (s_ctx->showCommandTerminal && *s_ctx->showCommandTerminal) {
+        *s_ctx->showCommandTerminal = false;
+      } else if (*s_ctx->showGameMenu) {
         // Menu already open — close it
         *s_ctx->showGameMenu = false;
       } else {
@@ -557,6 +688,23 @@ static void key_callback(GLFWwindow *window, int key, int scancode, int action,
         }
         if (*s_ctx->showSkillWindow) {
           *s_ctx->showSkillWindow = false;
+          closedSomething = true;
+        }
+        if (*s_ctx->showQuestLog) {
+          *s_ctx->showQuestLog = false;
+          closedSomething = true;
+        }
+        if (*s_ctx->questDialogOpen) {
+          // Tell server to resume guard patrol
+          if (*s_ctx->questDialogNpcIndex >= 0 &&
+              *s_ctx->questDialogNpcIndex < s_ctx->npcMgr->GetNpcCount()) {
+            NpcInfo qi = s_ctx->npcMgr->GetNpcInfo(*s_ctx->questDialogNpcIndex);
+            s_ctx->server->SendNpcInteract(qi.type, false);
+          }
+          *s_ctx->questDialogOpen = false;
+          *s_ctx->questDialogNpcIndex = -1;
+          *s_ctx->questDialogSelected = -1;
+          *s_ctx->selectedNpc = -1;
           closedSomething = true;
         }
         if (!closedSomething) {
@@ -615,6 +763,27 @@ void InputHandler::RegisterCallbacks(GLFWwindow *window) {
 
 void InputHandler::ResetGameReady() { s_gameReady = false; }
 
+int InputHandler::GetActiveQuickSlot() { return s_activeQuickSlot; }
+
+void InputHandler::RestoreQuickSlotState() {
+  // Reset first — each character has its own state
+  s_activeQuickSlot = -1;
+  s_savedRmcSkillId = -1;
+
+  if (!s_ctx->rmcSkillId || !s_ctx->skillBar)
+    return;
+  int8_t rmc = *s_ctx->rmcSkillId;
+  if (rmc < 0)
+    return;
+  // Check if current RMC matches any of slots 0-3
+  for (int i = 0; i < 4; i++) {
+    if (s_ctx->skillBar[i] == rmc) {
+      s_activeQuickSlot = i;
+      return;
+    }
+  }
+}
+
 // --- Process input: hero movement + auto-pickup ---
 
 void InputHandler::ProcessInput(GLFWwindow *window, float deltaTime) {
@@ -640,17 +809,20 @@ void InputHandler::ProcessInput(GLFWwindow *window, float deltaTime) {
     }
   }
 
-  // Pending NPC interaction: open shop when hero reaches the NPC
+  // Pending NPC interaction: open shop/dialog when hero reaches the NPC
   if (s_pendingNpcIdx >= 0 && s_pendingNpcIdx < s_ctx->npcMgr->GetNpcCount()) {
     NpcInfo info = s_ctx->npcMgr->GetNpcInfo(s_pendingNpcIdx);
     float dist = glm::distance(s_ctx->hero->GetPosition(), info.position);
     if (dist < NPC_INTERACT_RANGE) {
-      s_ctx->server->SendShopOpen(info.type);
+      OpenNpcDialog(s_pendingNpcIdx, info);
       s_pendingNpcIdx = -1;
     }
   }
 
   // Pending interactive object: trigger sit/pose when hero reaches the object
+  // Cancel if mounted — can't pose while riding
+  if (s_pendingInteractIdx >= 0 && s_ctx->hero && s_ctx->hero->IsMounted())
+    s_pendingInteractIdx = -1;
   if (s_pendingInteractIdx >= 0 && s_ctx->objectRenderer) {
     const auto &objs = s_ctx->objectRenderer->GetInteractiveObjects();
     if (s_pendingInteractIdx < (int)objs.size()) {

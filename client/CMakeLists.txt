@@ -69,11 +69,15 @@ set(COMMON_SRC
     src/FireEffect.cpp
     src/Sky.cpp
     src/GrassRenderer.cpp
+    src/TerrainUtils.cpp
     src/VFXManager.cpp
+    src/VFXManagerElemental.cpp
+    src/VFXManagerSpirit.cpp
+    src/VFXManagerMelee.cpp
 )
 
 # Main Game Executable
-add_executable(MuRemaster src/main.cpp src/InputHandler.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/BoidManager.cpp src/NetworkClient.cpp src/ServerConnection.cpp src/ClientPacketHandler.cpp src/CharacterSelect.cpp src/ItemDatabase.cpp src/ItemModelManager.cpp src/GroundItemRenderer.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp src/RayPicker.cpp src/InventoryUI.cpp src/PathFinder.cpp src/SoundManager.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
+add_executable(MuRemaster src/main.cpp src/InputHandler.cpp src/ObjectRenderer.cpp src/ViewerCommon.cpp src/HeroCharacter.cpp src/HeroCharacterMount.cpp src/HeroCharacterPet.cpp src/ClickEffect.cpp src/NpcManager.cpp src/MonsterManager.cpp src/MonsterManagerRender.cpp src/MonsterManagerEffects.cpp src/BoidManager.cpp src/NetworkClient.cpp src/ServerConnection.cpp src/ClientPacketHandler.cpp src/CharacterSelect.cpp src/ItemDatabase.cpp src/ItemModelManager.cpp src/GroundItemRenderer.cpp src/GameUI.cpp src/UITexture.cpp src/UIWidget.cpp src/HUD.cpp src/MockData.cpp src/RayPicker.cpp src/InventoryUI.cpp src/InventoryUITooltip.cpp src/InventoryUISkills.cpp src/PathFinder.cpp src/SoundManager.cpp src/SystemMessageLog.cpp ${COMMON_SRC} ${IMGUI_SOURCES})
 target_link_libraries(MuRemaster PRIVATE
     glfw
     GLEW::GLEW

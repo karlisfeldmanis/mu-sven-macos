@@ -178,6 +178,12 @@ void Database::CreateTables() {
       "ALTER TABLE item_definitions ADD COLUMN buy_price INTEGER DEFAULT 0",
       nullptr, nullptr, nullptr);
 
+  // Migration: add magic_power to item_definitions (Staff Rise, default 0)
+  sqlite3_exec(
+      m_db,
+      "ALTER TABLE item_definitions ADD COLUMN magic_power INTEGER DEFAULT 0",
+      nullptr, nullptr, nullptr);
+
   // Migration: add rmc_skill_id to characters (default -1)
   sqlite3_exec(m_db,
                "ALTER TABLE characters ADD COLUMN rmc_skill_id INTEGER "
@@ -203,6 +209,46 @@ void Database::CreateTables() {
     printf("[DB] character_skills create error: %s\n", skillErr);
     sqlite3_free(skillErr);
   }
+
+  // Chat log table (persistent per-character message history)
+  const char *chatSql = R"(
+        CREATE TABLE IF NOT EXISTS chat_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_id INTEGER NOT NULL,
+            category INTEGER NOT NULL,
+            color INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            timestamp INTEGER DEFAULT (strftime('%s','now')),
+            FOREIGN KEY (character_id) REFERENCES characters(id)
+        );
+    )";
+  char *chatErr = nullptr;
+  if (sqlite3_exec(m_db, chatSql, nullptr, nullptr, &chatErr) != SQLITE_OK) {
+    printf("[DB] chat_log create error: %s\n", chatErr);
+    sqlite3_free(chatErr);
+  }
+
+  // Quest progress table
+  const char *questSql = R"(
+        CREATE TABLE IF NOT EXISTS character_quests (
+            character_id INTEGER PRIMARY KEY,
+            quest_index INTEGER NOT NULL DEFAULT 0,
+            kill_count_0 INTEGER NOT NULL DEFAULT 0,
+            kill_count_1 INTEGER NOT NULL DEFAULT 0,
+            kill_count_2 INTEGER NOT NULL DEFAULT 0,
+            accepted INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (character_id) REFERENCES characters(id)
+        );
+    )";
+  char *questErr = nullptr;
+  if (sqlite3_exec(m_db, questSql, nullptr, nullptr, &questErr) != SQLITE_OK) {
+    printf("[DB] character_quests create error: %s\n", questErr);
+    sqlite3_free(questErr);
+  }
+  // Migrate: add accepted column if missing (existing DBs)
+  sqlite3_exec(m_db,
+      "ALTER TABLE character_quests ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0",
+      nullptr, nullptr, nullptr);
 }
 
 void Database::CreateDefaultAccount() {
@@ -235,17 +281,9 @@ void Database::CreateDefaultAccount() {
   sqlite3_finalize(stmt);
 
   if (charCount == 0) {
-    char sql[512];
-    snprintf(
-        sql, sizeof(sql),
-        "INSERT INTO characters (account_id, slot, name, class, level, "
-        "strength, dexterity, vitality, energy, life, max_life, mana, "
-        "max_mana, money, level_up_points, skill_bar, potion_bar) "
-        "VALUES (%d, 0, 'RealPlayer', 16, 50, 28, 20, 25, 10, 208, 208, 20, "
-        "20, 1000000, 245, NULL, NULL)",
-        accountId);
-    sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
-    printf("[DB] Created RealPlayer character for account %d\n", accountId);
+    // No seed characters — user creates their own from character select
+    printf("[DB] Account %d has no characters (create from character select)\n",
+           accountId);
   }
 }
 
@@ -618,14 +656,14 @@ void Database::SaveCharacterFull(int charId, uint16_t level, uint16_t strength,
                                  uint16_t maxMana, uint16_t ag, uint16_t maxAg,
                                  uint16_t levelUpPoints, uint64_t experience,
                                  uint32_t money, uint8_t posX, uint8_t posY,
-                                 const int8_t *skillBar,
+                                 uint8_t mapId, const int8_t *skillBar,
                                  const int16_t *potionBar, int8_t rmcSkillId) {
   sqlite3_stmt *stmt = nullptr;
   const char *sql =
       "UPDATE characters SET level=?, strength=?, dexterity=?, vitality=?, "
       "energy=?, life=?, max_life=?, mana=?, max_mana=?, ag=?, max_ag=?, "
       "level_up_points=?, experience=?, money=?, pos_x=?, pos_y=?, "
-      "skill_bar=?, potion_bar=?, rmc_skill_id=? WHERE id=?";
+      "map_id=?, skill_bar=?, potion_bar=?, rmc_skill_id=? WHERE id=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return;
   sqlite3_bind_int(stmt, 1, level);
@@ -644,10 +682,11 @@ void Database::SaveCharacterFull(int charId, uint16_t level, uint16_t strength,
   sqlite3_bind_int(stmt, 14, money);
   sqlite3_bind_int(stmt, 15, posX);
   sqlite3_bind_int(stmt, 16, posY);
-  sqlite3_bind_blob(stmt, 17, skillBar, 10, SQLITE_TRANSIENT);
-  sqlite3_bind_blob(stmt, 18, potionBar, 8, SQLITE_TRANSIENT); // 4 × int16_t
-  sqlite3_bind_int(stmt, 19, rmcSkillId);
-  sqlite3_bind_int(stmt, 20, charId);
+  sqlite3_bind_int(stmt, 17, mapId);
+  sqlite3_bind_blob(stmt, 18, skillBar, 10, SQLITE_TRANSIENT);
+  sqlite3_bind_blob(stmt, 19, potionBar, 8, SQLITE_TRANSIENT); // 4 × int16_t
+  sqlite3_bind_int(stmt, 20, rmcSkillId);
+  sqlite3_bind_int(stmt, 21, charId);
 
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
@@ -693,11 +732,11 @@ void Database::SeedNpcSpawns() {
             (255, 0, 123, 135, 2, 'Lumen the Barmaid'),
             (240, 0, 146, 110, 4, 'Safety Guardian'),
             (240, 0, 147, 145, 2, 'Safety Guardian'),
-            (249, 0, 131, 88,  4, 'Guard'),
-            (249, 0, 173, 125, 2, 'Guard'),
-            (249, 0, 94,  125, 2, 'Guard'),
-            (249, 0, 94,  130, 2, 'Guard'),
-            (249, 0, 131, 148, 8, 'Guard');
+            (245, 0, 94,  125, 2, 'Warden Aldric'),
+            (246, 0, 123, 84,  3, 'Corporal Brynn'),
+            (247, 0, 130, 115, 4, 'Sergeant Dorian'),
+            (248, 0, 173, 125, 5, 'Lieutenant Kael'),
+            (249, 0, 131, 148, 3, 'Captain Marcus');
     )";
   char *err = nullptr;
   if (sqlite3_exec(m_db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
@@ -1192,6 +1231,18 @@ void Database::SeedItemDefinitions() {
                  "item_index = 15)",
                  nullptr, nullptr, nullptr);
     printf("[DB] Set buy prices for all items\n");
+
+    // Staff Rise magicPower values (OpenMU Version075 Weapons.cs)
+    const char *staffMagicPower = R"(
+        UPDATE item_definitions SET magic_power = CASE item_index
+            WHEN 0 THEN 6   WHEN 1 THEN 20  WHEN 2 THEN 34
+            WHEN 3 THEN 46  WHEN 4 THEN 58  WHEN 5 THEN 59
+            WHEN 6 THEN 70  WHEN 7 THEN 94  WHEN 8 THEN 115
+            ELSE 0 END
+        WHERE category = 5;
+    )";
+    sqlite3_exec(m_db, staffMagicPower, nullptr, nullptr, nullptr);
+    printf("[DB] Set staff magicPower values\n");
   }
 }
 
@@ -1208,7 +1259,7 @@ ItemDefinition Database::GetItemDefinition(uint8_t category,
       "SELECT id, category, item_index, name, model_file, level_req, "
       "damage_min, damage_max, defense, attack_speed, two_handed, "
       "width, height, req_str, req_dex, req_vit, req_ene, class_flags, "
-      "buy_price "
+      "buy_price, magic_power "
       "FROM item_definitions WHERE category=? AND item_index=?";
   if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     return item;
@@ -1236,6 +1287,7 @@ ItemDefinition Database::GetItemDefinition(uint8_t category,
     item.reqEnergy = static_cast<uint16_t>(sqlite3_column_int(stmt, 16));
     item.classFlags = static_cast<uint32_t>(sqlite3_column_int64(stmt, 17));
     item.buyPrice = static_cast<uint32_t>(sqlite3_column_int(stmt, 18));
+    item.magicPower = static_cast<uint16_t>(sqlite3_column_int(stmt, 19));
   }
   sqlite3_finalize(stmt);
   return item;
@@ -1329,7 +1381,7 @@ void Database::SeedMonsterSpawns() {
             (3, 0, 187, 119, 2), (3, 0, 188, 117, 4), (3, 0, 186, 120, 6), (3, 0, 189, 118, 1),
             (3, 0, 181, 128, 3), (3, 0, 183, 130, 5), (3, 0, 180, 126, 0), (3, 0, 182, 129, 7),
             (3, 0, 179, 154, 2), (3, 0, 175, 155, 4),
-            (3, 0, 185, 135, 1), (3, 0, 190, 125, 3),
+            (3, 0, 185, 135, 1), (3, 0, 191, 125, 3),
             (3, 0, 195, 115, 5), (3, 0, 192, 122, 6),
 
             -- Elite Bull Fighter (type 4): Level 12 — west region (OpenMU: X:8-94, Y:11-244)
@@ -1363,6 +1415,117 @@ void Database::SeedMonsterSpawns() {
     printf("[DB] Seeded Lorencia monster spawns (8 types: Bull Fighter, Hound, "
            "Budge Dragon, Spider, Elite Bull Fighter, Lich, Giant, Skeleton "
            "Warrior)\n");
+  }
+
+  // Seed Dungeon (map_id=1) spawns if not already present
+  sqlite3_prepare_v2(m_db, "SELECT COUNT(*) FROM monster_spawns WHERE map_id=1",
+                     -1, &stmt, nullptr);
+  int dungeonCount = 0;
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    dungeonCount = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  if (dungeonCount > 0) {
+    printf("[DB] Dungeon spawns already seeded (%d entries)\n", dungeonCount);
+    return;
+  }
+
+  // Dungeon monster spawns — exact coordinates from OpenMU Version075 Dungeon.cs
+  // 258 unique spawns (IDs 101-359, skipping 300) across 12 monster types
+  // Types: 5=Hell Hound, 8=Poison Bull, 9=Thunder Lich, 10=Dark Knight,
+  //        11=Ghost, 12=Larva, 13=Hell Spider, 14=Skeleton Warrior,
+  //        15=Skeleton Archer, 16=Elite Skeleton, 17=Cyclops, 18=Gorgon
+  const char *dungeonSql = R"(
+        INSERT INTO monster_spawns (type, map_id, pos_x, pos_y, direction) VALUES
+            -- Poison Bull (type 8) — west corridors + deep areas
+            (8,1,42,122,2),(8,1,4,73,2),(8,1,12,56,2),(8,1,2,78,2),
+            (8,1,187,15,2),(8,1,158,17,2),(8,1,119,47,2),(8,1,25,100,2),
+            (8,1,21,82,2),(8,1,16,55,2),(8,1,35,55,2),(8,1,116,47,2),
+            (8,1,122,46,2),(8,1,193,30,2),(8,1,39,112,2),(8,1,26,111,2),
+            (8,1,15,113,2),(8,1,12,97,2),(8,1,44,56,2),(8,1,205,24,2),
+            -- Elite Skeleton (type 16) — north + deep corridors
+            (16,1,108,9,2),(16,1,159,41,2),(16,1,115,7,2),(16,1,124,20,2),
+            (16,1,90,6,2),(16,1,212,83,2),(16,1,211,90,2),(16,1,226,58,2),
+            (16,1,239,56,2),(16,1,235,23,2),(16,1,29,80,2),(16,1,86,105,2),
+            (16,1,88,104,2),(16,1,240,77,2),(16,1,247,77,2),(16,1,248,20,2),
+            (16,1,244,9,2),(16,1,229,11,2),(16,1,155,32,2),(16,1,137,33,2),
+            (16,1,122,29,2),(16,1,48,11,2),
+            -- Skeleton Warrior (type 14) — entrance + south corridors
+            (14,1,120,232,2),(14,1,98,221,2),(14,1,100,220,2),(14,1,100,225,2),
+            (14,1,108,232,2),(14,1,107,230,2),(14,1,84,244,2),(14,1,94,242,2),
+            (14,1,108,195,2),(14,1,94,208,2),(14,1,62,181,2),(14,1,83,198,2),
+            (14,1,33,209,2),(14,1,45,201,2),(14,1,31,247,2),(14,1,3,246,2),
+            (14,1,29,246,2),(14,1,120,243,2),(14,1,99,49,2),(14,1,152,247,2),
+            (14,1,156,247,2),(14,1,97,187,2),(14,1,105,208,2),(14,1,85,208,2),
+            (14,1,84,220,2),(14,1,85,229,2),(14,1,68,227,2),(14,1,61,238,2),
+            (14,1,73,245,2),(14,1,3,232,2),(14,1,3,219,2),(14,1,7,219,2),
+            (14,1,17,211,2),
+            -- Larva (type 12) — south + mid corridors
+            (12,1,65,205,2),(12,1,87,177,2),(12,1,70,195,2),(12,1,61,213,2),
+            (12,1,69,222,2),(12,1,57,247,2),(12,1,49,246,2),(12,1,86,196,2),
+            (12,1,46,210,2),(12,1,46,205,2),(12,1,137,241,2),(12,1,130,244,2),
+            (12,1,134,240,2),(12,1,193,224,2),(12,1,194,222,2),(12,1,194,221,2),
+            (12,1,79,154,2),(12,1,78,189,2),(12,1,100,198,2),(12,1,95,192,2),
+            (12,1,90,187,2),(12,1,73,241,2),
+            -- Ghost (type 11) — most common, throughout dungeon
+            (11,1,69,167,2),(11,1,136,149,2),(11,1,133,212,2),(11,1,135,212,2),
+            (11,1,151,212,2),(11,1,168,220,2),(11,1,46,146,2),(11,1,49,182,2),
+            (11,1,44,162,2),(11,1,45,180,2),(11,1,45,183,2),(11,1,164,232,2),
+            (11,1,92,157,2),(11,1,102,174,2),(11,1,113,166,2),(11,1,222,223,2),
+            (11,1,163,184,2),(11,1,164,186,2),(11,1,150,193,2),(11,1,142,218,2),
+            (11,1,199,116,2),(11,1,240,247,2),(11,1,242,247,2),(11,1,241,226,2),
+            (11,1,246,220,2),(11,1,243,201,2),(11,1,244,192,2),(11,1,213,248,2),
+            (11,1,148,149,2),(11,1,247,7,2),(11,1,240,9,2),(11,1,241,9,2),
+            (11,1,227,248,2),(11,1,181,246,2),(11,1,86,150,2),(11,1,98,145,2),
+            (11,1,45,188,2),(11,1,53,188,2),(11,1,52,166,2),(11,1,62,154,2),
+            (11,1,70,154,2),(11,1,77,152,2),(11,1,110,145,2),(11,1,119,146,2),
+            (11,1,120,159,2),(11,1,111,188,2),(11,1,125,195,2),(11,1,135,196,2),
+            (11,1,144,187,2),(11,1,125,218,2),(11,1,197,245,2),(11,1,247,211,2),
+            (11,1,231,186,2),(11,1,223,187,2),(11,1,213,186,2),(11,1,209,175,2),
+            (11,1,183,128,2),
+            -- Skeleton Archer (type 15) — ranged, scattered
+            (15,1,61,169,2),(15,1,217,229,2),(15,1,141,110,2),(15,1,98,54,2),
+            (15,1,114,110,2),(15,1,68,110,2),(15,1,76,111,2),(15,1,156,125,2),
+            (15,1,193,148,2),(15,1,188,146,2),(15,1,206,152,2),(15,1,212,151,2),
+            (15,1,247,176,2),(15,1,175,127,2),(15,1,175,118,2),(15,1,183,123,2),
+            (15,1,68,125,2),(15,1,80,97,2),
+            -- Cyclops (type 17) — mid-level areas
+            (17,1,18,220,2),(17,1,230,173,2),(17,1,236,167,2),(17,1,241,173,2),
+            (17,1,173,200,2),(17,1,165,171,2),(17,1,208,162,2),(17,1,220,161,2),
+            (17,1,176,188,2),(17,1,168,150,2),(17,1,156,171,2),(17,1,176,161,2),
+            (17,1,185,161,2),(17,1,181,171,2),(17,1,198,168,2),(17,1,190,172,2),
+            (17,1,128,232,2),(17,1,143,232,2),(17,1,50,211,2),(17,1,220,172,2),
+            (17,1,247,168,2),(17,1,52,222,2),(17,1,50,235,2),(17,1,38,234,2),
+            (17,1,16,227,2),(17,1,25,220,2),(17,1,235,108,2),(17,1,228,105,2),
+            (17,1,214,116,2),(17,1,13,235,2),(17,1,27,236,2),
+            -- Hell Hound (type 5) — mid-deep areas
+            (5,1,170,126,2),(5,1,163,114,2),(5,1,163,125,2),(5,1,145,118,2),
+            (5,1,123,120,2),(5,1,138,86,2),(5,1,120,75,2),(5,1,81,58,2),
+            (5,1,71,53,2),(5,1,69,88,2),(5,1,98,111,2),(5,1,87,114,2),
+            (5,1,65,127,2),(5,1,70,76,2),
+            -- Hell Spider (type 13) — ranged, deep areas
+            (13,1,112,93,2),(13,1,104,65,2),(13,1,183,27,2),(13,1,114,20,2),
+            (13,1,247,87,2),(13,1,149,94,2),(13,1,126,94,2),(13,1,168,96,2),
+            (13,1,196,100,2),
+            -- Thunder Lich (type 9) — ranged, northwest + scattered
+            (9,1,28,18,2),(9,1,22,4,2),(9,1,18,29,2),(9,1,18,23,2),
+            (9,1,34,4,2),(9,1,22,90,2),(9,1,33,78,2),(9,1,42,117,2),
+            (9,1,118,11,2),(9,1,38,23,2),(9,1,160,10,2),(9,1,194,18,2),
+            (9,1,213,12,2),(9,1,221,14,2),(9,1,243,16,2),(9,1,233,66,2),
+            (9,1,30,105,2),(9,1,27,53,2),(9,1,10,68,2),(9,1,33,90,2),
+            (9,1,12,121,2),
+            -- Dark Knight (type 10) — elite, west corridors
+            (10,1,14,107,2),(10,1,22,65,2),(10,1,39,77,2),(10,1,29,66,2),
+            (10,1,41,88,2),(10,1,19,120,2),(10,1,37,98,2),
+            -- Gorgon (type 18) — boss, west area
+            (18,1,43,111,2),(18,1,8,123,2),(18,1,7,56,2),(18,1,26,67,2)
+    )";
+  err = nullptr;
+  if (sqlite3_exec(m_db, dungeonSql, nullptr, nullptr, &err) != SQLITE_OK) {
+    printf("[DB] SeedMonsterSpawns (dungeon) error: %s\n", err);
+    sqlite3_free(err);
+  } else {
+    printf("[DB] Seeded Dungeon monster spawns (258 spawns, 12 types from "
+           "OpenMU Version075 Dungeon.cs)\n");
   }
 }
 
@@ -1561,4 +1724,116 @@ bool Database::HasSkill(int characterId, uint8_t skillId) {
   bool found = (sqlite3_step(stmt) == SQLITE_ROW);
   sqlite3_finalize(stmt);
   return found;
+}
+
+void Database::SetRmcSkillId(int characterId, int8_t skillId) {
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql =
+      "UPDATE characters SET rmc_skill_id=? WHERE id=?";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return;
+  sqlite3_bind_int(stmt, 1, skillId);
+  sqlite3_bind_int(stmt, 2, characterId);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+}
+
+// ─── Chat Log Persistence ────────────────────────────────────────────────────
+
+void Database::SaveChatMessage(int characterId, uint8_t category,
+                               uint32_t color, const std::string &message) {
+  sqlite3_stmt *stmt = nullptr;
+  const char *sql =
+      "INSERT INTO chat_log (character_id, category, color, message) "
+      "VALUES (?, ?, ?, ?)";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return;
+  sqlite3_bind_int(stmt, 1, characterId);
+  sqlite3_bind_int(stmt, 2, category);
+  sqlite3_bind_int64(stmt, 3, (int64_t)color);
+  sqlite3_bind_text(stmt, 4, message.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+
+  // Trim: keep only last 500 messages per character
+  sqlite3_stmt *trimStmt = nullptr;
+  const char *trimSql =
+      "DELETE FROM chat_log WHERE character_id=? AND id NOT IN "
+      "(SELECT id FROM chat_log WHERE character_id=? ORDER BY id DESC LIMIT 500)";
+  if (sqlite3_prepare_v2(m_db, trimSql, -1, &trimStmt, nullptr) == SQLITE_OK) {
+    sqlite3_bind_int(trimStmt, 1, characterId);
+    sqlite3_bind_int(trimStmt, 2, characterId);
+    sqlite3_step(trimStmt);
+    sqlite3_finalize(trimStmt);
+  }
+}
+
+std::vector<Database::ChatLogEntry>
+Database::GetChatHistory(int characterId, int limit) {
+  std::vector<ChatLogEntry> entries;
+  sqlite3_stmt *stmt = nullptr;
+  // Get most recent N messages, ordered oldest-first for display
+  const char *sql =
+      "SELECT category, color, message FROM "
+      "(SELECT category, color, message FROM chat_log "
+      "WHERE character_id=? ORDER BY id DESC LIMIT ?) "
+      "ORDER BY rowid ASC";
+  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    return entries;
+  sqlite3_bind_int(stmt, 1, characterId);
+  sqlite3_bind_int(stmt, 2, limit);
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    ChatLogEntry e;
+    e.category = (uint8_t)sqlite3_column_int(stmt, 0);
+    e.color = (uint32_t)sqlite3_column_int64(stmt, 1);
+    const char *msg = (const char *)sqlite3_column_text(stmt, 2);
+    e.message = msg ? msg : "";
+    entries.push_back(std::move(e));
+  }
+  sqlite3_finalize(stmt);
+  return entries;
+}
+
+Database::QuestState Database::LoadQuestState(int characterId) {
+  QuestState qs;
+  sqlite3_stmt *stmt = nullptr;
+  if (sqlite3_prepare_v2(m_db,
+          "SELECT quest_index, kill_count_0, kill_count_1, kill_count_2, accepted "
+          "FROM character_quests WHERE character_id=?",
+          -1, &stmt, nullptr) != SQLITE_OK)
+    return qs;
+  sqlite3_bind_int(stmt, 1, characterId);
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    qs.questIndex = sqlite3_column_int(stmt, 0);
+    qs.killCount0 = sqlite3_column_int(stmt, 1);
+    qs.killCount1 = sqlite3_column_int(stmt, 2);
+    qs.killCount2 = sqlite3_column_int(stmt, 3);
+    qs.accepted = sqlite3_column_int(stmt, 4) != 0;
+  }
+  sqlite3_finalize(stmt);
+  return qs;
+}
+
+void Database::SaveQuestState(int characterId, int questIndex,
+                              int kc0, int kc1, int kc2, bool accepted) {
+  sqlite3_stmt *stmt = nullptr;
+  if (sqlite3_prepare_v2(m_db,
+          "INSERT INTO character_quests (character_id, quest_index, "
+          "kill_count_0, kill_count_1, kill_count_2, accepted) VALUES (?,?,?,?,?,?) "
+          "ON CONFLICT(character_id) DO UPDATE SET "
+          "quest_index=excluded.quest_index, "
+          "kill_count_0=excluded.kill_count_0, "
+          "kill_count_1=excluded.kill_count_1, "
+          "kill_count_2=excluded.kill_count_2, "
+          "accepted=excluded.accepted",
+          -1, &stmt, nullptr) != SQLITE_OK)
+    return;
+  sqlite3_bind_int(stmt, 1, characterId);
+  sqlite3_bind_int(stmt, 2, questIndex);
+  sqlite3_bind_int(stmt, 3, kc0);
+  sqlite3_bind_int(stmt, 4, kc1);
+  sqlite3_bind_int(stmt, 5, kc2);
+  sqlite3_bind_int(stmt, 6, accepted ? 1 : 0);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
 }

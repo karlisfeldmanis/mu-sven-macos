@@ -48,6 +48,10 @@ enum class ParticleType {
   // Main 5.2: BITMAP_SPARK SubType 1 — pet companion sparkle (stationary, fading)
   PET_SPARKLE,
   IMP_SPARKLE, // Imp companion — dark red/orange ember motes
+  MOUNT_DUST,    // Main 5.2: BITMAP_SMOKE hoofbeat dust while mount is running
+  DUNGEON_MIST,  // Ground-level fog particles in dungeon
+  // Main 5.2: BITMAP_WATERFALL_2 SubType 3 — rising columnar stream for armor set bonus
+  SET_WATERFALL, // Rising energy column particles (full set +10+)
 };
 
 class VFXManager {
@@ -59,6 +63,10 @@ public:
 
   // Spawns a burst of particles at a given world position
   void SpawnBurst(ParticleType type, const glm::vec3 &position, int count = 10);
+
+  // Spawns particles with custom color override (for set bonus, etc.)
+  void SpawnBurstColored(ParticleType type, const glm::vec3 &position,
+                         const glm::vec3 &color, int count = 1);
 
   // Main 5.2 level-up effect: 15 BITMAP_FLARE joints rising in a ring
   void SpawnLevelUpEffect(const glm::vec3 &position);
@@ -92,6 +100,9 @@ public:
 
   // Main 5.2: MODEL_SKILL_BLAST — twin sky-strike bolts falling at target
   void SpawnLightningStrike(const glm::vec3 &targetPos);
+
+  // Single vertical sky bolt for Lightning spell impact (lighter than Cometfall's twin bolts)
+  void SpawnLightningImpactBolt(const glm::vec3 &targetPos);
 
   // Main 5.2: Meteorite — single fireball falling from sky at target
   void SpawnMeteorStrike(const glm::vec3 &targetPos);
@@ -593,6 +604,7 @@ private:
   // Per-frame hero bone world positions (for bone-attached particles)
   std::vector<glm::vec3> m_heroBoneWorldPositions;
 
+  // Dungeon ground mist state
   // Textures
   GLuint m_bloodTexture = 0;
   GLuint m_hitTexture = 0;   // Legacy (Interface/hit.OZT)

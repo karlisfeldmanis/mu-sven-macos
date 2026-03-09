@@ -2,6 +2,7 @@
 #define MU_GAME_WORLD_HPP
 
 #include "Database.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -25,6 +26,37 @@ namespace ServerConfig {
 static constexpr int XP_MULTIPLIER =
     100;                            // XP gain multiplier (1=normal, 100=100x)
 static constexpr int DROP_RATE = 1; // Drop rate multiplier
+
+// WoW-style progressive/degressive XP calculation
+// All monsters give at least 1 XP, with smooth reduction for lower-level mobs
+inline int CalculateXP(int playerLevel, int monsterLevel) {
+  // Gray threshold scales with player level (8 at low, up to 20 at high)
+  int grayThreshold = 8 + playerLevel / 10;
+  if (grayThreshold > 20) grayThreshold = 20;
+
+  int levelDiff = playerLevel - monsterLevel;
+
+  // Base XP (MU Online formula)
+  double baseXP = (monsterLevel + 25.0) * monsterLevel / 3.0;
+  if (monsterLevel >= 65)
+    baseXP += (double)(monsterLevel - 64) * ((double)monsterLevel / 4.0);
+
+  // Progressive reduction: 100% at same level, down to ~5% beyond gray threshold
+  if (levelDiff > 0) {
+    double scale = 1.0 - (double)levelDiff / (double)grayThreshold;
+    if (scale < 0.05) scale = 0.05; // Minimum 5% XP for very low mobs
+    baseXP *= scale;
+  }
+
+  // Bonus for higher-level monsters (up to 20%)
+  if (levelDiff < 0) {
+    double bonus = std::min(0.20, (double)(-levelDiff) * 0.04);
+    baseXP *= (1.0 + bonus);
+  }
+
+  return std::max(1, (int)(baseXP * 1.25 * XP_MULTIPLIER));
+}
+
 } // namespace ServerConfig
 
 struct NpcSpawn {
@@ -53,6 +85,9 @@ struct NpcSpawn {
   int guardPathStep = 0;
   float guardMoveTimer = 0.0f;
   static constexpr float GUARD_MOVE_DELAY = 0.4f; // seconds per grid step
+
+  // Player interaction: pauses patrol when a player is talking to the guard
+  int interactingFd = -1; // FD of interacting player (-1 = none)
 };
 
 // ─── Per-type monster stat definition (replaces per-type constexprs) ───
@@ -111,6 +146,9 @@ struct MonsterInstance {
   uint8_t viewRange = 5;        // Grid cells for aggro detection
   uint8_t attackRange = 1;      // Grid cells for attack range
   bool aggressive = false;      // true=red (auto-aggro)
+
+  // Passive HP regen timer (1% maxHP per second when idle + out of combat)
+  float regenTimer = 0.0f;
 
   // Main 5.2: StormTime — Twister stun (pauses AI for N ticks)
   int stormTime = 0;
@@ -220,6 +258,11 @@ public:
                    std::vector<MonsterMoveUpdate> &outMoves);
 
   const std::vector<NpcSpawn> &GetNpcs() const { return m_npcs; }
+
+  // Guard NPC interaction: pause/resume patrol when a player talks to a guard
+  void SetGuardInteracting(uint16_t npcType, int playerFd, bool interact);
+  void ClearGuardInteractionsForPlayer(int playerFd);
+
   const std::vector<MonsterInstance> &GetMonsterInstances() const {
     return m_monsterInstances;
   }
@@ -257,6 +300,9 @@ public:
 
   // Load terrain attributes (.att file) for walkability checks
   bool LoadTerrainAttributes(const std::string &attFilePath);
+  bool LoadTerrainAttributesForMap(uint8_t mapId, const std::string &attFilePath);
+  void SetActiveMap(uint8_t mapId);
+  void ClearWorldData(); // Clear NPCs, monsters, drops for map transition
   bool IsWalkable(float worldX, float worldZ) const;
   bool IsSafeZone(float worldX, float worldZ) const;
   bool IsWalkableGrid(uint8_t gx, uint8_t gy) const;
@@ -282,7 +328,9 @@ private:
   std::vector<NpcSpawn> m_npcs;
   std::vector<MonsterInstance> m_monsterInstances;
   std::vector<GroundDrop> m_drops;
-  std::vector<uint8_t> m_terrainAttributes; // 256x256 attribute grid
+  std::vector<uint8_t> m_terrainAttributes; // 256x256 attribute grid (active map)
+  std::unordered_map<uint8_t, std::vector<uint8_t>> m_mapTerrainAttributes; // Per-map
+  uint8_t m_activeMapId = 0;
   uint16_t m_nextMonsterIndex = 2001;
   uint16_t m_nextDropIndex = 1;
 

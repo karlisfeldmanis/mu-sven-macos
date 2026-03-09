@@ -1,6 +1,7 @@
 #include "NpcManager.hpp"
 #include "HeroCharacter.hpp" // For PointLight struct
 #include "SoundManager.hpp"
+#include "TerrainUtils.hpp"
 #include "TextureLoader.hpp"
 #include "VFXManager.hpp"
 #include "ViewerCommon.hpp"
@@ -18,46 +19,18 @@ static const std::unordered_map<uint16_t, std::string> s_npcNames = {
     {254, "Pasi the Mage"},
     {255, "Lumen the Barmaid"},
     {240, "Safety Guardian"},
-    {247, "Guard"},
-    {249, "Guard"}};
+    {245, "Warden Aldric"},
+    {246, "Corporal Brynn"},
+    {247, "Sergeant Dorian"},
+    {248, "Lieutenant Kael"},
+    {249, "Captain Marcus"}};
 
 glm::vec3 NpcManager::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
-  const int SIZE = 256;
-  if (m_terrainLightmap.size() < (size_t)(SIZE * SIZE))
-    return glm::vec3(1.0f);
-
-  float gz = worldPos.x / 100.0f;
-  float gx = worldPos.z / 100.0f;
-  int xi = (int)gx, zi = (int)gz;
-  if (xi < 0 || zi < 0 || xi > SIZE - 2 || zi > SIZE - 2)
-    return glm::vec3(0.5f);
-
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  const glm::vec3 &c00 = m_terrainLightmap[zi * SIZE + xi];
-  const glm::vec3 &c10 = m_terrainLightmap[zi * SIZE + (xi + 1)];
-  const glm::vec3 &c01 = m_terrainLightmap[(zi + 1) * SIZE + xi];
-  const glm::vec3 &c11 = m_terrainLightmap[(zi + 1) * SIZE + (xi + 1)];
-  glm::vec3 left = c00 + (c01 - c00) * zd;
-  glm::vec3 right = c10 + (c11 - c10) * zd;
-  return left + (right - left) * xd;
+  return TerrainUtils::SampleLightAt(m_terrainLightmap, worldPos);
 }
 
 float NpcManager::snapToTerrain(float worldX, float worldZ) {
-  if (!m_terrainData)
-    return 0.0f;
-  const int S = TerrainParser::TERRAIN_SIZE;
-  float gz = worldX / 100.0f;
-  float gx = worldZ / 100.0f;
-  gz = std::clamp(gz, 0.0f, (float)(S - 2));
-  gx = std::clamp(gx, 0.0f, (float)(S - 2));
-  int xi = (int)gx, zi = (int)gz;
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  float h00 = m_terrainData->heightmap[zi * S + xi];
-  float h10 = m_terrainData->heightmap[zi * S + (xi + 1)];
-  float h01 = m_terrainData->heightmap[(zi + 1) * S + xi];
-  float h11 = m_terrainData->heightmap[(zi + 1) * S + (xi + 1)];
-  return h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) + h01 * (1 - xd) * zd +
-         h11 * xd * zd;
+  return TerrainUtils::GetHeight(m_terrainData, worldX, worldZ);
 }
 
 int NpcManager::loadModel(const std::string &npcPath,
@@ -131,6 +104,7 @@ void NpcManager::addNpc(int modelIdx, int gridX, int gridY, int dir,
   //   Angle[2] = ((float)Data->Angle - 1.f) * 45.f
   // DB stores OpenMU 1-8 = protocol 0-7 + 1, so subtract 2:
   npc.facing = (float)(dir - 2) * (float)M_PI / 4.0f;
+  npc.spawnFacing = npc.facing;
 
   // Random animation offset so NPCs don't all sync
   npc.animFrame = (float)(m_npcs.size() * 3.7f);
@@ -242,18 +216,9 @@ void NpcManager::InitModels(const std::string &dataPath) {
   m_dataPath = dataPath;
 
   // Create shaders
-  std::ifstream shaderTest("shaders/model.vert");
-  m_shader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/model.vert" : "../shaders/model.vert",
-      shaderTest.good() ? "shaders/model.frag" : "../shaders/model.frag");
-
-  m_shadowShader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/shadow.vert" : "../shaders/shadow.vert",
-      shaderTest.good() ? "shaders/shadow.frag" : "../shaders/shadow.frag");
-
-  m_outlineShader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/outline.vert" : "../shaders/outline.vert",
-      shaderTest.good() ? "shaders/outline.frag" : "../shaders/outline.frag");
+  m_shader = Shader::Load("model.vert", "model.frag");
+  m_shadowShader = Shader::Load("shadow.vert", "shadow.frag");
+  m_outlineShader = Shader::Load("outline.vert", "outline.frag");
 
   // Load NPC models for 0.97d Lorencia
   int smithIdx = loadModel(npcPath, "Smith01.bmd", {}, "Smith");
@@ -284,6 +249,11 @@ void NpcManager::InitModels(const std::string &dataPath) {
 
   // ── Guard NPCs (Main 5.2: ZzzCharacter.cpp:13859-13890) ──
   // Guards use Player.bmd skeleton + armor set 9 (heavy plate)
+  // Load chrome/metal textures for +7 enhancement glow
+  m_chromeTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome01.OZJ");
+  m_chrome2Texture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome02.OZJ");
+  m_shinyTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Shiny01.OZJ");
+
   std::string playerPath = dataPath + "/Player/";
   std::string itemPath = dataPath + "/Item/";
 
@@ -302,25 +272,28 @@ void NpcManager::InitModels(const std::string &dataPath) {
       m_models[berdyshIdx].defaultAction = 1;     // PLAYER_STOP_MALE (weapon on back)
       m_ownedBmds.push_back(std::move(spearBmd));
     }
-    m_typeToModel[249] = berdyshIdx;
+    m_typeToModel[245] = berdyshIdx; // Warden Aldric
+    m_typeToModel[246] = berdyshIdx; // Corporal Brynn
+    m_typeToModel[248] = berdyshIdx; // Lieutenant Kael
+    m_typeToModel[249] = berdyshIdx; // Captain Marcus
   }
 
-  // Type 247: Crossbow Guard (bow, left hand bone 42)
+  // Type 247: Poleaxe Guard (two-handed spear, right hand bone 33)
   // Plate Armor = item index 9 → Male10 BMD files (Main 5.2: fileNum = index+1)
-  int crossbowIdx =
+  int poleaxeIdx =
       loadModel(playerPath, "player.bmd",
                 {"HelmMale10.bmd", "ArmorMale10.bmd", "PantMale10.bmd",
                  "GloveMale10.bmd", "BootMale10.bmd"},
-                "CrossbowGuard");
-  if (crossbowIdx >= 0) {
-    auto bowBmd = BMDParser::Parse(itemPath + "Bow07.bmd");
-    if (bowBmd) {
-      m_models[crossbowIdx].weaponBmd = bowBmd.get();
-      m_models[crossbowIdx].weaponAttachBone = 42; // Left hand
-      m_models[crossbowIdx].defaultAction = 1;     // PLAYER_STOP_MALE (weapon on back)
-      m_ownedBmds.push_back(std::move(bowBmd));
+                "PoleaxeGuard");
+  if (poleaxeIdx >= 0) {
+    auto spearBmd2 = BMDParser::Parse(itemPath + "Spear05.bmd");
+    if (spearBmd2) {
+      m_models[poleaxeIdx].weaponBmd = spearBmd2.get();
+      m_models[poleaxeIdx].weaponAttachBone = 33; // Right hand
+      m_models[poleaxeIdx].defaultAction = 1;     // PLAYER_STOP_MALE (weapon on back)
+      m_ownedBmds.push_back(std::move(spearBmd2));
     }
-    m_typeToModel[247] = crossbowIdx;
+    m_typeToModel[247] = poleaxeIdx;
   }
 
   m_modelsLoaded = true;
@@ -353,8 +326,10 @@ void NpcManager::AddNpcByType(uint16_t npcType, uint8_t gridX, uint8_t gridY,
 
   // Guard walk actions — weapons on back, use non-weapon animations
   // PLAYER_WALK_MALE = 15 (neutral walk, no weapon in hand)
-  if (npcType == 249 || npcType == 247)
+  if (npcType >= 245 && npcType <= 249) {
     added.walkAction = 15;
+    added.isGuard = true;
+  }
 
   std::cout << "[NPC] Server-spawned NPC type=" << npcType
             << " idx=" << serverIndex << " at grid (" << (int)gridX << ","
@@ -401,25 +376,29 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
   m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   m_shader->setVec3("viewPos", eye);
   m_shader->setBool("useFog", true);
-  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
-  m_shader->setFloat("uFogNear", 1500.0f);
-  m_shader->setFloat("uFogFar", 3500.0f);
+  if (m_mapId == 1) {
+    m_shader->setVec3("uFogColor", glm::vec3(0.0f));
+    m_shader->setFloat("uFogNear", 800.0f);
+    m_shader->setFloat("uFogFar", 2500.0f);
+  } else {
+    m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+    m_shader->setFloat("uFogNear", 1500.0f);
+    m_shader->setFloat("uFogFar", 3500.0f);
+  }
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setFloat("objectAlpha", 1.0f);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
   m_shader->setFloat("luminosity", m_luminosity);
+  m_shader->setVec3("baseTint", glm::vec3(1.0f));
+  m_shader->setVec3("glowColor", glm::vec3(0.0f));
+  m_shader->setInt("chromeMode", 0);
 
-  // Point lights
+  // Point lights (pre-cached locations)
   int plCount = std::min((int)m_pointLights.size(), MAX_POINT_LIGHTS);
-  m_shader->setInt("numPointLights", plCount);
-  for (int i = 0; i < plCount; ++i) {
-    std::string idx = std::to_string(i);
-    m_shader->setVec3("pointLightPos[" + idx + "]", m_pointLights[i].position);
-    m_shader->setVec3("pointLightColor[" + idx + "]", m_pointLights[i].color);
-    m_shader->setFloat("pointLightRange[" + idx + "]", m_pointLights[i].range);
-  }
+  m_shader->uploadPointLights(plCount, m_pointLights.data());
 
-  for (auto &npc : m_npcs) {
+  for (int ni = 0; ni < (int)m_npcs.size(); ++ni) {
+    auto &npc = m_npcs[ni];
     auto &mdl = m_models[npc.modelIdx];
 
     // Advance idle animation
@@ -468,8 +447,27 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
     }
 
-    // Guard patrol movement: interpolate toward move target
-    if (npc.isMoving) {
+    // Guard interaction: face player when quest dialog is open
+    if (npc.isGuard && m_interactingNpc == ni) {
+      // Stop movement immediately and face player
+      if (npc.isMoving) {
+        npc.isMoving = false;
+        npc.action = mdl.defaultAction;
+        npc.animFrame = 0.0f;
+      }
+      float dx = m_playerPos.x - npc.position.x;
+      float dz = m_playerPos.z - npc.position.z;
+      if (dx * dx + dz * dz > 1.0f)
+        npc.facing = atan2f(dz, -dx);
+    }
+    // Guard was interacting last frame but no longer — reset to spawn facing
+    if (npc.isGuard && m_prevInteractingNpc == ni && m_interactingNpc != ni) {
+      npc.facing = npc.spawnFacing;
+    }
+    // Guard patrol is server-driven via 0x14 NPC_MOVE packets (SetNpcMoveTarget)
+
+    // Guard patrol movement: interpolate toward move target (skip if interacting)
+    if (npc.isMoving && !(npc.isGuard && m_interactingNpc == ni)) {
       glm::vec3 diff = npc.moveTarget - npc.position;
       diff.y = 0.0f; // Only move in XZ plane
       float dist = glm::length(diff);
@@ -614,10 +612,15 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     // Main 5.2: o->BlendMesh = 4; o->BlendMeshLight = Luminosity;
     // Luminosity for Lorencia is a constant 0.8f (ZzzCharacter.cpp:5500)
     bool isBlacksmith = (npc.npcType == 251);
+    bool isGuardNpc = (npc.npcType >= 245 && npc.npcType <= 249);
     float forgeLum = 1.0f;
     if (isBlacksmith) {
       forgeLum = 0.8f;
       m_shader->setFloat("blendMeshLight", forgeLum);
+    }
+    // Main 5.2: +7 armor dims base mesh to 0.8 so chrome glow stands out
+    if (isGuardNpc) {
+      m_shader->setFloat("blendMeshLight", 0.8f);
     }
 
     // Draw all body part meshes
@@ -651,9 +654,68 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
     }
 
-    // Reset blendMeshLight after blacksmith
-    if (isBlacksmith) {
+    // Reset blendMeshLight after blacksmith or guard dimming
+    if (isBlacksmith || isGuardNpc) {
       m_shader->setFloat("blendMeshLight", 1.0f);
+    }
+
+    // ── +7 plate armor enhancement glow for guards ──
+    // Guards wear +7 plate armor (item index 9). Use proper per-part glow
+    // with chrome textures, matching HeroCharacter enhancement rendering.
+    // Main 5.2 ZzzObject.cpp RenderPartObjectEffect
+    bool isGuardType = (npc.npcType >= 245 && npc.npcType <= 249);
+    if (isGuardType && m_chromeTexture) {
+      static constexpr int GUARD_ARMOR_LEVEL = 7;
+      static constexpr int GUARD_ITEM_INDEX = 9; // Plate armor
+      float t = (float)glfwGetTime();
+
+      // Main 5.2 glow pass definitions
+      struct GlowPass { int chromeMode; };
+      auto getGlowPasses = [](uint8_t level, GlowPass *passes) -> int {
+        if (level >= 13) {
+          passes[0] = {4}; passes[1] = {3}; passes[2] = {1}; return 3;
+        } else if (level >= 11) {
+          passes[0] = {2}; passes[1] = {3}; passes[2] = {1}; return 3;
+        } else if (level >= 9) {
+          passes[0] = {1}; passes[1] = {3}; return 2;
+        } else {
+          passes[0] = {1}; return 1;
+        }
+      };
+
+      glBlendFunc(GL_ONE, GL_ONE);
+      glDepthMask(GL_FALSE);
+      glDisable(GL_CULL_FACE);
+
+      // Guard body parts: 0=Helm(cat7), 1=Armor(cat8), 2=Pants(cat9),
+      //                    3=Gloves(cat10), 4=Boots(cat11)
+      for (int p = 0; p < (int)npc.bodyParts.size(); ++p) {
+        auto &bp = npc.bodyParts[p];
+        glm::vec3 partGlow = GetPartObjectColor(7 + p, GUARD_ITEM_INDEX);
+        GlowPass passes[3];
+        int numPasses = getGlowPasses(GUARD_ARMOR_LEVEL, passes);
+        for (int gp = 0; gp < numPasses; ++gp) {
+          m_shader->setVec3("glowColor", partGlow);
+          m_shader->setInt("chromeMode", passes[gp].chromeMode);
+          m_shader->setFloat("chromeTime", t);
+          GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
+                               ? m_chrome2Texture
+                         : (passes[gp].chromeMode == 3) ? m_shinyTexture
+                         : m_chromeTexture;
+          glBindTexture(GL_TEXTURE_2D, glowTex);
+          for (auto &mb : bp.meshBuffers) {
+            if (mb.indexCount == 0 || mb.hidden) continue;
+            glBindVertexArray(mb.vao);
+            glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+          }
+        }
+      }
+
+      glEnable(GL_CULL_FACE);
+      glDepthMask(GL_TRUE);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      m_shader->setVec3("glowColor", glm::vec3(0.0f));
+      m_shader->setInt("chromeMode", 0);
     }
 
     // ── Guard weapon rendering (Main 5.2: ZzzCharacter.cpp:13859-13890) ──
@@ -713,6 +775,9 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
     }
   }
+
+  // Track previous interacting NPC for detecting dialog close transitions
+  m_prevInteractingNpc = m_interactingNpc;
 }
 
 void NpcManager::RenderShadows(const glm::mat4 &view, const glm::mat4 &proj) {
@@ -770,8 +835,8 @@ void NpcManager::RenderShadows(const glm::mat4 &view, const glm::mat4 &proj) {
           continue;
 
         auto &mesh = bmd->Meshes[mi];
-        std::vector<glm::vec3> shadowVerts;
-        shadowVerts.reserve(sm.vertexCount);
+        static std::vector<glm::vec3> shadowVerts;
+        shadowVerts.clear();
 
         for (int i = 0; i < mesh.NumTriangles; ++i) {
           auto &tri = mesh.Triangles[i];
@@ -995,6 +1060,84 @@ void NpcManager::Cleanup() {
   m_shadowShader.reset();
 }
 
+void NpcManager::SetQuestState(int questIndex, const int *killCount,
+                               const int *required, int targetCount) {
+  m_questIndex = questIndex;
+  m_questTargetCount = targetCount;
+  for (int i = 0; i < 3; i++) {
+    m_questKillCount[i] = killCount ? killCount[i] : 0;
+    m_questRequired[i] = required ? required[i] : 0;
+  }
+}
+
+// Quest chain layout (9 quests: 5 kill + 4 travel):
+//   Kill quest indices by guard: 0=248, 2=246, 4=245, 6=247, 8=249
+//   Travel quest destinations:   1→246, 3→245, 5→247, 7→249
+// QuestType: 0=kill, 1=travel
+struct QuestChainEntry { uint16_t guardType; uint8_t questType; };
+static const QuestChainEntry s_questChain[9] = {
+  {248, 0}, {246, 1}, {246, 0}, {247, 1}, {247, 0},
+  {245, 1}, {245, 0}, {249, 1}, {249, 0},
+};
+
+// Determine quest marker for a guard NPC:
+//  '!' gold = quest available / travel destination
+//  '?' grey = kill quest in progress (kills not done)
+//  '?' gold = kill quest complete (ready to turn in)
+//  '\0' = no marker
+static char GetQuestMarker(uint16_t npcType, int questIndex,
+                           const int *killCount, const int *required,
+                           int targetCount, ImU32 &color) {
+  if (questIndex < 0 || questIndex >= 9)
+    return '\0'; // All done or invalid
+
+  const auto &cur = s_questChain[questIndex];
+
+  if (cur.questType == 1) {
+    // Travel quest: destination guard shows gold !
+    if (npcType == cur.guardType) {
+      color = IM_COL32(255, 210, 50, 255);
+      return '!';
+    }
+    return '\0';
+  }
+
+  // Kill quest: only the owning guard shows a marker
+  if (npcType != cur.guardType)
+    return '\0';
+
+  // Check if accepted (server sends targets when accepted)
+  bool accepted = false;
+  for (int i = 0; i < targetCount; i++) {
+    if (required[i] > 0) { accepted = true; break; }
+  }
+
+  if (!accepted) {
+    // Kill quest available, not yet accepted — gold !
+    color = IM_COL32(255, 210, 50, 255);
+    return '!';
+  }
+
+  // Check if all targets complete
+  bool allDone = true;
+  for (int i = 0; i < targetCount; i++) {
+    if (required[i] > 0 && killCount[i] < required[i]) {
+      allDone = false;
+      break;
+    }
+  }
+
+  if (allDone) {
+    // All targets done — gold ?
+    color = IM_COL32(255, 210, 50, 255);
+    return '?';
+  }
+
+  // In progress — grey ?
+  color = IM_COL32(160, 160, 160, 255);
+  return '?';
+}
+
 void NpcManager::RenderLabels(ImDrawList *dl, const glm::mat4 &view,
                               const glm::mat4 &proj, int winW, int winH,
                               const glm::vec3 &camPos, int hoveredNpc) {
@@ -1038,6 +1181,31 @@ void NpcManager::RenderLabels(ImDrawList *dl, const glm::mat4 &view,
     // Text
     dl->AddText(ImVec2(sx - textSize.x / 2, sy - textSize.y / 2), textCol,
                 info.name.c_str());
+
+    // Quest marker above nameplate (for guard NPCs)
+    ImU32 markerColor = 0;
+    char marker = GetQuestMarker(info.type, m_questIndex, m_questKillCount,
+                                 m_questRequired, m_questTargetCount,
+                                 markerColor);
+    if (marker != '\0') {
+      char markerStr[2] = {marker, '\0'};
+      // Use larger font scale for marker
+      float baseFontSize = ImGui::GetFontSize();
+      float markerFontSize = baseFontSize * 2.0f;
+      ImVec2 markerSize = ImGui::CalcTextSize(markerStr);
+      markerSize.x *= 2.0f;
+      markerSize.y *= 2.0f;
+      float mx = sx - markerSize.x * 0.5f;
+      float my = y0 - markerSize.y - 4.0f;
+      // Shadow
+      ImFont *font = ImGui::GetFont();
+      dl->AddText(font, markerFontSize,
+                  ImVec2(mx + 1.5f, my + 1.5f), IM_COL32(0, 0, 0, 200),
+                  markerStr);
+      // Marker
+      dl->AddText(font, markerFontSize, ImVec2(mx, my),
+                  markerColor, markerStr);
+    }
   }
 }
 

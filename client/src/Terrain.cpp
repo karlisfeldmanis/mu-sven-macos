@@ -118,16 +118,16 @@ vec4 sampleLayerSmooth(sampler2D layerMap, vec2 uv, vec2 uvBase) {
             vec2 cUV = fract(uv * 0.25);
             cUV = applySymmetry(cUV, centerSym);
             if(centerIsWater) {
-                cUV.x += uTime * 0.1;
-                cUV.y += sin(uTime + (uv.y * 0.25) * 10.0) * 0.05;
+                cUV.x += uTime * 0.015;
+                cUV.y += sin(uTime * 0.2 + (uv.y * 0.25) * 10.0) * 0.02;
             }
             c[k] = texture(tileTextures, vec3(cUV, floor(centerSrc + 0.5)));
         } else {
             vec2 tileUV = fract(uv * 0.25);
             tileUV = applySymmetry(tileUV, sym[k]);
             if(isWater) {
-                tileUV.x += uTime * 0.1;
-                tileUV.y += sin(uTime + (uv.y * 0.25) * 10.0) * 0.05;
+                tileUV.x += uTime * 0.015;
+                tileUV.y += sin(uTime * 0.2 + (uv.y * 0.25) * 10.0) * 0.02;
             }
             c[k] = texture(tileTextures, vec3(tileUV, floor(src[k] + 0.5)));
         }
@@ -166,6 +166,11 @@ void main() {
     float mistBuild = smoothstep(uFogNear * 0.7, uFogNear * 1.5, dist); // mist only in far distance
     float fogFactor = distFog * (1.0 - heightMist * mistBuild * 0.55);
     finalColor = mix(uFogColor * luminosity, finalColor, fogFactor);
+
+    // Edge fog: darken at map boundaries (semi-transparent, not pure black)
+    float edgeFactor = computeEdgeFog(FragPos);
+    float edgeBlend = mix(0.3, 1.0, edgeFactor);
+    finalColor *= edgeBlend;
 
     FragColor = vec4(finalColor, 1.0);
 }
@@ -245,7 +250,7 @@ void Terrain::SetPointLights(const std::vector<glm::vec3> &positions,
                              const std::vector<glm::vec3> &colors,
                              const std::vector<float> &ranges,
                              const std::vector<int> &objectTypes) {
-  plCount = std::min((int)positions.size(), 64);
+  plCount = (int)positions.size(); // No cap — terrain uses CPU lightmap, not shader uniforms
   plPositions.assign(positions.begin(), positions.begin() + plCount);
   plColors.assign(colors.begin(), colors.begin() + plCount);
   plRanges.assign(ranges.begin(), ranges.begin() + plCount);
@@ -661,7 +666,11 @@ void Terrain::applyDynamicLights() {
     float gx = plPositions[li].z / 100.0f;
     float gz = plPositions[li].x / 100.0f;
 
-    int cellRange = 3; // Original uses range 3 for most light types
+    // Compute cellRange from range data, capped to prevent over-bright overlaps
+    int cellRange = 3; // fallback
+    if (li < (int)plRanges.size() && plRanges[li] > 0.0f) {
+      cellRange = std::max(1, std::min(5, (int)(plRanges[li] / 100.0f)));
+    }
 
     // Per-type flickering (Main 5.2 ZzzObject.cpp:3908-3940)
     // Use slow sine-wave modulation instead of per-frame random to avoid strobing.
@@ -672,24 +681,42 @@ void Terrain::applyDynamicLights() {
     int objType = (li < (int)plObjectTypes.size()) ? plObjectTypes[li] : 0;
     if (objType == -1) {
       // Spell light: color already has Main 5.2 luminosity, pass through unscaled
-      // Use plRanges to determine cell range (300 = 3 cells, 200 = 2 cells)
-      float spellRange = (li < (int)plRanges.size()) ? plRanges[li] : 200.0f;
-      cellRange = (int)(spellRange / 100.0f);
-    } else if (objType == 90) { // StreetLight
-      float phase = s_flickerPhase + (float)li * 1.7f; // per-light offset
-      float L = 0.7f + 0.1f * std::sin(phase); // [0.6, 0.8]
+    } else if (objType == 90 || objType == 98) { // StreetLight / Town lantern
+      float phase = s_flickerPhase + (float)li * 1.7f;
+      float L = 0.75f + 0.05f * std::sin(phase); // subtle flicker
       color = glm::vec3(L, L * 0.8f, L * 0.6f);
     } else if (objType == 150) { // Candle
       float phase = s_flickerPhase + (float)li * 2.3f;
-      float L = 0.5f + 0.2f * std::sin(phase); // [0.3, 0.7]
+      float L = 0.3f + 0.05f * std::sin(phase); // subtle
       color = glm::vec3(L, L * 0.6f, L * 0.2f);
+    } else if (objType == 41 || objType == 42) { // Dungeon torches
+      float phase = s_flickerPhase + (float)li * 1.3f;
+      float L = 0.5f + 0.05f * std::sin(phase);
+      color = glm::vec3(L, L * 0.55f, L * 0.2f);
+    } else if (objType == 50 || objType == 51 || objType == 55) { // Fire / Gate fire
+      float phase = s_flickerPhase + (float)li * 1.5f;
+      float L = 0.5f + 0.05f * std::sin(phase);
+      color = glm::vec3(L, L * 0.6f, L * 0.25f);
+    } else if (objType == 52) { // Bonfire
+      float phase = s_flickerPhase + (float)li * 1.1f;
+      float L = 0.6f + 0.05f * std::sin(phase);
+      color = glm::vec3(L, L * 0.5f, L * 0.15f);
+    } else if (objType == 80) { // Bridge lamp
+      float phase = s_flickerPhase + (float)li * 1.9f;
+      float L = 0.45f + 0.05f * std::sin(phase);
+      color = glm::vec3(L, L * 0.6f, L * 0.3f);
+    } else if (objType == 130 || objType == 131 || objType == 132) { // Light fixtures
+      float phase = s_flickerPhase + (float)li * 2.1f;
+      float L = 0.5f + 0.04f * std::sin(phase);
+      color = glm::vec3(L, L * 0.7f, L * 0.4f);
     } else {
-      color *= 0.35f; // Default scaling for non-flickering lights
+      color *= 0.5f;
     }
 
     float rf = (float)cellRange;
     int gxi = (int)gx;
     int gzi = (int)gz;
+
 
     for (int sz = gzi - cellRange; sz <= gzi + cellRange; ++sz) {
       if (sz < 0 || sz >= S)

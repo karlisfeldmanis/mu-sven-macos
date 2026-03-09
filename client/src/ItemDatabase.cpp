@@ -259,7 +259,8 @@ void Init() {
                    uint16_t d, uint16_t v, uint16_t e, uint16_t l, uint32_t cf,
                    uint16_t dmgMin = 0, uint16_t dmgMax = 0,
                    uint16_t defense = 0, uint8_t attackSpeed = 0,
-                   bool twoHanded = false, uint32_t buyPrice = 0) {
+                   bool twoHanded = false, uint32_t buyPrice = 0,
+                   uint16_t magicPower = 0) {
     ClientItemDefinition cd;
     cd.category = cat;
     cd.itemIndex = idx;
@@ -279,6 +280,7 @@ void Init() {
     cd.attackSpeed = attackSpeed;
     cd.twoHanded = twoHanded;
     cd.buyPrice = buyPrice;
+    cd.magicPower = magicPower;
 
     // Use Standard ID (Cat*32 + Idx) as key
     // This matches what the server sends for drops and ensures consistency
@@ -424,25 +426,25 @@ void Init() {
          0, false);
   addDef(144, 4, 16, "Saint Crossbow", "CrossBow08.bmd", 2, 3, 50, 130, 0, 0,
          83, 4, 90, 108, 0, 35, false);
-  // Category 5: Staves (OpenMU 0.95d Weapons.cs)
+  // Category 5: Staves (OpenMU 0.95d Weapons.cs) — last arg = magicPower
   addDef(160, 5, 0, "Skull Staff", "Staff01.bmd", 1, 3, 40, 0, 0, 0, 6, 1, 3, 4,
-         0, 20, false);
+         0, 20, false, 0, 6);
   addDef(161, 5, 1, "Angelic Staff", "Staff02.bmd", 2, 3, 50, 0, 0, 0, 18, 1,
-         10, 12, 0, 25, false);
+         10, 12, 0, 25, false, 0, 20);
   addDef(162, 5, 2, "Serpent Staff", "Staff03.bmd", 2, 3, 50, 0, 0, 0, 30, 1,
-         17, 18, 0, 25, false);
+         17, 18, 0, 25, false, 0, 34);
   addDef(163, 5, 3, "Thunder Staff", "Staff04.bmd", 2, 4, 40, 10, 0, 0, 42, 1,
-         23, 25, 0, 25, false);
+         23, 25, 0, 25, false, 0, 46);
   addDef(164, 5, 4, "Gorgon Staff", "Staff05.bmd", 2, 4, 60, 0, 0, 0, 52, 1, 29,
-         32, 0, 25, false);
+         32, 0, 25, false, 0, 58);
   addDef(165, 5, 5, "Legendary Staff", "Staff06.bmd", 1, 4, 50, 0, 0, 0, 59, 1,
-         29, 31, 0, 25, false);
+         29, 31, 0, 25, false, 0, 59);
   addDef(166, 5, 6, "Staff of Resurrection", "Staff07.bmd", 1, 4, 60, 10, 0, 0,
-         70, 1, 35, 39, 0, 25, false);
+         70, 1, 35, 39, 0, 25, false, 0, 70);
   addDef(167, 5, 7, "Chaos Lightning Staff", "Staff08.bmd", 2, 4, 60, 10, 0, 0,
-         75, 1, 47, 48, 0, 30, false);
+         75, 1, 47, 48, 0, 30, false, 0, 94);
   addDef(168, 5, 8, "Staff of Destruction", "Staff09.bmd", 2, 4, 60, 10, 0, 0,
-         90, 9, 55, 60, 0, 35, false);
+         90, 9, 55, 60, 0, 35, false, 0, 115);
   // Category 6: Shields (OpenMU v0.75)
   addDef(192, 6, 0, "Small Shield", "Shield01.bmd", 2, 2, 70, 0, 0, 0, 3, 15, 0,
          0, 3, 0, false);

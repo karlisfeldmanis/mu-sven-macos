@@ -1,6 +1,7 @@
 #include "handlers/ShopHandler.hpp"
 #include "PacketDefs.hpp"
 #include "handlers/InventoryHandler.hpp"
+#include <algorithm>
 #include <map>
 
 namespace ShopHandler {
@@ -132,29 +133,8 @@ void HandleShopOpen(Session &session, const std::vector<uint8_t> &packet,
   session.Send(sendBuf.data(), sendBuf.size());
 }
 
-bool FindEmptySpace(Session &session, uint8_t w, uint8_t h, uint8_t &outSlot) {
-  for (int startY = 0; startY <= 8 - h; ++startY) {
-    for (int startX = 0; startX <= 8 - w; ++startX) {
-      bool fits = true;
-      for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-          int slot = (startY + y) * 8 + (startX + x);
-          if (session.bag[slot].occupied) {
-            fits = false;
-            break;
-          }
-        }
-        if (!fits)
-          break;
-      }
-      if (fits) {
-        outSlot = startY * 8 + startX;
-        return true;
-      }
-    }
-  }
-  return false;
-}
+// FindEmptySpace is now in InventoryHandler namespace
+using InventoryHandler::FindEmptySpace;
 
 void HandleShopBuy(Session &session, const std::vector<uint8_t> &packet,
                    Database &db) {
@@ -307,8 +287,10 @@ void HandleShopSell(Session &session, const std::vector<uint8_t> &packet,
 
   uint32_t sellPrice = def.buyPrice / 3;
   if (sellPrice == 0) {
-    session.Send(&res, sizeof(res));
-    return; // Cannot sell this item
+    // Fallback: items with no/low buy price get minimum sell price
+    sellPrice = std::max(1u, (uint32_t)(def.level * 100));
+    if (sellPrice == 0)
+      sellPrice = 10; // Absolute minimum so all items are sellable
   }
 
   session.zen += sellPrice;

@@ -21,6 +21,7 @@ static constexpr int MAX_SLOTS = 5;
 struct CharSlotEquip {
   uint8_t category = 0xFF; // 0xFF = empty/default
   uint8_t itemIndex = 0;
+  uint8_t itemLevel = 0;   // +0 to +15 enhancement (for glow rendering)
 };
 
 struct CharSlot {

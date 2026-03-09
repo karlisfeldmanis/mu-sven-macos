@@ -46,6 +46,7 @@ public:
   int weaponDamageMax = 0;
   int minMagicDamage = 0;
   int maxMagicDamage = 0;
+  int staffRisePercent = 0;  // Staff Rise % (magicPower-based, includes level bonus)
 
   int attackSpeed = 0;
   int attackRate = 0;
@@ -102,6 +103,9 @@ public:
   // World position (updated from move packets, used for server AI aggro)
   float worldX = 0.0f;
   float worldZ = 0.0f;
+  uint8_t mapId = 0; // 0=Lorencia, 1=Dungeon
+  float gateTransitionCooldown = 0.0f; // Seconds until gate detection re-enables
+  float pendingViewportDelay = 0.0f;   // Seconds until deferred viewport send after map change
 
   // Potion cooldown timer (seconds)
   float potionCooldown = 0.0f;
@@ -116,8 +120,18 @@ public:
   float agRegenTimer = 0.0f;
   uint32_t lastAgUseTime = 0;
 
+  // Server-side attack rate limiter (prevents speed hack / GCD bypass)
+  float attackCooldown = 0.0f; // Seconds until next attack is allowed
+
   // Learned skills (skill IDs)
   std::vector<uint8_t> learnedSkills;
+
+  // Quest system
+  int questIndex = 0;      // Current quest (0-8), 9=all done
+  int questKillCount0 = 0; // Kill progress for target 0
+  int questKillCount1 = 0; // Kill progress for target 1
+  int questKillCount2 = 0; // Kill progress for target 2
+  bool questAccepted = false; // Whether current quest has been accepted
 
 private:
   int m_fd;

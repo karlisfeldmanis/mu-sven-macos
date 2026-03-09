@@ -22,6 +22,19 @@ For each mesh:
   else -> normal draw (uses global alpha blend)
 ```
 
+## Chrome Glow Rendering (Item Enhancement)
+
+See [character-system.md](character-system.md) for the full pass structure and color tables. Summary:
+
+- **Environment-map textures**: Chrome01.OZJ, Chrome02.OZJ, Shiny01.OZJ
+- **UV generation**: Fragment shader derives UVs from vertex normals + time-based wave
+  - CHROME: `UV = (N.z*0.5+wave, N.y*0.5+wave*2)`
+  - CHROME2: `UV = ((N.z+N.x)*0.8+wave2*2, (N.y+N.x)*1.0+wave2*3)` with sinusoidal wave2
+  - METAL: `UV = (N.z*0.5+0.2, N.y*0.5+0.5)` (static)
+  - CHROME4: Dynamic light vector `L = (cos(t), sin(2t), 1)`, `UV = dot(N,L)` variants (most intense)
+- **Blend state**: `GL_ONE, GL_ONE` additive, depth write off, face culling off
+- **Color selection**: `GetPartObjectColor()` for CHROME/METAL, `GetPartObjectColor2()` for CHROME2/CHROME4
+
 ## Blob Shadow (ZzzBMD.cpp RenderBodyShadow)
 
 Shadow projection formula in MU-local space:

@@ -48,6 +48,15 @@ struct InputContext {
   bool *teleportingToTown;
   float *teleportTimer;
   float teleportCastTime;
+  bool *mountToggling;
+  float *mountToggleTimer;
+  float mountToggleTime;
+  bool *questDialogOpen;
+  int *questDialogNpcIndex;
+  int *questDialogSelected;
+  bool *showQuestLog;
+  bool *mouseOverUIPanel; // Set each frame by main — true if cursor is over any panel
+  bool *showCommandTerminal; // Enter opens, Escape closes
   std::string dataPath;
 };
 
@@ -56,6 +65,8 @@ void Init(const InputContext &ctx);
 void RegisterCallbacks(GLFWwindow *window);
 void ProcessInput(GLFWwindow *window, float deltaTime);
 void ResetGameReady(); // Call on state transitions to prevent click bleed-through
+int GetActiveQuickSlot(); // Returns 0-3 for active toggle slot, -1 if none
+void RestoreQuickSlotState(); // Restore active slot from persisted rmcSkillId
 } // namespace InputHandler
 
 #endif // MU_INPUT_HANDLER_HPP

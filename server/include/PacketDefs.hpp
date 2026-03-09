@@ -82,6 +82,27 @@ constexpr uint8_t SHOP_SELL_RESULT = 0x40; // S->C: sell result
 constexpr uint8_t SKILL_LIST = 0x41;     // S->C: learned skill list (C2)
 constexpr uint8_t SKILL_USE = 0x42;      // C->S: skill attack
 constexpr uint8_t SKILL_TELEPORT = 0x43; // C->S: teleport to position
+
+// NPC Interaction
+constexpr uint8_t NPC_INTERACT = 0x44; // C->S: guard/quest NPC interact (open/close)
+
+// Quest System
+constexpr uint8_t QUEST = 0x50;              // Quest headcode
+constexpr uint8_t SUB_QUEST_STATE = 0x00;    // S->C: current quest state
+constexpr uint8_t SUB_QUEST_ACCEPT = 0x01;   // C->S: accept quest
+constexpr uint8_t SUB_QUEST_COMPLETE = 0x02; // C->S: turn in quest
+constexpr uint8_t SUB_QUEST_REWARD = 0x03;   // S->C: reward notification
+constexpr uint8_t SUB_QUEST_ABANDON = 0x04;  // C->S: abandon active quest
+
+// Map transition
+constexpr uint8_t MAP_CHANGE = 0x1C; // S->C: map transition
+
+// Warp command
+constexpr uint8_t WARP_COMMAND = 0x62;     // C->S: warp to map
+
+// Chat log
+constexpr uint8_t CHAT_LOG_HISTORY = 0x60; // S->C: chat history on login (C2)
+constexpr uint8_t CHAT_LOG_SAVE = 0x61;    // C->S: save chat message
 } // namespace Opcode
 
 // =====================================================
@@ -156,6 +177,7 @@ struct PMSG_CHARLIST_ENTRY {
   uint8_t ctlCode;
   uint8_t charSet[18];
   uint8_t guildStatus;
+  uint8_t equipLevels[7]; // +0-15 per slot (RH, LH, Helm, Armor, Pants, Gloves, Boots)
 };
 
 // C->S: Character Create (F3:01)
@@ -362,6 +384,14 @@ struct PMSG_SKILL_TELEPORT_RECV {
   uint8_t targetGridY;
 };
 
+// C->S: Warp Command (0x62)
+struct PMSG_WARP_COMMAND_RECV {
+  PBMSG_HEAD h; // C1:0x62
+  uint8_t mapId;
+  uint8_t spawnX; // 0 = use default spawn
+  uint8_t spawnY;
+};
+
 // S->C: Damage Result (0x29)
 struct PMSG_DAMAGE_SEND {
   PBMSG_HEAD h; // C1:0x29
@@ -461,6 +491,13 @@ struct PMSG_DROP_REMOVE_SEND {
 struct PMSG_SHOP_OPEN_RECV {
   PBMSG_HEAD h;     // C1:0x3B
   uint16_t npcType; // NPC type (250/251/253/254/255)
+};
+
+// C->S: NPC Interact (0x44)
+struct PMSG_NPC_INTERACT_RECV {
+  PBMSG_HEAD h;     // C1:0x44
+  uint16_t npcType; // NPC type (249=guard, etc.)
+  uint8_t action;   // 1=open dialog, 0=close dialog
 };
 
 // S->C: Shop item entry (part of C2 list)
@@ -598,6 +635,49 @@ struct PMSG_POSITION_SEND {
   uint8_t indexL;
   uint8_t x;
   uint8_t y;
+};
+
+// S->C: Map change (0x1C)
+struct PMSG_MAP_CHANGE_SEND {
+  PBMSG_HEAD h;    // C1:0x1C
+  uint8_t mapId;   // 0=Lorencia, 1=Dungeon
+  uint8_t spawnX;  // Grid X to spawn at
+  uint8_t spawnY;  // Grid Y to spawn at
+};
+
+// =====================================================
+// Section 6b: Quest System
+// =====================================================
+
+// S->C: Quest state sync (0x50:0x00)
+struct PMSG_QUEST_STATE_SEND {
+  PSBMSG_HEAD h;       // C1:0x50:0x00
+  uint8_t questIndex;  // 0-4 active quest, 5=all done
+  uint8_t targetCount; // 1-3 kill targets this quest
+  struct Target {
+    uint8_t killCount;
+    uint8_t killsRequired;
+  } targets[3];
+};
+
+// C->S: Accept quest (0x50:0x01)
+struct PMSG_QUEST_ACCEPT_RECV {
+  PSBMSG_HEAD h;        // C1:0x50:0x01
+  uint16_t guardNpcType;
+};
+
+// C->S: Complete quest (0x50:0x02)
+struct PMSG_QUEST_COMPLETE_RECV {
+  PSBMSG_HEAD h;        // C1:0x50:0x02
+  uint16_t guardNpcType;
+};
+
+// S->C: Reward notification (0x50:0x03)
+struct PMSG_QUEST_REWARD_SEND {
+  PSBMSG_HEAD h;         // C1:0x50:0x03
+  uint32_t zenReward;
+  uint32_t xpReward;
+  uint8_t nextQuestIndex;
 };
 
 // =====================================================

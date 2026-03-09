@@ -15,7 +15,8 @@ public:
   };
 
   void Init();
-  void Load(const TerrainData &data, int worldID, const std::string &dataPath);
+  void Load(const TerrainData &data, int worldID, const std::string &dataPath,
+            const std::vector<bool> *objectOccupancy = nullptr);
   void Render(const glm::mat4 &view, const glm::mat4 &projection, float time,
               const glm::vec3 &viewPos,
               const std::vector<PushSource> &pushSources = {});
@@ -23,6 +24,7 @@ public:
 
   void SetFogColor(const glm::vec3 &c) { fogColor = c; }
   void SetFogRange(float near_, float far_) { fogNear = near_; fogFar = far_; }
+  void SetLuminosity(float l) { m_luminosity = l; }
 
 private:
   GLuint VAO = 0, VBO = 0, EBO = 0;
@@ -47,7 +49,8 @@ private:
 
   // Cached uniform locations
   GLint u_view = -1, u_projection = -1, u_uTime = -1, u_viewPos = -1;
-  GLint u_fogColor = -1, u_fogNear = -1, u_fogFar = -1;
+  GLint u_fogColor = -1, u_fogNear = -1, u_fogFar = -1, u_luminosity = -1;
+  float m_luminosity = 1.0f;
   GLint u_numPushers = -1;
   GLint u_pushPos[17] = {}, u_pushRadius[17] = {};
   GLint u_grassTex[3] = {};

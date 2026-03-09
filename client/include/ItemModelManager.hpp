@@ -30,7 +30,8 @@ public:
   static void Init(Shader *shader, const std::string &dataPath);
   static LoadedItemModel *Get(const std::string &filename);
   static void RenderItemUI(const std::string &modelFile, int16_t defIndex,
-                           int x, int y, int w, int h, bool hovered = false);
+                           int x, int y, int w, int h, bool hovered = false,
+                           uint8_t itemLevel = 0);
   static void RenderItemWorld(const std::string &filename, const glm::vec3 &pos,
                               const glm::mat4 &view, const glm::mat4 &proj,
                               float scale = 1.0f,
@@ -52,6 +53,10 @@ private:
   static Shader *s_shader;
   static std::unique_ptr<Shader> s_shadowShader;
   static std::string s_dataPath;
+  // Chrome environment map textures for +7/+9/+11 glow
+  static GLuint s_chromeTexture;
+  static GLuint s_chrome2Texture;
+  static GLuint s_shinyTexture;
   // Player.bmd skeleton for computing idle-pose bones for body part items
   static std::shared_ptr<BMDData> s_playerBmd;
   static std::vector<BoneWorldMatrix> s_playerIdleBones;

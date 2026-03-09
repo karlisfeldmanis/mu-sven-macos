@@ -29,6 +29,10 @@ static int GetBlendMeshTexId(int type) {
     return 2; // Carriage01 — lantern glow
   case 105:
     return 3; // Waterspout01 — water UV scroll
+  case 41:
+    return 1; // DungeonGate02 torch — fire glow mesh
+  case 42:
+    return 1; // DungeonGate03 torch — fire glow mesh
   default:
     return -1;
   }
@@ -243,6 +247,105 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
   out.push_back(mb);
 }
 
+void ObjectRenderer::UploadMeshGPUSkinned(const Mesh_t &mesh,
+                                           const std::string &baseDir,
+                                           std::vector<MeshBuffers> &out) {
+  MeshBuffers mb;
+  mb.texture = 0;
+
+  struct SkinnedVertex {
+    glm::vec3 pos;
+    glm::vec3 normal;
+    glm::vec2 tex;
+    float boneIndex;
+  };
+  std::vector<SkinnedVertex> vertices;
+  std::vector<unsigned int> indices;
+
+  for (int i = 0; i < mesh.NumTriangles; ++i) {
+    auto &tri = mesh.Triangles[i];
+    int steps = (tri.Polygon == 3) ? 3 : 4;
+    int startIdx = vertices.size();
+    for (int v = 0; v < 3; ++v) {
+      SkinnedVertex vert;
+      auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+      auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
+      vert.pos = srcVert.Position;          // RAW position (no bone transform)
+      vert.normal = srcNorm.Normal;          // RAW normal
+      vert.boneIndex = (float)srcVert.Node;  // Bone index for GPU skinning
+      vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                           mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+      vertices.push_back(vert);
+      indices.push_back(startIdx + v);
+    }
+    if (steps == 4) {
+      int quadIndices[3] = {0, 2, 3};
+      for (int v : quadIndices) {
+        SkinnedVertex vert;
+        auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+        auto &srcNorm = mesh.Normals[tri.NormalIndex[v]];
+        vert.pos = srcVert.Position;
+        vert.normal = srcNorm.Normal;
+        vert.boneIndex = (float)srcVert.Node;
+        vert.tex = glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                             mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV);
+        vertices.push_back(vert);
+        indices.push_back(vertices.size() - 1);
+      }
+    }
+  }
+
+  mb.indexCount = indices.size();
+  mb.vertexCount = vertices.size();
+  mb.isDynamic = false; // Static VBO — animation via shader uniforms
+  if (mb.indexCount == 0) {
+    out.push_back(mb);
+    return;
+  }
+
+  glGenVertexArrays(1, &mb.vao);
+  glGenBuffers(1, &mb.vbo);
+  glGenBuffers(1, &mb.ebo);
+
+  glBindVertexArray(mb.vao);
+  glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
+  glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(SkinnedVertex),
+               vertices.data(), GL_STATIC_DRAW);
+
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mb.ebo);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int),
+               indices.data(), GL_STATIC_DRAW);
+
+  // pos
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex), (void *)0);
+  glEnableVertexAttribArray(0);
+  // normal
+  glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex),
+                        (void *)(sizeof(float) * 3));
+  glEnableVertexAttribArray(1);
+  // tex
+  glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex),
+                        (void *)(sizeof(float) * 6));
+  glEnableVertexAttribArray(2);
+  // boneIndex
+  glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(SkinnedVertex),
+                        (void *)(sizeof(float) * 8));
+  glEnableVertexAttribArray(3);
+
+  auto texResult = TextureLoader::ResolveWithInfo(baseDir, mesh.TextureName);
+  mb.texture = texResult.textureID;
+  mb.hasAlpha = texResult.hasAlpha;
+  mb.textureName = mesh.TextureName;
+
+  auto scriptFlags = TextureLoader::ParseScriptFlags(mesh.TextureName);
+  mb.noneBlend = scriptFlags.noneBlend;
+  mb.hidden = scriptFlags.hidden;
+  mb.bright = scriptFlags.bright;
+  mb.bmdTextureId = mesh.Texture;
+
+  out.push_back(mb);
+}
+
 void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
                                  const std::string &objectDir) {
   int skipped = 0;
@@ -270,17 +373,14 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
       cache.blendMeshTexId = GetBlendMeshTexId(obj.type);
 
       // Detect animated models (>1 keyframe in first action)
-      // Only enable CPU re-skinning for select types — trees (0-19) and
-      // stone walls have too many instances for per-frame vertex transforms.
-      auto shouldAnimate = [](int t) {
-        // Cloth, signs, animals, mechanical, decorative — low instance count
+      auto shouldCPUAnimate = [](int t) {
+        // CPU re-skinning: low instance count types only
         return t == 56 || t == 57 ||   // MerchantAnimal01-02
-               // Type 59 (TreasureChest01) excluded: original sets Velocity=0
-               // in Lorencia (ZzzObject.cpp:4719), purely decorative/static
                t == 60 ||              // Ship01
+               t == 72 || t == 74 ||   // StoneWall04/06 (flag banners)
                t == 90 ||              // StreetLight01
                t == 95 ||              // Curtain01
-               t == 96 ||              // Sign01
+               t == 96 || t == 97 ||   // Sign01-02
                t == 98 ||              // Carriage01
                t == 105 ||             // Waterspout01
                t == 110 ||             // Hanging01
@@ -288,16 +388,27 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
                t == 120 ||             // Tent01
                t == 150;               // Candle01
       };
-      if (!bmd->Actions.empty() && bmd->Actions[0].NumAnimationKeys > 1 &&
-          shouldAnimate(obj.type)) {
-        cache.isAnimated = true;
-        cache.numAnimationKeys = bmd->Actions[0].NumAnimationKeys;
-      }
+      // GPU skinning: high instance count animated types (trees)
+      bool isTree = (obj.type >= 0 && obj.type <= 19);
+      bool hasAnim = !bmd->Actions.empty() && bmd->Actions[0].NumAnimationKeys > 1;
 
-      for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
-        auto &mesh = bmd->Meshes[mi];
-        UploadMesh(mesh, objectDir + "/", cache.boneMatrices, cache.meshBuffers,
-                   cache.isAnimated);
+      if (hasAnim && isTree) {
+        // GPU-skinned path: store raw vertices + bone indices
+        cache.isGPUAnimated = true;
+        cache.numAnimationKeys = bmd->Actions[0].NumAnimationKeys;
+        for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
+          UploadMeshGPUSkinned(bmd->Meshes[mi], objectDir + "/",
+                               cache.meshBuffers);
+        }
+      } else {
+        if (hasAnim && shouldCPUAnimate(obj.type)) {
+          cache.isAnimated = true;
+          cache.numAnimationKeys = bmd->Actions[0].NumAnimationKeys;
+        }
+        for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
+          UploadMesh(bmd->Meshes[mi], objectDir + "/", cache.boneMatrices,
+                     cache.meshBuffers, cache.isAnimated);
+        }
       }
 
       // Mark BlendMesh meshes (window light / glow)
@@ -309,10 +420,11 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
         }
       }
 
-      // Retain BMD data for animated types (needed for per-frame re-skinning)
-      if (cache.isAnimated) {
+      // Retain BMD data for animated types (CPU re-skinning or GPU bone compute)
+      if (cache.isAnimated || cache.isGPUAnimated) {
         cache.bmdData = std::move(bmd);
-        std::cout << "  [Animated] type " << obj.type
+        std::cout << "  [" << (cache.isGPUAnimated ? "GPU-Anim" : "CPU-Anim")
+                  << "] type " << obj.type
                   << " keys=" << cache.numAnimationKeys << std::endl;
       }
 
@@ -359,6 +471,10 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
       objPos.y = h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) +
                  h01 * (1 - xd) * zd + h11 * xd * zd;
     }
+
+    // Fix floating candle — model origin is above base, lower onto table surface
+    if (obj.type == 150)
+      objPos.y -= 50.0f;
 
     // Build model matrix
     glm::mat4 model = glm::translate(glm::mat4(1.0f), objPos);
@@ -435,6 +551,7 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
             << " object instances, " << modelCache.size()
             << " unique models, " << m_interactiveObjects.size()
             << " interactive objects, skipped " << skipped << std::endl;
+
 }
 
 void ObjectRenderer::LoadObjectsGeneric(
@@ -478,7 +595,7 @@ void ObjectRenderer::LoadObjectsGeneric(
 
       ModelCache cache;
       cache.boneMatrices = ComputeBoneMatrices(bmd.get());
-      cache.blendMeshTexId = -1;
+      cache.blendMeshTexId = GetBlendMeshTexId(obj.type);
 
       // Enable animation for models with multiple keyframes (low instance count)
       if (!bmd->Actions.empty() && bmd->Actions[0].NumAnimationKeys > 1) {
@@ -495,6 +612,15 @@ void ObjectRenderer::LoadObjectsGeneric(
       for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
         UploadMesh(bmd->Meshes[mi], texDir, cache.boneMatrices,
                    cache.meshBuffers, cache.isAnimated);
+      }
+
+      // Mark BlendMesh meshes (fire glow / torch light)
+      if (cache.blendMeshTexId >= 0) {
+        for (auto &mb : cache.meshBuffers) {
+          if (mb.bmdTextureId == cache.blendMeshTexId) {
+            mb.isWindowLight = true;
+          }
+        }
       }
 
       if (cache.isAnimated) {
@@ -652,6 +778,7 @@ void ObjectRenderer::RetransformMesh(const Mesh_t &mesh,
                   vertices.data());
 }
 
+
 void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
                             const glm::vec3 &cameraPos, float currentTime) {
   if (instances.empty() || !shader)
@@ -692,57 +819,128 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   shader->setFloat("objectAlpha", 1.0f);
   shader->setVec2("texCoordOffset", glm::vec2(0.0f));
   shader->setFloat("luminosity", m_luminosity);
+  shader->setInt("chromeMode", 0);
+  shader->setFloat("chromeTime", 0.0f);
+  shader->setVec3("baseTint", glm::vec3(1.0f));
+  shader->setVec3("glowColor", glm::vec3(0.0f));
 
-  // Set point light uniforms
-  shader->setInt("numPointLights", plCount);
-  for (int i = 0; i < plCount; ++i) {
-    std::string idx = std::to_string(i);
-    shader->setVec3("pointLightPos[" + idx + "]", plPositions[i]);
-    shader->setVec3("pointLightColor[" + idx + "]", plColors[i]);
-    shader->setFloat("pointLightRange[" + idx + "]", plRanges[i]);
-  }
+  // Set point light uniforms (pre-cached locations)
+  shader->uploadPointLights(plCount, plPositions.data(), plColors.data(),
+                            plRanges.data());
 
   // Advance skeletal animation for animated model types
+  shader->setBool("useSkinning", false); // Default off
   {
     const float ANIM_SPEED = 4.0f; // keyframes/sec (reference: 0.16 * 25fps)
+    const float TREE_ANIM_SPEED = 8.0f; // Trees: Main 5.2 Velocity=0.4 * 25fps
     float dt = (lastAnimTime > 0.0f) ? (currentTime - lastAnimTime) : 0.0f;
     if (dt > 0.0f && dt < 1.0f) { // clamp to avoid huge jumps
       for (auto &[type, cache] : modelCache) {
-        if (!cache.isAnimated || !cache.bmdData)
+        if (!cache.bmdData)
           continue;
+
+        // GPU-skinned animation (trees): compute bone matrices for shader upload
+        if (cache.isGPUAnimated) {
+          auto &state = animStates[type];
+          state.frame += TREE_ANIM_SPEED * dt;
+          if (state.frame >= (float)cache.numAnimationKeys)
+            state.frame = std::fmod(state.frame, (float)cache.numAnimationKeys);
+
+          auto bones = ComputeBoneMatricesInterpolated(cache.bmdData.get(), 0,
+                                                       state.frame);
+          // Convert BoneWorldMatrix (3x4 row-major) to glm::mat4 (column-major)
+          cache.gpuBoneMatrices.resize(bones.size());
+          for (size_t i = 0; i < bones.size(); ++i) {
+            auto &bm = bones[i];
+            cache.gpuBoneMatrices[i][0] = glm::vec4(bm[0][0], bm[1][0], bm[2][0], 0.0f);
+            cache.gpuBoneMatrices[i][1] = glm::vec4(bm[0][1], bm[1][1], bm[2][1], 0.0f);
+            cache.gpuBoneMatrices[i][2] = glm::vec4(bm[0][2], bm[1][2], bm[2][2], 0.0f);
+            cache.gpuBoneMatrices[i][3] = glm::vec4(bm[0][3], bm[1][3], bm[2][3], 1.0f);
+          }
+          continue;
+        }
+
+        // CPU-skinned animation: retransform mesh vertices
+        if (!cache.isAnimated)
+          continue;
+
         auto &state = animStates[type];
-        // Per-type speed: flag (96) uses Velocity=0.3 in original (7.5 kf/s)
-        float speed = (type == 96) ? 7.5f : ANIM_SPEED;
-        state.frame += speed * dt;
+        state.frame += ANIM_SPEED * dt;
         if (state.frame >= (float)cache.numAnimationKeys)
           state.frame = std::fmod(state.frame, (float)cache.numAnimationKeys);
 
         auto bones = ComputeBoneMatricesInterpolated(cache.bmdData.get(), 0,
                                                      state.frame);
 
+        // StoneWall04/06 flags: reduce bone animation amplitude to prevent
+        // clipping through adjacent walls. Blend animated bones with rest
+        // pose (30% animation, 70% rest). Only affects the animated chain
+        // bones (2-5), not the static root/helpers.
+        bool isWallFlag = (type == 72 || type == 74);
+        if (isWallFlag) {
+          const float blend = 0.3f;
+          auto &rest = cache.boneMatrices;
+          for (int bi = 0; bi < (int)bones.size() && bi < (int)rest.size();
+               ++bi) {
+            for (int r = 0; r < 3; ++r)
+              for (int c = 0; c < 4; ++c)
+                bones[bi][r][c] =
+                    rest[bi][r][c] +
+                    blend * (bones[bi][r][c] - rest[bi][r][c]);
+          }
+        }
+
         for (int mi = 0; mi < (int)cache.meshBuffers.size() &&
                          mi < (int)cache.bmdData->Meshes.size();
              ++mi) {
+          // StoneWall04/06: only animate flag meshes (badge_*), skip
+          // static wall base (tile_01.jpg) to prevent clipping
+          if (isWallFlag &&
+              cache.meshBuffers[mi].textureName.find("badge") ==
+                  std::string::npos) {
+            continue;
+          }
           RetransformMesh(cache.bmdData->Meshes[mi], bones,
                           cache.meshBuffers[mi]);
         }
       }
     }
+
+
     lastAnimTime = currentTime;
   }
 
   // Compute BlendMesh animation state from time
   // Flicker: random-ish intensity between 0.4 and 0.7 (like original
   // rand()%4+4)
-  float flickerBase = 0.55f + 0.15f * std::sin(currentTime * 7.3f) *
-                                  std::sin(currentTime * 11.1f + 2.0f);
+  // Layered sines (additive, not multiplicative) — no beat-frequency strobing
+  float flickerBase = 0.72f + 0.09f * std::sin(currentTime * 4.7f)
+                            + 0.07f * std::sin(currentTime * 11.3f + 1.3f)
+                            + 0.04f * std::sin(currentTime * 21.7f + 3.7f);
   // UV scroll: 1-second cycle for animated window meshes
   float uvScroll = -std::fmod(currentTime, 1.0f);
+
+  // Dungeon UV scroll: types 22-24 StreamMesh=1, V = -(WorldTime%1000)*0.001
+  // Main 5.2 ZzzObject.cpp:3964 — 1-second cycle, V-axis only
+  float dungeonWaterScroll = 0.0f;
+  if (m_mapId == 1) {
+    int wt = (int)(currentTime * 1000.0f) % 1000;
+    dungeonWaterScroll = -(float)wt * 0.001f;
+  }
 
   for (auto &inst : instances) {
     // PoseBox (type 133) is an NPC interaction trigger, not a visible object
     // Light01-03 (types 130-132) are fire/smoke-only emitters (HiddenMesh=-2)
     if (inst.type == 133 || (inst.type >= 130 && inst.type <= 132))
+      continue;
+
+    // Dungeon hidden objects (Main 5.2 ZzzObject.cpp:3955 — HiddenMesh=-2)
+    // Types 39=lance trap, 40=blade trap, 51=fire trap (VFX-only)
+    // Type 52: debris spawner (particles only, no mesh)
+    // Type 60: gate trigger (invisible, interaction-only)
+    if (m_mapId == 1 &&
+        (inst.type == 39 || inst.type == 40 || inst.type == 51 ||
+         inst.type == 52 || inst.type == 60))
       continue;
 
     // Type filter: if set, only render specified types
@@ -787,32 +985,81 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
     shader->setMat4("model", inst.modelMatrix);
     shader->setVec3("terrainLight", inst.terrainLight);
 
+    // GPU skinning: upload bone matrices for GPU-animated types (trees)
+    if (it->second.isGPUAnimated && !it->second.gpuBoneMatrices.empty()) {
+      int count = std::min((int)it->second.gpuBoneMatrices.size(), 48);
+      glUniformMatrix4fv(shader->loc("boneMatrices"), count, GL_FALSE,
+                         glm::value_ptr(it->second.gpuBoneMatrices[0]));
+      shader->setBool("useSkinning", true);
+    } else {
+      shader->setBool("useSkinning", false);
+    }
+
     // Check if this model type has BlendMesh animation
     bool hasBlendMesh = it->second.blendMeshTexId >= 0;
     bool hasUVScroll =
         (inst.type == 118 || inst.type == 119 || inst.type == 105);
+    // Dungeon water objects: types 22-24 with StreamMesh=1 (mesh idx 1 scrolls)
+    bool isDungeonWater =
+        (m_mapId == 1 && inst.type >= 22 && inst.type <= 24);
 
+    // Dungeon coffins/sarcophagi (types 44-46), organic/squid objects (11, 22-24, 53):
+    // disable face culling — thin/double-sided geometry needs both sides visible
+    bool disableCullForObj = (m_mapId == 1 &&
+        ((inst.type >= 44 && inst.type <= 46) ||
+         (inst.type >= 22 && inst.type <= 24) ||
+         inst.type == 11 || inst.type == 53));
+    if (disableCullForObj)
+      glDisable(GL_CULL_FACE);
+
+    int meshIdx = 0;
     for (auto &mb : it->second.meshBuffers) {
-      if (mb.indexCount == 0 || mb.hidden)
+      if (mb.indexCount == 0 || mb.hidden) {
+        ++meshIdx;
         continue;
-      if (mb.texture == 0)
+      }
+      if (mb.texture == 0) {
+        ++meshIdx;
         continue;
+      }
 
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
 
+      // Dungeon water: StreamMesh=1 — only mesh index 1 gets V-axis UV scroll
+      // Main 5.2: BlendMeshTexCoordV = -(WorldTime%1000)*0.001f
+      if (isDungeonWater && meshIdx == 1) {
+        shader->setVec2("texCoordOffset", glm::vec2(0.0f, dungeonWaterScroll));
+        glBlendFunc(GL_ONE, GL_ONE);
+        glDepthMask(GL_FALSE);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        glDepthMask(GL_TRUE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        shader->setVec2("texCoordOffset", glm::vec2(0.0f));
+        ++meshIdx;
+        continue;
+      }
+
       if (mb.isWindowLight && hasBlendMesh) {
         // BlendMesh: additive blending with intensity flicker
         float intensity = flickerBase;
-        // Bonfire has wider flicker range (0.4-0.9)
+        // Bonfire has wider flicker range (0.5-0.95)
         if (inst.type == 52)
-          intensity = 0.65f + 0.25f * std::sin(currentTime * 9.0f) *
-                                  std::sin(currentTime * 13.7f);
-        // Static glow for streetlights, candles, carriages, waterspout
-        // Reference: BlendMeshLight = 1.0f for these types
-        if (inst.type == 90 || inst.type == 150 || inst.type == 98 ||
-            inst.type == 105)
+          intensity = 0.70f + 0.12f * std::sin(currentTime * 6.3f)
+                            + 0.08f * std::sin(currentTime * 14.1f + 0.7f)
+                            + 0.05f * std::sin(currentTime * 27.3f + 2.1f);
+        // Street light: subtle flicker 0.6-0.8 (Main 5.2: rand()%2+6 * 0.1)
+        if (inst.type == 90)
+          intensity = 0.7f + 0.1f * std::sin(currentTime * 5.3f);
+        // Static glow for candles, carriages, waterspout
+        if (inst.type == 150 || inst.type == 98 || inst.type == 105)
           intensity = 1.0f;
+        // Dungeon torches: warm steady glow with gentle organic flicker
+        if (inst.type == 41 || inst.type == 42) {
+          float phase = inst.modelMatrix[3][0] * 0.013f; // per-torch offset
+          intensity = 0.78f + 0.10f * std::sin(currentTime * 3.8f + phase)
+                            + 0.06f * std::sin(currentTime * 9.5f + phase * 2.1f);
+        }
 
         shader->setFloat("blendMeshLight", intensity);
         if (hasUVScroll)
@@ -856,8 +1103,13 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
           glEnable(GL_CULL_FACE);
         }
       }
+      ++meshIdx;
     }
+
+    if (disableCullForObj)
+      glEnable(GL_CULL_FACE);
   }
+
 }
 
 void ObjectRenderer::Cleanup() {
@@ -875,5 +1127,9 @@ void ObjectRenderer::Cleanup() {
   }
   modelCache.clear();
   instances.clear();
+  if (m_chromeTexture) {
+    glDeleteTextures(1, &m_chromeTexture);
+    m_chromeTexture = 0;
+  }
   shader.reset();
 }

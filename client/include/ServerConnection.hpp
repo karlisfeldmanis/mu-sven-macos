@@ -46,6 +46,17 @@ public:
   // Game Menu
   void SendCharListRequest();
 
+  // NPC Interaction (guard quest dialog)
+  void SendNpcInteract(uint16_t npcType, bool open);
+
+  // Quest system
+  void SendQuestAccept(uint16_t guardNpcType);
+  void SendQuestComplete(uint16_t guardNpcType);
+  void SendQuestAbandon();
+
+  // Warp
+  void SendWarpCommand(uint8_t mapId, uint8_t spawnX = 0, uint8_t spawnY = 0);
+
   // Shop
   void SendShopOpen(uint16_t npcType);
   void SendShopBuy(int16_t defIndex, uint8_t itemLevel, uint8_t quantity,

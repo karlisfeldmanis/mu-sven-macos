@@ -2,6 +2,7 @@
 #include "PacketDefs.hpp"
 #include "Server.hpp"
 #include "handlers/CharacterSelectHandler.hpp"
+#include "handlers/QuestHandler.hpp"
 #include "handlers/ShopHandler.hpp"
 #include <cstdio>
 
@@ -107,6 +108,48 @@ void Handle(Session &session, const std::vector<uint8_t> &packet, Database &db,
     break;
   case Opcode::SHOP_SELL:
     ShopHandler::HandleShopSell(session, packet, db);
+    break;
+
+  // NPC Interaction (guard quest dialog)
+  case Opcode::NPC_INTERACT:
+    if (packet.size() >= sizeof(PMSG_NPC_INTERACT_RECV)) {
+      auto *recv =
+          reinterpret_cast<const PMSG_NPC_INTERACT_RECV *>(packet.data());
+      world.SetGuardInteracting(recv->npcType, session.GetFd(),
+                                recv->action == 1);
+    }
+    break;
+
+  // Warp command
+  case Opcode::WARP_COMMAND: {
+    if (packet.size() < sizeof(PMSG_WARP_COMMAND_RECV))
+      break;
+    auto *warp =
+        reinterpret_cast<const PMSG_WARP_COMMAND_RECV *>(packet.data());
+    uint8_t mapId = warp->mapId;
+    uint8_t sx = warp->spawnX;
+    uint8_t sy = warp->spawnY;
+    // Default spawn points per map
+    if (sx == 0 && sy == 0) {
+      if (mapId == 0) { sx = 125; sy = 125; }       // Lorencia center
+      else if (mapId == 1) { sx = 108; sy = 247; }   // Dungeon entrance
+    }
+    if (mapId <= 1) { // Only allow maps 0-1 for now
+      printf("[PacketHandler] Warp command: fd=%d -> map %d (%d,%d)\n",
+             session.GetFd(), mapId, sx, sy);
+      server.TransitionMap(session, mapId, sx, sy);
+    }
+    break;
+  }
+
+  // Quest system
+  case Opcode::QUEST:
+    if (subcode == Opcode::SUB_QUEST_ACCEPT)
+      QuestHandler::HandleQuestAccept(session, packet, db, server);
+    else if (subcode == Opcode::SUB_QUEST_COMPLETE)
+      QuestHandler::HandleQuestComplete(session, packet, db, server);
+    else if (subcode == Opcode::SUB_QUEST_ABANDON)
+      QuestHandler::HandleQuestAbandon(session, db);
     break;
 
   default:

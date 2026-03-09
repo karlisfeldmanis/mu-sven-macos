@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -76,6 +77,15 @@ public:
     glDeleteShader(fragment);
   }
 
+  // Factory: resolves shaders/ vs ../shaders/ path and returns unique_ptr
+  static std::unique_ptr<Shader> Load(const std::string &vertName,
+                                      const std::string &fragName) {
+    std::ifstream test("shaders/" + vertName);
+    std::string prefix = test.good() ? "shaders/" : "../shaders/";
+    return std::make_unique<Shader>((prefix + vertName).c_str(),
+                                   (prefix + fragName).c_str());
+  }
+
   void use() { glUseProgram(ID); }
 
   GLint loc(const std::string &name) const {
@@ -109,8 +119,55 @@ public:
     glUniformMatrix4fv(loc(name), 1, GL_FALSE, &mat[0][0]);
   }
 
+  // Point light uniform upload — pre-cached locations, zero string allocs
+  static constexpr int MAX_POINT_LIGHTS = 64;
+
+  // Struct-based overload: any T with .position, .color, .range members
+  template <typename T>
+  void uploadPointLights(int count, const T *lights) {
+    ensurePLCached();
+    glUniform1i(m_plCount, count);
+    for (int i = 0; i < count; ++i) {
+      glUniform3fv(m_plPos[i], 1, &lights[i].position[0]);
+      glUniform3fv(m_plColor[i], 1, &lights[i].color[0]);
+      glUniform1f(m_plRange[i], lights[i].range);
+    }
+  }
+
+  void uploadPointLights(int count, const glm::vec3 *positions,
+                         const glm::vec3 *colors, const float *ranges) {
+    ensurePLCached();
+    glUniform1i(m_plCount, count);
+    for (int i = 0; i < count; ++i) {
+      glUniform3fv(m_plPos[i], 1, &positions[i][0]);
+      glUniform3fv(m_plColor[i], 1, &colors[i][0]);
+      glUniform1f(m_plRange[i], ranges[i]);
+    }
+  }
+
 private:
+  void ensurePLCached() {
+    if (!m_plCached) {
+      for (int i = 0; i < MAX_POINT_LIGHTS; ++i) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "pointLightPos[%d]", i);
+        m_plPos[i] = glGetUniformLocation(ID, buf);
+        snprintf(buf, sizeof(buf), "pointLightColor[%d]", i);
+        m_plColor[i] = glGetUniformLocation(ID, buf);
+        snprintf(buf, sizeof(buf), "pointLightRange[%d]", i);
+        m_plRange[i] = glGetUniformLocation(ID, buf);
+      }
+      m_plCount = glGetUniformLocation(ID, "numPointLights");
+      m_plCached = true;
+    }
+  }
   mutable std::unordered_map<std::string, GLint> m_uniformCache;
+  // Pre-cached point light uniform locations
+  GLint m_plPos[MAX_POINT_LIGHTS]{};
+  GLint m_plColor[MAX_POINT_LIGHTS]{};
+  GLint m_plRange[MAX_POINT_LIGHTS]{};
+  GLint m_plCount = -1;
+  bool m_plCached = false;
 };
 
 #endif

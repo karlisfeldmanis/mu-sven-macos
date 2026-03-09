@@ -1,4 +1,4 @@
-#include "InventoryUI.hpp"
+#include "InventoryUI_Internal.hpp"
 #include "HeroCharacter.hpp"
 #include "ItemDatabase.hpp"
 #include "ServerConnection.hpp"
@@ -11,25 +11,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <string>
 
-// ─── File-scope statics (internal-only) ─────────────────────────────────────
+// ─── Shared state (external linkage — declared in InventoryUI_Internal.hpp) ──
 
 static InventoryUIContext s_ctxStore;
-static const InventoryUIContext *s_ctx = &s_ctxStore;
+const InventoryUIContext *s_ctx = &s_ctxStore;
 
 // Potion cooldown constant
 static constexpr float POTION_COOLDOWN_TIME = 30.0f;
-
-// UI scale and panel layout
-static constexpr float g_uiPanelScale = 1.5f;
-static constexpr float BASE_PANEL_W = 190.0f;
-static constexpr float BASE_PANEL_H = 429.0f;
-static constexpr float PANEL_W = BASE_PANEL_W * g_uiPanelScale;
-static constexpr float PANEL_H = BASE_PANEL_H * g_uiPanelScale;
-static constexpr float PANEL_Y = 20.0f;
-static constexpr float PANEL_X_RIGHT = 1270.0f - PANEL_W;
 
 // Equipment layout rects (virtual coords)
 static const EquipSlotRect g_equipLayoutRects[] = {
@@ -50,7 +42,7 @@ static const EquipSlotRect g_equipLayoutRects[] = {
 // Slot background textures
 static GLuint g_slotBackgrounds[12] = {0};
 static UITexture g_texInventoryBg;
-static GLuint g_texSkillIcons = 0; // Skill.OZJ sprite sheet
+GLuint g_texSkillIcons = 0; // Skill.OZJ sprite sheet (shared)
 
 // Render queue for deferred 3D item rendering
 static std::vector<ItemRenderJob> g_renderQueue;
@@ -63,39 +55,26 @@ struct DeferredOverlay {
 };
 static std::vector<DeferredOverlay> g_deferredOverlays;
 
-// Deferred cooldown overlays (potion cooldown drawn on top of 3D items)
-struct DeferredCooldown {
-  float x, y, w, h; // screen-space rect
-  char text[8];
-};
-static std::vector<DeferredCooldown> g_deferredCooldowns;
+// DeferredCooldown struct defined in InventoryUI_Internal.hpp
+std::vector<DeferredCooldown> g_deferredCooldowns;
 
 // Drag state
-static int g_dragFromSlot = -1;
-static int g_dragFromEquipSlot = -1;
-static int16_t g_dragDefIndex = -2;
+int g_dragFromSlot = -1;
+int g_dragFromEquipSlot = -1;
+int16_t g_dragDefIndex = -2;
 static uint8_t g_dragQuantity = 0;
 static uint8_t g_dragItemLevel = 0;
-static bool g_isDragging = false;
-static int g_dragFromPotionSlot = -1;
-static int g_dragFromSkillSlot = -1;
-static bool g_dragFromRmcSlot = false;
+bool g_isDragging = false;
+int g_dragFromPotionSlot = -1;
+int g_dragFromSkillSlot = -1;
+bool g_dragFromRmcSlot = false;
 static int g_dragFromShopSlot =
     -1; // Primary slot in s_shopGrid when dragging from shop
 
-// Unified skill definition (works for DK skills and DW spells)
-struct SkillDef {
-  uint8_t skillId;
-  const char *name;
-  int resourceCost; // AG for DK, Mana for DW
-  int levelReq;
-  int damageBonus;
-  const char *desc;
-  int energyReq; // Energy stat required to learn
-};
+// SkillDef struct defined in InventoryUI_Internal.hpp
 
 // DK skills (AG cost)
-static const SkillDef g_dkSkills[] = {
+const SkillDef g_dkSkills[] = {
     {19, "Falling Slash", 9, 1, 15, "Downward slash attack", 0},
     {20, "Lunge", 9, 1, 15, "Forward thrust attack", 0},
     {21, "Uppercut", 8, 1, 15, "Upward strike attack", 0},
@@ -105,10 +84,10 @@ static const SkillDef g_dkSkills[] = {
     {42, "Rageful Blow", 20, 170, 60, "Powerful ground strike", 0},
     {43, "Death Stab", 12, 160, 70, "Piercing stab attack", 0},
 };
-static constexpr int NUM_DK_SKILLS = 8;
+// NUM_DK_SKILLS defined in InventoryUI_Internal.hpp
 
 // DW spells (Mana cost) — OpenMU Version075
-static const SkillDef g_dwSpells[] = {
+const SkillDef g_dwSpells[] = {
     {17, "Energy Ball", 1, 1, 8, "Basic energy projectile", 0},
     {4, "Fire Ball", 3, 5, 22, "Fireball projectile", 40},
     {1, "Poison", 42, 10, 20, "Poison magic", 140},
@@ -124,10 +103,10 @@ static const SkillDef g_dwSpells[] = {
     {13, "Cometfall", 90, 72, 120, "Sky-strike AoE", 436},
     {14, "Inferno", 200, 88, 150, "Ring of explosions", 578},
 };
-static constexpr int NUM_DW_SPELLS = 14;
+// NUM_DW_SPELLS defined in InventoryUI_Internal.hpp
 
 // Helper to get the skill list for current class
-static const SkillDef *GetClassSkills(uint8_t classCode, int &outCount) {
+const SkillDef *GetClassSkills(uint8_t classCode, int &outCount) {
   if (classCode == 0) { // DW
     outCount = NUM_DW_SPELLS;
     return g_dwSpells;
@@ -136,24 +115,8 @@ static const SkillDef *GetClassSkills(uint8_t classCode, int &outCount) {
   return g_dkSkills;
 }
 
-// Skill icon sprite sheet: 25 cols, 20x28px per icon, 512x512 texture
-static constexpr int SKILL_ICON_COLS = 25;
-static constexpr float SKILL_ICON_W = 20.0f;
-static constexpr float SKILL_ICON_H = 28.0f;
-static constexpr float SKILL_TEX_SIZE = 512.0f;
-
-// Deferred tooltip
-struct PendingTooltipLine {
-  ImU32 color;
-  std::string text;
-};
-struct PendingTooltip {
-  bool active = false;
-  ImVec2 pos;
-  float w = 0, h = 0;
-  std::vector<PendingTooltipLine> lines;
-};
-static PendingTooltip g_pendingTooltip;
+// Skill icon constants and PendingTooltip defined in InventoryUI_Internal.hpp
+PendingTooltip g_pendingTooltip;
 
 // Shop grid (mirrors inventory bag grid for NPC shop display)
 static constexpr int SHOP_GRID_COLS = 8;
@@ -192,11 +155,9 @@ static constexpr float REGION_SHOW_TIME = 2.0f;         // 2 seconds hold
 static GLuint s_mapNameTexture = 0;
 static int s_mapNameTexW = 0, s_mapNameTexH = 0;
 
-// ─── Internal helpers (unnamed namespace) ───────────────────────────────────
+// ─── Shared helpers (external linkage — declared in InventoryUI_Internal.hpp) ─
 
-namespace {
-
-static void BeginPendingTooltip(float tw, float th) {
+void BeginPendingTooltip(float tw, float th) {
   ImVec2 mp = ImGui::GetIO().MousePos;
   ImVec2 tPos(mp.x + 15, mp.y + 15);
   float winW = ImGui::GetIO().DisplaySize.x;
@@ -212,18 +173,17 @@ static void BeginPendingTooltip(float tw, float th) {
   g_pendingTooltip.lines.clear();
 }
 
-static void AddPendingTooltipLine(ImU32 color, const std::string &text) {
-  g_pendingTooltip.lines.push_back({color, text});
+void AddPendingTooltipLine(ImU32 color, const std::string &text,
+                           uint8_t flags) {
+  g_pendingTooltip.lines.push_back({color, text, flags});
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// WoW-style UI helpers
-// ═══════════════════════════════════════════════════════════════════
+void AddTooltipSeparator() {
+  g_pendingTooltip.lines.push_back({0, "---", 2});
+}
 
-// Panel background with gradient + double border (outer dark, inner gold)
-static void DrawStyledPanel(ImDrawList *dl, float x0, float y0, float x1,
-                            float y1, float rounding = 5.0f) {
-  // Gradient background: darker at top, slightly lighter at bottom
+void DrawStyledPanel(ImDrawList *dl, float x0, float y0, float x1,
+                     float y1, float rounding) {
   dl->AddRectFilledMultiColor(
       ImVec2(x0, y0), ImVec2(x1, y1),
       IM_COL32(8, 8, 18, 245),   // top-left
@@ -231,49 +191,38 @@ static void DrawStyledPanel(ImDrawList *dl, float x0, float y0, float x1,
       IM_COL32(18, 18, 32, 240), // bottom-right
       IM_COL32(18, 18, 32, 240)  // bottom-left
   );
-  // Outer border: dark edge
   dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
               IM_COL32(5, 5, 10, 255), rounding, 0, 2.0f);
-  // Inner border: gold/bronze highlight
   dl->AddRect(ImVec2(x0 + 2, y0 + 2), ImVec2(x1 - 2, y1 - 2),
               IM_COL32(80, 70, 45, 140), rounding > 2 ? rounding - 1 : rounding);
 }
 
-// Slot with inner shadow bevel
-static void DrawStyledSlot(ImDrawList *dl, ImVec2 p0, ImVec2 p1,
-                           bool hovered = false, float rounding = 3.0f) {
+void DrawStyledSlot(ImDrawList *dl, ImVec2 p0, ImVec2 p1,
+                    bool hovered, float rounding) {
   dl->AddRectFilled(p0, p1, IM_COL32(12, 12, 22, 220), rounding);
-  // Inner shadow: 1px dark line at top and left edges
   dl->AddLine(ImVec2(p0.x + 1, p0.y + 1), ImVec2(p1.x - 1, p0.y + 1),
               IM_COL32(0, 0, 0, 100));
   dl->AddLine(ImVec2(p0.x + 1, p0.y + 1), ImVec2(p0.x + 1, p1.y - 1),
               IM_COL32(0, 0, 0, 100));
-  // Border: gold-tinted
   ImU32 borderCol = hovered ? IM_COL32(180, 160, 90, 200)
                             : IM_COL32(65, 60, 45, 200);
   dl->AddRect(p0, p1, borderCol, rounding);
 }
 
-// Resource bar with gradient fill + glass highlight
-static void DrawStyledBar(ImDrawList *dl, float x, float y, float w, float h,
-                          float frac, ImU32 topColor, ImU32 botColor,
-                          const char *label) {
+void DrawStyledBar(ImDrawList *dl, float x, float y, float w, float h,
+                   float frac, ImU32 topColor, ImU32 botColor,
+                   const char *label) {
   frac = std::clamp(frac, 0.0f, 1.0f);
   ImVec2 p0(x, y), p1(x + w, y + h);
-  // Dark background
   dl->AddRectFilled(p0, p1, IM_COL32(8, 8, 15, 220), 3.0f);
-  // Gradient fill
   if (frac > 0.01f) {
     dl->AddRectFilledMultiColor(
         p0, ImVec2(x + w * frac, y + h),
         topColor, topColor, botColor, botColor);
-    // Glass highlight line at top of fill
     dl->AddLine(ImVec2(x + 1, y + 1), ImVec2(x + w * frac - 1, y + 1),
                 IM_COL32(255, 255, 255, 40));
   }
-  // Border: gold-tinted
   dl->AddRect(p0, p1, IM_COL32(65, 60, 45, 180), 3.0f);
-  // Centered text with shadow
   ImVec2 tsz = ImGui::CalcTextSize(label);
   float tx = x + (w - tsz.x) * 0.5f;
   float ty = y + (h - tsz.y) * 0.5f;
@@ -281,13 +230,16 @@ static void DrawStyledBar(ImDrawList *dl, float x, float y, float w, float h,
   dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
 }
 
-// Text with shadow (stronger shadow for titles)
-static void DrawShadowText(ImDrawList *dl, ImVec2 pos, ImU32 color,
-                           const char *text, int shadowOffset = 1) {
+void DrawShadowText(ImDrawList *dl, ImVec2 pos, ImU32 color,
+                    const char *text, int shadowOffset) {
   dl->AddText(ImVec2(pos.x + shadowOffset, pos.y + shadowOffset),
               IM_COL32(0, 0, 0, 230), text);
   dl->AddText(pos, color, text);
 }
+
+// ─── Internal helpers (unnamed namespace) ───────────────────────────────────
+
+namespace {
 
 // Close button with hover highlight — used by all panels
 static void DrawCloseButton(ImDrawList *dl, const UICoords &c, float px,
@@ -578,8 +530,10 @@ void ConsumeQuickSlotItem(int slotIndex) {
   if (slotIndex < 0 || slotIndex >= 4)
     return;
   int16_t defIdx = s_ctx->potionBar[slotIndex];
-  if (defIdx == -1)
+  if (defIdx <= 0) {
+    std::cout << "[QuickSlot] Slot " << slotIndex << " empty (defIdx=" << defIdx << ")" << std::endl;
     return;
+  }
 
   // Cooldown check
   if (*s_ctx->potionCooldown > 0.0f) {
@@ -700,8 +654,8 @@ void RecalcEquipmentStats() {
 }
 
 // Get the equip slot index for a given item category (-1 if none)
-static int GetEquipSlotForCategory(uint8_t category,
-                                   bool isAlternativeHand = false) {
+int GetEquipSlotForCategory(uint8_t category,
+                            bool isAlternativeHand) {
   switch (category) {
   case 0:
   case 1:
@@ -731,7 +685,7 @@ static int GetEquipSlotForCategory(uint8_t category,
 }
 
 // Get the equipped item's DropDef for comparison (nullptr if slot empty)
-static const DropDef *GetEquippedDropDef(int equipSlot) {
+const DropDef *GetEquippedDropDef(int equipSlot) {
   if (equipSlot < 0 || equipSlot >= 12)
     return nullptr;
   if (!s_ctx->equipSlots[equipSlot].equipped)
@@ -742,454 +696,6 @@ static const DropDef *GetEquippedDropDef(int equipSlot) {
   return ItemDatabase::GetDropInfo(di);
 }
 
-void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
-  auto &g_itemDefs = ItemDatabase::GetItemDefs();
-  auto it = g_itemDefs.find(defIndex);
-  const ClientItemDefinition *def = nullptr;
-  ClientItemDefinition fallback;
-
-  if (it != g_itemDefs.end()) {
-    def = &it->second;
-  } else {
-    fallback.name = ItemDatabase::GetDropName(defIndex);
-    fallback.category = (uint8_t)(defIndex / 32);
-    fallback.width = 1;
-    fallback.height = 1;
-    def = &fallback;
-  }
-
-  // Find equipped item for comparison
-  int equipSlot = GetEquipSlotForCategory(def->category);
-  // Special handling for weapons to compare with left hand if right hand is
-  // empty or weapon doesn't fit right hand. We'll just compare against primary
-  // recommended slot (right hand for weapons) for tooltips.
-  const DropDef *equippedDef = GetEquippedDropDef(equipSlot);
-  // Don't compare against itself (same defIndex in the same slot)
-  if (equippedDef && equipSlot >= 0 && s_ctx->equipSlots[equipSlot].equipped) {
-    int16_t eqDi = ItemDatabase::GetDefIndexFromCategory(
-        s_ctx->equipSlots[equipSlot].category,
-        s_ctx->equipSlots[equipSlot].itemIndex);
-    if (eqDi == defIndex &&
-        s_ctx->equipSlots[equipSlot].itemLevel == (uint8_t)itemLevel)
-      equippedDef = nullptr; // Same item, no comparison
-  }
-
-  // Calculate tooltip height
-  float lineH = 18.0f;
-  float th = 10.0f; // Padding
-  th += lineH;      // name
-  const char *catDesc = ItemDatabase::GetCategoryName(def->category);
-  if (catDesc[0])
-    th += lineH;
-
-  // Potion healing/mana info
-  int potionHeal = 0;
-  int potionMana = 0;
-  const char *potionEffect = nullptr; // For antidote/ale/town portal
-  if (def->category == 14) {
-    uint8_t pidx = (uint8_t)(defIndex % 32);
-    if (pidx == 0)
-      potionHeal = 10;
-    else if (pidx == 1)
-      potionHeal = 20;
-    else if (pidx == 2)
-      potionHeal = 50;
-    else if (pidx == 3)
-      potionHeal = 100;
-    else if (pidx == 4)
-      potionMana = 20;
-    else if (pidx == 5)
-      potionMana = 50;
-    else if (pidx == 6)
-      potionMana = 100;
-    else if (pidx == 8)
-      potionEffect = "Cures Poison";
-    else if (pidx == 9)
-      potionEffect = "Restores 10 HP";
-    else if (pidx == 10)
-      potionEffect = "Teleport to Town";
-    if (potionHeal > 0 || potionMana > 0 || potionEffect)
-      th += lineH;
-  }
-
-  // Ring/Pendant/Pet effect info
-  const char *accessoryEffect = nullptr;
-  const char *accessoryEffect2 = nullptr;
-  const char *accessorySlot = nullptr;
-  if (def->category == 13) {
-    uint8_t aidx = (uint8_t)(defIndex % 32);
-    if (aidx == 0) {
-      accessoryEffect = "+50 Max HP";
-      accessoryEffect2 = "20% Damage Reduction";
-      accessorySlot = "Pet";
-    } else if (aidx == 1) {
-      accessoryEffect = "30% Attack Damage Increase";
-      accessorySlot = "Pet";
-    } else if (aidx == 2) {
-      accessoryEffect = "Rideable Mount";
-      accessorySlot = "Pet";
-    } else if (aidx == 3) {
-      accessoryEffect = "15% Attack Damage Increase";
-      accessoryEffect2 = "10% Damage Reduction";
-      accessorySlot = "Pet";
-    } else if (aidx == 8) {
-      accessoryEffect = "+50 Ice Resistance";
-      accessorySlot = "Ring";
-    } else if (aidx == 9) {
-      accessoryEffect = "+50 Poison Resistance";
-      accessorySlot = "Ring";
-    } else if (aidx == 10) {
-      accessoryEffect = "Transform into Monsters";
-      accessorySlot = "Ring";
-    } else if (aidx == 12) {
-      accessoryEffect = "+50 Lightning Resistance";
-      accessorySlot = "Pendant";
-    } else if (aidx == 13) {
-      accessoryEffect = "+50 Fire Resistance";
-      accessorySlot = "Pendant";
-    }
-    if (accessorySlot)
-      th += lineH;
-    if (accessoryEffect)
-      th += lineH;
-    if (accessoryEffect2)
-      th += lineH;
-  }
-
-  // Item level bonus calculations (MU 0.97d formulas)
-  int levelDmgBonus = 0, levelDefBonus = 0;
-  if (itemLevel > 0) {
-    if (def->category <= 6) // Weapons + shields
-      levelDmgBonus = itemLevel * 3;
-    if (def->category == 6 || (def->category >= 7 && def->category <= 11))
-      levelDefBonus = itemLevel;
-  }
-
-  // Skill scroll/orb: resolve skill ID and check learned status
-  uint8_t scrollSkillId = 0;
-  bool scrollAlreadyLearned = false;
-  if (def->category == 15) {
-    // Inline scroll index → skill ID mapping (matches ScrollIndexToSkillId)
-    static const uint8_t scrollMap[][2] = {
-        {0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}, {6, 7},
-        {7, 8}, {8, 9}, {9, 10}, {11, 12}, {12, 13}, {13, 14},
-    };
-    uint8_t idx = (uint8_t)(defIndex % 32);
-    for (auto &m : scrollMap)
-      if (m[0] == idx) { scrollSkillId = m[1]; break; }
-  } else if (def->category == 12) {
-    // Inline orb index → skill ID mapping (matches OrbIndexToSkillId)
-    static const uint8_t orbMap[][2] = {
-        {20, 19}, {21, 20}, {22, 21}, {23, 22},
-        {24, 23}, {7, 41}, {12, 42}, {19, 43},
-    };
-    uint8_t idx = (uint8_t)(defIndex % 32);
-    for (auto &m : orbMap)
-      if (m[0] == idx) { scrollSkillId = m[1]; break; }
-  }
-  if (scrollSkillId > 0 && s_ctx->learnedSkills) {
-    for (auto s : *s_ctx->learnedSkills) {
-      if (s == scrollSkillId) {
-        scrollAlreadyLearned = true;
-        break;
-      }
-    }
-    th += lineH; // Skill info line (name + cost)
-    th += lineH; // Level requirement
-    th += lineH; // Energy requirement
-    th += lineH; // "Already Learned" or "Not Learned"
-  }
-
-  // Hands / type specification
-  if (def->category <= 5 || def->category == 12)
-    th += lineH; // "Two-Handed Weapon" / "One-Handed Weapon"
-  if (def->category == 6)
-    th += lineH; // "Shield"
-
-  if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0))
-    th += lineH; // damage line
-  // Attack Speed
-  if (def->category <= 5 && def->attackSpeed > 0)
-    th += lineH;
-
-  // Defense for shields (cat 6) and armor (cat 7-11)
-  if ((def->category == 6 || (def->category >= 7 && def->category <= 11)) &&
-      def->defense > 0)
-    th += lineH;
-
-  // Comparison lines height
-  if (equippedDef) {
-    if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0))
-      th += lineH; // damage diff
-    if ((def->category == 6 || (def->category >= 7 && def->category <= 11)) &&
-        def->defense > 0)
-      th += lineH; // defense diff
-  }
-
-  th += 8; // separator
-  if (def->levelReq > 0)
-    th += lineH;
-  if (def->reqStr > 0)
-    th += lineH;
-  if (def->reqDex > 0)
-    th += lineH;
-  if (def->reqVit > 0)
-    th += lineH;
-  if (def->reqEne > 0)
-    th += lineH;
-
-  // Class requirements
-  if (def->classFlags > 0 && def->classFlags != 0xFFFFFFFF)
-    th += lineH;
-
-  th += 10; // bottom padding
-
-  BeginPendingTooltip(185.0f, th);
-
-  // Name color based on level
-  ImU32 nameColor = IM_COL32(255, 255, 255, 255);
-  if (itemLevel >= 7)
-    nameColor = IM_COL32(255, 215, 0, 255);
-  else if (itemLevel >= 4)
-    nameColor = IM_COL32(100, 180, 255, 255);
-
-  char nameBuf[64];
-  if (itemLevel > 0)
-    snprintf(nameBuf, sizeof(nameBuf), "%s +%d", def->name.c_str(), itemLevel);
-  else
-    snprintf(nameBuf, sizeof(nameBuf), "%s", def->name.c_str());
-  AddPendingTooltipLine(nameColor, nameBuf);
-
-  if (catDesc[0])
-    AddPendingTooltipLine(IM_COL32(160, 160, 160, 200), catDesc);
-
-  // Skill scroll/orb: show skill info and learned status
-  if (scrollSkillId > 0) {
-    // Find skill definition from skill tables
-    const SkillDef *skillDef = nullptr;
-    for (int i = 0; i < NUM_DK_SKILLS; i++) {
-      if (g_dkSkills[i].skillId == scrollSkillId) {
-        skillDef = &g_dkSkills[i];
-        break;
-      }
-    }
-    if (!skillDef) {
-      for (int i = 0; i < NUM_DW_SPELLS; i++) {
-        if (g_dwSpells[i].skillId == scrollSkillId) {
-          skillDef = &g_dwSpells[i];
-          break;
-        }
-      }
-    }
-    if (skillDef) {
-      char skillBuf[64];
-      bool isDW = (def->category == 15);
-      snprintf(skillBuf, sizeof(skillBuf), "Teaches: %s (%d %s)", skillDef->name,
-               skillDef->resourceCost, isDW ? "Mana" : "AG");
-      AddPendingTooltipLine(IM_COL32(150, 200, 255, 255), skillBuf);
-      // Level requirement
-      if (skillDef->levelReq > 0) {
-        char reqBuf[48];
-        bool met = s_ctx->serverLevel && *s_ctx->serverLevel >= skillDef->levelReq;
-        snprintf(reqBuf, sizeof(reqBuf), "Req Level: %d", skillDef->levelReq);
-        AddPendingTooltipLine(met ? IM_COL32(80, 255, 80, 255) : IM_COL32(255, 80, 80, 255), reqBuf);
-      }
-      // Energy requirement
-      if (skillDef->energyReq > 0) {
-        char reqBuf[48];
-        bool met = s_ctx->serverEne && *s_ctx->serverEne >= skillDef->energyReq;
-        snprintf(reqBuf, sizeof(reqBuf), "Req Energy: %d", skillDef->energyReq);
-        AddPendingTooltipLine(met ? IM_COL32(80, 255, 80, 255) : IM_COL32(255, 80, 80, 255), reqBuf);
-      }
-    }
-    if (scrollAlreadyLearned)
-      AddPendingTooltipLine(IM_COL32(255, 150, 50, 255), "(Already Learned)");
-    else
-      AddPendingTooltipLine(IM_COL32(80, 255, 80, 255), "(Not Learned)");
-  }
-
-  if (potionHeal > 0) {
-    char healBuf[32];
-    snprintf(healBuf, sizeof(healBuf), "Restores %d HP", potionHeal);
-    AddPendingTooltipLine(IM_COL32(80, 255, 80, 255), healBuf);
-  }
-  if (potionMana > 0) {
-    char manaBuf[32];
-    snprintf(manaBuf, sizeof(manaBuf), "Restores %d Mana", potionMana);
-    AddPendingTooltipLine(IM_COL32(100, 150, 255, 255), manaBuf);
-  }
-  if (potionEffect) {
-    AddPendingTooltipLine(IM_COL32(80, 255, 80, 255), potionEffect);
-  }
-
-  // Ring/Pendant/Pet slot + effect
-  if (accessorySlot)
-    AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), accessorySlot);
-  if (accessoryEffect)
-    AddPendingTooltipLine(IM_COL32(100, 200, 255, 255), accessoryEffect);
-  if (accessoryEffect2)
-    AddPendingTooltipLine(IM_COL32(100, 200, 255, 255), accessoryEffect2);
-
-  if (def->category <= 5) {
-    if (def->twoHanded)
-      AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), "Two-Handed Weapon");
-    else if (def->category != 4 || def->name == "Arrows" || def->name == "Bolt")
-      AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), "One-Handed Weapon");
-  }
-  if (def->category == 6)
-    AddPendingTooltipLine(IM_COL32(200, 200, 200, 255), "Shield");
-
-  // Weapon stats + comparison
-  if (def->category <= 5 && (def->dmgMin > 0 || def->dmgMax > 0)) {
-    int dMin = def->dmgMin + levelDmgBonus;
-    int dMax = def->dmgMax + levelDmgBonus;
-    char buf[48];
-    if (levelDmgBonus > 0)
-      snprintf(buf, sizeof(buf), "Damage: %d~%d (+%d)", dMin, dMax,
-               levelDmgBonus);
-    else
-      snprintf(buf, sizeof(buf), "Damage: %d~%d", dMin, dMax);
-    AddPendingTooltipLine(IM_COL32(255, 140, 140, 255), buf);
-
-    if (equippedDef) {
-      int avgNew = (dMin + dMax) / 2;
-      int avgOld = (equippedDef->dmgMin + equippedDef->dmgMax) / 2;
-      int diff = avgNew - avgOld;
-      char cmpBuf[48];
-      if (diff > 0) {
-        snprintf(cmpBuf, sizeof(cmpBuf), "  +%d avg damage", diff);
-        AddPendingTooltipLine(IM_COL32(80, 255, 80, 255), cmpBuf);
-      } else if (diff < 0) {
-        snprintf(cmpBuf, sizeof(cmpBuf), "  %d avg damage", diff);
-        AddPendingTooltipLine(IM_COL32(255, 80, 80, 255), cmpBuf);
-      } else {
-        AddPendingTooltipLine(IM_COL32(180, 180, 180, 255), "  same damage");
-      }
-    }
-  }
-
-  if (def->category <= 5 && def->attackSpeed > 0) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Attack Speed: %d", def->attackSpeed);
-    AddPendingTooltipLine(IM_COL32(200, 255, 200, 255), buf);
-  }
-
-  // Defense for shields (cat 6) and armor (cat 7-11) + comparison
-  if ((def->category == 6 || (def->category >= 7 && def->category <= 11)) &&
-      def->defense > 0) {
-    int totalDef = def->defense + levelDefBonus;
-    char buf[48];
-    if (levelDefBonus > 0)
-      snprintf(buf, sizeof(buf), "Defense: %d (+%d)", totalDef, levelDefBonus);
-    else
-      snprintf(buf, sizeof(buf), "Defense: %d", totalDef);
-    AddPendingTooltipLine(IM_COL32(140, 200, 255, 255), buf);
-
-    if (equippedDef) {
-      int diff = totalDef - (int)equippedDef->defense;
-      char cmpBuf[48];
-      if (diff > 0) {
-        snprintf(cmpBuf, sizeof(cmpBuf), "  +%d defense", diff);
-        AddPendingTooltipLine(IM_COL32(80, 255, 80, 255), cmpBuf);
-      } else if (diff < 0) {
-        snprintf(cmpBuf, sizeof(cmpBuf), "  %d defense", diff);
-        AddPendingTooltipLine(IM_COL32(255, 80, 80, 255), cmpBuf);
-      } else {
-        AddPendingTooltipLine(IM_COL32(180, 180, 180, 255), "  same defense");
-      }
-    }
-  }
-
-  if (def->buyPrice > 0) {
-    char buf[64];
-    std::string bStr = std::to_string(def->buyPrice);
-    std::string sStr = std::to_string(def->buyPrice / 3);
-    int n = bStr.length() - 3;
-    while (n > 0) {
-      bStr.insert(n, ",");
-      n -= 3;
-    }
-    n = sStr.length() - 3;
-    while (n > 0) {
-      sStr.insert(n, ",");
-      n -= 3;
-    }
-    snprintf(buf, sizeof(buf), "Buy: %s / Sell: %s Zen", bStr.c_str(),
-             sStr.c_str());
-    AddPendingTooltipLine(IM_COL32(255, 215, 0, 255), buf);
-  }
-
-  AddPendingTooltipLine(IM_COL32(80, 80, 120, 0), "---");
-
-  auto addReq = [&](const char *label, int current, int req) {
-    char rBuf[48];
-    snprintf(rBuf, sizeof(rBuf), "%s: %d", label, req);
-    ImU32 rcol = (current >= req) ? IM_COL32(180, 220, 180, 255)
-                                  : IM_COL32(255, 80, 80, 255);
-    AddPendingTooltipLine(rcol, rBuf);
-  };
-
-  if (def->levelReq > 0)
-    addReq("Level", *s_ctx->serverLevel, def->levelReq);
-  if (def->reqStr > 0)
-    addReq("STR", *s_ctx->serverStr, def->reqStr);
-  if (def->reqDex > 0)
-    addReq("DEX", *s_ctx->serverDex, def->reqDex);
-  if (def->reqVit > 0)
-    addReq("VIT", *s_ctx->serverVit, def->reqVit);
-  if (def->reqEne > 0)
-    addReq("ENE", *s_ctx->serverEne, def->reqEne);
-
-  if (def->classFlags > 0 && def->classFlags != 0xFFFFFFFF) {
-    std::string classes = "";
-    if (def->classFlags & 1)
-      classes += "DW ";
-    if (def->classFlags & 2)
-      classes += "DK ";
-    if (def->classFlags & 4)
-      classes += "FE ";
-    if (def->classFlags & 8)
-      classes += "MG";
-    if (!classes.empty()) {
-      uint32_t myFlag = (1 << (s_ctx->hero->GetClass() / 16));
-      ImU32 col = (def->classFlags & myFlag) ? IM_COL32(160, 160, 255, 255)
-                                             : IM_COL32(255, 80, 80, 255);
-      AddPendingTooltipLine(col, classes);
-    }
-  }
-}
-
-void FlushPendingTooltip() {
-  if (!g_pendingTooltip.active)
-    return;
-  g_pendingTooltip.active = false;
-  ImDrawList *dl = ImGui::GetForegroundDrawList();
-  ImVec2 tPos = g_pendingTooltip.pos;
-  float tw = g_pendingTooltip.w, th = g_pendingTooltip.h;
-  dl->AddRectFilled(tPos, ImVec2(tPos.x + tw, tPos.y + th),
-                    IM_COL32(10, 10, 20, 245), 4.0f);
-  dl->AddRect(tPos, ImVec2(tPos.x + tw, tPos.y + th),
-              IM_COL32(120, 120, 200, 200), 4.0f);
-  float curY = tPos.y + 8;
-  if (s_ctx->fontDefault)
-    ImGui::PushFont(s_ctx->fontDefault);
-
-  for (auto &line : g_pendingTooltip.lines) {
-    if (line.text == "---") {
-      // Horizontal separator
-      dl->AddLine(ImVec2(tPos.x + 6, curY + 4),
-                  ImVec2(tPos.x + tw - 6, curY + 4),
-                  IM_COL32(80, 80, 120, 180));
-      curY += 12;
-    } else {
-      dl->AddText(ImVec2(tPos.x + 10, curY), line.color, line.text.c_str());
-      curY += 18.0f;
-    }
-  }
-
-  if (s_ctx->fontDefault)
-    ImGui::PopFont();
-}
 
 void UpdateAndRenderNotification(float deltaTime) {
   if (s_notifyTimer <= 0.0f)
@@ -1253,6 +759,29 @@ void ShowRegionName(const char *name) {
   s_regionState = RegionNameState::FADEIN;
   s_regionAlpha = 0.0f;
   s_regionShowTimer = 0.0f;
+
+  // Load the correct map name OZT texture for this region
+  // Main 5.2: Local/[Language]/ImgsMapName/ — one OZT per map
+  const char *oztFile = nullptr;
+  if (strcmp(name, "Lorencia") == 0)
+    oztFile = "Data/Local/Eng/ImgsMapName/lorencia.OZT";
+  else if (strcmp(name, "Dungeon") == 0)
+    oztFile = "Data/Local/Eng/ImgsMapName/dungeun.OZT"; // Original typo in assets
+
+  if (oztFile) {
+    if (s_mapNameTexture) {
+      glDeleteTextures(1, &s_mapNameTexture);
+      s_mapNameTexture = 0;
+    }
+    s_mapNameTexture = TextureLoader::LoadOZT(oztFile);
+    if (s_mapNameTexture) {
+      glBindTexture(GL_TEXTURE_2D, s_mapNameTexture);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &s_mapNameTexW);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &s_mapNameTexH);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+  }
 }
 
 bool HasActiveRegionName() {
@@ -1327,51 +856,46 @@ void UpdateAndRenderRegionName(float deltaTime) {
 
 void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   float px = GetCharInfoPanelX(), py = PANEL_Y;
-  float pw = PANEL_W,
-        ph = PANEL_H +
-             60.0f * g_uiPanelScale; // Extend to fit combat stats + atk speed
+  float pw = PANEL_W, ph = PANEL_H + 60.0f * g_uiPanelScale;
 
-  // Colors
-  const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
-  const ImU32 colLabel = IM_COL32(170, 170, 190, 255);
-  const ImU32 colValue = IM_COL32(255, 255, 255, 255);
-  const ImU32 colGreen = IM_COL32(100, 255, 100, 255);
+  // WoW-style palette
+  const ImU32 colTitle   = IM_COL32(255, 210, 80, 255);
+  const ImU32 colSection = IM_COL32(200, 170, 60, 220);
+  const ImU32 colLabel   = IM_COL32(160, 160, 180, 255);
+  const ImU32 colValue   = IM_COL32(255, 255, 255, 255);
+  const ImU32 colGreen   = IM_COL32(100, 255, 100, 255);
+  const ImU32 colSepLine = IM_COL32(100, 85, 50, 140);
+  const ImU32 colRowA    = IM_COL32(20, 20, 35, 180);
+  const ImU32 colRowB    = IM_COL32(28, 28, 45, 180);
   char buf[256];
+
+  float W = BASE_PANEL_W; // internal layout width (unscaled)
+  float margin = 10;
+  float rowH = 20;      // stat row height
+  float rowGap = 1;     // gap between rows
+  float sectionGap = 8; // extra gap before each section header
 
   DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py),
                   c.ToScreenX(px + pw), c.ToScreenY(py + ph));
-
-  // Title
-  DrawPanelTextCentered(dl, c, px, py, 0, 11, BASE_PANEL_W, "Character Info",
-                        colTitle, s_ctx->fontDefault);
-
   DrawCloseButton(dl, c, px, py);
 
-  // Basic Info
-  DrawPanelText(dl, c, px, py, 20, 45, "Name", colLabel);
-  DrawPanelTextRight(dl, c, px, py, 20, 45, 145, s_ctx->characterName,
-                     colValue);
+  // ─── Header: Character name + class/level ────────────────────────
+  DrawPanelTextCentered(dl, c, px, py, 0, 10, W, s_ctx->characterName,
+                        colTitle, s_ctx->fontDefault);
 
-  DrawPanelText(dl, c, px, py, 20, 65, "Class", colLabel);
   {
     const char *className = "Dark Knight";
     if (s_ctx->hero) {
       uint8_t cc = s_ctx->hero->GetClass();
-      if (cc == 0)
-        className = "Dark Wizard";
-      else if (cc == 32)
-        className = "Elf";
-      else if (cc == 48)
-        className = "Magic Gladiator";
+      if (cc == 0) className = "Dark Wizard";
+      else if (cc == 32) className = "Elf";
+      else if (cc == 48) className = "Magic Gladiator";
     }
-    DrawPanelTextRight(dl, c, px, py, 20, 65, 145, className, colValue);
+    snprintf(buf, sizeof(buf), "Level %d %s", *s_ctx->serverLevel, className);
+    DrawPanelTextCentered(dl, c, px, py, 0, 30, W, buf, colLabel);
   }
 
-  DrawPanelText(dl, c, px, py, 20, 85, "Level", colLabel);
-  snprintf(buf, sizeof(buf), "%d", *s_ctx->serverLevel);
-  DrawPanelTextRight(dl, c, px, py, 20, 85, 145, buf, colGreen);
-
-  // XP bar
+  // ─── XP progress bar ─────────────────────────────────────────────
   float xpFrac = 0.0f;
   uint64_t nextXp = s_ctx->hero->GetNextExperience();
   uint64_t curXp = (uint64_t)*s_ctx->serverXP;
@@ -1380,108 +904,151 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
     xpFrac = (float)(curXp - prevXp) / (float)(nextXp - prevXp);
   xpFrac = std::clamp(xpFrac, 0.0f, 1.0f);
 
-  float barX = 15, barY = 115, barW = 160, barH = 5;
-  dl->AddRectFilled(ImVec2(c.ToScreenX(px + barX * g_uiPanelScale),
-                           c.ToScreenY(py + barY * g_uiPanelScale)),
-                    ImVec2(c.ToScreenX(px + (barX + barW) * g_uiPanelScale),
-                           c.ToScreenY(py + (barY + barH) * g_uiPanelScale)),
-                    IM_COL32(20, 20, 30, 255));
-  if (xpFrac > 0.0f) {
-    dl->AddRectFilled(
-        ImVec2(c.ToScreenX(px + barX * g_uiPanelScale),
-               c.ToScreenY(py + barY * g_uiPanelScale)),
-        ImVec2(c.ToScreenX(px + (barX + barW * xpFrac) * g_uiPanelScale),
-               c.ToScreenY(py + (barY + barH) * g_uiPanelScale)),
-        IM_COL32(40, 180, 80, 255));
+  {
+    float bx = margin, by = 48, bw = W - margin * 2, bh = 10;
+    snprintf(buf, sizeof(buf), "%.1f%%", xpFrac * 100.0f);
+    float sx0 = c.ToScreenX(px + bx * g_uiPanelScale);
+    float sy0 = c.ToScreenY(py + by * g_uiPanelScale);
+    float sx1 = c.ToScreenX(px + (bx + bw) * g_uiPanelScale);
+    float sy1 = c.ToScreenY(py + (by + bh) * g_uiPanelScale);
+    DrawStyledBar(dl, sx0, sy0, sx1 - sx0, sy1 - sy0, xpFrac,
+                  IM_COL32(60, 200, 100, 230), IM_COL32(30, 140, 60, 230), buf);
   }
 
-  // Stats
+  // Helper: section header with decorative lines "── Title ──"
+  auto drawSectionHeader = [&](float relY, const char *text) {
+    float sx0 = c.ToScreenX(px + margin * g_uiPanelScale);
+    float sx1 = c.ToScreenX(px + (W - margin) * g_uiPanelScale);
+    float sy  = c.ToScreenY(py + (relY + 7) * g_uiPanelScale);
+    ImVec2 tsz = ImGui::CalcTextSize(text);
+    float tw = tsz.x + 12;
+    float cx0 = (sx0 + sx1 - tw) * 0.5f;
+    float cx1 = cx0 + tw;
+    dl->AddLine(ImVec2(sx0, sy), ImVec2(cx0 - 4, sy), colSepLine);
+    dl->AddLine(ImVec2(cx1 + 4, sy), ImVec2(sx1, sy), colSepLine);
+    DrawPanelTextCentered(dl, c, px, py, 0, relY, W, text, colSection);
+  };
+
+  // Helper: stat row with alternating background
+  int rowIdx = 0;
+  auto drawStatRow = [&](float relY, const char *label, const char *value,
+                         ImU32 valColor = IM_COL32(255, 255, 255, 255)) {
+    float rx0 = c.ToScreenX(px + margin * g_uiPanelScale);
+    float ry0 = c.ToScreenY(py + relY * g_uiPanelScale);
+    float rx1 = c.ToScreenX(px + (W - margin) * g_uiPanelScale);
+    float ry1 = c.ToScreenY(py + (relY + rowH) * g_uiPanelScale);
+    dl->AddRectFilled(ImVec2(rx0, ry0), ImVec2(rx1, ry1),
+                      (rowIdx & 1) ? colRowB : colRowA, 2.0f);
+    DrawPanelText(dl, c, px, py, margin + 8, relY + 3, label, colLabel);
+    DrawPanelTextRight(dl, c, px, py, margin + 8, relY + 3, W - margin * 2 - 38,
+                       value, valColor);
+    rowIdx++;
+  };
+
+  // ─── Attributes ──────────────────────────────────────────────────
+  float curY = 64;
+  drawSectionHeader(curY, "Attributes");
+  curY += 18;
+
   const char *statLabels[] = {"Strength", "Agility", "Vitality", "Energy"};
   int statValues[] = {*s_ctx->serverStr, *s_ctx->serverDex, *s_ctx->serverVit,
                       *s_ctx->serverEne};
-  float statYOffsets[] = {150, 182, 214, 246};
-
+  float attrStartY = curY;
+  rowIdx = 0;
   for (int i = 0; i < 4; i++) {
-    float ry = statYOffsets[i];
-    dl->AddRectFilled(ImVec2(c.ToScreenX(px + 15 * g_uiPanelScale),
-                             c.ToScreenY(py + ry * g_uiPanelScale)),
-                      ImVec2(c.ToScreenX(px + 175 * g_uiPanelScale),
-                             c.ToScreenY(py + (ry + 22) * g_uiPanelScale)),
-                      IM_COL32(30, 35, 50, 255), 2.0f);
-
-    DrawPanelText(dl, c, px, py, 25, ry + 4, statLabels[i], colLabel);
+    float ry = curY + i * (rowH + rowGap);
     snprintf(buf, sizeof(buf), "%d", statValues[i]);
-    DrawPanelTextRight(dl, c, px, py, 25, ry + 4, 120, buf, colValue);
+    drawStatRow(ry, statLabels[i], buf);
 
     if (*s_ctx->serverLevelUpPoints > 0) {
-      dl->AddRectFilled(ImVec2(c.ToScreenX(px + 155 * g_uiPanelScale),
-                               c.ToScreenY(py + (ry + 2) * g_uiPanelScale)),
-                        ImVec2(c.ToScreenX(px + 173 * g_uiPanelScale),
-                               c.ToScreenY(py + (ry + 20) * g_uiPanelScale)),
-                        IM_COL32(50, 150, 50, 255), 2.0f);
-      DrawPanelText(dl, c, px, py, 158, ry + 3, "+", colValue);
+      float btnX = c.ToScreenX(px + (W - margin - 18) * g_uiPanelScale);
+      float btnY = c.ToScreenY(py + (ry + 2) * g_uiPanelScale);
+      float btnS = c.ToScreenY(py + (ry + rowH - 2) * g_uiPanelScale) - btnY;
+      ImVec2 bp0(btnX, btnY), bp1(btnX + btnS, btnY + btnS);
+      ImVec2 mp = ImGui::GetIO().MousePos;
+      bool hov = mp.x >= bp0.x && mp.x < bp1.x && mp.y >= bp0.y && mp.y < bp1.y;
+      ImU32 btnCol = hov ? IM_COL32(80, 200, 80, 255) : IM_COL32(50, 140, 50, 230);
+      dl->AddRectFilled(bp0, bp1, btnCol, 3.0f);
+      dl->AddRect(bp0, bp1, hov ? IM_COL32(130, 255, 130, 180)
+                                : IM_COL32(40, 100, 40, 180), 3.0f);
+      ImVec2 ps = ImGui::CalcTextSize("+");
+      float ptx = btnX + (btnS - ps.x) * 0.5f;
+      float pty = btnY + (btnS - ps.y) * 0.5f;
+      dl->AddText(ImVec2(ptx + 1, pty + 1), IM_COL32(0, 0, 0, 200), "+");
+      dl->AddText(ImVec2(ptx, pty), colValue, "+");
     }
   }
+  curY += 4 * (rowH + rowGap);
 
   if (*s_ctx->serverLevelUpPoints > 0) {
-    snprintf(buf, sizeof(buf), "Points: %d", *s_ctx->serverLevelUpPoints);
-    DrawPanelText(dl, c, px, py, 15, 272, buf, colGreen);
+    snprintf(buf, sizeof(buf), "%d points", *s_ctx->serverLevelUpPoints);
+    DrawPanelTextCentered(dl, c, px, py, 0, curY + 2, W, buf, colGreen);
+    curY += 18;
   }
 
-  // Combat Info — class-aware damage formulas
+  // ─── Offense ─────────────────────────────────────────────────────
+  curY += sectionGap;
+  drawSectionHeader(curY, "Offense");
+  curY += 18;
+
   bool isDKChar = s_ctx->hero && s_ctx->hero->GetClass() == 16;
   int dMin, dMax;
   if (isDKChar) {
-    // DK: STR/6 min, STR/4 max + weapon bonus
     dMin = *s_ctx->serverStr / 6 + s_ctx->hero->GetWeaponBonusMin();
     dMax = *s_ctx->serverStr / 4 + s_ctx->hero->GetWeaponBonusMax();
   } else {
-    // DW: ENE/9 min, ENE/4 max + staff bonus (wizardry damage)
     dMin = *s_ctx->serverEne / 9 + s_ctx->hero->GetWeaponBonusMin();
     dMax = *s_ctx->serverEne / 4 + s_ctx->hero->GetWeaponBonusMax();
   }
 
-  snprintf(buf, sizeof(buf), "%s: %d - %d",
-           isDKChar ? "Damage" : "Wiz Dmg", dMin, dMax);
-  DrawPanelText(dl, c, px, py, 15, 300, buf, colValue);
+  rowIdx = 0;
+  snprintf(buf, sizeof(buf), "%d - %d", dMin, dMax);
+  drawStatRow(curY, isDKChar ? "Damage" : "Wizardry", buf);
+  curY += rowH + rowGap;
 
-  // Defense: DK=DEX/3, DW=DEX/4 + equipment
-  int baseDef = isDKChar ? *s_ctx->serverDex / 3 : *s_ctx->serverDex / 4;
-  int addDef = s_ctx->hero->GetDefenseBonus();
-  if (addDef > 0) {
-    snprintf(buf, sizeof(buf), "Defense: %d + %d", baseDef, addDef);
-  } else {
-    snprintf(buf, sizeof(buf), "Defense: %d", baseDef);
-  }
-  DrawPanelText(dl, c, px, py, 15, 315, buf, colValue);
+  snprintf(buf, sizeof(buf), "%d", *s_ctx->serverAttackSpeed);
+  drawStatRow(curY, "Attack Speed", buf);
+  curY += rowH + rowGap;
 
-  // Defense Rate (OpenMU: DK=DEX/3, DW=DEX/4)
-  int defRate = isDKChar ? *s_ctx->serverDex / 3 : *s_ctx->serverDex / 4;
-  snprintf(buf, sizeof(buf), "Def Rate: %d", defRate);
-  DrawPanelText(dl, c, px, py, 15, 330, buf, colValue);
-
-  // Crit/Excellent rates (OpenMU: flat 5% crit, 1% excellent)
-  snprintf(buf, sizeof(buf), "Crit: 5%%");
-  DrawPanelText(dl, c, px, py, 15, 345, buf, IM_COL32(100, 200, 255, 255));
-
-  snprintf(buf, sizeof(buf), "Exc: 1%%");
-  DrawPanelText(dl, c, px, py, 100, 345, buf, IM_COL32(100, 255, 100, 255));
-
-  // Attack Speed (DEX/15 for DK)
-  snprintf(buf, sizeof(buf), "Atk Speed: %d", *s_ctx->serverAttackSpeed);
-  DrawPanelText(dl, c, px, py, 15, 360, buf, colValue);
-
-  // Attack Rate / Hit Chance — DK: Level*5+DEX*3/2+STR/4, DW: Level*5+ENE*3/2
   int atkRate;
   if (isDKChar)
     atkRate = *s_ctx->serverLevel * 5 + (*s_ctx->serverDex * 3) / 2 +
               *s_ctx->serverStr / 4;
   else
     atkRate = *s_ctx->serverLevel * 5 + (*s_ctx->serverEne * 3) / 2;
-  snprintf(buf, sizeof(buf), "Atk Rate: %d", atkRate);
-  DrawPanelText(dl, c, px, py, 15, 375, buf, colValue);
+  snprintf(buf, sizeof(buf), "%d", atkRate);
+  drawStatRow(curY, "Attack Rate", buf);
+  curY += rowH + rowGap;
 
-  // HP / MP Bars (DK uses AG instead of MP)
+  // ─── Defenses ────────────────────────────────────────────────────
+  curY += sectionGap;
+  drawSectionHeader(curY, "Defenses");
+  curY += 18;
+
+  int baseDef = isDKChar ? *s_ctx->serverDex / 3 : *s_ctx->serverDex / 4;
+  int addDef = s_ctx->hero->GetDefenseBonus();
+  if (addDef > 0)
+    snprintf(buf, sizeof(buf), "%d (+%d)", baseDef, addDef);
+  else
+    snprintf(buf, sizeof(buf), "%d", baseDef);
+  rowIdx = 0;
+  drawStatRow(curY, "Defense", buf);
+  curY += rowH + rowGap;
+
+  int defRate = isDKChar ? *s_ctx->serverDex / 3 : *s_ctx->serverDex / 4;
+  snprintf(buf, sizeof(buf), "%d", defRate);
+  drawStatRow(curY, "Defense Rate", buf);
+  curY += rowH + rowGap;
+
+  drawStatRow(curY, "Critical", "5%", IM_COL32(100, 200, 255, 255));
+  curY += rowH + rowGap;
+
+  drawStatRow(curY, "Excellent", "1%", colGreen);
+  curY += rowH + rowGap;
+
+  // ─── Resources ───────────────────────────────────────────────────
+  curY += sectionGap;
+
   int curHP = s_ctx->hero->GetHP();
   int maxHP = s_ctx->hero->GetMaxHP();
   bool isDKBars = (s_ctx->hero->GetClass() == 16);
@@ -1491,43 +1058,32 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   float hpFrac = (maxHP > 0) ? (float)curHP / maxHP : 0.0f;
   float mpFrac = (maxMP > 0) ? (float)curMP / maxMP : 0.0f;
 
-  float hbarX = 50, hbarY = 415, hbarW = 100, hbarH = 8;
-  DrawPanelText(dl, c, px, py, 15, hbarY - 2, "HP", colLabel);
-  dl->AddRectFilled(ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
-                           c.ToScreenY(py + hbarY * g_uiPanelScale)),
-                    ImVec2(c.ToScreenX(px + (hbarX + hbarW) * g_uiPanelScale),
-                           c.ToScreenY(py + (hbarY + hbarH) * g_uiPanelScale)),
-                    IM_COL32(50, 20, 20, 255));
-  if (hpFrac > 0.0f) {
-    dl->AddRectFilled(
-        ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
-               c.ToScreenY(py + hbarY * g_uiPanelScale)),
-        ImVec2(c.ToScreenX(px + (hbarX + hbarW * hpFrac) * g_uiPanelScale),
-               c.ToScreenY(py + (hbarY + hbarH) * g_uiPanelScale)),
-        IM_COL32(200, 30, 30, 255));
+  // HP bar
+  {
+    float bx = margin, bw = W - margin * 2, bh = 16;
+    snprintf(buf, sizeof(buf), "HP  %d / %d", std::max(curHP, 0), maxHP);
+    float sx0 = c.ToScreenX(px + bx * g_uiPanelScale);
+    float sy0 = c.ToScreenY(py + curY * g_uiPanelScale);
+    float sx1 = c.ToScreenX(px + (bx + bw) * g_uiPanelScale);
+    float sy1 = c.ToScreenY(py + (curY + bh) * g_uiPanelScale);
+    DrawStyledBar(dl, sx0, sy0, sx1 - sx0, sy1 - sy0, hpFrac,
+                  IM_COL32(220, 50, 50, 230), IM_COL32(160, 30, 30, 230), buf);
   }
-  snprintf(buf, sizeof(buf), "%d / %d", curHP, maxHP);
-  DrawPanelTextRight(dl, c, px, py, hbarX, hbarY - 3, hbarW, buf, colValue);
+  curY += 20;
 
-  float mbarY = 435;
-  // DK uses AG (Ability Gauge) instead of MP
-  const char *manaLabel = (s_ctx->hero->GetClass() == 16) ? "AG" : "MP";
-  DrawPanelText(dl, c, px, py, 15, mbarY - 2, manaLabel, colLabel);
-  dl->AddRectFilled(ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
-                           c.ToScreenY(py + mbarY * g_uiPanelScale)),
-                    ImVec2(c.ToScreenX(px + (hbarX + hbarW) * g_uiPanelScale),
-                           c.ToScreenY(py + (mbarY + hbarH) * g_uiPanelScale)),
-                    IM_COL32(20, 20, 80, 255));
-  if (mpFrac > 0.0f) {
-    dl->AddRectFilled(
-        ImVec2(c.ToScreenX(px + hbarX * g_uiPanelScale),
-               c.ToScreenY(py + mbarY * g_uiPanelScale)),
-        ImVec2(c.ToScreenX(px + (hbarX + hbarW * mpFrac) * g_uiPanelScale),
-               c.ToScreenY(py + (mbarY + hbarH) * g_uiPanelScale)),
-        IM_COL32(40, 40, 220, 255));
+  // AG/Mana bar
+  {
+    const char *manaLabel = isDKBars ? "AG" : "Mana";
+    float bx = margin, bw = W - margin * 2, bh = 16;
+    snprintf(buf, sizeof(buf), "%s  %d / %d", manaLabel, std::max(curMP, 0), maxMP);
+    float sx0 = c.ToScreenX(px + bx * g_uiPanelScale);
+    float sy0 = c.ToScreenY(py + curY * g_uiPanelScale);
+    float sx1 = c.ToScreenX(px + (bx + bw) * g_uiPanelScale);
+    float sy1 = c.ToScreenY(py + (curY + bh) * g_uiPanelScale);
+    ImU32 barTop = isDKBars ? IM_COL32(180, 160, 40, 230) : IM_COL32(40, 100, 220, 230);
+    ImU32 barBot = isDKBars ? IM_COL32(130, 115, 20, 230) : IM_COL32(25, 60, 160, 230);
+    DrawStyledBar(dl, sx0, sy0, sx1 - sx0, sy1 - sy0, mpFrac, barTop, barBot, buf);
   }
-  snprintf(buf, sizeof(buf), "%d / %d", curMP, maxMP);
-  DrawPanelTextRight(dl, c, px, py, hbarX, mbarY - 3, hbarW, buf, colValue);
 }
 
 void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
@@ -1539,7 +1095,7 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
   // Colors
   const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
   const ImU32 colHeader = IM_COL32(200, 180, 120, 255);
-  const ImU32 colSlotBg = IM_COL32(0, 0, 0, 150);
+  const ImU32 colSlotBg = IM_COL32(0, 0, 0, 60); // subtle background, grid visible
   const ImU32 colSlotBr = IM_COL32(80, 75, 60, 255);
   const ImU32 colGold = IM_COL32(255, 215, 0, 255);
   const ImU32 colValue = IM_COL32(255, 255, 255, 255);
@@ -1568,11 +1124,9 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
     bool hoverSlot =
         mp.x >= sMin.x && mp.x < sMax.x && mp.y >= sMin.y && mp.y < sMax.y;
 
+    // Always draw slot background fill and silhouette (visible behind 3D items)
     dl->AddRectFilled(sMin, sMax, colSlotBg, 3.0f);
-
-    // Draw Background Placeholder if empty
-    if (!s_ctx->equipSlots[ep.slot].equipped &&
-        g_slotBackgrounds[ep.slot] != 0) {
+    if (g_slotBackgrounds[ep.slot] != 0) {
       dl->AddImage((ImTextureID)(intptr_t)g_slotBackgrounds[ep.slot], sMin,
                    sMax, ImVec2(0, 0), ImVec2(1, 1),
                    IM_COL32(255, 255, 255, 200));
@@ -1592,21 +1146,14 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
             s_ctx->equipSlots[ep.slot].itemIndex);
         g_renderQueue.push_back({modelName, defIdx, (int)sMin.x,
                                  winH - (int)sMax.y, (int)(sMax.x - sMin.x),
-                                 (int)(sMax.y - sMin.y), hoverSlot});
+                                 (int)(sMax.y - sMin.y), hoverSlot,
+                                 s_ctx->equipSlots[ep.slot].itemLevel});
       }
       if (hoverSlot) {
         AddPendingItemTooltip(ItemDatabase::GetDefIndexFromCategory(
                                   s_ctx->equipSlots[ep.slot].category,
                                   s_ctx->equipSlots[ep.slot].itemIndex),
                               s_ctx->equipSlots[ep.slot].itemLevel);
-      }
-      // Always show +Level overlay if > 0
-      if (s_ctx->equipSlots[ep.slot].itemLevel > 0) {
-        char lvlBuf[8];
-        snprintf(lvlBuf, sizeof(lvlBuf), "+%d",
-                 s_ctx->equipSlots[ep.slot].itemLevel);
-        dl->AddText(ImVec2(sMin.x + 2, sMin.y + 2), IM_COL32(255, 200, 80, 255),
-                    lvlBuf);
       }
     }
   }
@@ -1668,8 +1215,6 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
 
           if (hoverItem)
             dl->AddRectFilled(iMin, iMax, IM_COL32(255, 255, 255, 30), 2.0f);
-          else
-            dl->AddRectFilled(iMin, iMax, IM_COL32(0, 0, 0, 40), 2.0f);
 
           const char *model = def.modelFile.empty()
                                   ? ItemDatabase::GetDropModelName(
@@ -1680,20 +1225,13 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
             g_renderQueue.push_back({model, s_ctx->inventory[slot].defIndex,
                                      (int)iMin.x, winH - (int)iMax.y,
                                      (int)(iMax.x - iMin.x),
-                                     (int)(iMax.y - iMin.y), hoverItem});
+                                     (int)(iMax.y - iMin.y), hoverItem,
+                                     s_ctx->inventory[slot].itemLevel});
           }
           if (hoverItem && !g_isDragging)
             AddPendingItemTooltip(s_ctx->inventory[slot].defIndex,
                                   s_ctx->inventory[slot].itemLevel);
 
-          // Level overlay
-          if (s_ctx->inventory[slot].itemLevel > 0) {
-            char lvlBuf[8];
-            snprintf(lvlBuf, sizeof(lvlBuf), "+%d",
-                     s_ctx->inventory[slot].itemLevel);
-            dl->AddText(ImVec2(iMin.x + 2, iMin.y + 2),
-                        IM_COL32(255, 200, 80, 255), lvlBuf);
-          }
 
           // Quantity overlay (deferred — drawn after 3D item models)
           if (s_ctx->inventory[slot].quantity > 1) {
@@ -1702,8 +1240,8 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
                      s_ctx->inventory[slot].quantity);
             ImVec2 qSize = ImGui::CalcTextSize(ov.text);
             ov.x = iMax.x - qSize.x - 2;
-            ov.y = iMax.y - qSize.y - 1;
-            ov.color = IM_COL32(255, 255, 255, 255);
+            ov.y = iMin.y + 1;
+            ov.color = IM_COL32(255, 210, 80, 255);
             g_deferredOverlays.push_back(ov);
           }
         }
@@ -1785,7 +1323,8 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
       // Queue 3D render for dragged item
       int winH = (int)ImGui::GetIO().DisplaySize.y;
       g_renderQueue.push_back({def.modelFile, g_dragDefIndex, (int)iMin.x,
-                               winH - (int)iMax.y, (int)dw, (int)dh, false});
+                               winH - (int)iMax.y, (int)dw, (int)dh, false,
+                               g_dragItemLevel});
 
       if (g_dragItemLevel > 0)
         snprintf(buf, sizeof(buf), "%s +%d", def.name.c_str(), g_dragItemLevel);
@@ -1875,7 +1414,7 @@ void RenderShopPanel(ImDrawList *dl, const UICoords &c) {
   float gridRX = 15.0f, gridRY = 35.0f;
   float cellW = 20.0f, cellH = 20.0f;
 
-  const ImU32 colSlotBg = IM_COL32(0, 0, 0, 150);
+  const ImU32 colSlotBg = IM_COL32(0, 0, 0, 60);
   const ImU32 colSlotBr = IM_COL32(80, 75, 60, 255);
 
   // Draw empty grid cells
@@ -1933,10 +1472,8 @@ void RenderShopPanel(ImDrawList *dl, const UICoords &c) {
           mp.x >= iMin.x && mp.x < iMax.x && mp.y >= iMin.y && mp.y < iMax.y;
 
       if (!isBeingDragged) {
-        dl->AddRectFilled(iMin, iMax,
-                          hoverItem ? IM_COL32(255, 255, 255, 30)
-                                    : IM_COL32(0, 0, 0, 40),
-                          2.0f);
+        if (hoverItem)
+          dl->AddRectFilled(iMin, iMax, IM_COL32(255, 255, 255, 30), 2.0f);
 
         const char *model =
             def.modelFile.empty()
@@ -1947,7 +1484,8 @@ void RenderShopPanel(ImDrawList *dl, const UICoords &c) {
           g_renderQueue.push_back({model, s_shopGrid[slot].defIndex,
                                    (int)iMin.x, winH - (int)iMax.y,
                                    (int)(iMax.x - iMin.x),
-                                   (int)(iMax.y - iMin.y), hoverItem});
+                                   (int)(iMax.y - iMin.y), hoverItem,
+                                   s_shopGrid[slot].itemLevel});
         }
       }
 
@@ -1955,12 +1493,6 @@ void RenderShopPanel(ImDrawList *dl, const UICoords &c) {
         AddPendingItemTooltip(s_shopGrid[slot].defIndex,
                               s_shopGrid[slot].itemLevel);
 
-      if (s_shopGrid[slot].itemLevel > 0) {
-        char lvlBuf[8];
-        snprintf(lvlBuf, sizeof(lvlBuf), "+%d", s_shopGrid[slot].itemLevel);
-        dl->AddText(ImVec2(iMin.x + 2, iMin.y + 2), IM_COL32(255, 200, 80, 255),
-                    lvlBuf);
-      }
     }
   }
 }
@@ -2043,11 +1575,11 @@ bool HandlePanelClick(float vx, float vy) {
       return true;
     }
 
-    // Stat "+" buttons
-    float statRowYOffsets[] = {150, 182, 214, 246};
+    // Stat "+" buttons (attrStartY=82, rowH=20, rowGap=1)
+    float statRowYOffsets[] = {82, 103, 124, 145};
     if (*s_ctx->serverLevelUpPoints > 0) {
       for (int i = 0; i < 4; i++) {
-        float btnX = 155, btnY = statRowYOffsets[i] + 2;
+        float btnX = BASE_PANEL_W - 28, btnY = statRowYOffsets[i] + 2;
         if (relX >= btnX && relX < btnX + 18 && relY >= btnY &&
             relY < btnY + 18) {
           s_ctx->server->SendStatAlloc(static_cast<uint8_t>(i));
@@ -2136,6 +1668,7 @@ bool HandlePanelClick(float vx, float vy) {
             g_dragQuantity = s_ctx->inventory[primarySlot].quantity;
             g_dragItemLevel = s_ctx->inventory[primarySlot].itemLevel;
             g_isDragging = true;
+            SoundManager::Play(SOUND_GET_ITEM01);
           }
           return true;
         }
@@ -2174,11 +1707,11 @@ bool HandlePanelClick(float vx, float vy) {
   static constexpr float HUD_BAR_W = 140.0f;
   static constexpr float HUD_BTN = 36.0f;
   static constexpr float HUD_BTN_GAP = 3.0f;
-  static constexpr float HUD_MENU_W = HUD_GAP + HUD_BTN * 3 + HUD_BTN_GAP * 2;
+  static constexpr float HUD_MENU_W = HUD_GAP + HUD_BTN * 4 + HUD_BTN_GAP * 3;
   static constexpr float HUD_CONTENT_W =
       HUD_BAR_W + HUD_GAP * 2 + (HUD_SLOT + HUD_GAP) * 4 + HUD_GAP +
       (HUD_SLOT + HUD_GAP) * 4 + HUD_GAP + HUD_SLOT + HUD_GAP * 2 +
-      HUD_BAR_W + HUD_MENU_W;
+      HUD_BAR_W;
   static constexpr float HUD_START_VX = (1280.0f - HUD_CONTENT_W) * 0.5f;
   static constexpr float HUD_ROW_VY = 818.0f;
 
@@ -2194,6 +1727,7 @@ bool HandlePanelClick(float vx, float vy) {
         g_dragDefIndex = s_ctx->potionBar[i];
         g_dragFromSlot = -1;
         g_dragFromEquipSlot = -1;
+        SoundManager::Play(SOUND_INTERFACE01);
         return true;
       }
     }
@@ -2209,6 +1743,7 @@ bool HandlePanelClick(float vx, float vy) {
         g_dragDefIndex = -(int)s_ctx->skillBar[i]; // Negative = skill ID
         g_dragFromSlot = -1;
         g_dragFromEquipSlot = -1;
+        SoundManager::Play(SOUND_INTERFACE01);
         return true;
       }
     }
@@ -2222,31 +1757,48 @@ bool HandlePanelClick(float vx, float vy) {
         g_dragDefIndex = -(*s_ctx->rmcSkillId); // Negative = skill ID
         g_dragFromSlot = -1;
         g_dragFromEquipSlot = -1;
+        SoundManager::Play(SOUND_INTERFACE01);
         return true;
       }
     }
 
-    // Menu buttons: C, I, T (after AG bar)
-    float menuStartX = rmcX + HUD_SLOT + HUD_GAP * 2 + HUD_BAR_W + HUD_GAP;
-    for (int i = 0; i < 3; i++) {
+    // Menu buttons: C, I, L, T, M (bottom-right corner, at quickbar row level)
+    static constexpr int HUD_MBTN_COUNT = 5;
+    static constexpr float HUD_MBTN_VY = HUD_ROW_VY + (HUD_SLOT - HUD_BTN) * 0.5f;
+    float menuStartX = 1280.0f - (HUD_BTN * HUD_MBTN_COUNT + HUD_BTN_GAP * (HUD_MBTN_COUNT - 1)) - 4.0f;
+    for (int i = 0; i < HUD_MBTN_COUNT; i++) {
       float bx = menuStartX + i * (HUD_BTN + HUD_BTN_GAP);
-      if (vx >= bx && vx <= bx + HUD_BTN) {
+      if (vx >= bx && vx <= bx + HUD_BTN && vy >= HUD_MBTN_VY && vy <= HUD_MBTN_VY + HUD_BTN) {
         if (i == 0) {
           *s_ctx->showCharInfo = !*s_ctx->showCharInfo;
           SoundManager::Play(SOUND_INTERFACE01);
         } else if (i == 1) {
           *s_ctx->showInventory = !*s_ctx->showInventory;
           SoundManager::Play(SOUND_INTERFACE01);
-        } else if (i == 2 && s_ctx->teleportingToTown &&
+        } else if (i == 2) {
+          *s_ctx->showQuestLog = !*s_ctx->showQuestLog;
+          SoundManager::Play(SOUND_INTERFACE01);
+        } else if (i == 3 && s_ctx->teleportingToTown &&
                  !*s_ctx->teleportingToTown) {
-          // Don't allow teleport if already in safe zone (city)
-          if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
+          if (s_ctx->hero && s_ctx->hero->IsDead()) {
+            // Can't teleport when dead
+          } else if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
             ShowNotification("Already in town!");
             SoundManager::Play(SOUND_ERROR01);
           } else {
             *s_ctx->teleportingToTown = true;
             *s_ctx->teleportTimer = s_ctx->teleportCastTime;
             SoundManager::Play(SOUND_SUMMON);
+          }
+        } else if (i == 4 && s_ctx->mountToggling &&
+                 !*s_ctx->mountToggling) {
+          if (s_ctx->hero && s_ctx->hero->HasMountEquipped()) {
+            s_ctx->hero->StopMoving();
+            *s_ctx->mountToggling = true;
+            *s_ctx->mountToggleTimer = s_ctx->mountToggleTime;
+          } else {
+            ShowNotification("No mount equipped!");
+            SoundManager::Play(SOUND_ERROR01);
           }
         }
         return true;
@@ -2339,10 +1891,23 @@ bool HandlePanelRightClick(float vx, float vy) {
         uint8_t cat = (uint8_t)(item.defIndex / 32);
         uint8_t itemIdx = (uint8_t)(item.defIndex % 32);
 
-        // Skill orb (category 12): right-click to USE (learn skill)
+        // Skill orb (category 12): right-click to USE (learn skill) — DK only
         if (!*s_ctx->shopOpen && cat == 12 && !*s_ctx->isLearningSkill) {
           uint8_t skillId = OrbIndexToSkillId(itemIdx);
           if (skillId > 0) {
+            if (s_ctx->hero->GetClass() != 16) {
+              ShowNotification("Only Dark Knight can use skill orbs!");
+              SoundManager::Play(SOUND_ERROR01);
+              return true;
+            }
+            if (s_ctx->learnedSkills) {
+              for (auto s : *s_ctx->learnedSkills)
+                if (s == skillId) {
+                  ShowNotification("Skill already learned!");
+                  SoundManager::Play(SOUND_ERROR01);
+                  return true;
+                }
+            }
             s_ctx->server->SendItemUse((uint8_t)primarySlot);
             *s_ctx->isLearningSkill = true;
             *s_ctx->learnSkillTimer = 0.0f;
@@ -2353,10 +1918,23 @@ bool HandlePanelRightClick(float vx, float vy) {
           }
         }
 
-        // DW Scroll (category 15): right-click to USE (learn spell)
+        // DW Scroll (category 15): right-click to USE (learn spell) — DW only
         if (!*s_ctx->shopOpen && cat == 15 && !*s_ctx->isLearningSkill) {
           uint8_t skillId = ScrollIndexToSkillId(itemIdx);
           if (skillId > 0) {
+            if (s_ctx->hero->GetClass() != 0) {
+              ShowNotification("Only Dark Wizard can use spell scrolls!");
+              SoundManager::Play(SOUND_ERROR01);
+              return true;
+            }
+            if (s_ctx->learnedSkills) {
+              for (auto s : *s_ctx->learnedSkills)
+                if (s == skillId) {
+                  ShowNotification("Spell already learned!");
+                  SoundManager::Play(SOUND_ERROR01);
+                  return true;
+                }
+            }
             s_ctx->server->SendItemUse((uint8_t)primarySlot);
             *s_ctx->isLearningSkill = true;
             *s_ctx->learnSkillTimer = 0.0f;
@@ -2422,10 +2000,33 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
       }
       g_dragFromRmcSlot = false;
     } else if (droppedOnHUD) {
-      // Dragged FROM skill panel TO RMC slot area — assign
-      *s_ctx->rmcSkillId = (int8_t)skillId;
-      std::cout << "[RMC] Assigned skill " << (int)skillId << " to RMC slot"
-                << std::endl;
+      // Check if dropped on a specific skill slot (1-4) first
+      static constexpr float SK_SLOT = 44.0f, SK_GAP = 5.0f, SK_BAR_W = 140.0f;
+      static constexpr float SK_CW =
+          SK_BAR_W + SK_GAP * 2 + (SK_SLOT + SK_GAP) * 4 + SK_GAP +
+          (SK_SLOT + SK_GAP) * 4 + SK_GAP + SK_SLOT + SK_GAP * 2 + SK_BAR_W;
+      static constexpr float SK_START = (1280.0f - SK_CW) * 0.5f;
+      float potStart = SK_START + SK_BAR_W + SK_GAP * 2;
+      float skillStart = potStart + 4 * (SK_SLOT + SK_GAP) + SK_GAP;
+      bool assignedToSlot = false;
+      for (int i = 0; i < 4; i++) {
+        float x0 = skillStart + i * (SK_SLOT + SK_GAP);
+        if (vx >= x0 && vx <= x0 + SK_SLOT) {
+          s_ctx->skillBar[i] = (int8_t)skillId;
+          SoundManager::Play(SOUND_GET_ITEM01);
+          std::cout << "[Skill] Assigned skill " << (int)skillId << " to slot "
+                    << i << std::endl;
+          assignedToSlot = true;
+          break;
+        }
+      }
+      if (!assignedToSlot) {
+        // Dropped on HUD but not on a skill slot → assign to RMC
+        *s_ctx->rmcSkillId = (int8_t)skillId;
+        SoundManager::Play(SOUND_INTERFACE01);
+        std::cout << "[RMC] Assigned skill " << (int)skillId << " to RMC slot"
+                  << std::endl;
+      }
     }
     // Dropped elsewhere = cancelled (no action)
     g_dragFromSlot = -1;
@@ -2627,6 +2228,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
             s_ctx->hero->EquipShield(info);
           if (ep.slot == 8 && cat == 13 && (idx == 0 || idx == 1))
             s_ctx->hero->EquipPet(idx);
+          if (ep.slot == 8 && cat == 13 && (idx == 2 || idx == 3))
+            s_ctx->hero->EquipMount(idx);
 
           // Body part equipment (Helm/Armor/Pants/Gloves/Boots)
           int bodyPart = ItemDatabase::GetBodyPartIndex(cat);
@@ -2634,7 +2237,7 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
             std::string partModel =
                 ItemDatabase::GetBodyPartModelFile(cat, idx);
             if (!partModel.empty())
-              s_ctx->hero->EquipBodyPart(bodyPart, partModel);
+              s_ctx->hero->EquipBodyPart(bodyPart, partModel, g_dragItemLevel, idx);
           }
 
           // Send Equip packet
@@ -2666,13 +2269,10 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
     static constexpr float DROP_SLOT = 44.0f;
     static constexpr float DROP_GAP = 5.0f;
     static constexpr float DROP_BAR_W = 140.0f;
-    static constexpr float DROP_BTN = 36.0f;
-    static constexpr float DROP_BTN_GAP = 3.0f;
-    static constexpr float DROP_MENU_W = DROP_GAP + DROP_BTN * 3 + DROP_BTN_GAP * 2;
     static constexpr float DROP_CONTENT_W =
         DROP_BAR_W + DROP_GAP * 2 + (DROP_SLOT + DROP_GAP) * 4 + DROP_GAP +
         (DROP_SLOT + DROP_GAP) * 4 + DROP_GAP + DROP_SLOT + DROP_GAP * 2 +
-        DROP_BAR_W + DROP_MENU_W;
+        DROP_BAR_W;
     static constexpr float DROP_START_VX = (1280.0f - DROP_CONTENT_W) * 0.5f;
     static constexpr float DROP_ROW_VY = 818.0f;
 
@@ -2687,6 +2287,7 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
             auto it = g_itemDefs.find(g_dragDefIndex);
             if (it != g_itemDefs.end() && it->second.category == 14) {
               s_ctx->potionBar[i] = g_dragDefIndex;
+              SoundManager::Play(SOUND_GET_ITEM01);
               return;
             }
           }
@@ -2702,6 +2303,7 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
           if (g_dragDefIndex < 0) {
             uint8_t skillId = (uint8_t)(-g_dragDefIndex);
             s_ctx->skillBar[i] = (int8_t)skillId;
+            SoundManager::Play(SOUND_GET_ITEM01);
             return;
           }
         }
@@ -2713,6 +2315,7 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
         if (g_dragDefIndex < 0) {
           uint8_t skillId = (uint8_t)(-g_dragDefIndex);
           *s_ctx->rmcSkillId = (int8_t)skillId;
+          SoundManager::Play(SOUND_GET_ITEM01);
           return;
         }
       }
@@ -2806,6 +2409,7 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
                   static_cast<uint8_t>(g_dragFromSlot),
                   static_cast<uint8_t>(targetSlot));
 
+            SoundManager::Play(SOUND_GET_ITEM01);
             std::cout << "[UI] Moved item from " << g_dragFromSlot << " to "
                       << targetSlot << std::endl;
           } else {
@@ -2950,801 +2554,6 @@ float GetShopPanelX() { return GetInventoryPanelX() - PANEL_W - 5.0f; }
 bool IsPointInPanel(float vx, float vy, float panelX) {
   return vx >= panelX && vx < panelX + PANEL_W && vy >= PANEL_Y &&
          vy < PANEL_Y + PANEL_H;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Skill Drag Cursor — always rendered on foreground when dragging a skill
-// ═══════════════════════════════════════════════════════════════════
-
-void RenderSkillDragCursor(ImDrawList *dl) {
-  if (!g_isDragging || g_dragDefIndex >= 0)
-    return;
-
-  uint8_t skillId = (uint8_t)(-g_dragDefIndex);
-  ImVec2 mp = ImGui::GetIO().MousePos;
-  float dw = 40.0f, dh = 56.0f; // 20:28 ratio scaled up
-  ImVec2 iMin(mp.x - dw * 0.5f, mp.y - dh * 0.5f);
-  ImVec2 iMax(iMin.x + dw, iMin.y + dh);
-
-  dl->AddRectFilled(iMin, iMax, IM_COL32(30, 30, 50, 180), 3.0f);
-  if (g_texSkillIcons != 0) {
-    int ic = skillId % SKILL_ICON_COLS;
-    int ir = skillId / SKILL_ICON_COLS;
-    float uvIn = 0.1f / SKILL_TEX_SIZE;
-    float u0 = (SKILL_ICON_W * ic) / SKILL_TEX_SIZE + uvIn;
-    float v0 = (SKILL_ICON_H * ir) / SKILL_TEX_SIZE + uvIn;
-    float u1 = (SKILL_ICON_W * (ic + 1)) / SKILL_TEX_SIZE - uvIn;
-    float v1 = (SKILL_ICON_H * (ir + 1)) / SKILL_TEX_SIZE - uvIn;
-    dl->AddImage((ImTextureID)(uintptr_t)g_texSkillIcons, iMin, iMax,
-                 ImVec2(u0, v0), ImVec2(u1, v1));
-  }
-  // Look up skill name from both DK and DW tables
-  const char *skillName = nullptr;
-  for (int i = 0; i < NUM_DK_SKILLS; i++) {
-    if (g_dkSkills[i].skillId == skillId) { skillName = g_dkSkills[i].name; break; }
-  }
-  if (!skillName) {
-    for (int i = 0; i < NUM_DW_SPELLS; i++) {
-      if (g_dwSpells[i].skillId == skillId) { skillName = g_dwSpells[i].name; break; }
-    }
-  }
-  if (skillName) {
-    ImVec2 nsz = ImGui::CalcTextSize(skillName);
-    dl->AddText(ImVec2(iMin.x + dw * 0.5f - nsz.x * 0.5f, iMax.y + 2),
-                IM_COL32(255, 210, 80, 255), skillName);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// RMC (Right Mouse Click) Skill Slot — HUD element
-// ═══════════════════════════════════════════════════════════════════
-
-void RenderRmcSlot(ImDrawList *dl, float screenX, float screenY, float size) {
-  if (!s_ctx->rmcSkillId)
-    return;
-  int8_t skillId = *s_ctx->rmcSkillId;
-
-  // Check if player can afford the resource cost (AG for DK, Mana for DW)
-  int cost = (skillId > 0) ? GetSkillResourceCost(skillId) : 0;
-  bool isDK = s_ctx->hero && s_ctx->hero->GetClass() == 16;
-  int currentResource = isDK ? (s_ctx->serverAG ? *s_ctx->serverAG : 0)
-                             : (s_ctx->serverMP ? *s_ctx->serverMP : 0);
-  bool canAfford = currentResource >= cost;
-  ImU32 tint = canAfford ? IM_COL32(255, 255, 255, 255)
-                         : IM_COL32(100, 100, 100, 180);
-
-  ImVec2 p0(screenX, screenY);
-  ImVec2 p1(screenX + size, screenY + size);
-  ImVec2 mpos = ImGui::GetIO().MousePos;
-  bool hov = mpos.x >= p0.x && mpos.x < p1.x && mpos.y >= p0.y && mpos.y < p1.y;
-  DrawStyledSlot(dl, p0, p1, hov);
-
-  if (skillId >= 0 && g_texSkillIcons != 0) {
-    int ic = skillId % SKILL_ICON_COLS;
-    int ir = skillId / SKILL_ICON_COLS;
-    static constexpr float UV_INSET = 0.1f / SKILL_TEX_SIZE;
-    float u0 = (SKILL_ICON_W * ic) / SKILL_TEX_SIZE + UV_INSET;
-    float v0 = (SKILL_ICON_H * ir) / SKILL_TEX_SIZE + UV_INSET;
-    float u1 = (SKILL_ICON_W * (ic + 1)) / SKILL_TEX_SIZE - UV_INSET;
-    float v1 = (SKILL_ICON_H * (ir + 1)) / SKILL_TEX_SIZE - UV_INSET;
-
-    float pad = 4.0f;
-    ImVec2 iMin(screenX + pad, screenY + pad);
-    ImVec2 iMax(screenX + size - pad, screenY + size - pad);
-    dl->AddImage((ImTextureID)(uintptr_t)g_texSkillIcons, iMin, iMax,
-                 ImVec2(u0, v0), ImVec2(u1, v1), tint);
-  }
-
-  if (skillId > 0 && !canAfford)
-    dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 120), 3.0f);
-
-  // "RMC" label
-  dl->AddText(ImVec2(screenX + 2, screenY + 1), IM_COL32(255, 255, 255, 180),
-              "RMC");
-
-  // RMC slot tooltip
-  if (hov && skillId > 0) {
-    uint8_t classCode = s_ctx->hero ? s_ctx->hero->GetClass() : 16;
-    bool isDKClass3 = (classCode == 16);
-    const char *resLabel = isDKClass3 ? "AG" : "Mana";
-    int skillCount3 = 0;
-    const SkillDef *skills = GetClassSkills(classCode, skillCount3);
-    const SkillDef *found = nullptr;
-    for (int j = 0; j < skillCount3; j++) {
-      if (skills[j].skillId == (uint8_t)skillId) {
-        found = &skills[j];
-        break;
-      }
-    }
-    if (found) {
-      char buf[64];
-      BeginPendingTooltip(200, 18 * 4 + 10);
-      AddPendingTooltipLine(IM_COL32(255, 210, 80, 255), found->name);
-      snprintf(buf, sizeof(buf), "%s Cost: %d", resLabel,
-               found->resourceCost);
-      AddPendingTooltipLine(IM_COL32(100, 180, 255, 255), buf);
-      snprintf(buf, sizeof(buf), "Damage: +%d", found->damageBonus);
-      AddPendingTooltipLine(IM_COL32(255, 200, 100, 255), buf);
-      AddPendingTooltipLine(IM_COL32(170, 170, 190, 255), found->desc);
-    }
-  }
-}
-
-// Helper: render a filled bar with text overlay
-static void RenderBar(ImDrawList *dl, float x, float y, float w, float h,
-                      float frac, ImU32 fillColor, ImU32 bgColor,
-                      const char *label) {
-  frac = std::clamp(frac, 0.0f, 1.0f);
-  ImVec2 p0(x, y), p1(x + w, y + h);
-  dl->AddRectFilled(p0, p1, bgColor, 3.0f);
-  if (frac > 0.01f)
-    dl->AddRectFilled(p0, ImVec2(x + w * frac, y + h), fillColor, 3.0f);
-  dl->AddRect(p0, p1, IM_COL32(60, 60, 80, 200), 3.0f);
-  // Centered text with shadow
-  ImVec2 tsz = ImGui::CalcTextSize(label);
-  float tx = x + (w - tsz.x) * 0.5f;
-  float ty = y + (h - tsz.y) * 0.5f;
-  dl->AddText(ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 200), label);
-  dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
-}
-
-// Helper: render a skill icon into a rect
-static void RenderSkillIcon(ImDrawList *dl, int8_t skillId, float sx, float sy,
-                            float sz,
-                            ImU32 tint = IM_COL32(255, 255, 255, 255)) {
-  if (skillId >= 0 && g_texSkillIcons != 0) {
-    int ic = skillId % SKILL_ICON_COLS;
-    int ir = skillId / SKILL_ICON_COLS;
-    static constexpr float UV_INSET = 0.1f / SKILL_TEX_SIZE;
-    float u0 = (SKILL_ICON_W * ic) / SKILL_TEX_SIZE + UV_INSET;
-    float v0 = (SKILL_ICON_H * ir) / SKILL_TEX_SIZE + UV_INSET;
-    float u1 = (SKILL_ICON_W * (ic + 1)) / SKILL_TEX_SIZE - UV_INSET;
-    float v1 = (SKILL_ICON_H * (ir + 1)) / SKILL_TEX_SIZE - UV_INSET;
-    float pad = 4.0f;
-    dl->AddImage((ImTextureID)(uintptr_t)g_texSkillIcons,
-                 ImVec2(sx + pad, sy + pad),
-                 ImVec2(sx + sz - pad, sy + sz - pad), ImVec2(u0, v0),
-                 ImVec2(u1, v1), tint);
-  }
-}
-
-void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
-  if (!s_ctx->hero)
-    return;
-  HeroCharacter &hero = *s_ctx->hero;
-
-  int winW, winH;
-  glfwGetWindowSize(glfwGetCurrentContext(), &winW, &winH);
-  float screenBottom = (float)winH;
-
-  // ── Layout constants (virtual coords, 1280×720) ──
-  // Slot size and spacing
-  static constexpr float SLOT = 44.0f;
-  static constexpr float GAP = 5.0f;
-  static constexpr float BAR_W = 140.0f;
-  static constexpr float BAR_H = 22.0f;
-  static constexpr float XP_H = 10.0f;
-
-  // Menu button constants
-  static constexpr float BTN = 36.0f;
-  static constexpr float BTN_GAP = 3.0f;
-  static constexpr float MENU_W = GAP + BTN * 3 + BTN_GAP * 2;
-
-  // Compute total width: HP + gap + 4pots + gap + 4skills + gap + RMC + gap +
-  // AG + menu buttons
-  static constexpr float CONTENT_W =
-      BAR_W + GAP * 2 + (SLOT + GAP) * 4 + GAP + (SLOT + GAP) * 4 + GAP +
-      SLOT + GAP * 2 + BAR_W + MENU_W;
-
-  // Center horizontally
-  static constexpr float START_VX = (1280.0f - CONTENT_W) * 0.5f;
-  // Anchor to actual screen bottom (virtual Y ~874 = screen bottom at 0.7 scale)
-  static constexpr float ROW_VY = 818.0f; // Slot row
-  static constexpr float XP_VY = 864.0f;  // XP bar below slots (bottom at ~874)
-
-  // ── Background bar ──
-  {
-    float bgX = c.ToScreenX(START_VX - 8.0f);
-    float bgY = c.ToScreenY(ROW_VY - 6.0f);
-    float bgX1 = c.ToScreenX(START_VX + CONTENT_W + 8.0f);
-    float bgY1 = c.ToScreenY(XP_VY + XP_H + 4.0f);
-    // Gradient background
-    dl->AddRectFilledMultiColor(
-        ImVec2(bgX, bgY), ImVec2(bgX1, bgY1),
-        IM_COL32(6, 6, 14, 200), IM_COL32(6, 6, 14, 200),
-        IM_COL32(14, 14, 26, 190), IM_COL32(14, 14, 26, 190));
-    // Outer dark border
-    dl->AddRect(ImVec2(bgX, bgY), ImVec2(bgX1, bgY1),
-                IM_COL32(5, 5, 10, 230), 6.0f, 0, 2.0f);
-    // Inner gold border
-    dl->AddRect(ImVec2(bgX + 2, bgY + 2), ImVec2(bgX1 - 2, bgY1 - 2),
-                IM_COL32(70, 65, 45, 120), 5.0f);
-  }
-
-  float curVX = START_VX;
-
-  // ── HP Bar ──
-  {
-    float barVY = ROW_VY + (SLOT - BAR_H) * 0.5f; // Vertically centered
-    float sx = c.ToScreenX(curVX);
-    float sy = c.ToScreenY(barVY);
-    float sw = c.ToScreenX(curVX + BAR_W) - sx;
-    float sh = c.ToScreenY(barVY + BAR_H) - sy;
-
-    int curHP = hero.GetHP();
-    int maxHP = hero.GetMaxHP();
-    float hpFrac = maxHP > 0 ? (float)curHP / (float)maxHP : 0.0f;
-    char hpLabel[32];
-    snprintf(hpLabel, sizeof(hpLabel), "HP %d/%d", std::max(curHP, 0), maxHP);
-    DrawStyledBar(dl, sx, sy, sw, sh, hpFrac,
-                  IM_COL32(220, 50, 50, 230), IM_COL32(160, 30, 30, 230),
-                  hpLabel);
-    curVX += BAR_W + GAP * 2;
-  }
-
-  // ── Potion slots (Q, W, E, R) ──
-  ImVec2 mp = ImGui::GetIO().MousePos;
-  const char *potLabels[] = {"Q", "W", "E", "R"};
-  for (int i = 0; i < 4; i++) {
-    float vx = curVX;
-    float vy = ROW_VY;
-    float sx = c.ToScreenX(vx);
-    float sy = c.ToScreenY(vy);
-    float sz = c.ToScreenX(vx + SLOT) - sx;
-
-    ImVec2 p0(sx, sy), p1(sx + sz, sy + sz);
-    bool slotHov = mp.x >= p0.x && mp.x < p1.x && mp.y >= p0.y && mp.y < p1.y;
-    DrawStyledSlot(dl, p0, p1, slotHov);
-    DrawShadowText(dl, ImVec2(sx + 2, sy + 1),
-                   IM_COL32(255, 255, 255, 180), potLabels[i]);
-
-    int16_t defIdx = s_ctx->potionBar[i];
-    if (defIdx != -1) {
-      int count = 0;
-      for (int slot = 0; slot < INVENTORY_SLOTS; slot++) {
-        if (s_ctx->inventory[slot].occupied &&
-            s_ctx->inventory[slot].primary &&
-            s_ctx->inventory[slot].defIndex == defIdx)
-          count += s_ctx->inventory[slot].quantity;
-      }
-      if (count > 0) {
-        auto it = ItemDatabase::GetItemDefs().find(defIdx);
-        if (it != ItemDatabase::GetItemDefs().end()) {
-          AddRenderJob({it->second.modelFile, defIdx, (int)sx + 4,
-                        (int)(screenBottom - sy - sz + 4), (int)sz - 8,
-                        (int)sz - 8, false});
-          char cbuf[16];
-          snprintf(cbuf, sizeof(cbuf), "%d", count);
-          ImVec2 tsz = ImGui::CalcTextSize(cbuf);
-          dl->AddText(ImVec2(sx + sz - tsz.x - 2, sy + sz - 14),
-                      IM_COL32(255, 210, 80, 255), cbuf);
-        }
-      }
-    }
-
-    if (*s_ctx->potionCooldown > 0.0f) {
-      // Defer to second ImGui pass (renders on top of 3D item models)
-      DeferredCooldown cd;
-      cd.x = sx; cd.y = sy; cd.w = sz; cd.h = sz;
-      snprintf(cd.text, sizeof(cd.text), "%d",
-               (int)ceil(*s_ctx->potionCooldown));
-      g_deferredCooldowns.push_back(cd);
-    }
-
-    // Potion slot tooltip
-    if (slotHov && defIdx != -1) {
-      auto it = ItemDatabase::GetItemDefs().find(defIdx);
-      if (it != ItemDatabase::GetItemDefs().end()) {
-        int count = 0;
-        for (int slot = 0; slot < INVENTORY_SLOTS; slot++) {
-          if (s_ctx->inventory[slot].occupied &&
-              s_ctx->inventory[slot].primary &&
-              s_ctx->inventory[slot].defIndex == defIdx)
-            count += s_ctx->inventory[slot].quantity;
-        }
-        char buf[64];
-        BeginPendingTooltip(180, 18 * 2 + 10);
-        AddPendingTooltipLine(IM_COL32(255, 210, 80, 255),
-                              it->second.name);
-        snprintf(buf, sizeof(buf), "Quantity: %d", count);
-        AddPendingTooltipLine(IM_COL32(170, 170, 190, 255), buf);
-      }
-    }
-
-    curVX += SLOT + GAP;
-  }
-  curVX += GAP; // Extra gap between potion and skill groups
-
-  // ── Skill slots (1, 2, 3, 4) ──
-  const char *skillLabels[] = {"1", "2", "3", "4"};
-  for (int i = 0; i < 4; i++) {
-    float vx = curVX;
-    float vy = ROW_VY;
-    float sx = c.ToScreenX(vx);
-    float sy = c.ToScreenY(vy);
-    float sz = c.ToScreenX(vx + SLOT) - sx;
-
-    ImVec2 p0(sx, sy), p1(sx + sz, sy + sz);
-    bool slotHov = mp.x >= p0.x && mp.x < p1.x && mp.y >= p0.y && mp.y < p1.y;
-    DrawStyledSlot(dl, p0, p1, slotHov);
-    DrawShadowText(dl, ImVec2(sx + 2, sy + 1),
-                   IM_COL32(255, 255, 255, 180), skillLabels[i]);
-
-    int8_t sid = s_ctx->skillBar[i];
-    int skillCost = (sid > 0) ? GetSkillResourceCost(sid) : 0;
-    bool isDKClass = s_ctx->hero && s_ctx->hero->GetClass() == 16;
-    int curRes = isDKClass ? (s_ctx->serverAG ? *s_ctx->serverAG : 0)
-                           : (s_ctx->serverMP ? *s_ctx->serverMP : 0);
-    bool canAfford = curRes >= skillCost;
-    ImU32 tint = canAfford ? IM_COL32(255, 255, 255, 255)
-                           : IM_COL32(100, 100, 100, 180);
-    RenderSkillIcon(dl, sid, sx, sy, sz, tint);
-    if (sid > 0 && !canAfford)
-      dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 120), 3.0f);
-
-    // GCD overlay — dark sweep from top, proportional to remaining cooldown
-    if (sid > 0 && s_ctx->hero) {
-      float gcd = s_ctx->hero->GetGlobalCooldown();
-      float gcdMax = s_ctx->hero->GetGlobalCooldownMax();
-      if (gcd > 0.0f && gcdMax > 0.0f) {
-        float frac = gcd / gcdMax; // 1.0 = full, 0.0 = ready
-        float fillH = sz * frac;   // Height of darkened portion
-        dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + fillH),
-                          IM_COL32(10, 10, 10, 180), 3.0f);
-      }
-    }
-
-    // Skill slot tooltip
-    if (slotHov && sid > 0) {
-      uint8_t classCode = s_ctx->hero ? s_ctx->hero->GetClass() : 16;
-      bool isDKClass2 = (classCode == 16);
-      const char *resourceLabel = isDKClass2 ? "AG" : "Mana";
-      int skillCount2 = 0;
-      const SkillDef *skills = GetClassSkills(classCode, skillCount2);
-      const SkillDef *found = nullptr;
-      for (int j = 0; j < skillCount2; j++) {
-        if (skills[j].skillId == (uint8_t)sid) {
-          found = &skills[j];
-          break;
-        }
-      }
-      if (found) {
-        char buf[64];
-        int numLines = 4;
-        BeginPendingTooltip(200, 18 * numLines + 10);
-        AddPendingTooltipLine(IM_COL32(255, 210, 80, 255), found->name);
-        snprintf(buf, sizeof(buf), "%s Cost: %d", resourceLabel,
-                 found->resourceCost);
-        AddPendingTooltipLine(IM_COL32(100, 180, 255, 255), buf);
-        snprintf(buf, sizeof(buf), "Damage: +%d", found->damageBonus);
-        AddPendingTooltipLine(IM_COL32(255, 200, 100, 255), buf);
-        AddPendingTooltipLine(IM_COL32(170, 170, 190, 255), found->desc);
-      }
-    }
-
-    curVX += SLOT + GAP;
-  }
-  curVX += GAP;
-
-  // ── RMC Slot ──
-  {
-    float sx = c.ToScreenX(curVX);
-    float sy = c.ToScreenY(ROW_VY);
-    float sz = c.ToScreenX(curVX + SLOT) - sx;
-    RenderRmcSlot(dl, sx, sy, sz);
-    curVX += SLOT + GAP * 2;
-  }
-
-  // ── AG / MP Bar ──
-  {
-    float barVY = ROW_VY + (SLOT - BAR_H) * 0.5f;
-    float sx = c.ToScreenX(curVX);
-    float sy = c.ToScreenY(barVY);
-    float sw = c.ToScreenX(curVX + BAR_W) - sx;
-    float sh = c.ToScreenY(barVY + BAR_H) - sy;
-
-    // DK (class 16) uses AG, other classes use MP/Mana
-    bool isDK = (hero.GetClass() == 16);
-    int curVal = isDK ? hero.GetAG() : hero.GetMana();
-    int maxVal = isDK ? hero.GetMaxAG() : hero.GetMaxMana();
-    float frac = maxVal > 0 ? (float)curVal / (float)maxVal : 0.0f;
-    const char *resLabel = isDK ? "AG" : "MP";
-    ImU32 topCol = isDK ? IM_COL32(160, 60, 220, 230)
-                        : IM_COL32(50, 70, 220, 230);
-    ImU32 botCol = isDK ? IM_COL32(110, 35, 160, 230)
-                        : IM_COL32(30, 45, 160, 230);
-
-    char barLabel[32];
-    snprintf(barLabel, sizeof(barLabel), "%s %d/%d", resLabel,
-             std::max(curVal, 0), maxVal);
-    DrawStyledBar(dl, sx, sy, sw, sh, frac, topCol, botCol, barLabel);
-    curVX += BAR_W;
-  }
-
-  // ── Menu buttons: C (Character), I (Inventory), T (Teleport) ──
-  {
-    curVX += GAP;
-    const char *btnLabels[] = {"C", "I", "T"};
-    bool tDisabled = (s_ctx->hero && s_ctx->hero->IsInSafeZone());
-    for (int i = 0; i < 3; i++) {
-      float bx = c.ToScreenX(curVX);
-      float by = c.ToScreenY(ROW_VY + (SLOT - BTN) * 0.5f);
-      float bs = c.ToScreenX(curVX + BTN) - bx;
-      ImVec2 bp0(bx, by), bp1(bx + bs, by + bs);
-      bool hov = mp.x >= bp0.x && mp.x < bp1.x &&
-                 mp.y >= bp0.y && mp.y < bp1.y;
-      bool disabled = (i == 2 && tDisabled); // T button disabled in safe zone
-      // Gradient fill
-      ImU32 topFill = disabled ? IM_COL32(15, 15, 20, 200)
-                     : hov     ? IM_COL32(35, 35, 55, 230)
-                               : IM_COL32(20, 20, 35, 220);
-      ImU32 botFill = disabled ? IM_COL32(10, 10, 16, 200)
-                     : hov     ? IM_COL32(25, 25, 42, 230)
-                               : IM_COL32(14, 14, 26, 220);
-      dl->AddRectFilledMultiColor(bp0, bp1, topFill, topFill, botFill, botFill);
-      // Border: gold-tinted, brighter on hover, dimmer when disabled
-      ImU32 borderCol = disabled ? IM_COL32(40, 35, 25, 120)
-                       : hov     ? IM_COL32(180, 160, 90, 220)
-                                 : IM_COL32(65, 60, 45, 180);
-      dl->AddRect(bp0, bp1, borderCol, 4.0f);
-      ImVec2 tsz = ImGui::CalcTextSize(btnLabels[i]);
-      ImU32 textCol = disabled ? IM_COL32(100, 95, 80, 140)
-                               : IM_COL32(220, 215, 200, 240);
-      DrawShadowText(dl,
-          ImVec2(bx + (bs - tsz.x) * 0.5f, by + (bs - tsz.y) * 0.5f),
-          textCol, btnLabels[i]);
-      curVX += BTN + BTN_GAP;
-    }
-  }
-
-  // ── XP Bar (spans full HUD width, below slots) ──
-  {
-    float xpVX = START_VX;
-    float xpW = CONTENT_W;
-    float sx = c.ToScreenX(xpVX);
-    float sy = c.ToScreenY(XP_VY);
-    float sw = c.ToScreenX(xpVX + xpW) - sx;
-    float sh = c.ToScreenY(XP_VY + XP_H) - sy;
-
-    uint64_t curXp = hero.GetExperience();
-    int curLv = hero.GetLevel();
-    uint64_t nextXp = hero.GetNextExperience();
-    uint64_t prevXp = HeroCharacter::CalcXPForLevel(curLv);
-    float xpFrac = 0.0f;
-    if (nextXp > prevXp)
-      xpFrac = (float)(curXp - prevXp) / (float)(nextXp - prevXp);
-
-    char xpLabel[64];
-    snprintf(xpLabel, sizeof(xpLabel), "Lv.%d  -  %.1f%%", curLv,
-             std::clamp(xpFrac, 0.0f, 1.0f) * 100.0f);
-    DrawStyledBar(dl, sx, sy, sw, sh, xpFrac,
-                  IM_COL32(50, 180, 220, 230), IM_COL32(30, 130, 170, 230),
-                  xpLabel);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Skill Window (S key) — Class-aware skill/spell panel
-// ═══════════════════════════════════════════════════════════════════
-
-void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
-  // Get class-appropriate skill list
-  uint8_t classCode = s_ctx->hero ? s_ctx->hero->GetClass() : 16;
-  bool isDK = (classCode == 16);
-  int skillCount = 0;
-  const SkillDef *skills = GetClassSkills(classCode, skillCount);
-  const char *resourceLabel = isDK ? "AG" : "Mana";
-  const char *panelTitle = isDK ? "Skills" : "Spells";
-
-  // Grid layout: adapt rows to skill count
-  static constexpr int GRID_COLS = 4;
-  int GRID_ROWS = (skillCount + GRID_COLS - 1) / GRID_COLS;
-  static constexpr float CELL_W = 110.0f;
-  static constexpr float CELL_H = 105.0f;
-  static constexpr float CELL_PAD = 10.0f;
-  static constexpr float TITLE_H = 32.0f;
-  static constexpr float FOOTER_H = 24.0f;
-  static constexpr float MARGIN = 16.0f;
-
-  float pw = MARGIN * 2 + GRID_COLS * CELL_W + (GRID_COLS - 1) * CELL_PAD;
-  float ph = TITLE_H + MARGIN + GRID_ROWS * CELL_H +
-             (GRID_ROWS - 1) * CELL_PAD + FOOTER_H + MARGIN;
-
-  // Center on screen
-  float px = (UICoords::VIRTUAL_W - pw) * 0.5f;
-  float py = (UICoords::VIRTUAL_H - ph) * 0.5f;
-
-  // Colors
-  const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
-  const ImU32 colLabel = IM_COL32(170, 170, 190, 255);
-  const ImU32 colValue = IM_COL32(255, 255, 255, 255);
-  const ImU32 colGreen = IM_COL32(100, 255, 100, 255);
-  const ImU32 colRed = IM_COL32(255, 80, 80, 255);
-  const ImU32 colDim = IM_COL32(255, 255, 255, 100);
-  char buf[256];
-
-  // Background
-  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py),
-                  c.ToScreenX(px + pw), c.ToScreenY(py + ph), 6.0f);
-
-  // Title — centered with strong shadow
-  {
-    const char *title = panelTitle;
-    ImVec2 tsz = ImGui::CalcTextSize(title);
-    float tx = c.ToScreenX(px + pw * 0.5f) - tsz.x * 0.5f;
-    float ty = c.ToScreenY(py + 10.0f);
-    DrawShadowText(dl, ImVec2(tx, ty), colTitle, title, 2);
-  }
-
-  // Close button (top-right)
-  {
-    float bx = px + pw - 24.0f;
-    float by = py + 8.0f;
-    float bw = 16.0f, bh = 16.0f;
-    ImVec2 bMin(c.ToScreenX(bx), c.ToScreenY(by));
-    ImVec2 bMax(c.ToScreenX(bx + bw), c.ToScreenY(by + bh));
-    ImVec2 mp = ImGui::GetIO().MousePos;
-    bool hovered =
-        mp.x >= bMin.x && mp.x < bMax.x && mp.y >= bMin.y && mp.y < bMax.y;
-    ImU32 bgCol =
-        hovered ? IM_COL32(200, 40, 40, 255) : IM_COL32(100, 20, 20, 200);
-    dl->AddRectFilled(bMin, bMax, bgCol, 2.0f);
-    if (hovered)
-      dl->AddRect(bMin, bMax, IM_COL32(255, 100, 100, 255), 2.0f);
-    ImVec2 xSize = ImGui::CalcTextSize("X");
-    ImVec2 xPos(bMin.x + (bMax.x - bMin.x) * 0.5f - xSize.x * 0.5f,
-                bMin.y + (bMax.y - bMin.y) * 0.5f - xSize.y * 0.5f);
-    dl->AddText(xPos, IM_COL32(255, 255, 255, 255), "X");
-    if (hovered && ImGui::IsMouseClicked(0)) {
-      SoundManager::Play(SOUND_CLICK01);
-      *s_ctx->showSkillWindow = false;
-    }
-  }
-
-  // Check which skills are learned
-  auto isLearned = [](uint8_t skillId) -> bool {
-    if (!s_ctx->learnedSkills)
-      return false;
-    for (auto s : *s_ctx->learnedSkills) {
-      if (s == skillId)
-        return true;
-    }
-    return false;
-  };
-
-  ImVec2 mousePos = ImGui::GetIO().MousePos;
-
-  // Icon display size (preserve 20:28 aspect ratio = 5:7)
-  static constexpr float ICON_DISP_W = 46.0f;
-  static constexpr float ICON_DISP_H = 64.0f; // 46 * 28/20 = 64.4
-
-  float gridStartY = py + TITLE_H;
-
-  for (int i = 0; i < skillCount; i++) {
-    const auto &skill = skills[i];
-    bool learned = isLearned(skill.skillId);
-
-    int col = i % GRID_COLS;
-    int row = i / GRID_COLS;
-    float cx = px + MARGIN + col * (CELL_W + CELL_PAD);
-    float cy = gridStartY + row * (CELL_H + CELL_PAD);
-
-    // Cell background
-    ImVec2 cMin(c.ToScreenX(cx), c.ToScreenY(cy));
-    ImVec2 cMax(c.ToScreenX(cx + CELL_W), c.ToScreenY(cy + CELL_H));
-
-    bool cellHovered = mousePos.x >= cMin.x && mousePos.x < cMax.x &&
-                       mousePos.y >= cMin.y && mousePos.y < cMax.y;
-
-    ImU32 cellBg =
-        cellHovered ? IM_COL32(40, 45, 65, 220) : IM_COL32(25, 28, 40, 200);
-    dl->AddRectFilled(cMin, cMax, cellBg, 4.0f);
-    dl->AddRect(cMin, cMax, IM_COL32(50, 55, 75, 150), 4.0f);
-
-    // Icon centered at top of cell
-    if (g_texSkillIcons != 0) {
-      int iconIdx = skill.skillId;
-      int ic = iconIdx % SKILL_ICON_COLS;
-      int ir = iconIdx / SKILL_ICON_COLS;
-      // Tiny inset (0.1 texels) prevents bilinear bleed from neighbors
-      static constexpr float UV_INSET = 0.1f / SKILL_TEX_SIZE;
-      float u0 = (SKILL_ICON_W * ic) / SKILL_TEX_SIZE + UV_INSET;
-      float v0 = (SKILL_ICON_H * ir) / SKILL_TEX_SIZE + UV_INSET;
-      float u1 = (SKILL_ICON_W * (ic + 1)) / SKILL_TEX_SIZE - UV_INSET;
-      float v1 = (SKILL_ICON_H * (ir + 1)) / SKILL_TEX_SIZE - UV_INSET;
-
-      float iconX = cx + (CELL_W - ICON_DISP_W) * 0.5f;
-      float iconY = cy + 6.0f;
-
-      ImVec2 iMin(c.ToScreenX(iconX), c.ToScreenY(iconY));
-      ImVec2 iMax(c.ToScreenX(iconX + ICON_DISP_W),
-                  c.ToScreenY(iconY + ICON_DISP_H));
-
-      // Learning animation: interpolate opacity 100→255 over learn duration
-      bool isBeingLearned =
-          *s_ctx->isLearningSkill && *s_ctx->learningSkillId == skill.skillId;
-      int iconAlpha;
-      if (learned)
-        iconAlpha = 255;
-      else if (isBeingLearned)
-        iconAlpha = 100 + (int)(155.0f *
-                                std::min(1.0f, *s_ctx->learnSkillTimer / 3.0f));
-      else
-        iconAlpha = 100;
-      ImU32 iconTint = IM_COL32(255, 255, 255, iconAlpha);
-      dl->AddImage((ImTextureID)(uintptr_t)g_texSkillIcons, iMin, iMax,
-                   ImVec2(u0, v0), ImVec2(u1, v1), iconTint);
-
-      // "Learning..." / "Learned" label overlay
-      if (isBeingLearned) {
-        const char *lbl = "Learning...";
-        ImVec2 lsz = ImGui::CalcTextSize(lbl);
-        float lx = (iMin.x + iMax.x) * 0.5f - lsz.x * 0.5f;
-        float ly = iMax.y - lsz.y - 2.0f;
-        dl->AddText(ImVec2(lx + 1, ly + 1), IM_COL32(0, 0, 0, 200), lbl);
-        dl->AddText(ImVec2(lx, ly), IM_COL32(255, 210, 80, 255), lbl);
-      }
-    }
-
-    // Drag from skill panel (learned skills only)
-    if (learned && cellHovered && ImGui::IsMouseClicked(0) && !g_isDragging) {
-      g_isDragging = true;
-      g_dragFromSlot = -1;
-      g_dragFromEquipSlot = -1;
-      g_dragDefIndex =
-          -skill.skillId; // Negative = skill ID (not item defIndex)
-      std::cout << "[Skill] Started dragging skill " << skill.name << std::endl;
-    }
-
-    // Skill name centered below icon
-    {
-      ImU32 nameCol = learned ? colValue : colDim;
-      ImVec2 nsz = ImGui::CalcTextSize(skill.name);
-      float nameY = cy + 6.0f + ICON_DISP_H + 4.0f;
-      // Clamp text to cell width
-      float nx = c.ToScreenX(cx + CELL_W * 0.5f) - nsz.x * 0.5f;
-      float cellLeft = c.ToScreenX(cx + 2.0f);
-      if (nx < cellLeft)
-        nx = cellLeft;
-      float ny = c.ToScreenY(nameY);
-      dl->AddText(ImVec2(nx + 1, ny + 1), IM_COL32(0, 0, 0, 180), skill.name);
-      dl->AddText(ImVec2(nx, ny), nameCol, skill.name);
-    }
-
-    // Level req badge (bottom-right corner of cell, only if > 1)
-    if (skill.levelReq > 1) {
-      snprintf(buf, sizeof(buf), "Lv%d", skill.levelReq);
-      bool meetsReq = *s_ctx->serverLevel >= skill.levelReq;
-      ImU32 reqCol = meetsReq ? colGreen : colRed;
-      if (!learned)
-        reqCol = (reqCol & 0x00FFFFFF) | 0x64000000;
-      ImVec2 rsz = ImGui::CalcTextSize(buf);
-      float rx = c.ToScreenX(cx + CELL_W - 3.0f) - rsz.x;
-      float ry = c.ToScreenY(cy + CELL_H - 16.0f);
-      dl->AddText(ImVec2(rx + 1, ry + 1), IM_COL32(0, 0, 0, 180), buf);
-      dl->AddText(ImVec2(rx, ry), reqCol, buf);
-    }
-
-    // Tooltip on hover
-    if (cellHovered) {
-      float tw = 200;
-      float lineH = 18;
-      int numLines = 5;
-      float th = lineH * numLines + 10;
-
-      BeginPendingTooltip(tw, th);
-      AddPendingTooltipLine(colTitle, skill.name);
-
-      snprintf(buf, sizeof(buf), "%s Cost: %d", resourceLabel,
-               skill.resourceCost);
-      AddPendingTooltipLine(IM_COL32(100, 180, 255, 255), buf);
-
-      snprintf(buf, sizeof(buf), "Damage: +%d", skill.damageBonus);
-      AddPendingTooltipLine(IM_COL32(255, 200, 100, 255), buf);
-
-      snprintf(buf, sizeof(buf), "Level Req: %d", skill.levelReq);
-      bool meetsReq = *s_ctx->serverLevel >= skill.levelReq;
-      AddPendingTooltipLine(meetsReq ? colGreen : colRed, buf);
-
-      AddPendingTooltipLine(colLabel, skill.desc);
-
-      if (!learned) {
-        AddPendingTooltipLine(IM_COL32(255, 150, 50, 255), "(Not learned)");
-      }
-    }
-  }
-
-  // Footer — centered
-  int learnedCount =
-      s_ctx->learnedSkills ? (int)s_ctx->learnedSkills->size() : 0;
-  snprintf(buf, sizeof(buf), "Learned: %d / %d", learnedCount, skillCount);
-  {
-    ImVec2 fsz = ImGui::CalcTextSize(buf);
-    float fx = c.ToScreenX(px + pw * 0.5f) - fsz.x * 0.5f;
-    float fy = c.ToScreenY(py + ph - FOOTER_H);
-    dl->AddText(ImVec2(fx + 1, fy + 1), IM_COL32(0, 0, 0, 180), buf);
-    dl->AddText(ImVec2(fx, fy), colLabel, buf);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// ── Cast Bar (centered on screen) ─────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
-static const char *GetSkillName(uint8_t skillId) {
-  for (int i = 0; i < NUM_DK_SKILLS; i++)
-    if (g_dkSkills[i].skillId == skillId) return g_dkSkills[i].name;
-  for (int i = 0; i < NUM_DW_SPELLS; i++)
-    if (g_dwSpells[i].skillId == skillId) return g_dwSpells[i].name;
-  return nullptr;
-}
-
-void RenderCastBar(ImDrawList *dl) {
-  if (!s_ctx) return;
-
-  bool isTeleport = s_ctx->teleportingToTown && *s_ctx->teleportingToTown;
-  bool isLearning = s_ctx->isLearningSkill && *s_ctx->isLearningSkill;
-  if (!isTeleport && !isLearning) return;
-
-  // Build label and progress
-  char label[64];
-  float progress = 0.0f;
-  float remaining = 0.0f;
-
-  if (isLearning) {
-    const char *name = GetSkillName(*s_ctx->learningSkillId);
-    snprintf(label, sizeof(label), "Learning %s", name ? name : "Skill");
-    float elapsed = *s_ctx->learnSkillTimer;
-    float duration = s_ctx->learnSkillDuration;
-    progress = std::clamp(elapsed / duration, 0.0f, 1.0f);
-    remaining = std::max(0.0f, duration - elapsed);
-  } else {
-    snprintf(label, sizeof(label), "Teleporting to Lorencia");
-    float timer = *s_ctx->teleportTimer;
-    float duration = s_ctx->teleportCastTime;
-    progress = std::clamp(1.0f - timer / duration, 0.0f, 1.0f);
-    remaining = std::max(0.0f, timer);
-  }
-
-  // Minimal layout: narrow bar centered on screen
-  ImVec2 disp = ImGui::GetIO().DisplaySize;
-  float barW = 220.0f;
-  float barH = 14.0f;
-  float bx = (disp.x - barW) * 0.5f;
-  float by = disp.y * 0.68f; // Above HUD bar
-
-  // Label above bar
-  ImVec2 labelSz = ImGui::CalcTextSize(label);
-  float lx = bx + (barW - labelSz.x) * 0.5f;
-  float ly = by - labelSz.y - 3.0f;
-  dl->AddText(ImVec2(lx + 1, ly + 1), IM_COL32(0, 0, 0, 200), label);
-  dl->AddText(ImVec2(lx, ly), IM_COL32(220, 210, 180, 240), label);
-
-  // Bar background
-  dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + barW, by + barH),
-                    IM_COL32(0, 0, 0, 160), 2.0f);
-
-  // Fill
-  if (progress > 0.01f) {
-    float fillW = barW * progress;
-    dl->AddRectFilledMultiColor(
-        ImVec2(bx, by), ImVec2(bx + fillW, by + barH),
-        IM_COL32(190, 165, 55, 220), IM_COL32(190, 165, 55, 220),
-        IM_COL32(130, 105, 30, 220), IM_COL32(130, 105, 30, 220));
-  }
-
-  // Thin border
-  dl->AddRect(ImVec2(bx, by), ImVec2(bx + barW, by + barH),
-              IM_COL32(80, 70, 45, 180), 2.0f);
-
-  // Time right-aligned inside bar
-  char timeBuf[8];
-  snprintf(timeBuf, sizeof(timeBuf), "%.1fs", remaining);
-  ImVec2 tsz = ImGui::CalcTextSize(timeBuf);
-  float tx = bx + barW - tsz.x - 4.0f;
-  float ty = by + (barH - tsz.y) * 0.5f;
-  dl->AddText(ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 200), timeBuf);
-  dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 220), timeBuf);
 }
 
 } // namespace InventoryUI

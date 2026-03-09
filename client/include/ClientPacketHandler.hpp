@@ -58,11 +58,25 @@ struct ClientGameState {
   char *characterName = nullptr;
   std::vector<uint8_t> *learnedSkills = nullptr;
 
+  // Quest state (synced from server)
+  int *questIndex = nullptr;
+  int *questKillCount = nullptr;  // [3] array
+  int *questRequired = nullptr;   // [3] array
+  int *questTargetCount = nullptr;
+
   // Callbacks for main.cpp-specific functionality
   std::function<void(const glm::vec3 &, int, uint8_t)> spawnDamageNumber;
   std::function<int(uint8_t)> getBodyPartIndex;
   std::function<std::string(uint8_t, uint8_t)> getBodyPartModelFile;
   std::function<void(int16_t, glm::vec3 &, float &)> getItemRestingAngle;
+};
+
+// Pending map change (set by packet handler, consumed by main loop)
+struct PendingMapChange {
+  bool pending = false;
+  uint8_t mapId = 0;
+  uint8_t spawnX = 0;
+  uint8_t spawnY = 0;
 };
 
 namespace ClientPacketHandler {
@@ -78,6 +92,12 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize);
 
 // Handle character select packets (F3:00 charlist, F3:01 create, F3:02 delete)
 void HandleCharSelectPacket(const uint8_t *pkt, int pktSize);
+
+// Reset internal state for character switch (clears s_initialStatsReceived, etc.)
+void ResetForCharSwitch();
+
+// Map change: check if server requested a map transition
+PendingMapChange &GetPendingMapChange();
 
 } // namespace ClientPacketHandler
 

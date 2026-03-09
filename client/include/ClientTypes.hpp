@@ -62,6 +62,7 @@ struct ClientItemDefinition {
   uint8_t attackSpeed = 0;
   bool twoHanded = false;
   uint32_t buyPrice = 0;
+  uint16_t magicPower = 0;  // Staff Rise base value (for tooltip display)
 };
 
 // ── Client-side inventory slot ──

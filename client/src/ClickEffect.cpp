@@ -1,25 +1,12 @@
 #include "ClickEffect.hpp"
+#include "TerrainUtils.hpp"
 #include "TextureLoader.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 
 float ClickEffect::getTerrainHeight(float worldX, float worldZ) const {
-  if (!m_terrainData)
-    return 0.0f;
-  const int S = TerrainParser::TERRAIN_SIZE;
-  float gz = worldX / 100.0f;
-  float gx = worldZ / 100.0f;
-  gz = std::clamp(gz, 0.0f, (float)(S - 2));
-  gx = std::clamp(gx, 0.0f, (float)(S - 2));
-  int xi = (int)gx, zi = (int)gz;
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  float h00 = m_terrainData->heightmap[zi * S + xi];
-  float h10 = m_terrainData->heightmap[zi * S + (xi + 1)];
-  float h01 = m_terrainData->heightmap[(zi + 1) * S + xi];
-  float h11 = m_terrainData->heightmap[(zi + 1) * S + (xi + 1)];
-  return h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) +
-         h01 * (1 - xd) * zd + h11 * xd * zd;
+  return TerrainUtils::GetHeight(m_terrainData, worldX, worldZ);
 }
 
 void ClickEffect::drawGroundQuad(float cx, float cz, float halfSize,

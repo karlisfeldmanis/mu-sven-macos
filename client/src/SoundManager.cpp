@@ -218,12 +218,15 @@ void Init(const std::string &dataPath) {
 
   // Non-positional sounds (UI, player actions — always at listener)
   LoadSound(SOUND_WIND01, sndPath + "aWind.wav", 1);
+  LoadSound(SOUND_DUNGEON01, sndPath + "aDungeon.wav", 1);
+  LoadSound(SOUND_BAT01, sndPath + "aBat.wav", 1, true); // 3D positional
   LoadSound(SOUND_WALK_GRASS, sndPath + "pWalk(Grass).wav", 2);
   LoadSound(SOUND_WALK_SOIL, sndPath + "pWalk(Soil).wav", 2);
   LoadSound(SOUND_CLICK01, sndPath + "iButtonClick.wav", 1);
   LoadSound(SOUND_ERROR01, sndPath + "iButtonError.wav", 1);
   LoadSound(SOUND_MENU01, sndPath + "iButtonMove.wav", 2);
   LoadSound(SOUND_INTERFACE01, sndPath + "iCreateWindow.wav", 1);
+  LoadSound(SOUND_QUEST_ACCEPT, sndPath + "iDuel_Window.wav", 1);
   LoadSound(SOUND_GET_ITEM01, sndPath + "pGetItem.wav", 1);
   LoadSound(SOUND_DROP_ITEM01, sndPath + "pDropItem.wav", 1);
   LoadSound(SOUND_DROP_GOLD01, sndPath + "pDropMoney.wav", 1);
@@ -239,7 +242,24 @@ void Init(const std::string &dataPath) {
   LoadSound(SOUND_HIT4, sndPath + "eMeleeHit4.wav", 2);
   LoadSound(SOUND_HIT5, sndPath + "eMeleeHit5.wav", 2);
   LoadSound(SOUND_LEVEL_UP, sndPath + "pLevelUp.wav", 1);
+  LoadSound(SOUND_MALE_SCREAM1, sndPath + "pMaleScream1.wav", 2);
+  LoadSound(SOUND_MALE_SCREAM2, sndPath + "pMaleScream2.wav", 2);
+  LoadSound(SOUND_MALE_SCREAM3, sndPath + "pMaleScream3.wav", 2);
   LoadSound(SOUND_MALE_DIE, sndPath + "pMaleDie.wav", 1);
+  LoadSound(SOUND_FEMALE_SCREAM1, sndPath + "pFemaleScream1.wav", 2);
+  LoadSound(SOUND_FEMALE_SCREAM2, sndPath + "pFemaleScream2.wav", 2);
+
+  // Body blow / armor impact sounds (Main 5.2: SOUND_BLOW01-04)
+  LoadSound(SOUND_BLOW1, sndPath + "eBlow1.wav", 2);
+  LoadSound(SOUND_BLOW2, sndPath + "eBlow2.wav", 2);
+  LoadSound(SOUND_BLOW3, sndPath + "eBlow3.wav", 2);
+  LoadSound(SOUND_BLOW4, sndPath + "eBlow4.wav", 2);
+
+  // Missile/spell impact sounds
+  LoadSound(SOUND_MISSILE_HIT1, sndPath + "eMissileHit1.wav", 2);
+  LoadSound(SOUND_MISSILE_HIT2, sndPath + "eMissileHit2.wav", 2);
+  LoadSound(SOUND_MISSILE_HIT3, sndPath + "eMissileHit3.wav", 2);
+  LoadSound(SOUND_MISSILE_HIT4, sndPath + "eMissileHit4.wav", 2);
 
   // Teleport / Gem sounds
   LoadSound(SOUND_SUMMON, sndPath + "eSummon.wav", 1);
@@ -248,12 +268,19 @@ void Init(const std::string &dataPath) {
   // Main 5.2: SOUND_THUNDER01 — lightning spell cast/impact
   LoadSound(SOUND_THUNDER01, sndPath + "eThunder.wav", 2);
 
-  // Lich thunder attack (3D positional)
+  // Lich thunder attack (3D positional for Lich monster)
   LoadSound(SOUND_LICH_THUNDER, sndPath + "w57/Naipin-Thunder.wav", 2, true);
+  // Same sound, non-positional — for DW lightning bolt cast
+  LoadSound(SOUND_LIGHTNING_CAST, sndPath + "w57/Naipin-Thunder.wav", 2);
 
   // Skeleton bone sounds (3D positional)
   LoadSound(SOUND_BONE1, sndPath + "mBone1.wav", 2, true);
   LoadSound(SOUND_BONE2, sndPath + "mBone2.wav", 2, true);
+
+  // Mount hoofbeat sounds (Main 5.2: pHorseStep 1-3)
+  LoadSound(SOUND_MOUNT_STEP1, sndPath + "pHorseStep1.wav", 2);
+  LoadSound(SOUND_MOUNT_STEP2, sndPath + "pHorseStep2.wav", 2);
+  LoadSound(SOUND_MOUNT_STEP3, sndPath + "pHorseStep3.wav", 2);
 
   // DK skill sounds
   LoadSound(SOUND_KNIGHT_SKILL1, sndPath + "sKnightSkill1.wav", 2);
@@ -263,6 +290,16 @@ void Init(const std::string &dataPath) {
   LoadSound(SOUND_RAGE_BLOW1, sndPath + "eRageBlow_1.wav", 2);
   LoadSound(SOUND_RAGE_BLOW2, sndPath + "eRageBlow_2.wav", 2);
   LoadSound(SOUND_RAGE_BLOW3, sndPath + "eRageBlow_3.wav", 2);
+
+  // DW spell sounds (Main 5.2: ZzzCharacter.cpp PlayBuffer calls)
+  LoadSound(SOUND_METEORITE01, sndPath + "eMeteorite.wav", 2);
+  LoadSound(SOUND_STORM, sndPath + "sTornado.wav", 2);
+  LoadSound(SOUND_EVIL, sndPath + "sEvil.wav", 2);
+  LoadSound(SOUND_MAGIC, sndPath + "sMagic.wav", 2);
+  LoadSound(SOUND_HELLFIRE, sndPath + "sHellFire.wav", 2);
+  LoadSound(SOUND_ICE, sndPath + "sIce.wav", 2);
+  LoadSound(SOUND_FLAME, sndPath + "sFlame.wav", 2);
+  LoadSound(SOUND_FLASH, sndPath + "sAquaFlash.wav", 2);
 
   // 3D positional sounds (monsters, ambient creatures)
   LoadSound(SOUND_BIRD01, sndPath + "aBird1.wav", 1, true);
@@ -283,8 +320,9 @@ void Init(const std::string &dataPath) {
   LoadSound(SOUND_MONSTER_BUDGE1, sndPath + "mBudge1.wav", 2, true);
   LoadSound(SOUND_MONSTER_BUDGEATTACK1, sndPath + "mBudgeAttack1.wav", 2, true);
   LoadSound(SOUND_MONSTER_BUDGEDIE, sndPath + "mBudgeDie.wav", 2, true);
-  // Spider (type 3) — all states use mSpider1.wav in Main 5.2
+  // Spider (type 3)
   LoadSound(SOUND_MONSTER_SPIDER1, sndPath + "mSpider1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_SPIDERDIE, sndPath + "mHellSpiderDie.wav", 2, true);
   // Elite Bull Fighter / Wizard (type 4) — Main 5.2 uses mWizard sounds
   LoadSound(SOUND_MONSTER_WIZARD1, sndPath + "mWizard1.wav", 2, true);
   LoadSound(SOUND_MONSTER_WIZARD2, sndPath + "mWizard2.wav", 2, true);
@@ -304,6 +342,33 @@ void Init(const std::string &dataPath) {
   LoadSound(SOUND_MONSTER_ASSASSINATTACK1, sndPath + "mAssassinAttack1.wav", 2, true);
   LoadSound(SOUND_MONSTER_ASSASSINATTACK2, sndPath + "mAssassinAttack2.wav", 2, true);
   LoadSound(SOUND_MONSTER_ASSASSINDIE, sndPath + "mAssassinDie.wav", 2, true);
+  // Ghost (type 11) — Main 5.2: mGhost sounds
+  LoadSound(SOUND_MONSTER_GHOST1, sndPath + "mGhost1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_GHOST2, sndPath + "mGhost2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_GHOSTATTACK1, sndPath + "mGhostAttack1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_GHOSTATTACK2, sndPath + "mGhostAttack2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_GHOSTDIE, sndPath + "mGhostDie.wav", 2, true);
+  // Cyclops/Ogre (type 17) — Main 5.2: mOgre sounds
+  LoadSound(SOUND_MONSTER_OGRE1, sndPath + "mOgre1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_OGRE2, sndPath + "mOgre2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_OGREATTACK1, sndPath + "mOgreAttack1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_OGREATTACK2, sndPath + "mOgreAttack2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_OGREDIE, sndPath + "mOgreDie.wav", 2, true);
+  // Gorgon (type 18) — Main 5.2: mGorgon sounds
+  LoadSound(SOUND_MONSTER_GORGON1, sndPath + "mGorgon1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_GORGON2, sndPath + "mGorgon2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_GORGONATTACK1, sndPath + "mGorgonAttack1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_GORGONATTACK2, sndPath + "mGorgonAttack2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_GORGONDIE, sndPath + "mGorgonDie.wav", 2, true);
+  // Shadow (type 13) — Main 5.2: mShadow sounds (Hell Spider reuses model)
+  LoadSound(SOUND_MONSTER_SHADOW1, sndPath + "mShadow1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_SHADOW2, sndPath + "mShadow2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_SHADOWATTACK1, sndPath + "mShadowAttack1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_SHADOWATTACK2, sndPath + "mShadowAttack2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_SHADOWDIE, sndPath + "mShadowDie.wav", 2, true);
+  // Dark Knight monster (type 10) — Main 5.2: mDarkKnight sounds
+  LoadSound(SOUND_MONSTER_DARKKNIGHT1, sndPath + "mDarkKnight1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_DARKKNIGHT2, sndPath + "mDarkKnight2.wav", 2, true);
   // NPC sounds (3D positional)
   LoadSound(SOUND_NPC_BLACKSMITH, sndPath + "nBlackSmith.wav", 1, true);
   LoadSound(SOUND_NPC_HARP, sndPath + "nHarp.wav", 1, true);
@@ -390,6 +455,33 @@ void PlayLoop(int soundId) {
   auto nm = s_soundNames.find(soundId);
   std::cout << "[Sound] PlayLoop: " << (nm != s_soundNames.end() ? nm->second : "?")
             << " (id=" << soundId << ")" << std::endl;
+}
+
+void Play3DLoop(int soundId, float x, float y, float z, float gain) {
+  if (!s_initialized)
+    return;
+  auto it = s_sounds.find(soundId);
+  if (it == s_sounds.end())
+    return;
+
+  auto &slot = it->second;
+  ALuint src = slot.sources[0];
+  alSource3f(src, AL_POSITION, x, y, z);
+  alSourcef(src, AL_PITCH, 1.0f);
+  alSourcei(src, AL_LOOPING, AL_TRUE);
+  alSourcef(src, AL_GAIN, s_masterVolume * gain);
+  alSourcePlay(src);
+}
+
+void UpdateSource3D(int soundId, float x, float y, float z) {
+  if (!s_initialized)
+    return;
+  auto it = s_sounds.find(soundId);
+  if (it == s_sounds.end())
+    return;
+
+  ALuint src = it->second.sources[0];
+  alSource3f(src, AL_POSITION, x, y, z);
 }
 
 void Stop(int soundId) {

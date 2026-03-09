@@ -77,7 +77,7 @@ public:
   void RenderNameplates(ImDrawList *dl, ImFont *font, const glm::mat4 &view,
                         const glm::mat4 &proj, int winW, int winH,
                         const glm::vec3 &camPos, int hoveredMonster,
-                        int attackTarget = -1);
+                        int attackTarget, int playerLevel = 1);
   void Cleanup();
   void ClearMonsters();
 
@@ -127,6 +127,7 @@ public:
     m_pointLights = lights;
   }
   void SetLuminosity(float l) { m_luminosity = l; }
+  void SetMapId(int mapId) { m_mapId = mapId; }
   void SetVFXManager(VFXManager *vfx) { m_vfxManager = vfx; }
 
 private:
@@ -165,6 +166,12 @@ private:
     // BlendMesh: mesh with this TextureId renders additive (Main 5.2 BlendMesh)
     // -1 = disabled. Lich: 0, Skeleton: 0.
     int blendMesh = -1;
+    // Per-type alpha: <1.0 for semi-transparent monsters (Main 5.2: Ghost=0.4)
+    float typeAlpha = 1.0f;
+    // HiddenMesh: mesh index to hide (-1=none). Main 5.2: HiddenMesh=N hides mesh N.
+    int hiddenMesh = -1;
+    // AABB from mesh upload — actual model bounding box for nameplate positioning
+    AABB meshBounds{};
 
     // Helper: get the BMD to use for bone/animation computation
     BMDData *getAnimBmd() const { return animBmd ? animBmd : bmd; }
@@ -230,6 +237,11 @@ private:
       int vertexCount = 0;
     };
     std::vector<ShadowMesh> shadowMeshes;
+    // Per-weapon shadow meshes (parallel to weaponMeshes)
+    struct WeaponShadowSet {
+      std::vector<ShadowMesh> meshes;
+    };
+    std::vector<WeaponShadowSet> weaponShadowMeshes;
     std::vector<BoneWorldMatrix> cachedBones;
   };
 
@@ -276,6 +288,7 @@ private:
   std::vector<PointLight> m_pointLights;
   static constexpr int MAX_POINT_LIGHTS = 64;
   float m_luminosity = 1.0f;
+  int m_mapId = 0; // 0=Lorencia, 1=Dungeon
   float m_worldTime = 0.0f; // Accumulated time for UV scroll effects
 
   std::unordered_map<uint16_t, int> m_typeToModel;
@@ -303,7 +316,7 @@ private:
   static constexpr float CHASE_SPEED =
       250.0f; // Match server grid speed (100 units / 0.4s moveDelay)
   static constexpr float WANDER_SPEED =
-      150.0f; // Wander/walk speed
+      220.0f; // Slightly slower than chase for relaxed feel (server: 250)
 
   // Player position for cosmetic facing (not used for AI — that's server-side)
   glm::vec3 m_playerPos{0.0f};

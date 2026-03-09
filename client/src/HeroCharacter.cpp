@@ -1,6 +1,7 @@
 #include "HeroCharacter.hpp"
 #include "ItemModelManager.hpp"
 #include "SoundManager.hpp"
+#include "TerrainUtils.hpp"
 #include "TextureLoader.hpp"
 #include "VFXManager.hpp"
 #include <algorithm>
@@ -19,6 +20,247 @@ static const char *GetClassBodySuffix(uint8_t classCode) {
   case 48: return "Class04"; // MG
   default: return "Class02";
   }
+}
+
+// ─── Main 5.2 PartObjectColor: per-item-type glow colors (ZzzObject.cpp:6483-6768) ───
+// Maps (category, itemIndex) to the glow RGB used for chrome enhancement passes.
+// Color table has 43 entries; most items default to Color 0 (warm gold).
+glm::vec3 GetPartObjectColor(int category, int itemIndex) {
+  // Main 5.2 color palette (Bright=1.0 baked in)
+  static const glm::vec3 kColors[] = {
+    {1.0f, 0.5f, 0.0f},   //  0: default gold
+    {1.0f, 0.2f, 0.0f},   //  1: red-orange
+    {0.0f, 0.5f, 1.0f},   //  2: blue
+    {0.0f, 0.5f, 1.0f},   //  3: blue (alt)
+    {0.0f, 0.8f, 0.4f},   //  4: teal
+    {1.0f, 1.0f, 1.0f},   //  5: white
+    {0.6f, 0.8f, 0.4f},   //  6: green-gray
+    {0.9f, 0.8f, 1.0f},   //  7: lavender
+    {0.8f, 0.8f, 1.0f},   //  8: light blue
+    {0.5f, 0.5f, 0.8f},   //  9: muted blue
+    {0.75f,0.65f,0.5f},   // 10: warm beige
+    {0.35f,0.35f,0.6f},   // 11: dusk blue
+    {0.47f,0.67f,0.6f},   // 12: seafoam
+    {0.0f, 0.3f, 0.6f},   // 13: deep blue
+    {0.65f,0.65f,0.55f},  // 14: sandy
+    {0.2f, 0.3f, 0.6f},   // 15: dark blue
+    {0.8f, 0.46f,0.25f},  // 16: copper
+    {0.65f,0.45f,0.3f},   // 17: bronze
+    {0.5f, 0.4f, 0.3f},   // 18: dark bronze
+    {0.37f,0.37f,1.0f},   // 19: vivid blue
+    {0.3f, 0.7f, 0.3f},   // 20: green
+    {0.5f, 0.4f, 1.0f},   // 21: purple-blue
+    {0.45f,0.45f,0.23f},  // 22: olive
+    {0.3f, 0.3f, 0.45f},  // 23: slate
+    {0.6f, 0.5f, 0.2f},   // 24: amber
+    {0.6f, 0.6f, 0.6f},   // 25: silver
+    {0.3f, 0.7f, 0.3f},   // 26: green (alt)
+    {0.5f, 0.6f, 0.7f},   // 27: steel blue
+    {0.45f,0.45f,0.23f},  // 28: olive (alt)
+    {0.2f, 0.7f, 0.3f},   // 29: emerald
+    {0.7f, 0.3f, 0.3f},   // 30: crimson
+    {0.7f, 0.5f, 0.3f},   // 31: warm orange
+    {0.5f, 0.2f, 0.7f},   // 32: purple
+    {0.8f, 0.4f, 0.6f},   // 33: pink
+    {0.6f, 0.4f, 0.8f},   // 34: violet
+    {0.7f, 0.4f, 0.4f},   // 35: dusty rose
+    {0.5f, 0.5f, 0.7f},   // 36: periwinkle
+    {0.7f, 0.5f, 0.7f},   // 37: mauve
+    {0.2f, 0.4f, 0.7f},   // 38: royal blue
+    {0.3f, 0.6f, 0.4f},   // 39: sage
+    {0.7f, 0.2f, 0.2f},   // 40: dark red
+    {0.7f, 0.2f, 0.7f},   // 41: magenta
+    {0.8f, 0.4f, 0.0f},   // 42: dark gold
+    {0.8f, 0.6f, 0.2f},   // 43: golden
+  };
+  static const int kNumColors = sizeof(kColors) / sizeof(kColors[0]);
+
+  int color = 0;
+
+  // Armor categories 7-11 (helm, armor, pants, gloves, boots): color by itemIndex
+  // Main 5.2 ZzzObject.cpp lines 6661-6718
+  if (category >= 7 && category <= 11) {
+    switch (itemIndex) {
+    case 1:  color = 1;  break; // Pad set
+    case 3:  color = 3;  break; // Vine set
+    case 4:  color = 5;  break; // Silk set
+    case 6:  color = 6;  break; // Wind set
+    case 9:  color = 2;  break; // Legendary set
+    case 12: color = 2;  break; // Guardian set
+    case 13: color = 4;  break; // Storm set
+    case 14: color = 5;  break; // Adamantine set
+    case 15: color = 7;  break; // Dark set
+    case 16: color = 10; break; // Great Dragon set
+    case 17: color = 9;  break; // Red Spirit set
+    case 18: color = 5;  break; // Dark Phoenix set
+    case 19: color = 9;  break; // Grand Soul set
+    case 20: color = 9;  break; // Divine set
+    case 21: color = 16; break;
+    case 22: color = 17; break;
+    case 23: color = 11; break;
+    case 24: color = 16; break;
+    case 25: color = 11; break;
+    case 26: color = 12; break;
+    case 27: color = 10; break;
+    case 28: color = 15; break;
+    case 29: color = 18; break;
+    case 30: color = 19; break;
+    case 31: color = 20; break;
+    case 32: color = 21; break;
+    case 33: color = 22; break;
+    case 34: color = 24; break;
+    case 35: color = 25; break;
+    case 36: color = 26; break;
+    case 37: color = 27; break;
+    case 38: color = 28; break;
+    case 39: color = 29; break;
+    case 40: color = 30; break;
+    case 41: color = 31; break;
+    case 42: color = 32; break;
+    case 43: color = 33; break;
+    case 44: color = 34; break;
+    case 45: color = 36; break;
+    case 46: color = 42; break;
+    case 47: color = 37; break;
+    default: color = 0;  break; // Gold
+    }
+  }
+  // Weapon-specific overrides (Main 5.2 ZzzObject.cpp lines 6487-6658)
+  else if (category == 0) { // Swords
+    switch (itemIndex) {
+    case 14: color = 2;  break; // Lighting Sword → blue
+    case 20: color = 10; break;
+    case 21: color = 5;  break;
+    case 22: color = 18; break;
+    case 23: color = 23; break;
+    case 24: color = 24; break;
+    case 25: color = 27; break;
+    case 28: color = 8;  break;
+    case 31: color = 10; break;
+    default: color = 0;  break;
+    }
+  } else if (category == 1) { // Axes
+    // No specific overrides in 0.97d scope
+    color = 0;
+  } else if (category == 2) { // Maces
+    switch (itemIndex) {
+    case 8:  color = 9;  break;
+    case 9:  color = 10; break;
+    case 10: color = 12; break;
+    case 12: color = 16; break;
+    case 14: color = 22; break;
+    case 15: color = 28; break;
+    case 17: color = 40; break;
+    case 18: color = 5;  break;
+    default: color = 0;  break;
+    }
+  } else if (category == 3) { // Spears
+    switch (itemIndex) {
+    case 9:  color = 1;  break;
+    case 10: color = 9;  break;
+    case 11: color = 20; break;
+    default: color = 0;  break;
+    }
+  } else if (category == 4) { // Bows
+    switch (itemIndex) {
+    case 5:  color = 5;  break;
+    case 7:  color = 0;  break;
+    case 13: color = 5;  break;
+    case 15: color = 0;  break;
+    case 17: color = 9;  break;
+    case 18: color = 10; break;
+    case 19: color = 9;  break;
+    case 20: color = 16; break;
+    case 21: color = 20; break;
+    case 22: color = 26; break;
+    case 23: color = 35; break;
+    case 24: color = 36; break;
+    default: color = 0;  break;
+    }
+  } else if (category == 5) { // Staffs
+    switch (itemIndex) {
+    case 5:  color = 2;  break; // Staff of Destruction → blue
+    case 9:  color = 5;  break;
+    case 11: color = 17; break;
+    case 12: color = 19; break;
+    case 13: color = 25; break;
+    case 14: color = 24; break;
+    case 15: color = 15; break;
+    case 16: color = 1;  break;
+    case 17: color = 3;  break;
+    case 18: color = 30; break;
+    case 19: color = 21; break;
+    case 20: color = 5;  break;
+    case 22: color = 1;  break;
+    case 30: color = 1;  break;
+    case 31: color = 19; break;
+    case 33: color = 43; break;
+    case 34: color = 5;  break;
+    default: color = 0;  break;
+    }
+  } else if (category == 6) { // Shields
+    switch (itemIndex) {
+    case 16: color = 6;  break;
+    case 19: color = 29; break;
+    case 20: color = 36; break;
+    case 21: color = 30; break;
+    default: color = 0;  break;
+    }
+  }
+
+  if (color < 0 || color >= kNumColors) color = 0;
+  return kColors[color];
+}
+
+// Main 5.2 PartObjectColor2: secondary color modulator for CHROME2/CHROME4 passes
+// ZzzObject.cpp lines 6771-6853
+// Color 0 = neutral (1,1,1), Color 1 = warm orange (1,0.5,0), Color 2 = cyan (0,0.5,1), Color 3 = white (1,1,1)
+glm::vec3 GetPartObjectColor2(int category, int itemIndex) {
+  static const glm::vec3 kColors2[] = {
+    {1.0f, 1.0f, 1.0f},   // 0: neutral (keep original)
+    {1.0f, 0.5f, 0.0f},   // 1: warm orange (no blue)
+    {0.0f, 0.5f, 1.0f},   // 2: cyan/blue (no red)
+    {1.0f, 1.0f, 1.0f},   // 3: pure white
+  };
+
+  int color = 0;
+
+  // Armor categories 7-11: shared mapping across all armor slots
+  if (category >= 7 && category <= 11) {
+    switch (itemIndex) {
+    case 4:  color = 1; break; // Silk set
+    case 14: color = 1; break; // Adamantine set
+    case 15: color = 1; break; // Dark set
+    case 17: color = 1; break; // Red Spirit set
+    case 18: color = 2; break; // Dark Phoenix set
+    case 21: color = 3; break;
+    case 39: color = 1; break;
+    case 40: color = 1; break;
+    case 41: color = 1; break;
+    case 42: color = 1; break;
+    case 43: color = 2; break;
+    case 44: color = 3; break;
+    default: color = 0; break;
+    }
+  }
+  // Weapon/shield-specific overrides
+  else if (category == 0) { // Swords
+    if (itemIndex == 14) color = 2;      // Lighting Sword → cyan
+    else if (itemIndex == 18) color = 0; // neutral
+    else color = 0;
+  } else if (category == 4) { // Bows
+    if (itemIndex == 5 || itemIndex == 13) color = 2; // cyan
+    else if (itemIndex == 17) color = 0;
+    else color = 0;
+  } else if (category == 5) { // Staffs
+    if (itemIndex == 5) color = 2;       // Staff of Destruction → cyan
+    else if (itemIndex == 9) color = 0;
+    else color = 0;
+  } else {
+    color = 0; // All other weapons/shields: neutral
+  }
+
+  return kColors2[color];
 }
 
 // ─── DK Stat Formulas (MuEmu-0.97k ObjectManager.cpp) ──────────────────
@@ -222,24 +464,7 @@ DamageResult HeroCharacter::RollAttack(int targetDefense,
 }
 
 glm::vec3 HeroCharacter::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
-  const int SIZE = 256;
-  if (m_terrainLightmap.size() < (size_t)(SIZE * SIZE))
-    return glm::vec3(1.0f);
-
-  float gz = worldPos.x / 100.0f;
-  float gx = worldPos.z / 100.0f;
-  int xi = (int)gx, zi = (int)gz;
-  if (xi < 0 || zi < 0 || xi > SIZE - 2 || zi > SIZE - 2)
-    return glm::vec3(0.5f);
-
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  const glm::vec3 &c00 = m_terrainLightmap[zi * SIZE + xi];
-  const glm::vec3 &c10 = m_terrainLightmap[zi * SIZE + (xi + 1)];
-  const glm::vec3 &c01 = m_terrainLightmap[(zi + 1) * SIZE + xi];
-  const glm::vec3 &c11 = m_terrainLightmap[(zi + 1) * SIZE + (xi + 1)];
-  glm::vec3 left = c00 + (c01 - c00) * zd;
-  glm::vec3 right = c10 + (c11 - c10) * zd;
-  return left + (right - left) * xd;
+  return TerrainUtils::SampleLightAt(m_terrainLightmap, worldPos);
 }
 
 // Helper for smooth rotation (MU DK style interpolation)
@@ -463,10 +688,7 @@ void HeroCharacter::Init(const std::string &dataPath) {
   }
 
   // Create shader (same model.vert/frag as ObjectRenderer)
-  std::ifstream shaderTest("shaders/model.vert");
-  m_shader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/model.vert" : "../shaders/model.vert",
-      shaderTest.good() ? "shaders/model.frag" : "../shaders/model.frag");
+  m_shader = Shader::Load("model.vert", "model.frag");
 
   // Cache root bone index and log walk animation info
   if (m_skeleton) {
@@ -493,9 +715,12 @@ void HeroCharacter::Init(const std::string &dataPath) {
     }
   }
   // Create shadow shader
-  m_shadowShader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/shadow.vert" : "../shaders/shadow.vert",
-      shaderTest.good() ? "shaders/shadow.frag" : "../shaders/shadow.frag");
+  m_shadowShader = Shader::Load("shadow.vert", "shadow.frag");
+
+  // Load chrome/shiny environment-map textures (Main 5.2 +7/+9/+11 glow)
+  m_chromeTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome01.OZJ");
+  m_chrome2Texture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome02.OZJ");
+  m_shinyTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Shiny01.OZJ");
 
   // Compute initial stats from DK formulas
   RecalcStats();
@@ -543,7 +768,7 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     if (isHealAnim)
       speed = (float)numKeys / m_slowAnimDuration; // Stretch to fit duration
     else if (isAttacking)
-      speed = ANIM_SPEED * attackSpeedMultiplier();
+      speed = ANIM_SPEED * currentSpeedMultiplier();
     else if (isRideIdle)
       speed = 7.0f;  // Main 5.2: PlaySpeed 0.28 * 25fps
     else if (isRideWalk)
@@ -686,10 +911,26 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       }
     }
 
-    if (dx != 0.0f || dy != 0.0f) {
+    // When riding: strip Z root motion relative to ride IDLE frame 0.
+    // Ride walk has root Z=185 vs ride idle Z=141 — normalizing to ride idle
+    // prevents the character from jumping up when transitioning idle→walk.
+    // Mount's zBounce is applied as shared offset to both player and mount.
+    float dz = 0.0f;
+    if (isMountRiding() && m_rootBone >= 0) {
+      int refAction = m_weaponBmd ? ACTION_STOP_RIDE_WEAPON : ACTION_STOP_RIDE;
+      if (refAction < (int)m_skeleton->Actions.size()) {
+        auto &bmRef = m_skeleton->Bones[m_rootBone].BoneMatrixes[refAction];
+        if (!bmRef.Position.empty()) {
+          dz = bones[m_rootBone][2][3] - bmRef.Position[0].z;
+        }
+      }
+    }
+
+    if (dx != 0.0f || dy != 0.0f || dz != 0.0f) {
       for (int b = 0; b < (int)bones.size(); ++b) {
         bones[b][0][3] -= dx;
         bones[b][1][3] -= dy;
+        if (dz != 0.0f) bones[b][2][3] -= dz;
       }
     }
 
@@ -720,11 +961,14 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
   }
 
   // Build model matrix: translate -> MU->GL coord conversion -> facing rotation
-  // Main 5.2: when riding Dinorant, player is elevated +30 above terrain (sits on mount).
-  // Uniria: no height offset (unicorn is smaller).
+  // Ride animations elevate the character via root bone Z. A small saddle offset
+  // keeps the character on top of the mount, not inside it.
   glm::vec3 renderPos = m_pos;
-  if (isMountRiding() && m_mount.itemIndex == 3) // Dinorant
-    renderPos.y += 30.0f;
+  if (isMountRiding()) {
+    if (m_mount.itemIndex == 3) // Dinorant
+      renderPos.y += 10.0f;
+    renderPos.y += m_mount.zBounce; // Shared bounce for all mounts
+  }
   glm::mat4 model = glm::translate(glm::mat4(1.0f), renderPos);
   model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
   model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
@@ -740,30 +984,54 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
   m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   m_shader->setVec3("viewPos", eye);
   m_shader->setBool("useFog", true);
-  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
-  m_shader->setFloat("uFogNear", 1500.0f);
-  m_shader->setFloat("uFogFar", 3500.0f);
+  if (m_mapId == 1) {
+    m_shader->setVec3("uFogColor", glm::vec3(0.0f, 0.0f, 0.0f));
+    m_shader->setFloat("uFogNear", 800.0f);
+    m_shader->setFloat("uFogFar", 2500.0f);
+  } else {
+    m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+    m_shader->setFloat("uFogNear", 1500.0f);
+    m_shader->setFloat("uFogFar", 3500.0f);
+  }
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setFloat("objectAlpha", 1.0f);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
   m_shader->setFloat("luminosity", m_luminosity);
+  m_shader->setInt("chromeMode", 0);
+  m_shader->setVec3("glowColor", glm::vec3(0.0f));
+  m_shader->setVec3("baseTint", glm::vec3(1.0f));
 
   // Terrain lightmap at hero position
   glm::vec3 tLight = sampleTerrainLightAt(m_pos);
   m_shader->setVec3("terrainLight", tLight);
 
-  // Point lights
+  // Point lights (pre-cached locations)
   int plCount = std::min((int)m_pointLights.size(), MAX_POINT_LIGHTS);
-  m_shader->setInt("numPointLights", plCount);
-  for (int i = 0; i < plCount; ++i) {
-    std::string idx = std::to_string(i);
-    m_shader->setVec3("pointLightPos[" + idx + "]", m_pointLights[i].position);
-    m_shader->setVec3("pointLightColor[" + idx + "]", m_pointLights[i].color);
-    m_shader->setFloat("pointLightRange[" + idx + "]", m_pointLights[i].range);
-  }
+  m_shader->uploadPointLights(plCount, m_pointLights.data());
 
   // Draw all body part meshes
+  // Main 5.2: base body tinting (+3/+5) and dimming (+7/+9/+11)
+  // g_Luminosity approximation for +3/+5 tint pulsing
+  float g_Lum = 0.8f + 0.2f * sinf((float)glfwGetTime() * 2.0f);
   for (int p = 0; p < PART_COUNT; ++p) {
+    // +3/+5 base color tinting (Main 5.2 ZzzObject.cpp:10183-10196)
+    bool hasTint = false;
+    if (m_partLevels[p] >= 5 && m_partLevels[p] < 7) {
+      // +5/+6: cool blue tint
+      m_shader->setVec3("baseTint", glm::vec3(g_Lum * 0.5f, g_Lum * 0.7f, g_Lum));
+      hasTint = true;
+    } else if (m_partLevels[p] >= 3 && m_partLevels[p] < 7) {
+      // +3/+4: warm red tint
+      m_shader->setVec3("baseTint", glm::vec3(g_Lum, g_Lum * 0.6f, g_Lum * 0.6f));
+      hasTint = true;
+    }
+
+    // Dim base body for glow parts (Main 5.2 ZzzObject.cpp line 10201/10213/10227)
+    float partDim = 1.0f;
+    if (m_partLevels[p] >= 9) partDim = 0.9f;
+    else if (m_partLevels[p] >= 7) partDim = 0.8f;
+    if (partDim < 1.0f) m_shader->setFloat("blendMeshLight", partDim);
+
     for (auto &mb : m_parts[p].meshBuffers) {
       if (mb.indexCount == 0 || mb.hidden)
         continue;
@@ -785,6 +1053,8 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
       }
     }
+    if (partDim < 1.0f) m_shader->setFloat("blendMeshLight", 1.0f);
+    if (hasTint) m_shader->setVec3("baseTint", glm::vec3(1.0f));
   }
   // Draw base head for accessory helms (face visible underneath helm)
   if (m_showBaseHead) {
@@ -794,6 +1064,88 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
       glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+    }
+  }
+
+  // ── +7/+9/+11 armor glow passes (Main 5.2 RENDER_CHROME|RENDER_BRIGHT) ──
+  // Main 5.2 ZzzObject.cpp RenderPartObjectEffect (line 10197-10264):
+  // +7:  1 pass  = CHROME+BRIGHT (Chrome01.OZJ)
+  // +9:  2 passes = CHROME+BRIGHT + METAL+BRIGHT (Chrome01 + Shiny01)
+  // +11: 3 passes = CHROME2+BRIGHT + METAL+BRIGHT + CHROME+BRIGHT
+  // Color from PartObjectColor: default (Color 0) = (1.0, 0.5, 0.0) warm gold
+  {
+    float t = (float)glfwGetTime();
+    bool anyGlow = false;
+    for (int p = 0; p < PART_COUNT; ++p) {
+      if (m_partLevels[p] >= 7) { anyGlow = true; break; }
+    }
+    if (anyGlow && m_chromeTexture) {
+      glBlendFunc(GL_ONE, GL_ONE); // Additive (Main 5.2 EnableAlphaBlend)
+      glDepthMask(GL_FALSE);
+      glDisable(GL_CULL_FACE);
+
+      // chromeMode: 1=CHROME, 2=CHROME2, 3=METAL
+      // Main 5.2 passes Bright=1.0 to PartObjectColor which sets BodyLight
+      struct GlowPass { int chromeMode; };
+      // Main 5.2 ZzzObject.cpp RenderPartObjectEffect:
+      // +7:  1 pass  = CHROME
+      // +9:  2 passes = CHROME + METAL
+      // +11: 3 passes = CHROME2 + METAL + CHROME
+      // +13: 3 passes = CHROME4 + METAL + CHROME (most intense)
+      auto getGlowPasses = [](uint8_t level, GlowPass *passes) -> int {
+        if (level >= 13) {
+          passes[0] = {4};  // CHROME4 (Chrome02.OZJ, dynamic light vector)
+          passes[1] = {3};  // METAL   (Shiny01.OZJ)
+          passes[2] = {1};  // CHROME  (Chrome01.OZJ)
+          return 3;
+        } else if (level >= 11) {
+          passes[0] = {2};  // CHROME2 (Chrome02.OZJ)
+          passes[1] = {3};  // METAL   (Shiny01.OZJ)
+          passes[2] = {1};  // CHROME  (Chrome01.OZJ)
+          return 3;
+        } else if (level >= 9) {
+          passes[0] = {1};  // CHROME
+          passes[1] = {3};  // METAL
+          return 2;
+        } else { // level >= 7
+          passes[0] = {1};  // CHROME
+          return 1;
+        }
+      };
+
+      for (int p = 0; p < PART_COUNT; ++p) {
+        if (m_partLevels[p] < 7) continue;
+        // Part 0=Helm(cat7), 1=Armor(cat8), 2=Pants(cat9), 3=Gloves(cat10), 4=Boots(cat11)
+        GlowPass passes[3];
+        int numPasses = getGlowPasses(m_partLevels[p], passes);
+        for (int gp = 0; gp < numPasses; ++gp) {
+          // Main 5.2: CHROME2/CHROME4 use PartObjectColor2, others use PartObjectColor
+          glm::vec3 glowColor = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
+              ? GetPartObjectColor2(7 + p, m_partItemIndices[p])
+              : GetPartObjectColor(7 + p, m_partItemIndices[p]);
+          m_shader->setVec3("glowColor", glowColor);
+          m_shader->setInt("chromeMode", passes[gp].chromeMode);
+          m_shader->setFloat("chromeTime", t);
+          // Bind the correct environment-map texture (NOT the item diffuse)
+          // CHROME4 uses Chrome02 texture (same as CHROME2)
+          GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
+                               ? m_chrome2Texture
+                         : (passes[gp].chromeMode == 3) ? m_shinyTexture
+                         : m_chromeTexture;
+          glBindTexture(GL_TEXTURE_2D, glowTex);
+          for (auto &mb : m_parts[p].meshBuffers) {
+            if (mb.indexCount == 0 || mb.hidden) continue;
+            glBindVertexArray(mb.vao);
+            glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+          }
+        }
+      }
+
+      glEnable(GL_CULL_FACE);
+      glDepthMask(GL_TRUE);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      m_shader->setVec3("glowColor", glm::vec3(0.0f));
+      m_shader->setInt("chromeMode", 0);
     }
   }
 
@@ -904,6 +1256,18 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
 
+      // +3/+5 weapon tinting + +7 dimming (set once before mesh loop)
+      if (mi == 0) {
+        uint8_t wlvl = m_weaponInfo.itemLevel;
+        if (wlvl >= 5 && wlvl < 7) {
+          m_shader->setVec3("baseTint", glm::vec3(g_Lum * 0.5f, g_Lum * 0.7f, g_Lum));
+        } else if (wlvl >= 3 && wlvl < 7) {
+          m_shader->setVec3("baseTint", glm::vec3(g_Lum, g_Lum * 0.6f, g_Lum * 0.6f));
+        }
+        if (wlvl >= 9) m_shader->setFloat("blendMeshLight", 0.9f);
+        else if (wlvl >= 7) m_shader->setFloat("blendMeshLight", 0.8f);
+      }
+
       // Main 5.2: ItemLight — glow mesh renders additively with pulsing brightness
       if (m_weaponBlendMesh >= 0 && mi == m_weaponBlendMesh) {
         float pulseLight = sinf((float)glfwGetTime() * 4.0f) * 0.3f + 0.7f;
@@ -918,6 +1282,72 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
         glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
       }
     }
+    // Reset weapon +3/+5 tint and +7 dimming
+    {
+      uint8_t wlvl = m_weaponInfo.itemLevel;
+      if (wlvl >= 3 && wlvl < 7)
+        m_shader->setVec3("baseTint", glm::vec3(1.0f));
+      if (wlvl >= 7)
+        m_shader->setFloat("blendMeshLight", 1.0f);
+    }
+
+    // ── +7/+9/+11 weapon glow passes (Main 5.2 RENDER_CHROME|RENDER_BRIGHT) ──
+    // Main 5.2 PartObjectColor: default weapon (Color 0) = (1.0, 0.5, 0.0)
+    if (m_weaponInfo.itemLevel >= 7 && m_chromeTexture) {
+      float t = (float)glfwGetTime();
+      glBlendFunc(GL_ONE, GL_ONE);
+      glDepthMask(GL_FALSE);
+      glDisable(GL_CULL_FACE);
+
+      struct GlowPass { int chromeMode; };
+      GlowPass passes[3];
+      int numPasses = 0;
+      uint8_t wlv = m_weaponInfo.itemLevel;
+      if (wlv >= 13) {
+        passes[0] = {4}; passes[1] = {3}; passes[2] = {1}; // CHROME4+METAL+CHROME
+        numPasses = 3;
+      } else if (wlv >= 11) {
+        passes[0] = {2}; passes[1] = {3}; passes[2] = {1};
+        numPasses = 3;
+      } else if (wlv >= 9) {
+        passes[0] = {1}; passes[1] = {3};
+        numPasses = 2;
+      } else {
+        passes[0] = {1};
+        numPasses = 1;
+      }
+
+      for (int gp = 0; gp < numPasses; ++gp) {
+        // Main 5.2: CHROME2/CHROME4 use PartObjectColor2, others use PartObjectColor
+        glm::vec3 weaponGlowColor = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
+            ? GetPartObjectColor2(m_weaponInfo.category, m_weaponInfo.itemIndex)
+            : GetPartObjectColor(m_weaponInfo.category, m_weaponInfo.itemIndex);
+        m_shader->setVec3("glowColor", weaponGlowColor);
+        m_shader->setInt("chromeMode", passes[gp].chromeMode);
+        m_shader->setFloat("chromeTime", t);
+        // Bind the correct environment-map texture (CHROME4 uses Chrome02 like CHROME2)
+        GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
+                             ? m_chrome2Texture
+                       : (passes[gp].chromeMode == 3) ? m_shinyTexture
+                       : m_chromeTexture;
+        glBindTexture(GL_TEXTURE_2D, glowTex);
+        for (int mi2 = 0; mi2 < (int)m_weaponMeshBuffers.size(); ++mi2) {
+          auto &mb2 = m_weaponMeshBuffers[mi2];
+          if (mb2.indexCount == 0) continue;
+          // Skip BlendMesh (fire glow etc) — already additive, don't double-glow
+          if (m_weaponBlendMesh >= 0 && mi2 == m_weaponBlendMesh) continue;
+          glBindVertexArray(mb2.vao);
+          glDrawElements(GL_TRIANGLES, mb2.indexCount, GL_UNSIGNED_INT, 0);
+        }
+      }
+
+      glEnable(GL_CULL_FACE);
+      glDepthMask(GL_TRUE);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      m_shader->setVec3("glowColor", glm::vec3(0.0f));
+      m_shader->setInt("chromeMode", 0);
+    }
+
   }
 
   // --- Render shield / left-hand item ---
@@ -1004,6 +1434,22 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       glBufferSubData(GL_ARRAY_BUFFER, 0,
                       verts.size() * sizeof(ViewerVertex), verts.data());
     }
+    // +3/+5 shield base tinting & +7/+9 dimming (Main 5.2)
+    {
+      uint8_t slvl = m_shieldInfo.itemLevel;
+      if (slvl >= 5 && slvl < 7) {
+        float g_Lum = 0.8f + 0.2f * sinf((float)glfwGetTime() * 2.0f);
+        m_shader->setVec3("baseTint", glm::vec3(g_Lum * 0.5f, g_Lum * 0.7f, g_Lum));
+      } else if (slvl >= 3 && slvl < 5) {
+        float g_Lum = 0.8f + 0.2f * sinf((float)glfwGetTime() * 2.0f);
+        m_shader->setVec3("baseTint", glm::vec3(g_Lum, g_Lum * 0.6f, g_Lum * 0.6f));
+      }
+      if (slvl >= 9)
+        m_shader->setFloat("blendMeshLight", 0.9f);
+      else if (slvl >= 7)
+        m_shader->setFloat("blendMeshLight", 0.8f);
+    }
+
     // Draw shield meshes
     for (auto &mb : m_shieldMeshBuffers) {
       if (mb.indexCount == 0)
@@ -1011,6 +1457,113 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
       glBindTexture(GL_TEXTURE_2D, mb.texture);
       glBindVertexArray(mb.vao);
       glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+    }
+
+    // Reset shield +3/+5 tint and +7 dimming
+    {
+      uint8_t slvl = m_shieldInfo.itemLevel;
+      if (slvl >= 3 && slvl < 7)
+        m_shader->setVec3("baseTint", glm::vec3(1.0f));
+      if (slvl >= 7)
+        m_shader->setFloat("blendMeshLight", 1.0f);
+    }
+
+    // ── +7/+9/+11 shield glow passes (same system as weapon) ──
+    if (m_shieldInfo.itemLevel >= 7 && m_chromeTexture) {
+      float t = (float)glfwGetTime();
+      glBlendFunc(GL_ONE, GL_ONE);
+      glDepthMask(GL_FALSE);
+      glDisable(GL_CULL_FACE);
+
+      struct GlowPass { int chromeMode; };
+      GlowPass passes[3];
+      int numPasses = 0;
+      uint8_t slv = m_shieldInfo.itemLevel;
+      if (slv >= 13) {
+        passes[0] = {4}; passes[1] = {3}; passes[2] = {1}; // CHROME4+METAL+CHROME
+        numPasses = 3;
+      } else if (slv >= 11) {
+        passes[0] = {2}; passes[1] = {3}; passes[2] = {1};
+        numPasses = 3;
+      } else if (slv >= 9) {
+        passes[0] = {1}; passes[1] = {3};
+        numPasses = 2;
+      } else {
+        passes[0] = {1};
+        numPasses = 1;
+      }
+
+      for (int gp = 0; gp < numPasses; ++gp) {
+        // Main 5.2: CHROME2/CHROME4 use PartObjectColor2, others use PartObjectColor
+        glm::vec3 shieldGlowColor = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
+            ? GetPartObjectColor2(6, m_shieldInfo.itemIndex)
+            : GetPartObjectColor(6, m_shieldInfo.itemIndex);
+        m_shader->setVec3("glowColor", shieldGlowColor);
+        m_shader->setInt("chromeMode", passes[gp].chromeMode);
+        m_shader->setFloat("chromeTime", t);
+        GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
+                             ? m_chrome2Texture
+                       : (passes[gp].chromeMode == 3) ? m_shinyTexture
+                       : m_chromeTexture;
+        glBindTexture(GL_TEXTURE_2D, glowTex);
+        for (auto &mb : m_shieldMeshBuffers) {
+          if (mb.indexCount == 0) continue;
+          glBindVertexArray(mb.vao);
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        }
+      }
+
+      glEnable(GL_CULL_FACE);
+      glDepthMask(GL_TRUE);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      m_shader->setVec3("glowColor", glm::vec3(0.0f));
+      m_shader->setInt("chromeMode", 0);
+    }
+  }
+
+  // ── Full armor set bonus particles (Main 5.2 EquipmentLevelSet) ──
+  // Main 5.2 ZzzCharacter.cpp:10615-10695: 3x BITMAP_WATERFALL_2 at fixed body offsets
+  // Spawn probability per 25fps tick: +10=25%, +11=33%, +12=50%, +13+=100%
+  // At 60fps we scale: check every frame with adjusted probability
+  if (m_equipmentLevelSet >= 10 && m_vfxManager) {
+    // Waterfall rising particles: probability-per-frame model
+    // Main 5.2 ticks at 25fps. At 60fps, scale probabilities: p60 = 1-(1-p25)^(25/60)
+    // +10: ~10%/frame, +11: ~14%/frame, +12: ~21%/frame, +13: ~42%/frame
+    int chance = 10; // +10 default
+    if (m_equipmentLevelSet >= 13)      chance = 3;  // ~33% per frame (always at 25fps)
+    else if (m_equipmentLevelSet >= 12) chance = 5;  // ~20% per frame
+    else if (m_equipmentLevelSet >= 11) chance = 7;  // ~14% per frame
+
+    if ((rand() % chance) == 0) {
+      // Main 5.2: 3 particles at fixed body offsets (bone 0 local space)
+      // Position 1: (0, -18, 50) — left side
+      // Position 2: (0,   0, 70) — center (higher)
+      // Position 3: (0,  18, 50) — right side
+      // In our coordinate system: Y=height, X/Z=horizontal
+      float cosF = cosf(m_facing), sinF = sinf(m_facing);
+      glm::vec3 offsets[3] = {
+        glm::vec3(-18.0f * sinF, 50.0f, -18.0f * cosF), // Left
+        glm::vec3(0.0f,          70.0f, 0.0f),           // Center
+        glm::vec3( 18.0f * sinF, 50.0f,  18.0f * cosF), // Right
+      };
+      for (int i = 0; i < 3; ++i) {
+        glm::vec3 spawnPos = m_pos + offsets[i];
+        m_vfxManager->SpawnBurstColored(ParticleType::SET_WATERFALL, spawnPos,
+                                         m_setGlowColor, 1);
+      }
+    }
+
+    // Occasional bright flare sparkle (Main 5.2: rand()%20==0, ~5% per tick)
+    // Scale flare count by enhancement level
+    int flareChance = 20; // ~5% per frame at 60fps ≈ 3/sec
+    int flareCount = 1;
+    if (m_equipmentLevelSet >= 13)      { flareChance = 10; flareCount = 3; }
+    else if (m_equipmentLevelSet >= 12) { flareChance = 12; flareCount = 2; }
+    else if (m_equipmentLevelSet >= 11) { flareChance = 20; flareCount = 2; }
+    if ((rand() % flareChance) == 0) {
+      glm::vec3 flarePos = m_pos + glm::vec3(0.0f, 50.0f + (rand() % 80), 0.0f);
+      m_vfxManager->SpawnBurstColored(ParticleType::FLARE, flarePos,
+                                       m_setGlowColor, flareCount);
     }
   }
 
@@ -1081,451 +1634,12 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     m_shader->setMat4("model", charModel);
   }
 
-  // ── Mount rendering (Uniria / Dinorant) ──
-  // Main 5.2 GOBoid.cpp: mount renders at player position with Z offset.
-  // Mount and player have independent animation frames (both ~0.34f/tick).
-  if (m_mount.active && m_mount.bmd && !m_mount.meshBuffers.empty()) {
-    // Main 5.2: alpha fades to 0 in safe zone, 1 outside
-    float targetAlpha = m_inSafeZone ? 0.0f : 1.0f;
-    m_mount.alpha += (targetAlpha - m_mount.alpha) * glm::clamp(deltaTime * 4.0f, 0.0f, 1.0f);
-    if (m_mount.alpha > 0.99f) m_mount.alpha = 1.0f;
-    if (m_mount.alpha < 0.01f) m_mount.alpha = 0.0f;
 
-    // Mount animation: action mapping based on owner's state.
-    // Rider01 (Uniria): idle=0, walk=2, attack=3  (4 actions)
-    // Rider02 (Dinorant): idle=0, walk=2, attack=4 (8 actions, ground maps)
-    // Main 5.2 GOBoid.cpp: mount action set based on owner's current action
-    bool isRideAttack = (m_action >= ACTION_ATTACK_RIDE_SWORD &&
-                         m_action <= ACTION_ATTACK_RIDE_CROSSBOW);
-    int mountAction;
-    if (isRideAttack) {
-      mountAction = (m_mount.itemIndex == 3) ? 4 : 3; // Dinorant=4, Uniria=3
-    } else {
-      mountAction = m_moving ? 2 : 0;
-    }
-    if (mountAction >= (int)m_mount.bmd->Actions.size())
-      mountAction = 0;
+  // Mount rendering (extracted to HeroCharacterMount.cpp)
+  renderMountModel(view, proj, camPos, deltaTime, tLight);
 
-    // Sync mount animation frame to player's ride animation frame.
-    // Both Player.bmd ride actions and Rider01/02.bmd walk actions have matching
-    // key counts (7 for walk, 6 for idle) and identical 2-beat gallop Z patterns.
-    // Independent frames cause visible rider/mount Z separation (~25 unit bounce).
-    int mountNumKeys = m_mount.bmd->Actions[mountAction].NumAnimationKeys;
-    bool mountLockPos = m_mount.bmd->Actions[mountAction].LockPositions;
-    int mountWrapKeys = mountLockPos ? (mountNumKeys - 1) : mountNumKeys;
-    if (mountWrapKeys > 0) {
-      m_mount.animFrame = std::fmod(m_animFrame, (float)mountWrapKeys);
-    }
-
-    // Compute mount bones and re-skin meshes
-    auto mountBones = ComputeBoneMatricesInterpolated(m_mount.bmd.get(), mountAction,
-                                                       m_mount.animFrame);
-    // Remove HORIZONTAL root motion only — vertical bounce preserved in bones.
-    // Use m_mount.rootBone (0 for Rider01/Uniria, 1 for Rider02/Dinorant)
-    // because Rider02's bone 0 is a static Box01 helper, not the animated root.
-    int rb = m_mount.rootBone;
-    if (!mountBones.empty() && rb < (int)mountBones.size()) {
-      glm::vec3 idlePos, curPos;
-      glm::vec4 dummyQ;
-      GetInterpolatedBoneData(m_mount.bmd.get(), 0, 0.0f, rb, idlePos, dummyQ);
-      GetInterpolatedBoneData(m_mount.bmd.get(), mountAction, m_mount.animFrame,
-                              rb, curPos, dummyQ);
-      float dx = curPos.x - idlePos.x;
-      float dy = curPos.y - idlePos.y;
-      for (auto &bone : mountBones) {
-        bone[0][3] -= dx;
-        bone[1][3] -= dy;
-      }
-    }
-    for (int mi = 0; mi < (int)m_mount.meshBuffers.size() &&
-                     mi < (int)m_mount.bmd->Meshes.size(); ++mi) {
-      RetransformMeshWithBones(m_mount.bmd->Meshes[mi], mountBones,
-                               m_mount.meshBuffers[mi]);
-    }
-
-    // Skip GPU rendering when fully faded (safe zone), but animation stays updated
-    if (m_mount.alpha > 0.0f) {
-      // Main 5.2 GOBoid.cpp: mount at player pos, Dinorant offset -30 Z (ground level)
-      // Player is elevated +30 (set above in renderPos), mount stays at terrain.
-      glm::mat4 mountModel = glm::translate(glm::mat4(1.0f), m_pos);
-      mountModel = glm::rotate(mountModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-      mountModel = glm::rotate(mountModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-      mountModel = glm::rotate(mountModel, m_facing, glm::vec3(0, 0, 1));
-      // Main 5.2 RenderMount: overrides creation scale to 1.0 for in-game rendering
-      // (0.9 during CreateMountSub, but 1.0 in RenderMount for all non-Fenrir mounts)
-      mountModel = glm::scale(mountModel, glm::vec3(1.0f));
-
-      m_shader->setMat4("model", mountModel);
-      m_shader->setFloat("objectAlpha", m_mount.alpha);
-      m_shader->setFloat("blendMeshLight", 1.0f);
-      m_shader->setVec3("terrainLight", tLight);
-
-      glDisable(GL_CULL_FACE);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-      // Pass 1: Normal (non-blend) meshes
-      for (int mi = 0; mi < (int)m_mount.meshBuffers.size() &&
-                       mi < (int)m_mount.bmd->Meshes.size(); ++mi) {
-        auto &mb = m_mount.meshBuffers[mi];
-        if (mb.indexCount == 0 || mb.hidden) continue;
-        int bmdTex = m_mount.bmd->Meshes[mi].Texture;
-        if (bmdTex == m_mount.blendMesh || mb.bright) continue;
-        glBindTexture(GL_TEXTURE_2D, mb.texture);
-        glBindVertexArray(mb.vao);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-      }
-
-      // Pass 2: Additive blend meshes (glow/wings)
-      if (m_mount.blendMesh >= 0) {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-        m_shader->setFloat("blendMeshLight", 1.5f);
-        for (int mi = 0; mi < (int)m_mount.meshBuffers.size() &&
-                         mi < (int)m_mount.bmd->Meshes.size(); ++mi) {
-          auto &mb = m_mount.meshBuffers[mi];
-          if (mb.indexCount == 0 || mb.hidden) continue;
-          int bmdTex = m_mount.bmd->Meshes[mi].Texture;
-          if (bmdTex != m_mount.blendMesh && !mb.bright) continue;
-          glBindTexture(GL_TEXTURE_2D, mb.texture);
-          glBindVertexArray(mb.vao);
-          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-        }
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        m_shader->setFloat("blendMeshLight", 1.0f);
-      }
-
-      glEnable(GL_CULL_FACE);
-
-      // Restore shader state for subsequent rendering
-      m_shader->setFloat("objectAlpha", 1.0f);
-      glm::mat4 restoreModel = glm::translate(glm::mat4(1.0f), m_pos);
-      restoreModel = glm::rotate(restoreModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-      restoreModel = glm::rotate(restoreModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-      restoreModel = glm::rotate(restoreModel, m_facing, glm::vec3(0, 0, 1));
-      m_shader->setMat4("model", restoreModel);
-    }
-  }
-
-  // ── Pet companion: update + render (Guardian Angel / Imp) ──
-  // Main 5.2 GOBoid.cpp: Direction-vector movement with random wandering
-  if (m_pet.active && m_pet.bmd && !m_pet.meshBuffers.empty()) {
-    constexpr float FLY_RANGE = 100.0f;         // Max wander distance from owner
-    constexpr float MAX_DIST = 180.0f;           // Hard leash — teleport back if exceeded
-    constexpr float TICK_INTERVAL = 0.04f;       // 25fps tick rate
-    constexpr float MAX_TURN_PER_TICK = 20.0f;   // Degrees per tick
-    constexpr float MIN_HEIGHT = 100.0f;         // Above owner
-    constexpr float MAX_HEIGHT = 200.0f;         // Above owner
-
-    // ── Teleport pet to owner if too far (login, teleport, initial spawn at origin) ──
-    float petDistX = m_pet.pos.x - m_pos.x;
-    float petDistZ = m_pet.pos.z - m_pos.z;
-    float petDistSq = petDistX * petDistX + petDistZ * petDistZ;
-    if (petDistSq > MAX_DIST * MAX_DIST) {
-      m_pet.pos = m_pos + glm::vec3(
-          (float)(rand() % 100 - 50), MIN_HEIGHT + (float)(rand() % 50),
-          (float)(rand() % 100 - 50));
-      m_pet.lastOwnerPos = m_pos;
-      m_pet.dirAngle = glm::radians((float)(rand() % 360));
-      m_pet.speed = 0.5f;
-      m_pet.heightVel = 0.0f;
-      m_pet.tickAccum = 0.0f;
-      m_pet.followDelay = 0.0f;
-      m_pet.wasOwnerMoving = false;
-    }
-
-    // ── Detect if owner is moving ──
-    glm::vec3 ownerDelta = m_pos - m_pet.lastOwnerPos;
-    float ownerMoveSq = ownerDelta.x * ownerDelta.x + ownerDelta.z * ownerDelta.z;
-    bool ownerMoving = ownerMoveSq > 0.5f; // Threshold to avoid float noise
-    m_pet.lastOwnerPos = m_pos;
-
-    // Accumulate time for tick-based logic
-    m_pet.tickAccum += deltaTime;
-
-    // Follow ramp: when character just started moving, angel lerp starts slow and accelerates
-    if (ownerMoving && !m_pet.wasOwnerMoving) {
-      m_pet.followDelay = 0.0f; // Reset ramp timer on movement start
-    }
-    // When character just stopped, seed idle wander from current position
-    if (!ownerMoving && m_pet.wasOwnerMoving) {
-      float edx = m_pet.pos.x - m_pos.x;
-      float edz = m_pet.pos.z - m_pos.z;
-      m_pet.dirAngle = atan2f(edz, edx); // Continue moving in current direction
-      m_pet.speed = 0.3f;                // Slow drift, not a snap
-      m_pet.heightVel *= 0.5f;           // Dampen vertical momentum
-      m_pet.tickAccum = 0.0f;            // Prevent burst of accumulated ticks
-    }
-    if (ownerMoving) {
-      m_pet.followDelay += deltaTime; // Ramps up from 0
-    } else {
-      m_pet.followDelay = 0.0f;
-    }
-    m_pet.wasOwnerMoving = ownerMoving;
-
-    if (ownerMoving) {
-      // ── MOVING: angel trails behind character, facing same direction ──
-      constexpr float TRAIL_DIST = 60.0f;
-      constexpr float RAMP_DURATION = 0.5f; // Time to reach full follow speed
-      float behindX = m_pos.x - cosf(m_facing) * TRAIL_DIST;
-      float behindZ = m_pos.z - sinf(m_facing) * TRAIL_DIST;
-
-      // Lateral weave: dirAngle is repurposed as smooth lateral offset during MOVING
-      // Perpendicular to character facing — adds organic sway to follow path
-      float perpX = -sinf(m_facing);
-      float perpZ =  cosf(m_facing);
-      behindX += perpX * m_pet.dirAngle;
-      behindZ += perpZ * m_pet.dirAngle;
-
-      // Lerp rate ramps from ~0.5 to 5.0 over RAMP_DURATION seconds
-      float ramp = glm::clamp(m_pet.followDelay / RAMP_DURATION, 0.0f, 1.0f);
-      float speed = 0.5f + ramp * 4.5f; // 0.5 → 5.0
-      float lerpRate = glm::clamp(deltaTime * speed, 0.0f, 1.0f);
-      m_pet.pos.x += (behindX - m_pet.pos.x) * lerpRate;
-      m_pet.pos.z += (behindZ - m_pet.pos.z) * lerpRate;
-
-      // Smoothly lerp facing toward character's direction (also ramps)
-      float targetFacing = m_facing;
-      float facingDiff = targetFacing - m_pet.facing;
-      while (facingDiff > M_PI) facingDiff -= 2.0f * M_PI;
-      while (facingDiff < -M_PI) facingDiff += 2.0f * M_PI;
-      float facingSpeed = 1.0f + ramp * 3.0f; // 1.0 → 4.0
-      m_pet.facing += facingDiff * glm::clamp(deltaTime * facingSpeed, 0.0f, 1.0f);
-      constexpr float MOVE_HEAD_HEIGHT = 120.0f;
-      float mdy = (m_pos.y + MOVE_HEAD_HEIGHT) - m_pet.pos.y;
-      float mdx = m_pet.pos.x - m_pos.x;
-      float mdz = m_pet.pos.z - m_pos.z;
-      float mhDist = sqrtf(mdx * mdx + mdz * mdz);
-      m_pet.pitch = atan2f(mdy, std::max(mhDist, 1.0f));
-
-      // Vertical + lateral: smooth toward target height with gentle bobbing
-      while (m_pet.tickAccum >= TICK_INTERVAL) {
-        m_pet.tickAccum -= TICK_INTERVAL;
-        m_pet.pos.y += m_pet.heightVel;
-        m_pet.heightVel += ((float)(rand() % 10 - 5)) * 0.1f; // Gentle random nudge
-        if (m_pet.pos.y < m_pos.y + MIN_HEIGHT) m_pet.heightVel += 1.0f;
-        if (m_pet.pos.y > m_pos.y + MAX_HEIGHT) m_pet.heightVel -= 1.0f;
-        m_pet.heightVel *= 0.92f;
-
-        // Lateral weave: random drift ±25 units perpendicular to path
-        m_pet.dirAngle += ((float)(rand() % 10 - 5)) * 0.4f;
-        m_pet.dirAngle *= 0.93f; // Decay toward center
-
-        // Sparkle — angel gets white dots, imp gets red-orange embers
-        if (m_vfxManager && rand() % 4 == 0) {
-          glm::vec3 sparkPos = m_pet.pos + glm::vec3(
-              (float)(rand() % 16 - 8), (float)(rand() % 16 - 8), (float)(rand() % 16 - 8));
-          auto sparkType = m_pet.itemIndex == 1 ? ParticleType::IMP_SPARKLE
-                                                : ParticleType::PET_SPARKLE;
-          m_vfxManager->SpawnBurst(sparkType, sparkPos, 1);
-        }
-      }
-    } else {
-      // ── IDLE: wander smoothly around owner, always face toward character ──
-      while (m_pet.tickAccum >= TICK_INTERVAL) {
-        m_pet.tickAccum -= TICK_INTERVAL;
-
-        // Smooth turn toward target direction (max 8° per tick)
-        constexpr float MAX_TURN = glm::radians(8.0f);
-        float angleDiff = m_pet.dirAngle - atan2f(
-            sinf(m_pet.dirAngle) * m_pet.speed,
-            cosf(m_pet.dirAngle) * m_pet.speed);
-        // dirAngle is the target — smoothly steer current movement
-        float curMoveAngle = atan2f(sinf(m_pet.dirAngle), cosf(m_pet.dirAngle));
-
-        // Apply smooth movement
-        m_pet.pos.x += cosf(m_pet.dirAngle) * m_pet.speed;
-        m_pet.pos.z += sinf(m_pet.dirAngle) * m_pet.speed;
-        m_pet.pos.y += m_pet.heightVel;
-
-        // Body exclusion: gently push pet away if too close (soft spring, no snap)
-        constexpr float MIN_RADIUS = 40.0f;
-        float edx = m_pet.pos.x - m_pos.x;
-        float edz = m_pet.pos.z - m_pos.z;
-        float eDist = sqrtf(edx * edx + edz * edz);
-        if (eDist < MIN_RADIUS && eDist > 0.01f) {
-          float pushStr = (MIN_RADIUS - eDist) * 0.15f; // Soft push
-          m_pet.pos.x += (edx / eDist) * pushStr;
-          m_pet.pos.z += (edz / eDist) * pushStr;
-        } else if (eDist < 0.01f) {
-          m_pet.pos.x += cosf(m_pet.dirAngle) * 0.5f;
-          m_pet.pos.z += sinf(m_pet.dirAngle) * 0.5f;
-        }
-
-        // Gentle random direction drift: ~1.5% chance per tick, small angle change
-        if (rand() % 64 == 0) {
-          // New target direction: small random offset from current (±60°)
-          float angleOffset = glm::radians((float)(rand() % 120 - 60));
-          m_pet.dirAngle += angleOffset;
-          m_pet.speed = 0.5f + (float)(rand() % 15) * 0.1f; // 0.5-2.0 units/tick
-          m_pet.heightVel += ((float)(rand() % 20 - 10)) * 0.05f; // Gentle nudge
-        }
-
-        // Soft wander radius — pull back gradually, never snap
-        edx = m_pet.pos.x - m_pos.x;
-        edz = m_pet.pos.z - m_pos.z;
-        float wanderDist = sqrtf(edx * edx + edz * edz);
-        if (wanderDist > FLY_RANGE && wanderDist > 0.01f) {
-          float overshoot = wanderDist - FLY_RANGE;
-          float pullStr = std::min(overshoot * 0.1f, 2.0f); // Gradual pull
-          m_pet.pos.x -= (edx / wanderDist) * pullStr;
-          m_pet.pos.z -= (edz / wanderDist) * pullStr;
-          // Steer direction back toward owner
-          m_pet.dirAngle = atan2f(-edz, -edx) + glm::radians((float)(rand() % 60 - 30));
-          m_pet.speed = std::min(m_pet.speed, 1.0f);
-        }
-
-        // Height constraints — gentle spring
-        float targetY = m_pos.y + (MIN_HEIGHT + MAX_HEIGHT) * 0.5f; // Center of range
-        float heightErr = targetY - m_pet.pos.y;
-        m_pet.heightVel += heightErr * 0.02f; // Soft spring
-        if (m_pet.pos.y < m_pos.y + MIN_HEIGHT) m_pet.heightVel += 0.5f;
-        if (m_pet.pos.y > m_pos.y + MAX_HEIGHT) m_pet.heightVel -= 0.5f;
-        m_pet.heightVel *= 0.92f; // Strong damping for smooth bobbing
-
-        // Sparkle — angel gets white dots, imp gets red-orange embers
-        if (m_vfxManager && rand() % 4 == 0) {
-          glm::vec3 sparkPos = m_pet.pos + glm::vec3(
-              (float)(rand() % 16 - 8), (float)(rand() % 16 - 8), (float)(rand() % 16 - 8));
-          auto sparkType = m_pet.itemIndex == 1 ? ParticleType::IMP_SPARKLE
-                                                : ParticleType::PET_SPARKLE;
-          m_vfxManager->SpawnBurst(sparkType, sparkPos, 1);
-        }
-      }
-      // Update facing AFTER movement so angel always looks at character head
-      constexpr float HEAD_HEIGHT = 120.0f; // Approximate character head height
-      float dx = m_pos.x - m_pet.pos.x;
-      float dy = (m_pos.y + HEAD_HEIGHT) - m_pet.pos.y;
-      float dz = m_pos.z - m_pet.pos.z;
-      float hDist = sqrtf(dx * dx + dz * dz);
-      float rawAngle = atan2f(dz, dx);
-      float targetFacing = rawAngle + glm::half_pi<float>(); // +90° offset for Helper BMD front
-      // Smoothly lerp facing toward target
-      float facingDiff = targetFacing - m_pet.facing;
-      while (facingDiff > M_PI) facingDiff -= 2.0f * M_PI;
-      while (facingDiff < -M_PI) facingDiff += 2.0f * M_PI;
-      m_pet.facing += facingDiff * glm::clamp(deltaTime * 3.0f, 0.0f, 1.0f);
-      m_pet.pitch = atan2f(dy, std::max(hDist, 1.0f));
-    }
-
-    // ── Alpha: exponential smoothing (Main 5.2: Alpha += (AlphaTarget - Alpha) * 0.1f per tick) ──
-    // Adapted for delta-time: alpha approaches 1.0 with ~10% convergence per tick
-    if (m_pet.alpha < 0.99f) {
-      float ticksThisFrame = deltaTime / TICK_INTERVAL;
-      m_pet.alpha += (1.0f - m_pet.alpha) * (1.0f - powf(0.9f, ticksThisFrame));
-      if (m_pet.alpha > 0.99f) m_pet.alpha = 1.0f;
-    }
-
-    // Advance wing flap animation — slow gentle flap (Main 5.2: helpers are graceful)
-    int petNumKeys = 1;
-    if (!m_pet.bmd->Actions.empty())
-      petNumKeys = m_pet.bmd->Actions[0].NumAnimationKeys;
-    if (petNumKeys > 1) {
-      m_pet.animFrame += 14.0f * deltaTime; // Wing flap speed
-      if (m_pet.animFrame >= (float)petNumKeys)
-        m_pet.animFrame = std::fmod(m_pet.animFrame, (float)petNumKeys);
-    }
-
-    // Compute pet bones — blend toward bind pose to reduce leg/body shake
-    // while preserving wing flap at full speed (14fps frequency, reduced amplitude)
-    auto petBones = ComputeBoneMatricesInterpolated(m_pet.bmd.get(), 0,
-                                                     m_pet.animFrame);
-    auto bindBones = ComputeBoneMatricesInterpolated(m_pet.bmd.get(), 0, 0.0f);
-    constexpr float ANIM_STRENGTH = 0.6f; // Keep 60% of animation motion
-    for (size_t b = 0; b < petBones.size() && b < bindBones.size(); ++b) {
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 4; ++c)
-          petBones[b][r][c] = bindBones[b][r][c] +
-              (petBones[b][r][c] - bindBones[b][r][c]) * ANIM_STRENGTH;
-    }
-
-    // Re-skin pet mesh vertices
-    for (int mi = 0; mi < (int)m_pet.meshBuffers.size() &&
-                     mi < (int)m_pet.bmd->Meshes.size(); ++mi) {
-      RetransformMeshWithBones(m_pet.bmd->Meshes[mi], petBones,
-                               m_pet.meshBuffers[mi]);
-    }
-
-    // Build pet model matrix: translate to pet.pos, scale 0.7 (Main 5.2: o->Scale = 0.7f)
-    glm::mat4 petModel = glm::translate(glm::mat4(1.0f), m_pet.pos);
-    petModel = glm::rotate(petModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-    petModel = glm::rotate(petModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-    petModel = glm::rotate(petModel, m_pet.facing, glm::vec3(0, 0, 1));
-    petModel = glm::scale(petModel, glm::vec3(0.55f));
-
-    m_shader->setMat4("model", petModel);
-    m_shader->setFloat("objectAlpha", m_pet.alpha);
-    m_shader->setFloat("blendMeshLight", 1.0f);
-
-    // Self-illumination — brighter than surroundings for ethereal glow
-    glm::vec3 petTLight = sampleTerrainLightAt(m_pet.pos);
-    petTLight = glm::clamp(petTLight * 2.0f, 0.5f, 1.5f);
-    m_shader->setVec3("terrainLight", petTLight);
-
-    glDisable(GL_CULL_FACE); // Double-sided wing meshes
-
-    // Render body mesh first (normal alpha blend), then wings (additive)
-    // Main 5.2: BlendMesh compares mesh's Texture index, not mesh array index
-    for (int mi = 0; mi < (int)m_pet.meshBuffers.size() &&
-                     mi < (int)m_pet.bmd->Meshes.size(); ++mi) {
-      auto &mb = m_pet.meshBuffers[mi];
-      if (mb.indexCount == 0 || mb.hidden)
-        continue;
-
-      bool isBlendMesh = (m_pet.bmd->Meshes[mi].Texture == m_pet.blendMesh)
-                         || mb.bright;
-      if (isBlendMesh)
-        continue;
-
-      glBindTexture(GL_TEXTURE_2D, mb.texture);
-      glBindVertexArray(mb.vao);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-    }
-
-    // Second pass: wing meshes — standard alpha blend with brightness boost
-    // Additive (GL_ONE) washes out brights while leaving darks invisible;
-    // standard blend gives consistent opacity from texture alpha.
-    for (int mi = 0; mi < (int)m_pet.meshBuffers.size() &&
-                     mi < (int)m_pet.bmd->Meshes.size(); ++mi) {
-      auto &mb = m_pet.meshBuffers[mi];
-      if (mb.indexCount == 0 || mb.hidden)
-        continue;
-
-      bool isBlendMesh = (m_pet.bmd->Meshes[mi].Texture == m_pet.blendMesh)
-                         || mb.bright;
-      if (!isBlendMesh)
-        continue;
-
-      glBindTexture(GL_TEXTURE_2D, mb.texture);
-      glBindVertexArray(mb.vao);
-      glDepthMask(GL_FALSE);
-      if (m_pet.itemIndex == 0) {
-        // Angel: additive blend for ethereal transparent wings
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-        m_shader->setFloat("blendMeshLight", m_pet.alpha);
-      } else {
-        // Imp: standard alpha blend with brightness boost
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        m_shader->setFloat("blendMeshLight", 1.5f * m_pet.alpha);
-      }
-      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-      glDepthMask(GL_TRUE);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      m_shader->setFloat("blendMeshLight", 1.0f);
-    }
-
-    glEnable(GL_CULL_FACE);
-
-    // Restore shader state
-    m_shader->setFloat("objectAlpha", 1.0f);
-    m_shader->setVec3("terrainLight", tLight);
-    glm::mat4 restoreModel = glm::translate(glm::mat4(1.0f), m_pos);
-    restoreModel = glm::rotate(restoreModel, glm::radians(-90.0f),
-                               glm::vec3(0, 0, 1));
-    restoreModel = glm::rotate(restoreModel, glm::radians(-90.0f),
-                               glm::vec3(0, 1, 0));
-    restoreModel = glm::rotate(restoreModel, m_facing, glm::vec3(0, 0, 1));
-    m_shader->setMat4("model", restoreModel);
-  }
+  // Pet companion rendering (extracted to HeroCharacterPet.cpp)
+  renderPetCompanion(view, proj, camPos, deltaTime, tLight);
 }
 
 void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
@@ -1579,8 +1693,8 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
         continue;
 
       auto &mesh = bmd->Meshes[mi];
-      std::vector<glm::vec3> shadowVerts;
-      shadowVerts.reserve(sm.vertexCount);
+      static std::vector<glm::vec3> shadowVerts;
+      shadowVerts.clear();
 
       const float(*boneMatrix)[4] = nullptr;
       if (!weaponFinalBones && attachBone >= 0 && attachBone < (int)m_cachedBones.size()) {
@@ -1739,6 +1853,70 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
                                  (const float(*)[4])sLocalBones[bi].data(),
                                  (float(*)[4])sFinalBones[bi].data());
       renderShadowBatch(m_shieldBmd.get(), m_shieldShadowMeshes, -1, &sFinalBones);
+    }
+  }
+
+  // Mount shadow — uses mount's own cached bones (not player bones)
+  if (m_mount.active && m_mount.bmd && !m_mount.shadowMeshes.empty() &&
+      !m_mount.cachedBones.empty() && m_mount.alpha > 0.0f) {
+    for (int mi = 0;
+         mi < (int)m_mount.bmd->Meshes.size() && mi < (int)m_mount.shadowMeshes.size(); ++mi) {
+      auto &sm = m_mount.shadowMeshes[mi];
+      if (sm.vertexCount == 0 || sm.vao == 0)
+        continue;
+      auto &mesh = m_mount.bmd->Meshes[mi];
+      static std::vector<glm::vec3> shadowVerts;
+      shadowVerts.clear();
+      for (int i = 0; i < mesh.NumTriangles; ++i) {
+        auto &tri = mesh.Triangles[i];
+        for (int v = 0; v < 3; ++v) {
+          auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+          glm::vec3 pos = srcVert.Position;
+          int boneIdx = srcVert.Node;
+          if (boneIdx >= 0 && boneIdx < (int)m_mount.cachedBones.size())
+            pos = MuMath::TransformPoint(
+                (const float(*)[4])m_mount.cachedBones[boneIdx].data(), pos);
+          float rx = pos.x * cosF - pos.y * sinF;
+          float ry = pos.x * sinF + pos.y * cosF;
+          pos.x = rx;
+          pos.y = ry;
+          if (pos.z < sy) {
+            float factor = 1.0f / (pos.z - sy);
+            pos.x += pos.z * (pos.x + sx) * factor;
+            pos.y += pos.z * (pos.y + sx) * factor;
+          }
+          pos.z = 5.0f;
+          shadowVerts.push_back(pos);
+        }
+        if (tri.Polygon == 4) {
+          int quadIndices[3] = {0, 2, 3};
+          for (int v : quadIndices) {
+            auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+            glm::vec3 pos = srcVert.Position;
+            int boneIdx = srcVert.Node;
+            if (boneIdx >= 0 && boneIdx < (int)m_mount.cachedBones.size())
+              pos = MuMath::TransformPoint(
+                  (const float(*)[4])m_mount.cachedBones[boneIdx].data(), pos);
+            float rx = pos.x * cosF - pos.y * sinF;
+            float ry = pos.x * sinF + pos.y * cosF;
+            pos.x = rx;
+            pos.y = ry;
+            if (pos.z < sy) {
+              float factor = 1.0f / (pos.z - sy);
+              pos.x += pos.z * (pos.x + sx) * factor;
+              pos.y += pos.z * (pos.y + sx) * factor;
+            }
+            pos.z = 5.0f;
+            shadowVerts.push_back(pos);
+          }
+        }
+      }
+      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+      glBufferSubData(GL_ARRAY_BUFFER, 0,
+                      shadowVerts.size() * sizeof(glm::vec3),
+                      shadowVerts.data());
+      glBindVertexArray(sm.vao);
+      glDrawArrays(GL_TRIANGLES, 0, (GLsizei)shadowVerts.size());
     }
   }
 
@@ -2102,9 +2280,13 @@ static bool IsShowHeadHelm(const std::string &helmFile) {
   return false;
 }
 
-void HeroCharacter::EquipBodyPart(int partIndex, const std::string &modelFile) {
+void HeroCharacter::EquipBodyPart(int partIndex, const std::string &modelFile,
+                                  uint8_t level, uint8_t itemIndex) {
   if (partIndex < 0 || partIndex >= PART_COUNT)
     return;
+
+  m_partLevels[partIndex] = level;
+  m_partItemIndices[partIndex] = itemIndex;
 
   // Default naked body parts for current class
   const char *suffix = GetClassBodySuffix(m_class);
@@ -2207,6 +2389,40 @@ void HeroCharacter::EquipBodyPart(int partIndex, const std::string &modelFile) {
   std::cout << "[Hero] Equipped body part[" << partIndex << "]: " << fileToLoad
             << " (" << m_parts[partIndex].meshBuffers.size() << " GPU meshes)"
             << std::endl;
+
+  CheckFullArmorSet();
+}
+
+// Main 5.2 CheckFullSet (ZzzCharacter.cpp:5250-5336):
+// All 5 armor pieces must be equipped, same itemIndex, all +10 or higher.
+// m_equipmentLevelSet = minimum enhancement level, or 0 if no set bonus.
+void HeroCharacter::CheckFullArmorSet() {
+  m_equipmentLevelSet = 0;
+  m_setGlowColor = glm::vec3(1.0f);
+
+  // Check all 5 parts are equipped (level > 0 means an actual item, not default)
+  // Also check all same itemIndex and all +10+
+  uint8_t firstIdx = m_partItemIndices[0];
+  int minLevel = 99;
+  for (int i = 0; i < PART_COUNT; ++i) {
+    if (m_partLevels[i] < 10) return;     // Not high enough
+    if (m_parts[i].meshBuffers.empty()) return; // Not equipped
+    if (m_partItemIndices[i] != firstIdx) return; // Different type
+    minLevel = std::min(minLevel, (int)m_partLevels[i]);
+  }
+
+  m_equipmentLevelSet = minLevel;
+
+  // Set-specific glow color (Main 5.2 ZzzCharacter.cpp:10608-10614)
+  // Based on boots itemIndex (representative of the set)
+  switch (firstIdx) {
+  case 29: m_setGlowColor = glm::vec3(0.65f, 0.3f, 0.1f);  break; // Orange
+  case 30: m_setGlowColor = glm::vec3(0.1f, 0.1f, 0.9f);   break; // Blue
+  case 31: m_setGlowColor = glm::vec3(0.0f, 0.32f, 0.24f);  break; // Teal
+  case 32: m_setGlowColor = glm::vec3(0.5f, 0.24f, 0.8f);   break; // Purple
+  case 33: m_setGlowColor = glm::vec3(0.6f, 0.4f, 0.0f);    break; // Gold
+  default: m_setGlowColor = GetPartObjectColor(11, firstIdx); break; // Use boots glow
+  }
 }
 
 void HeroCharacter::AttackMonster(int monsterIndex,
@@ -2215,8 +2431,17 @@ void HeroCharacter::AttackMonster(int monsterIndex,
     return;
   if (m_sittingOrPosing)
     CancelSitPose();
-  if (m_globalAttackCooldown > 0.0f)
-    return; // Still on cooldown from cancelled attack
+  if (m_globalAttackCooldown > 0.0f) {
+    // Allow switching to a NEW target even during GCD (e.g. after killing a monster)
+    // Use m_gcdTargetMonster (persists through CancelAttack) to prevent
+    // move-cancel exploit: click ground → CancelAttack → re-click same monster
+    if (monsterIndex != m_gcdTargetMonster) {
+      m_globalAttackCooldown = 0.0f;
+      CancelAttack();
+    } else {
+      return; // Same target, still on cooldown
+    }
+  }
 
   // Already attacking same target — just update position, don't reset cycle
   if (monsterIndex == m_attackTargetMonster && m_activeSkillId == 0 &&
@@ -2261,14 +2486,20 @@ void HeroCharacter::AttackMonster(int monsterIndex,
     // Normal melee: weapon blur trail (Main 5.2: BlurType 1, BlurMapping 0)
     // BlurMapping 0 = blur01.OZJ texture, level-based color
     if (HasWeapon() && m_vfxManager) {
-      glm::vec3 trailColor(0.5f, 0.5f, 0.5f); // Default gray
+      // Main 5.2 ZzzCharacter.cpp:3752-3774 weapon trail colors
+      glm::vec3 trailColor(0.8f, 0.8f, 0.8f); // Default: gray/white
       uint8_t wlvl = m_weaponInfo.itemLevel;
       if (wlvl >= 7)
-        trailColor = glm::vec3(1.0f, 0.6f, 0.2f);  // Orange
+        trailColor = glm::vec3(1.0f, 0.6f, 0.2f); // Orange-gold
       else if (wlvl >= 5)
-        trailColor = glm::vec3(0.2f, 0.4f, 1.0f);   // Blue
+        trailColor = glm::vec3(0.2f, 0.4f, 1.0f); // Blue
       else if (wlvl >= 3)
-        trailColor = glm::vec3(1.0f, 0.2f, 0.2f);   // Red
+        trailColor = glm::vec3(1.0f, 0.2f, 0.2f); // Red
+      // Main 5.2: specific weapon models always use red trail
+      if ((m_weaponInfo.category == 0 && m_weaponInfo.itemIndex == 13) || // Sword+13
+          (m_weaponInfo.category == 2 && m_weaponInfo.itemIndex == 6) ||  // Mace+6
+          (m_weaponInfo.category == 3 && m_weaponInfo.itemIndex == 9))    // Spear+9
+        trailColor = glm::vec3(1.0f, 0.2f, 0.2f);
       m_weaponTrailActive = true;
       m_vfxManager->StartWeaponTrail(trailColor, false);
     }
@@ -2281,6 +2512,8 @@ void HeroCharacter::AttackMonster(int monsterIndex,
     float cd = ATTACK_COOLDOWN_TIME / attackSpeedMultiplier();
     m_globalAttackCooldown = animDur + cd;
     m_globalAttackCooldownMax = m_globalAttackCooldown;
+    m_gcdTargetMonster = monsterIndex; // Track for move-cancel exploit prevention
+    m_gcdFromSkill = false; // Melee GCD — can be interrupted by spells
   } else {
     // Out of range — walk toward target
     m_attackState = AttackState::APPROACHING;
@@ -2295,8 +2528,11 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
   // Tick global cooldown (persists after cancel to prevent exploit)
   if (m_globalAttackCooldown > 0.0f) {
     m_globalAttackCooldown -= deltaTime;
-    if (m_globalAttackCooldown < 0.0f)
+    if (m_globalAttackCooldown <= 0.0f) {
       m_globalAttackCooldown = 0.0f;
+      m_gcdFromSkill = false; // GCD expired, reset flag
+      m_gcdTargetMonster = -1; // Allow re-attacking same target now
+    }
   }
 
   if (m_attackState == AttackState::NONE)
@@ -2333,6 +2569,18 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
         case 41: SoundManager::Play(SOUND_KNIGHT_SKILL4); break; // Twisting Slash
         case 42: SoundManager::Play(SOUND_RAGE_BLOW1); break;
         case 43: SoundManager::Play(SOUND_KNIGHT_SKILL2); break;
+        // DW cast-time sounds (Main 5.2: ZzzCharacter.cpp PlayBuffer)
+        case 1:  SoundManager::Play(SOUND_HEART); break;        // Poison
+        case 2:  SoundManager::Play(SOUND_METEORITE01); break;  // Meteorite
+        case 3:  SoundManager::Play(SOUND_LIGHTNING_CAST); break; // Lightning (Lich electric sound)
+        case 4:  SoundManager::Play(SOUND_METEORITE01); break;  // Fire Ball
+        case 5:  SoundManager::Play(SOUND_FLAME); break;        // Flame
+        case 7:  SoundManager::Play(SOUND_ICE); break;          // Ice
+        case 8:  SoundManager::Play(SOUND_STORM); break;        // Twister
+        case 9:  SoundManager::Play(SOUND_EVIL); break;         // Evil Spirit
+        case 10: SoundManager::Play(SOUND_HELLFIRE); break;     // Hellfire
+        case 12: SoundManager::Play(SOUND_FLASH); break;        // Aqua Beam
+        case 17: SoundManager::Play(SOUND_METEORITE01); break;  // Energy Ball
         default:
           if (HasWeapon())
             SoundManager::Play(SOUND_SWING1 + rand() % 2);
@@ -2416,7 +2664,8 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
     if (m_action >= 0 && m_action < (int)m_skeleton->Actions.size())
       numKeys = m_skeleton->Actions[m_action].NumAnimationKeys;
 
-    float atkAnimSpeed = ANIM_SPEED * attackSpeedMultiplier();
+    float spdMul = currentSpeedMultiplier();
+    float atkAnimSpeed = ANIM_SPEED * spdMul;
     float animDuration = (numKeys > 1) ? (float)numKeys / atkAnimSpeed : 0.5f;
     m_attackAnimTimer += deltaTime;
 
@@ -2436,7 +2685,7 @@ void HeroCharacter::UpdateAttack(float deltaTime) {
       // Spells have shorter cooldown (0.2s base) for smoother casting flow
       float baseCooldown =
           (m_activeSkillId > 0) ? 0.2f : ATTACK_COOLDOWN_TIME;
-      m_attackCooldown = baseCooldown / attackSpeedMultiplier();
+      m_attackCooldown = baseCooldown / spdMul;
 
       // If beam never spawned (animation too short), force spawn now
       if (m_pendingAquaBeam && !m_aquaBeamSpawned && m_vfxManager) {
@@ -2489,7 +2738,7 @@ bool HeroCharacter::CheckAttackHit() {
   if (m_action >= 0 && m_action < (int)m_skeleton->Actions.size())
     numKeys = m_skeleton->Actions[m_action].NumAnimationKeys;
 
-  float atkAnimSpeed = ANIM_SPEED * attackSpeedMultiplier();
+  float atkAnimSpeed = ANIM_SPEED * currentSpeedMultiplier();
   float animDuration = (numKeys > 1) ? (float)numKeys / atkAnimSpeed : 0.5f;
   float hitTime = animDuration * ATTACK_HIT_FRACTION;
 
@@ -2594,11 +2843,11 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
     return;
   if (m_sittingOrPosing)
     CancelSitPose();
-  // Allow spell to interrupt normal melee attacks
+  // Allow spell to interrupt normal melee attacks, but NOT other spells
   if (m_globalAttackCooldown > 0.0f) {
-    if (m_activeSkillId > 0)
-      return; // Block if GCD from a previous skill cast
-    m_globalAttackCooldown = 0.0f; // Reset melee GCD
+    if (m_gcdFromSkill)
+      return; // Block if GCD from a previous skill cast (persists after move-cancel)
+    m_globalAttackCooldown = 0.0f; // Reset melee GCD only
     CancelAttack();
   }
 
@@ -2642,6 +2891,18 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
     case 41: SoundManager::Play(SOUND_KNIGHT_SKILL4); break; // Twisting Slash
     case 42: SoundManager::Play(SOUND_RAGE_BLOW1); break;    // Rageful Blow
     case 43: SoundManager::Play(SOUND_KNIGHT_SKILL2); break; // Death Stab (same as Lunge)
+    // DW cast-time sounds (Main 5.2: ZzzCharacter.cpp PlayBuffer)
+    case 1:  SoundManager::Play(SOUND_HEART); break;        // Poison
+    case 2:  SoundManager::Play(SOUND_METEORITE01); break;  // Meteorite
+    case 3:  SoundManager::Play(SOUND_LIGHTNING_CAST); break; // Lightning (Lich electric sound)
+    case 4:  SoundManager::Play(SOUND_METEORITE01); break;  // Fire Ball
+    case 5:  SoundManager::Play(SOUND_FLAME); break;        // Flame
+    case 7:  SoundManager::Play(SOUND_ICE); break;          // Ice
+    case 8:  SoundManager::Play(SOUND_STORM); break;        // Twister
+    case 9:  SoundManager::Play(SOUND_EVIL); break;         // Evil Spirit
+    case 10: SoundManager::Play(SOUND_HELLFIRE); break;     // Hellfire
+    case 12: SoundManager::Play(SOUND_FLASH); break;        // Aqua Beam
+    case 17: SoundManager::Play(SOUND_METEORITE01); break;  // Energy Ball
     default:
       if (HasWeapon())
         SoundManager::Play(SOUND_SWING1 + rand() % 2);
@@ -2651,14 +2912,16 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
     // Set GCD = full attack cycle (animation + cooldown)
     int nk = (skillAction >= 0 && skillAction < (int)m_skeleton->Actions.size())
                  ? m_skeleton->Actions[skillAction].NumAnimationKeys : 1;
-    float spd = ANIM_SPEED * attackSpeedMultiplier();
+    float spdMul = currentSpeedMultiplier();
+    float spd = ANIM_SPEED * spdMul;
     float animDur = (nk > 1) ? (float)nk / spd : 0.5f;
     // Flash: animation slowdown during frames 1.0-3.0 adds ~2 frames at half speed
     if (skillId == 12)
       animDur += 2.0f / spd;
-    float cd = 0.2f / attackSpeedMultiplier(); // Spell cooldown = 0.2s base
+    float cd = 0.2f / spdMul; // Spell cooldown = 0.2s base
     m_globalAttackCooldown = animDur + cd;
     m_globalAttackCooldownMax = m_globalAttackCooldown;
+    m_gcdFromSkill = true; // Skill GCD — cannot be bypassed by move-cancel
 
     if (m_vfxManager) {
       m_vfxManager->SpawnSkillCast(skillId, m_pos, m_facing, monsterPos);
@@ -2739,10 +3002,10 @@ void HeroCharacter::SkillAttackMonster(int monsterIndex,
 void HeroCharacter::CastSelfAoE(uint8_t skillId, const glm::vec3 &targetPos) {
   if (IsDead())
     return;
-  // Allow spell to interrupt normal melee attacks (reset GCD from auto-attack)
-  if (m_globalAttackCooldown > 0.0f && m_activeSkillId > 0)
-    return; // Only block if GCD is from a previous SKILL cast
-  // Cancel any in-progress attack and reset melee GCD
+  // Block if GCD is from a previous skill cast (persists after move-cancel)
+  if (m_globalAttackCooldown > 0.0f && m_gcdFromSkill)
+    return;
+  // Cancel any in-progress melee attack and reset melee GCD
   m_globalAttackCooldown = 0.0f;
   CancelAttack();
   m_moving = false;
@@ -2769,20 +3032,34 @@ void HeroCharacter::CastSelfAoE(uint8_t skillId, const glm::vec3 &targetPos) {
   switch (skillId) {
   case 41: SoundManager::Play(SOUND_KNIGHT_SKILL4); break; // Twisting Slash
   case 42: SoundManager::Play(SOUND_RAGE_BLOW1); break;    // Rageful Blow
-  default: break; // DW spells have no swing/cast sound
+  // DW cast-time sounds (Main 5.2: ZzzCharacter.cpp PlayBuffer)
+  case 1:  SoundManager::Play(SOUND_HEART); break;        // Poison
+  case 2:  SoundManager::Play(SOUND_METEORITE01); break;  // Meteorite
+  case 3:  SoundManager::Play(SOUND_LIGHTNING_CAST); break; // Lightning (Lich electric sound)
+  case 4:  SoundManager::Play(SOUND_METEORITE01); break;  // Fire Ball
+  case 5:  SoundManager::Play(SOUND_FLAME); break;        // Flame
+  case 7:  SoundManager::Play(SOUND_ICE); break;          // Ice
+  case 8:  SoundManager::Play(SOUND_STORM); break;        // Twister
+  case 9:  SoundManager::Play(SOUND_EVIL); break;         // Evil Spirit
+  case 10: SoundManager::Play(SOUND_HELLFIRE); break;     // Hellfire
+  case 12: SoundManager::Play(SOUND_FLASH); break;        // Aqua Beam
+  case 17: SoundManager::Play(SOUND_METEORITE01); break;  // Energy Ball
+  default: break;
   }
 
   // Set GCD
   int nk = (skillAction >= 0 && skillAction < (int)m_skeleton->Actions.size())
                ? m_skeleton->Actions[skillAction].NumAnimationKeys : 1;
-  float spd = ANIM_SPEED * attackSpeedMultiplier();
+  float spdMul = currentSpeedMultiplier();
+  float spd = ANIM_SPEED * spdMul;
   float animDur = (nk > 1) ? (float)nk / spd : 0.5f;
   // Flash: animation slowdown during frames 1.0-3.0 adds ~2 frames at half speed
   if (skillId == 12)
     animDur += 2.0f / spd;
-  float cd = 0.2f / attackSpeedMultiplier();
+  float cd = 0.2f / spdMul;
   m_globalAttackCooldown = animDur + cd;
   m_globalAttackCooldownMax = m_globalAttackCooldown;
+  m_gcdFromSkill = true; // Skill GCD — cannot be bypassed by move-cancel
 
   // Spawn VFX
   if (m_vfxManager) {
@@ -2834,11 +3111,13 @@ void HeroCharacter::TeleportTo(const glm::vec3 &target) {
     m_vfxManager->SpawnSkillCast(6, m_pos, m_facing);
     m_vfxManager->SpawnSkillImpact(6, target);
   }
+  SoundManager::Play(SOUND_MAGIC); // Main 5.2: PlayBuffer(SOUND_MAGIC)
 
   // No animation change — instant teleport, keep current pose
   // Fixed 1.5s GCD to prevent spam
   m_globalAttackCooldown = 1.5f;
   m_globalAttackCooldownMax = m_globalAttackCooldown;
+  m_gcdFromSkill = true; // Skill GCD — cannot be bypassed by move-cancel
 
   // Instantly move to target position
   m_pos = target;
@@ -3039,6 +3318,8 @@ void HeroCharacter::Respawn(const glm::vec3 &spawnPos) {
   m_moving = false;
   m_attackState = AttackState::NONE;
   m_attackTargetMonster = -1;
+  m_gcdTargetMonster = -1;
+  m_globalAttackCooldown = 0.0f;
   // Return to idle
   if (isMountRiding() || (!m_inSafeZone && m_weaponBmd)) {
     SetAction(weaponIdleAction());
@@ -3048,21 +3329,7 @@ void HeroCharacter::Respawn(const glm::vec3 &spawnPos) {
 }
 
 void HeroCharacter::SnapToTerrain() {
-  if (!m_terrainData)
-    return;
-  const int S = TerrainParser::TERRAIN_SIZE;
-  float gz = m_pos.x / 100.0f;
-  float gx = m_pos.z / 100.0f;
-  gz = std::clamp(gz, 0.0f, (float)(S - 2));
-  gx = std::clamp(gx, 0.0f, (float)(S - 2));
-  int xi = (int)gx, zi = (int)gz;
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  float h00 = m_terrainData->heightmap[zi * S + xi];
-  float h10 = m_terrainData->heightmap[zi * S + (xi + 1)];
-  float h01 = m_terrainData->heightmap[(zi + 1) * S + xi];
-  float h11 = m_terrainData->heightmap[(zi + 1) * S + (xi + 1)];
-  m_pos.y = h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) +
-            h01 * (1 - xd) * zd + h11 * xd * zd;
+  m_pos.y = TerrainUtils::GetHeight(m_terrainData, m_pos.x, m_pos.z);
 }
 
 void HeroCharacter::SetAction(int newAction) {
@@ -3094,15 +3361,7 @@ void HeroCharacter::SetAction(int newAction) {
                     (newAction >= 146 && newAction <= 154);
   bool isIdleToSkill = (isCurrentStop && isNewSkill);
 
-  // Mount transitions (mounting/dismounting — blend between normal and ride poses)
-  bool isMountTransition =
-      (newAction == ACTION_STOP_RIDE || newAction == ACTION_STOP_RIDE_WEAPON ||
-       newAction == ACTION_RUN_RIDE || newAction == ACTION_RUN_RIDE_WEAPON ||
-       m_action == ACTION_STOP_RIDE || m_action == ACTION_STOP_RIDE_WEAPON ||
-       m_action == ACTION_RUN_RIDE || m_action == ACTION_RUN_RIDE_WEAPON);
-
-  if (involvesFists || isStopping || isAttackToIdle || isIdleToSkill ||
-      isMountTransition) {
+  if (involvesFists || isStopping || isAttackToIdle || isIdleToSkill) {
     m_priorAction = m_action;
     m_priorAnimFrame = m_animFrame;
     m_isBlending = true;
@@ -3117,170 +3376,6 @@ void HeroCharacter::SetAction(int newAction) {
 
 }
 
-void HeroCharacter::EquipPet(uint8_t itemIndex) {
-  UnequipPet(); // Clear any existing pet
-
-  // Helper01.bmd = Guardian Angel, Helper02.bmd = Imp
-  std::string bmdFile = m_dataPath + "/Player/Helper0" +
-                         std::to_string(itemIndex + 1) + ".bmd";
-  auto bmd = BMDParser::Parse(bmdFile);
-  if (!bmd) {
-    std::cerr << "[Hero] Failed to load pet model: " << bmdFile << std::endl;
-    return;
-  }
-
-  m_pet.itemIndex = itemIndex;
-
-  // Main 5.2 GOBoid.cpp: BlendMesh=1 — mesh with Texture==1 renders additive
-  // BlendMesh compares against the mesh's Texture INDEX, not the mesh array index
-  m_pet.blendMesh = 1; // Standard for all helpers
-
-  // Upload mesh buffers with per-mesh texture resolution
-  // Helper BMDs are in Player/ but textures are in Item/
-  AABB petAABB{};
-  auto petBones = ComputeBoneMatrices(bmd.get());
-  for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
-    auto &mesh = bmd->Meshes[mi];
-
-    // Try Player/ first, then Item/ fallback for this specific mesh's texture
-    UploadMeshWithBones(mesh, m_dataPath + "/Player/", petBones,
-                        m_pet.meshBuffers, petAABB, true);
-
-    // Check if the just-uploaded mesh buffer got a valid texture
-    auto &mb = m_pet.meshBuffers.back();
-    if (mb.texture == 0) {
-      // Fallback: resolve THIS mesh's texture from Item/ directory
-      auto texInfo = TextureLoader::ResolveWithInfo(
-          m_dataPath + "/Item/", mesh.TextureName);
-      if (texInfo.textureID) {
-        mb.texture = texInfo.textureID;
-        std::cout << "[Hero] Pet mesh " << mi << ": texture '"
-                  << mesh.TextureName << "' resolved from Item/" << std::endl;
-      }
-    }
-  }
-
-  m_pet.bmd = std::move(bmd);
-  m_pet.active = true;
-  m_pet.alpha = 0.0f; // Start transparent, exponential fade in
-  m_pet.animFrame = 0.0f;
-  m_pet.sparkTimer = 0.0f;
-  // Direction-vector movement init (Main 5.2 GOBoid.cpp)
-  // Main 5.2: spawn at random offset ±256 XY, +128-256 Z from owner
-  m_pet.dirAngle = glm::radians((float)(rand() % 360));
-  m_pet.speed = (16.0f + (float)(rand() % 64)) * 0.1f; // Initial idle speed
-  m_pet.heightVel = ((float)(rand() % 64 - 32)) * 0.1f;
-  m_pet.facing = m_pet.dirAngle;
-  m_pet.tickAccum = 0.0f;
-  m_pet.lastOwnerPos = m_pos;
-  m_pet.pos = m_pos + glm::vec3(
-      (float)(rand() % 200 - 100), 128.0f + (float)(rand() % 128),
-      (float)(rand() % 200 - 100));
-
-  std::cout << "[Hero] Pet companion equipped: Helper0"
-            << (int)(itemIndex + 1) << ".bmd ("
-            << m_pet.meshBuffers.size() << " meshes, blendMesh="
-            << m_pet.blendMesh << ")" << std::endl;
-}
-
-void HeroCharacter::UnequipPet() {
-  if (!m_pet.active && m_pet.meshBuffers.empty())
-    return;
-  CleanupMeshBuffers(m_pet.meshBuffers);
-  m_pet.bmd.reset();
-  m_pet.active = false;
-  m_pet.alpha = 0.0f;
-  std::cout << "[Hero] Pet companion unequipped" << std::endl;
-}
-
-void HeroCharacter::EquipMount(uint8_t itemIndex) {
-  UnequipPet();    // Can't have pet + mount simultaneously
-  UnequipMount();  // Clear previous mount
-
-  // Main 5.2 ZzzOpenData.cpp: ride models are in Data/Skill/
-  //   AccessModel(MODEL_UNICON,  "Data\\Skill\\", "Rider", 1)  → Rider01.bmd (Uniria)
-  //   AccessModel(MODEL_PEGASUS, "Data\\Skill\\", "Rider", 2)  → Rider02.bmd (Dinorant)
-  int riderIndex = (itemIndex == 2) ? 1 : 2;
-  std::string bmdFile = m_dataPath + "/Skill/Rider0" +
-                         std::to_string(riderIndex) + ".bmd";
-  auto bmd = BMDParser::Parse(bmdFile);
-  if (!bmd) {
-    std::cerr << "[Hero] Failed to load mount model: " << bmdFile << std::endl;
-    return;
-  }
-
-  m_mount.itemIndex = itemIndex;
-  m_mount.blendMesh = -1;
-
-  // Rider01.bmd (Uniria): bone 0 = Bip01 (animated root)
-  // Rider02.bmd (Dinorant): bone 0 = Box01 (STATIC helper), bone 1 = Bip01 (animated root)
-  // Find first bone named "Bip01" as the skeleton root for root motion removal.
-  m_mount.rootBone = 0;
-  for (int bi = 0; bi < (int)bmd->Bones.size(); ++bi) {
-    if (std::strcmp(bmd->Bones[bi].Name, "Bip01") == 0) {
-      m_mount.rootBone = bi;
-      break;
-    }
-  }
-
-  // Texture directory: Uniria textures in Item/, Dinorant textures in Skill/
-  // Main 5.2: OpenTexture(MODEL_UNICON, "Item\\"), OpenTexture(MODEL_PEGASUS, "Skill\\")
-  std::string texDir = m_dataPath + ((itemIndex == 2) ? "/Item/" : "/Skill/");
-
-  AABB mountAABB{};
-  auto mountBones = ComputeBoneMatrices(bmd.get());
-  for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
-    auto &mesh = bmd->Meshes[mi];
-    UploadMeshWithBones(mesh, texDir, mountBones,
-                        m_mount.meshBuffers, mountAABB, true);
-
-    auto &mb = m_mount.meshBuffers.back();
-    if (mb.texture == 0) {
-      // Fallback: try the other directory
-      std::string fallbackDir = m_dataPath +
-          ((itemIndex == 2) ? "/Skill/" : "/Item/");
-      auto texInfo = TextureLoader::ResolveWithInfo(fallbackDir, mesh.TextureName);
-      if (texInfo.textureID) {
-        mb.texture = texInfo.textureID;
-      }
-    }
-  }
-
-  m_mount.bmd = std::move(bmd);
-  m_mount.active = true;
-  m_mount.alpha = 0.0f;
-  m_mount.animFrame = 0.0f;
-  m_mountEquippedIndex = itemIndex;
-
-  // Switch player to riding animation
-  if (m_moving) {
-    SetAction(weaponWalkAction());
-  } else {
-    SetAction(weaponIdleAction());
-  }
-
-  std::cout << "[Hero] Mount equipped: Rider0" << riderIndex << ".bmd ("
-            << m_mount.meshBuffers.size() << " meshes, "
-            << m_mount.bmd->Bones.size() << " bones, "
-            << m_mount.bmd->Actions.size() << " actions)" << std::endl;
-}
-
-void HeroCharacter::UnequipMount() {
-  if (!m_mount.active && m_mount.meshBuffers.empty())
-    return;
-  CleanupMeshBuffers(m_mount.meshBuffers);
-  m_mount.bmd.reset();
-  m_mount.active = false;
-  m_mount.alpha = 0.0f;
-
-  // Switch back to normal animation
-  if (m_moving) {
-    SetAction(m_weaponBmd ? weaponWalkAction() : ACTION_WALK_MALE);
-  } else {
-    SetAction(m_weaponBmd ? weaponIdleAction() : ACTION_STOP_MALE);
-  }
-  std::cout << "[Hero] Mount unequipped" << std::endl;
-}
 
 void HeroCharacter::Cleanup() {
   auto cleanupShadows = [](std::vector<ShadowMesh> &shadowMeshes) {
@@ -3310,10 +3405,22 @@ void HeroCharacter::Cleanup() {
   cleanupShadows(m_shieldShadowMeshes);
   m_shieldBmd.reset();
 
+  // Mount
+  CleanupMeshBuffers(m_mount.meshBuffers);
+  cleanupShadows(m_mount.shadowMeshes);
+  m_mount.cachedBones.clear();
+  m_mount.bmd.reset();
+  m_mount.active = false;
+
   // Pet companion
   CleanupMeshBuffers(m_pet.meshBuffers);
   m_pet.bmd.reset();
   m_pet.active = false;
+
+  // Chrome/shiny glow textures
+  if (m_chromeTexture) { glDeleteTextures(1, &m_chromeTexture); m_chromeTexture = 0; }
+  if (m_chrome2Texture) { glDeleteTextures(1, &m_chrome2Texture); m_chrome2Texture = 0; }
+  if (m_shinyTexture) { glDeleteTextures(1, &m_shinyTexture); m_shinyTexture = 0; }
 
   m_shader.reset();
   m_shadowShader.reset();

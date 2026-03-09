@@ -609,7 +609,7 @@ void HandleItemUse(Session &session, const std::vector<uint8_t> &packet,
           static_cast<uint16_t>(session.maxMana),
           static_cast<uint16_t>(std::max(session.ag, 0)),
           static_cast<uint16_t>(session.maxAg), session.levelUpPoints,
-          session.experience, session.zen, posX, posY,
+          session.experience, session.zen, posX, posY, session.mapId,
           session.skillBar, session.potionBar, session.rmcSkillId);
     }
   }
@@ -683,6 +683,30 @@ void HandleItemDrop(Session &session, const std::vector<uint8_t> &packet,
   printf("[Inventory] Player fd=%d dropped item def=%d from slot %d at "
          "(%.0f,%.0f)\n",
          session.GetFd(), defIndex, req->slot, drop.worldX, drop.worldZ);
+}
+
+bool FindEmptySpace(Session &session, uint8_t w, uint8_t h, uint8_t &outSlot) {
+  for (int startY = 0; startY <= 8 - h; ++startY) {
+    for (int startX = 0; startX <= 8 - w; ++startX) {
+      bool fits = true;
+      for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+          int slot = (startY + y) * 8 + (startX + x);
+          if (session.bag[slot].occupied) {
+            fits = false;
+            break;
+          }
+        }
+        if (!fits)
+          break;
+      }
+      if (fits) {
+        outSlot = startY * 8 + startX;
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 } // namespace InventoryHandler

@@ -4,6 +4,7 @@
 #include "StatCalculator.hpp"
 #include "handlers/CharacterHandler.hpp"
 #include "handlers/InventoryHandler.hpp"
+#include "handlers/QuestHandler.hpp"
 #include "handlers/WorldHandler.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -40,6 +41,7 @@ void SendCharList(Session &session, Database &db) {
     e.charSet[15] = 0;
     e.charSet[16] = 0;
     e.charSet[17] = 0;
+    std::memset(e.equipLevels, 0, 7);
 
     // Encode equipment appearance into charSet[1..14]
     // Layout: [1..2]=rightHand, [3..4]=leftHand, [5..6]=helm,
@@ -47,19 +49,22 @@ void SendCharList(Session &session, Database &db) {
     auto equip = db.GetCharacterEquipment(chars[i].id);
     for (auto &eq : equip) {
       int offset = -1;
+      int lvlIdx = -1;
       switch (eq.slot) {
-      case 0: offset = 1; break;  // Right hand
-      case 1: offset = 3; break;  // Left hand
-      case 2: offset = 5; break;  // Helm
-      case 3: offset = 7; break;  // Armor
-      case 4: offset = 9; break;  // Pants
-      case 5: offset = 11; break; // Gloves
-      case 6: offset = 13; break; // Boots
+      case 0: offset = 1;  lvlIdx = 0; break;  // Right hand
+      case 1: offset = 3;  lvlIdx = 1; break;  // Left hand
+      case 2: offset = 5;  lvlIdx = 2; break;  // Helm
+      case 3: offset = 7;  lvlIdx = 3; break;  // Armor
+      case 4: offset = 9;  lvlIdx = 4; break;  // Pants
+      case 5: offset = 11; lvlIdx = 5; break;  // Gloves
+      case 6: offset = 13; lvlIdx = 6; break;  // Boots
       }
       if (offset >= 0) {
         e.charSet[offset] = eq.category;
         e.charSet[offset + 1] = eq.itemIndex;
       }
+      if (lvlIdx >= 0)
+        e.equipLevels[lvlIdx] = eq.itemLevel;
     }
     e.guildStatus = 0xFF;
   }
@@ -122,10 +127,18 @@ void HandleCharCreate(Session &session, const std::vector<uint8_t> &packet,
     return;
   }
 
-  // DW (class 0) auto-learns Energy Ball (skill 17) on creation
+  // DW (class 0) auto-learns Energy Ball (skill 17) on creation and equips it
   if (classCode == 0) {
     db.LearnSkill(charId, 17);
-    printf("[CharSelect] DW '%s' auto-learned Energy Ball (skill 17)\n", name);
+    db.SetRmcSkillId(charId, 17);
+    printf("[CharSelect] DW '%s' auto-learned & equipped Energy Ball (skill 17)\n", name);
+  }
+
+  // DK (class 16) starts with Small Axe (cat=1,idx=0) + Small Shield (cat=6,idx=0)
+  if (classCode == 16) {
+    db.UpdateEquipment(charId, 0, 1, 0, 0); // Right hand: Small Axe
+    db.UpdateEquipment(charId, 1, 6, 0, 0); // Left hand: Small Shield
+    printf("[CharSelect] DK '%s' equipped Small Axe + Small Shield\n", name);
   }
 
   // Find the slot that was assigned
@@ -277,10 +290,15 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   session.maxHp =
       StatCalculator::CalculateMaxHP(charCls, session.level, session.vitality);
   session.hp = std::min(static_cast<int>(c.life), session.maxHp);
+  // Prevent loading with 0 HP (dead state from previous session)
+  if (session.hp <= 0)
+    session.hp = session.maxHp;
   session.maxMana = StatCalculator::CalculateMaxManaOrAG(
       charCls, session.level, session.strength, session.dexterity,
       session.vitality, session.energy);
   session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
+  if (session.mana <= 0)
+    session.mana = session.maxMana;
 
   if (charCls == CharacterClass::CLASS_DK) {
     session.maxAg = StatCalculator::CalculateMaxAG(c.strength, c.dexterity,
@@ -343,6 +361,51 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
     dpkt.worldX = drop.worldX;
     dpkt.worldZ = drop.worldZ;
     session.Send(&dpkt, sizeof(dpkt));
+  }
+
+  // Send chat log history
+  {
+    auto history = db.GetChatHistory(c.id, 200);
+    if (!history.empty()) {
+      // Build C2 variable-length packet:
+      // C2 header (4 bytes) + count(uint16_t) + entries
+      // Each entry: category(1) + color(4) + msgLen(1) + msg[msgLen]
+      std::vector<uint8_t> buf;
+      buf.resize(6); // header(4) + count(2)
+      uint16_t count = (uint16_t)history.size();
+      buf[4] = (uint8_t)(count >> 8);
+      buf[5] = (uint8_t)(count & 0xFF);
+      for (auto &e : history) {
+        buf.push_back(e.category);
+        buf.push_back((uint8_t)(e.color & 0xFF));
+        buf.push_back((uint8_t)((e.color >> 8) & 0xFF));
+        buf.push_back((uint8_t)((e.color >> 16) & 0xFF));
+        buf.push_back((uint8_t)((e.color >> 24) & 0xFF));
+        uint8_t len = (uint8_t)std::min((int)e.message.size(), 200);
+        buf.push_back(len);
+        for (int i = 0; i < len; i++)
+          buf.push_back((uint8_t)e.message[i]);
+      }
+      // Fill C2 header
+      uint16_t pktSize = (uint16_t)buf.size();
+      buf[0] = 0xC2;
+      buf[1] = (uint8_t)(pktSize >> 8);
+      buf[2] = (uint8_t)(pktSize & 0xFF);
+      buf[3] = Opcode::CHAT_LOG_HISTORY;
+      session.Send(buf.data(), buf.size());
+      printf("[ChatLog] Sent %d history entries to char %d\n", (int)count, c.id);
+    }
+  }
+
+  // Load quest state and send to client
+  {
+    auto qs = db.LoadQuestState(c.id);
+    session.questIndex = qs.questIndex;
+    session.questKillCount0 = qs.killCount0;
+    session.questKillCount1 = qs.killCount1;
+    session.questKillCount2 = qs.killCount2;
+    session.questAccepted = qs.accepted;
+    QuestHandler::SendQuestState(session);
   }
 
   printf("[CharSelect] Character '%s' entered world at (%d,%d) class=%d\n",

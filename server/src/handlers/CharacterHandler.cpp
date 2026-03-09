@@ -47,8 +47,12 @@ void SendCharStats(Session &session, Database &db, int characterId) {
   session.maxHp = StatCalculator::CalculateMaxHP(charCls, c.level, c.vitality) +
                   session.petBonusMaxHp;
   session.hp = std::min(static_cast<int>(c.life), session.maxHp);
+  if (session.hp <= 0)
+    session.hp = session.maxHp;
   session.maxMana = StatCalculator::CalculateMaxMP(charCls, c.level, c.energy);
   session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
+  if (session.mana <= 0)
+    session.mana = session.maxMana;
 
   session.maxAg = StatCalculator::CalculateMaxAG(c.strength, c.dexterity,
                                                  c.vitality, c.energy);
@@ -151,10 +155,6 @@ void SendCharStats(Session &session) {
 
 void SendEquipment(Session &session, Database &db, int characterId) {
   auto equip = db.GetCharacterEquipment(characterId);
-  if (equip.empty()) {
-    printf("[Character] No equipment for character %d\n", characterId);
-    return;
-  }
 
   size_t entrySize = 1 + 1 + 1 + 1 + 32;
   size_t totalSize = 5 + equip.size() * entrySize;
@@ -270,6 +270,29 @@ void RefreshCombatStats(Session &session, Database &db, int characterId) {
     session.weaponDamageMax = rightDmgMax + leftDmgMax;
   }
 
+  // Staff Rise calculation (OpenMU Version075)
+  session.staffRisePercent = 0;
+  for (auto &slot : equip) {
+    if (slot.slot == 0 && slot.category == 5) { // Right hand = staff
+      auto staffDef = db.GetItemDefinition(slot.category, slot.itemIndex);
+      if (staffDef.magicPower > 0) {
+        int base = staffDef.magicPower / 2;
+        static const int evenTable[16] = {0,  3,  7,  10, 14, 17, 21, 24,
+                                          28, 31, 35, 40, 45, 50, 56, 63};
+        static const int oddTable[16] = {0,  4,  7,  11, 14, 18, 21, 25,
+                                         28, 32, 36, 40, 45, 51, 57, 63};
+        int lvl = std::min((int)slot.itemLevel, 15);
+        int levelBonus =
+            (staffDef.magicPower % 2 == 0) ? evenTable[lvl] : oddTable[lvl];
+        session.staffRisePercent = base + levelBonus;
+        printf("[Character] Staff Rise: %s +%d -> %d%%\n",
+               staffDef.name.c_str(), slot.itemLevel,
+               session.staffRisePercent);
+      }
+      break;
+    }
+  }
+
   // Pet bonuses (slot 8, category 13)
   session.petBonusMaxHp = 0;
   session.petDamageReduction = 0.0f;
@@ -298,7 +321,7 @@ void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
 
   int charId = save->characterId;
   if (charId <= 0)
-    charId = 1;
+    charId = session.characterId;
 
   memcpy(session.skillBar, save->skillBar, 10);
   memcpy(session.potionBar, save->potionBar, 8);
@@ -314,8 +337,8 @@ void HandleCharSave(Session &session, const std::vector<uint8_t> &packet,
       static_cast<uint16_t>(std::max(session.ag, 0)),
       static_cast<uint16_t>(session.maxAg), session.levelUpPoints,
       save->experienceLo | (static_cast<uint64_t>(save->experienceHi) << 32),
-      session.zen, posX, posY, session.skillBar, session.potionBar,
-      save->rmcSkillId);
+      session.zen, posX, posY, session.mapId, session.skillBar,
+      session.potionBar, save->rmcSkillId);
 
   if (session.dead && save->life > 0) {
     // Respawn: enforce full HP and AG/mana server-side
@@ -763,8 +786,8 @@ void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,
         static_cast<uint16_t>(session.maxMana),
         static_cast<uint16_t>(std::max(session.ag, 0)),
         static_cast<uint16_t>(session.maxAg), session.levelUpPoints,
-        session.experience, session.zen, posX, posY, session.skillBar,
-        session.potionBar, session.rmcSkillId);
+        session.experience, session.zen, posX, posY, session.mapId,
+        session.skillBar, session.potionBar, session.rmcSkillId);
   }
 
   printf("[Character] Stat alloc: type=%d newVal=%d pts=%d maxHP=%d\n",

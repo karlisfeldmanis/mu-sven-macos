@@ -14,6 +14,9 @@ std::unique_ptr<Shader> ItemModelManager::s_shadowShader;
 std::string ItemModelManager::s_dataPath;
 std::shared_ptr<BMDData> ItemModelManager::s_playerBmd;
 std::vector<BoneWorldMatrix> ItemModelManager::s_playerIdleBones;
+GLuint ItemModelManager::s_chromeTexture = 0;
+GLuint ItemModelManager::s_chrome2Texture = 0;
+GLuint ItemModelManager::s_shinyTexture = 0;
 
 // Main 5.2: ItemLight — returns BlendMesh index for weapons with glow
 int ItemModelManager::GetItemBlendMesh(int category, int itemIndex) {
@@ -51,10 +54,12 @@ void ItemModelManager::Init(Shader *shader, const std::string &dataPath) {
   s_dataPath = dataPath;
 
   // Load shadow shader (same as monsters/NPCs/hero)
-  std::ifstream shaderTest("shaders/shadow.vert");
-  s_shadowShader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/shadow.vert" : "../shaders/shadow.vert",
-      shaderTest.good() ? "shaders/shadow.frag" : "../shaders/shadow.frag");
+  s_shadowShader = Shader::Load("shadow.vert", "shadow.frag");
+
+  // Chrome environment map textures for +7/+9/+11 glow (Main 5.2)
+  s_chromeTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome01.OZJ");
+  s_chrome2Texture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome02.OZJ");
+  s_shinyTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Shiny01.OZJ");
 }
 
 static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
@@ -322,7 +327,7 @@ LoadedItemModel *ItemModelManager::Get(const std::string &filename) {
 
 void ItemModelManager::RenderItemUI(const std::string &modelFile,
                                     int16_t defIndex, int x, int y, int w,
-                                    int h, bool hovered) {
+                                    int h, bool hovered, uint8_t itemLevel) {
   LoadedItemModel *model = Get(modelFile);
   if (!model || !model->bmd)
     return;
@@ -391,19 +396,33 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
     mod = glm::rotate(mod, glm::radians(-90.0f), glm::vec3(1, 0, 0));
   }
 
-  // 2. Consistent 360 spin around the GRID'S vertical axis (Y) on hover
+  // 2. Compute post-rotation AABB from STATIC pose (before spin) so scale
+  //    doesn't oscillate as the model rotates on hover.
+  {
+    glm::vec3 rMin(1e9f), rMax(-1e9f);
+    for (int ci = 0; ci < 8; ci++) {
+      glm::vec3 corner(
+          (ci & 1) ? max.x : min.x,
+          (ci & 2) ? max.y : min.y,
+          (ci & 4) ? max.z : min.z);
+      glm::vec3 rc = glm::vec3(mod * glm::vec4(corner - center, 1.0f));
+      rMin = glm::min(rMin, rc);
+      rMax = glm::max(rMax, rc);
+    }
+    glm::vec3 rSize = rMax - rMin;
+    float fitDim = std::max(rSize.x / aspect, rSize.y);
+    if (fitDim < 1.0f) fitDim = 1.0f;
+    float scale = 1.8f / fitDim;
+    mod = glm::scale(glm::mat4(1.0f), glm::vec3(scale)) * mod;
+  }
+
+  // 3. Apply hover spin AFTER scaling so it doesn't affect AABB calculation
   if (hovered) {
     float spin = (float)glfwGetTime() * 180.0f;
-    // Apply spin AFTER orientation so it's always around the screen's Y axis
     mod =
         glm::rotate(glm::mat4(1.0f), glm::radians(spin), glm::vec3(0, 1, 0)) *
         mod;
   }
-
-  // 3. Transformation order: Scale * (Spin * Orientation) * Translation
-  // Scale to fit: map maxDim to ~1.8 (leaving small margin in 2.0 range)
-  float scale = 1.8f / maxDim;
-  mod = glm::scale(glm::mat4(1.0f), glm::vec3(scale)) * mod;
 
   // Center the model locally before any rotation
   mod = mod * glm::translate(glm::mat4(1.0f), -center);
@@ -481,7 +500,9 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
       else
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     } else {
-      glDisable(GL_BLEND);
+      // Alpha blend so transparent texels blend with panel background
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       glDepthMask(GL_TRUE);
     }
 
@@ -491,6 +512,61 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
     if (isGlowMesh)
       shader->setFloat("blendMeshLight", 1.0f); // Restore
   }
+  // ── +7/+9/+11 chrome glow passes (Main 5.2 RENDER_CHROME|RENDER_BRIGHT) ──
+  if (itemLevel >= 7 && s_chromeTexture) {
+    float t = (float)glfwGetTime();
+    glBlendFunc(GL_ONE, GL_ONE); // Additive
+    glDepthMask(GL_FALSE);
+
+    struct GlowPass { int chromeMode; };
+    GlowPass passes[3];
+    int numPasses = 0;
+    if (itemLevel >= 11) {
+      passes[0] = {2}; passes[1] = {3}; passes[2] = {1};
+      numPasses = 3;
+    } else if (itemLevel >= 9) {
+      passes[0] = {1}; passes[1] = {3};
+      numPasses = 2;
+    } else {
+      passes[0] = {1};
+      numPasses = 1;
+    }
+
+    glm::vec3 glowColor(1.0f, 0.5f, 0.0f);
+
+    for (int gp = 0; gp < numPasses; ++gp) {
+      shader->setVec3("glowColor", glowColor);
+      shader->setInt("chromeMode", passes[gp].chromeMode);
+      shader->setFloat("chromeTime", t);
+      GLuint glowTex = (passes[gp].chromeMode == 2) ? s_chrome2Texture
+                     : (passes[gp].chromeMode == 3) ? s_shinyTexture
+                     : s_chromeTexture;
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, glowTex);
+      for (int mi = 0; mi < (int)model->meshes.size(); ++mi) {
+        const auto &mb = model->meshes[mi];
+        if (mb.hidden || mb.indexCount == 0) continue;
+        // Skip skin/body meshes for body parts (same filter as normal render)
+        if (isBodyPart && mi < (int)model->bmd->Meshes.size()) {
+          std::string texLower = model->bmd->Meshes[mi].TextureName;
+          std::transform(texLower.begin(), texLower.end(), texLower.begin(), ::tolower);
+          if (texLower.find("skin_") != std::string::npos || texLower.find("hide") != std::string::npos) continue;
+          if (category != 7 && texLower.find("head_") != std::string::npos) continue;
+        }
+        // Skip BlendMesh glow meshes — already additive
+        if (blendMeshIdx >= 0 && mi < (int)model->bmd->Meshes.size() &&
+            model->bmd->Meshes[mi].Texture == blendMeshIdx) continue;
+        glBindVertexArray(mb.vao);
+        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+      }
+    }
+
+    glDepthMask(GL_TRUE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    shader->setVec3("glowColor", glm::vec3(0.0f));
+    shader->setInt("chromeMode", 0);
+  }
+
   glEnable(GL_CULL_FACE);
   glBindVertexArray(0);
 
@@ -644,8 +720,8 @@ void ItemModelManager::RenderItemWorldShadow(const std::string &filename,
     // For items without BlendMesh: render all meshes
     if (blendMeshIdx >= 0 && mesh.Texture != blendMeshIdx)
       continue;
-    std::vector<glm::vec3> shadowVerts;
-    shadowVerts.reserve(sm.vertexCount);
+    static std::vector<glm::vec3> shadowVerts;
+    shadowVerts.clear();
 
     auto projectVertex = [&](int vertIdx) {
       auto &srcVert = mesh.Vertices[vertIdx];

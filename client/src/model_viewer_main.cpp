@@ -80,11 +80,8 @@ public:
       return;
     }
 
-    std::ifstream shaderTest("shaders/model.vert");
-    Shader shader(shaderTest.good() ? "shaders/model.vert"
-                                    : "../shaders/model.vert",
-                  shaderTest.good() ? "shaders/model.frag"
-                                    : "../shaders/model.frag");
+    auto shaderPtr = Shader::Load("model.vert", "model.frag");
+    Shader &shader = *shaderPtr;
     axes.Init();
     fireEffect.Init(EFFECT_PATH);
     LoadObject(0);

@@ -24,6 +24,8 @@ enum SoundId {
   SOUND_SWING1 = 60,
   SOUND_SWING2 = 61,
   SOUND_SWING_LIGHT = 62,
+  // DW spell impact (Main 5.2: SOUND_METEORITE01)
+  SOUND_METEORITE01 = 66,
   SOUND_JEWEL01 = 69,
   SOUND_HIT1 = 70,
   SOUND_HIT2 = 71,
@@ -33,13 +35,38 @@ enum SoundId {
   // Main 5.2: SOUND_THUNDER01 — lightning spell impact
   SOUND_THUNDER01 = 80,
   SOUND_LEVEL_UP = 83,
+  // Player hit reaction (Main 5.2: SOUND_HUMAN_SCREAM01-03)
+  SOUND_MALE_SCREAM1 = 105,
+  SOUND_MALE_SCREAM2 = 106,
+  SOUND_MALE_SCREAM3 = 107,
   // Player death (Main 5.2: SOUND_HUMAN_SCREAM04)
   SOUND_MALE_DIE = 108,
+  // Female hit/death (Main 5.2: SOUND_FEMALE_SCREAM01-02)
+  SOUND_FEMALE_SCREAM1 = 109,
+  SOUND_FEMALE_SCREAM2 = 110,
+  // DW spell sounds (Main 5.2: DSPlaySound.h)
+  SOUND_STORM = 116,    // Twister — sTornado.wav
+  SOUND_EVIL = 117,     // Evil Spirit — sEvil.wav
+  SOUND_MAGIC = 118,    // Teleport — sMagic.wav
+  SOUND_HELLFIRE = 119, // Hellfire — sHellFire.wav
+  SOUND_ICE = 120,      // Ice — sIce.wav
+  SOUND_FLAME = 121,    // Flame — sFlame.wav
+  SOUND_FLASH = 122,    // Aqua Beam — sAquaFlash.wav
   // DK skill sounds
   SOUND_KNIGHT_SKILL1 = 112, // Falling Slash
   SOUND_KNIGHT_SKILL2 = 113, // Lunge
   SOUND_KNIGHT_SKILL3 = 114, // Uppercut
   SOUND_KNIGHT_SKILL4 = 115, // Cyclone
+  // Body blow sounds (Main 5.2: SOUND_BLOW01-04 — armor/body hit impacts)
+  SOUND_BLOW1 = 130,
+  SOUND_BLOW2 = 131,
+  SOUND_BLOW3 = 132,
+  SOUND_BLOW4 = 133,
+  // Missile/spell impact sounds (Main 5.2: eMissileHit1-4)
+  SOUND_MISSILE_HIT1 = 134,
+  SOUND_MISSILE_HIT2 = 135,
+  SOUND_MISSILE_HIT3 = 136,
+  SOUND_MISSILE_HIT4 = 137,
   SOUND_RAGE_BLOW1 = 149,
   SOUND_RAGE_BLOW2 = 150,
   SOUND_RAGE_BLOW3 = 151,
@@ -58,8 +85,14 @@ enum SoundId {
   // Lich / Larva (type 6) — attack reuses idle, death=mLarva2
   SOUND_MONSTER_LARVA1 = 210,
   SOUND_MONSTER_LARVA2 = 211,
-  // Lich thunder attack (Main 5.2: Naipin-Thunder.wav)
+  // Mount hoofbeat sounds (Main 5.2: SOUND_RUN_DARK_HORSE_1/2/3)
+  SOUND_MOUNT_STEP1 = 236,
+  SOUND_MOUNT_STEP2 = 237,
+  SOUND_MOUNT_STEP3 = 238,
+  // Lich thunder attack (Main 5.2: Naipin-Thunder.wav) — 3D positional for Lich monster
   SOUND_LICH_THUNDER = 240,
+  // Same sound, non-positional — for DW lightning bolt cast
+  SOUND_LIGHTNING_CAST = 241,
   // Giant (type 7)
   SOUND_MONSTER_GIANT1 = 212,
   SOUND_MONSTER_GIANT2 = 213,
@@ -78,7 +111,8 @@ enum SoundId {
   SOUND_MONSTER_BUDGEDIE = 222,
   // Spider (type 3)
   SOUND_MONSTER_SPIDER1 = 223,
-  SOUND_MONSTER_ASSASSINDIE = 224,
+  SOUND_MONSTER_SPIDERDIE = 224,  // mHellSpiderDie.wav (distinct death screech)
+  SOUND_MONSTER_ASSASSINDIE = 260,
   // Elite Bull Fighter / Wizard (type 4) — Main 5.2 uses mWizard sounds
   SOUND_MONSTER_WIZARD1 = 225,
   SOUND_MONSTER_WIZARD2 = 226,
@@ -89,6 +123,39 @@ enum SoundId {
   SOUND_NPC_BLACKSMITH = 230,
   SOUND_NPC_HARP = 231,
   SOUND_NPC_MIX = 232,
+  // Quest UI sound
+  SOUND_QUEST_ACCEPT = 250,
+  // Dungeon ambient (Main 5.2: aDungeon.wav — looping cave atmosphere)
+  SOUND_DUNGEON01 = 251,
+  // Dungeon critter: bat screech (Main 5.2: aBat.wav — 3D positional)
+  SOUND_BAT01 = 252,
+  // Ghost (type 11) — Main 5.2: SOUND_MONSTER + 35..39
+  SOUND_MONSTER_GHOST1 = 245,
+  SOUND_MONSTER_GHOST2 = 246,
+  SOUND_MONSTER_GHOSTATTACK1 = 247,
+  SOUND_MONSTER_GHOSTATTACK2 = 248,
+  SOUND_MONSTER_GHOSTDIE = 249,
+  // Cyclops/Ogre (type 17) — Main 5.2: SOUND_MONSTER + 40..44
+  SOUND_MONSTER_OGRE1 = 253,
+  SOUND_MONSTER_OGRE2 = 254,
+  SOUND_MONSTER_OGREATTACK1 = 255,
+  SOUND_MONSTER_OGREATTACK2 = 256,
+  SOUND_MONSTER_OGREDIE = 257,
+  // Gorgon (type 18) — Main 5.2: SOUND_MONSTER + 45..49
+  SOUND_MONSTER_GORGON1 = 261,
+  SOUND_MONSTER_GORGON2 = 262,
+  SOUND_MONSTER_GORGONATTACK1 = 263,
+  SOUND_MONSTER_GORGONATTACK2 = 264,
+  SOUND_MONSTER_GORGONDIE = 265,
+  // Shadow (type 13) — Main 5.2: SOUND_MONSTER + 113..117
+  SOUND_MONSTER_SHADOW1 = 266,
+  SOUND_MONSTER_SHADOW2 = 267,
+  SOUND_MONSTER_SHADOWATTACK1 = 268,
+  SOUND_MONSTER_SHADOWATTACK2 = 269,
+  SOUND_MONSTER_SHADOWDIE = 270,
+  // Dark Knight monster (type 10) — Main 5.2: mDarkKnight sounds
+  SOUND_MONSTER_DARKKNIGHT1 = 271,
+  SOUND_MONSTER_DARKKNIGHT2 = 272,
 };
 
 namespace SoundManager {
@@ -98,6 +165,8 @@ void Play(int soundId);
 void PlayPitched(int soundId, float minPitch, float maxPitch);
 void Play3D(int soundId, float x, float y, float z);
 void PlayLoop(int soundId);
+void Play3DLoop(int soundId, float x, float y, float z, float gain = 1.0f);
+void UpdateSource3D(int soundId, float x, float y, float z);
 void Stop(int soundId);
 void StopAll();
 void SetMasterVolume(float vol); // 0.0 - 1.0

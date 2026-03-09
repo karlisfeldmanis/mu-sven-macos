@@ -20,6 +20,7 @@ struct ItemRenderJob {
   int16_t defIndex;
   int x, y, w, h;
   bool hovered;
+  uint8_t itemLevel = 0;
 };
 
 // Equipment slot layout rect (virtual coords)
@@ -37,6 +38,7 @@ struct InventoryUIContext {
   bool *showCharInfo;
   bool *showInventory;
   bool *showSkillWindow;
+  bool *showQuestLog;
   std::vector<uint8_t> *learnedSkills;
   int16_t *potionBar; // [4]
   int8_t *skillBar;   // [10]
@@ -61,6 +63,11 @@ struct InventoryUIContext {
   float *teleportTimer;
   float teleportCastTime;
   float learnSkillDuration;
+
+  // Mount toggle (M key)
+  bool *mountToggling;
+  float *mountToggleTimer;
+  float mountToggleTime;
 
   int *heroCharacterId;
   char *characterName;

@@ -195,6 +195,7 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   session.inWorld = true;
 
   // Cache stats
+  session.mapId = c.mapId;
   session.strength = c.strength;
   session.dexterity = c.dexterity;
   session.vitality = c.vitality;
@@ -209,10 +210,14 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
   session.maxHp =
       StatCalculator::CalculateMaxHP(charCls, session.level, session.vitality);
   session.hp = std::min(static_cast<int>(c.life), session.maxHp);
+  if (session.hp <= 0)
+    session.hp = session.maxHp;
   session.maxMana = StatCalculator::CalculateMaxManaOrAG(
       charCls, session.level, session.strength, session.dexterity,
       session.vitality, session.energy);
   session.mana = std::min(static_cast<int>(c.mana), session.maxMana);
+  if (session.mana <= 0)
+    session.mana = session.maxMana;
 
   if (charCls == CharacterClass::CLASS_DK) {
     session.maxAg = StatCalculator::CalculateMaxAG(c.strength, c.dexterity,
@@ -233,6 +238,22 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
 
   // Load learned skills from DB
   session.learnedSkills = db.GetCharacterSkills(c.id);
+
+  // If character is on a non-default map, reload world data for that map
+  if (c.mapId != 0) {
+    world.ClearWorldData();
+    world.SetActiveMap(c.mapId);
+    world.LoadNpcsFromDB(db, c.mapId);
+    world.LoadMonstersFromDB(db, c.mapId);
+
+    // Tell client to load the correct map
+    PMSG_MAP_CHANGE_SEND mapPkt{};
+    mapPkt.h = MakeC1Header(sizeof(mapPkt), Opcode::MAP_CHANGE);
+    mapPkt.mapId = c.mapId;
+    mapPkt.spawnX = c.posX;
+    mapPkt.spawnY = c.posY;
+    session.Send(&mapPkt, sizeof(mapPkt));
+  }
 
   SendNpcViewport(session, world);
   InventoryHandler::SendInventorySync(session);

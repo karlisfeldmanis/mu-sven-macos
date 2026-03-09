@@ -13,6 +13,11 @@
 #include <string>
 #include <vector>
 
+// Main 5.2 PartObjectColor: per-item-type glow color for chrome enhancement passes
+glm::vec3 GetPartObjectColor(int category, int itemIndex);
+// Main 5.2 PartObjectColor2: secondary glow color for CHROME2/CHROME4 passes
+glm::vec3 GetPartObjectColor2(int category, int itemIndex);
+
 struct PointLight {
   glm::vec3 position;
   glm::vec3 color;
@@ -108,12 +113,17 @@ public:
   void EquipMount(uint8_t itemIndex);
   void UnequipMount();
   bool IsMounted() const { return m_mount.active; }
-  // Main 5.2: mount stays loaded in safe zone (alpha=0), but player uses ground anims
-  bool isMountRiding() const { return m_mount.active && !m_inSafeZone; }
+  bool HasMountEquipped() const { return m_mountEquippedIndex == 2 || m_mountEquippedIndex == 3; }
+  uint8_t GetMountItemIndex() const { return m_mountEquippedIndex; }
+  // Mount is visually active and riding (allowed everywhere including safe zone)
+  bool isMountRiding() const { return m_mount.active; }
 
   // Body part replacement (0=Helm, 1=Armor, 2=Pants, 3=Gloves, 4=Boots)
   // Pass empty modelFile to revert to default naked part
-  void EquipBodyPart(int partIndex, const std::string &modelFile);
+  // level = item enhancement level (0-15), used for +7/+9/+11 glow
+  // itemIndex = item index within category, used for per-item glow color
+  void EquipBodyPart(int partIndex, const std::string &modelFile,
+                     uint8_t level = 0, uint8_t itemIndex = 0);
 
   // Combat: attack a monster by index
   void AttackMonster(int monsterIndex, const glm::vec3 &monsterPos);
@@ -132,6 +142,11 @@ public:
   uint8_t GetActiveSkillId() const { return m_activeSkillId; }
   float GetGlobalCooldown() const { return m_globalAttackCooldown; }
   float GetGlobalCooldownMax() const { return m_globalAttackCooldownMax; }
+  void ClearGlobalCooldown() { m_globalAttackCooldown = 0.0f; }
+  float GetTeleportCooldown() const { return m_teleportCooldown; }
+  float GetTeleportCooldownMax() const { return TELEPORT_COOLDOWN_TIME; }
+  void SetTeleportCooldown() { m_teleportCooldown = TELEPORT_COOLDOWN_TIME; }
+  void TickTeleportCooldown(float dt) { if (m_teleportCooldown > 0.0f) m_teleportCooldown -= dt; }
   static int GetSkillAction(uint8_t skillId);
   void SetVFXManager(class VFXManager *vfx) { m_vfxManager = vfx; }
   const std::vector<BoneWorldMatrix> &GetCachedBones() const {
@@ -192,8 +207,10 @@ public:
   int GetAttackSuccessRate() const { return m_attackSuccessRate; }
   int GetDefenseSuccessRate() const { return m_defenseSuccessRate; }
   void SetAttackSpeed(int speed) { m_serverAttackSpeed = speed; }
+  void SetMagicSpeed(int speed) { m_serverMagicSpeed = speed; }
   bool LeveledUpThisFrame() const { return m_leveledUpThisFrame; }
   void ClearLevelUpFlag() { m_leveledUpThisFrame = false; }
+  void SetLevelUpFlag() { m_leveledUpThisFrame = true; }
 
   // XP table: cubic curve (from gObjSetExperienceTable, MaxLevel=400)
   static uint64_t CalcXPForLevel(int level);
@@ -258,12 +275,19 @@ public:
     m_pointLights = lights;
   }
   void SetLuminosity(float l) { m_luminosity = l; }
+  void SetMapId(int mapId) { m_mapId = mapId; }
 
   // Snap hero Y to terrain height
   void SnapToTerrain();
 
 private:
   glm::vec3 sampleTerrainLightAt(const glm::vec3 &worldPos) const;
+  void renderMountModel(const glm::mat4 &view, const glm::mat4 &proj,
+                        const glm::vec3 &camPos, float deltaTime,
+                        const glm::vec3 &tLight);
+  void renderPetCompanion(const glm::mat4 &view, const glm::mat4 &proj,
+                          const glm::vec3 &camPos, float deltaTime,
+                          const glm::vec3 &tLight);
 
   // Position & movement
   glm::vec3 m_pos{12800.0f, 0.0f, 12800.0f};
@@ -427,7 +451,11 @@ private:
   float m_attackCooldown = 0.0f;
   float m_globalAttackCooldown = 0.0f;    // GCD remaining
   float m_globalAttackCooldownMax = 0.0f; // GCD total (for UI progress)
+  int m_gcdTargetMonster = -1; // Persists through CancelAttack to prevent move-cancel exploit
+  float m_teleportCooldown = 0.0f;        // 60s cooldown after teleport use
+  static constexpr float TELEPORT_COOLDOWN_TIME = 60.0f;
   uint8_t m_activeSkillId = 0;     // Non-zero when using a skill attack
+  bool m_gcdFromSkill = false;     // True if GCD was set by a skill (persists after CancelAttack)
   float m_slowAnimDuration = 0.0f; // >0 = stretch heal anim to this duration
   HellfirePhase m_hellfirePhase = HellfirePhase::NONE; // Multi-phase Hellfire animation
 
@@ -453,10 +481,21 @@ private:
   }
   static constexpr float ATTACK_COOLDOWN_TIME = 0.6f;
   static constexpr float ATTACK_HIT_FRACTION = 0.4f;
-  int m_serverAttackSpeed = 0; // From server (DEX/15 for DK)
-  // Agility-based attack speed multiplier: 3% faster per attack speed point
+  int m_serverAttackSpeed = 0; // From server (DEX-based, class-specific)
+  int m_serverMagicSpeed = 0;  // From server (DEX/10 for DW)
+  // Main 5.2: MagicSpeed2 = MagicSpeed * 0.002 added to base ~0.29 PlaySpeed
+  // That's roughly 0.7% per point (0.002/0.29). We use 0.7% for magic, 1.5% for melee.
   float attackSpeedMultiplier() const {
-    return 1.0f + m_serverAttackSpeed * 0.03f;
+    return 1.0f + m_serverAttackSpeed * 0.015f;
+  }
+  float magicSpeedMultiplier() const {
+    return 1.0f + m_serverMagicSpeed * 0.007f;
+  }
+  // Use magic speed for DW spells (skill IDs 1-17), attack speed for DK melee
+  float currentSpeedMultiplier() const {
+    if (m_activeSkillId > 0 && m_activeSkillId <= 17)
+      return magicSpeedMultiplier();
+    return attackSpeedMultiplier();
   }
 
   // ── Weapon animation selection (Main 5.2 ZzzCharacter.cpp) ──
@@ -483,6 +522,12 @@ private:
     std::vector<ShadowMesh> shadowMeshes;
   };
   BodyPart m_parts[PART_COUNT];
+  uint8_t m_partLevels[PART_COUNT] = {};      // Item enhancement level per body part (+0 to +15)
+  uint8_t m_partItemIndices[PART_COUNT] = {}; // Item index within category (for glow color)
+  int m_equipmentLevelSet = 0;                // Full armor set min level (0 = no set bonus)
+  glm::vec3 m_setGlowColor{1.0f};            // Set bonus particle color
+  float m_setParticleTimer = 0.0f;            // Set bonus particle spawn timer
+  void CheckFullArmorSet();                   // Recalculate m_equipmentLevelSet
   BodyPart m_baseHead; // Base head model (HelmClassXX.bmd) for accessory helms
   bool m_showBaseHead = false; // True when equipped helm needs face visible
   std::unique_ptr<Shader> m_shader;
@@ -497,6 +542,11 @@ private:
   // Weapon glow (Main 5.2: ItemLight / BlendMesh system)
   int m_weaponBlendMesh = -1;  // Mesh index to render additively (-1 = none)
   int m_shieldBlendMesh = -1;  // Shield glow mesh index (-1 = none)
+
+  // Chrome/Shiny environment-map textures (Main 5.2 RENDER_CHROME/CHROME2/METAL)
+  GLuint m_chromeTexture = 0;   // Effect/Chrome01.OZJ (BITMAP_CHROME)
+  GLuint m_chrome2Texture = 0;  // Effect/Chrome02.OZJ (BITMAP_CHROME2)
+  GLuint m_shinyTexture = 0;    // Effect/Shiny01.OZJ  (BITMAP_SHINY)
 
   // Shield (attached item model — left hand)
   WeaponEquipInfo m_shieldInfo;
@@ -535,10 +585,24 @@ private:
     uint8_t itemIndex = 0;          // 2=Uniria, 3=Dinorant
     std::unique_ptr<BMDData> bmd;
     std::vector<MeshBuffers> meshBuffers;
+    std::vector<ShadowMesh> shadowMeshes;
+    std::vector<BoneWorldMatrix> cachedBones; // For shadow rendering
     int blendMesh = -1;             // Additive mesh Texture index
     float animFrame = 0.0f;         // Mount walk/idle animation frame
-    float alpha = 0.0f;             // Fade-in alpha
+    float alpha = 0.0f;
     int rootBone = 0;               // Skeleton root bone index (0=Rider01, 1=Rider02)
+    float zBounce = 0.0f;           // Current frame Z bounce from mount root bone
+    // Animation blending (walk→idle only)
+    int action = 0;
+    int priorAction = -1;
+    float priorAnimFrame = 0.0f;
+    bool isBlending = false;
+    float blendAlpha = 1.0f;
+    // VFX / Sound
+    float dustTimer = 0.0f;           // Accumulator for smoke particle spawning
+    float hoofTimer = 0.0f;           // Accumulator for hoofbeat sound timing
+    int hoofIndex = 0;                // Cycles through step1/2/3
+    bool hoofFoot[2] = {false, false}; // Frame-based triggers (like player m_foot)
   };
   MountData m_mount;
   uint8_t m_mountEquippedIndex = 0xFF; // Persists across safe zone dismount (0xFF = none)
@@ -583,6 +647,7 @@ private:
   std::vector<PointLight> m_pointLights;
   static constexpr int MAX_POINT_LIGHTS = 64;
   float m_luminosity = 1.0f;
+  int m_mapId = 0;
 };
 
 #endif // HERO_CHARACTER_HPP

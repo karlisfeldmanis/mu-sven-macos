@@ -50,6 +50,29 @@ Marks specific mesh indices for additive blending (window glow, lamp light).
 - 90, 150, 98: constant 1.0 (no flicker)
 - 105 (Waterspout01): constant 1.0 + UV scroll
 
+## Dungeon Object Rendering (Map 1)
+
+### Face Culling Disabled Objects
+
+Thin/double-sided geometry in the dungeon requires `glDisable(GL_CULL_FACE)`:
+
+| Types | Object | Notes |
+|-------|--------|-------|
+| 11 | Squid tentacle (1 mesh, 8 bones) | Animated organic |
+| 22-24 | Squid water (2 meshes, 7 bones) | Mesh 1 = water scroll |
+| 44-46 | Coffins/sarcophagi | Thin lids |
+| 53 | Squid tentacle (2 meshes, 9 bones) | squid01.jpg + bons.jpg |
+
+### Dungeon Water (Types 22-24)
+
+StreamMesh=1: mesh index 1 renders with additive blend + V-axis UV scroll.
+Formula: `texCoordOffset.y = -(WorldTime % 1000) * 0.001f`
+
+### Dungeon Torches (Types 41-42)
+
+BlendMesh=1 (fire glow mesh). Per-torch phase offset prevents synchronized flicker:
+`intensity = 0.78 + 0.10*sin(t*3.8+phase) + 0.06*sin(t*9.5+phase*2.1)`
+
 ## Fire System
 
 - Data: `Data/Effect/Fire01.OZJ` (animated billboard strip)

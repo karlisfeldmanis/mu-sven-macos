@@ -1,5 +1,6 @@
 #include "MonsterManager.hpp"
 #include "SoundManager.hpp"
+#include "TerrainUtils.hpp"
 #include "TextureLoader.hpp"
 #include "ViewerCommon.hpp"
 #include "imgui.h"
@@ -16,50 +17,28 @@ static const std::unordered_map<uint16_t, std::string> s_monsterNames = {
     {2, "Budge Dragon"},
     {3, "Spider"},
     {4, "Elite Bull Fighter"},
+    {5, "Hell Hound"},
     {6, "Lich"},
     {7, "Giant"},
+    {8, "Poison Bull"},
+    {9, "Thunder Lich"},
+    {10, "Dark Knight"},
+    {11, "Ghost"},
+    {12, "Larva"},
+    {13, "Hell Spider"},
     {14, "Skeleton Warrior"},
     {15, "Skeleton Archer"},
-    {16, "Skeleton Captain"}};
+    {16, "Skeleton Captain"},
+    {17, "Cyclops"},
+    {18, "Gorgon"}};
 
 glm::vec3
 MonsterManager::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
-  const int SIZE = 256;
-  if (m_terrainLightmap.size() < (size_t)(SIZE * SIZE))
-    return glm::vec3(1.0f);
-
-  float gz = worldPos.x / 100.0f;
-  float gx = worldPos.z / 100.0f;
-  int xi = (int)gx, zi = (int)gz;
-  if (xi < 0 || zi < 0 || xi > SIZE - 2 || zi > SIZE - 2)
-    return glm::vec3(0.5f);
-
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  const glm::vec3 &c00 = m_terrainLightmap[zi * SIZE + xi];
-  const glm::vec3 &c10 = m_terrainLightmap[zi * SIZE + (xi + 1)];
-  const glm::vec3 &c01 = m_terrainLightmap[(zi + 1) * SIZE + xi];
-  const glm::vec3 &c11 = m_terrainLightmap[(zi + 1) * SIZE + (xi + 1)];
-  glm::vec3 left = c00 + (c01 - c00) * zd;
-  glm::vec3 right = c10 + (c11 - c10) * zd;
-  return left + (right - left) * xd;
+  return TerrainUtils::SampleLightAt(m_terrainLightmap, worldPos);
 }
 
 float MonsterManager::snapToTerrain(float worldX, float worldZ) {
-  if (!m_terrainData)
-    return 0.0f;
-  const int S = TerrainParser::TERRAIN_SIZE;
-  float gz = worldX / 100.0f;
-  float gx = worldZ / 100.0f;
-  gz = std::clamp(gz, 0.0f, (float)(S - 2));
-  gx = std::clamp(gx, 0.0f, (float)(S - 2));
-  int xi = (int)gx, zi = (int)gz;
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  float h00 = m_terrainData->heightmap[zi * S + xi];
-  float h10 = m_terrainData->heightmap[zi * S + (xi + 1)];
-  float h01 = m_terrainData->heightmap[(zi + 1) * S + xi];
-  float h11 = m_terrainData->heightmap[(zi + 1) * S + (xi + 1)];
-  return h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) + h01 * (1 - xd) * zd +
-         h11 * xd * zd;
+  return TerrainUtils::GetHeight(m_terrainData, worldX, worldZ);
 }
 
 
@@ -154,10 +133,9 @@ int MonsterManager::loadMonsterModel(const std::string &bmdFile,
 
   // Pre-upload mesh buffers using identity bones (for debris and shared use)
   auto identityBones = ComputeBoneMatrices(loadedBmd);
-  AABB dummyAABB{};
   for (auto &mesh : loadedBmd->Meshes) {
     UploadMeshWithBones(mesh, m_models[idx].texDir, identityBones,
-                        m_models[idx].meshBuffers, dummyAABB, true);
+                        m_models[idx].meshBuffers, m_models[idx].meshBounds, true);
   }
 
   // Log LockPositions for walk action (ACTION_WALK=2)
@@ -177,18 +155,9 @@ void MonsterManager::InitModels(const std::string &dataPath) {
   m_monsterTexPath = dataPath + "/Monster/";
 
   // Create shaders (same as NPC — model.vert/frag, shadow.vert/frag)
-  std::ifstream shaderTest("shaders/model.vert");
-  m_shader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/model.vert" : "../shaders/model.vert",
-      shaderTest.good() ? "shaders/model.frag" : "../shaders/model.frag");
-
-  m_shadowShader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/shadow.vert" : "../shaders/shadow.vert",
-      shaderTest.good() ? "shaders/shadow.frag" : "../shaders/shadow.frag");
-
-  m_outlineShader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/outline.vert" : "../shaders/outline.vert",
-      shaderTest.good() ? "shaders/outline.frag" : "../shaders/outline.frag");
+  m_shader = Shader::Load("model.vert", "model.frag");
+  m_shadowShader = Shader::Load("shadow.vert", "shadow.frag");
+  m_outlineShader = Shader::Load("outline.vert", "outline.frag");
 
   // Bull Fighter: server type 0, Monster01.bmd (CreateMonsterClient: scale 0.8)
   // BBox: (-60,-60,0) to (50,50,150) — default
@@ -264,10 +233,9 @@ void MonsterManager::InitModels(const std::string &dataPath) {
     eliteBull.attackRate = 50;  // OpenMU: AtkRate=50
     // Pre-upload mesh buffers (separate GL objects from Bull Fighter)
     auto identBones = ComputeBoneMatrices(eliteBull.bmd);
-    AABB dummyAABB{};
     for (auto &mesh : eliteBull.bmd->Meshes) {
       UploadMeshWithBones(mesh, eliteBull.texDir, identBones,
-                          eliteBull.meshBuffers, dummyAABB, true);
+                          eliteBull.meshBuffers, eliteBull.meshBounds, true);
     }
     eliteBullIdx = (int)m_models.size();
     m_models.push_back(std::move(eliteBull));
@@ -301,6 +269,126 @@ void MonsterManager::InitModels(const std::string &dataPath) {
     giant.attackRate = 80;  // OpenMU: AtkRate=80
   }
   m_typeToModel[7] = giantIdx;
+
+  // ── Dungeon monsters (map 1) ──
+  // Main 5.2 EMonsterModelType enum → BMD filename mapping:
+  // Model 3=DarkKnight→Monster04, 6=Larva→Monster07, 7=Ghost→Monster08,
+  // 8=HellSpider→Monster09, 10=Cyclops→Monster11, 11=Gorgon→Monster12
+
+  // Hell Hound (type 5): reuse Hound model (Monster02) at larger scale
+  {
+    int idx = loadMonsterModel("Monster02.bmd", "Hell Hound", 1.1f, 90.0f, 160.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 55;
+      m_models[idx].defense = 55;
+      m_models[idx].defenseRate = 55;
+      m_models[idx].attackRate = 165;
+      m_models[idx].hiddenMesh = 1; // Main 5.2: HiddenMesh=1 (hide body skin mesh)
+    }
+    m_typeToModel[5] = idx;
+  }
+
+  // Poison Bull (type 8): Monster01.bmd (Bull Fighter body, same as type 0/4)
+  // Main 5.2: OpenMonsterModel(MONSTER_MODEL_BULL_FIGHTER), Scale=1.0f
+  {
+    int idx = loadMonsterModel("Monster01.bmd", "Poison Bull", 1.0f, 90.0f, 130.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 75;
+      m_models[idx].defense = 75;
+      m_models[idx].defenseRate = 75;
+      m_models[idx].attackRate = 190;
+    }
+    m_typeToModel[8] = idx;
+  }
+
+  // Thunder Lich (type 9): reuse Lich model (Monster05) — lightning caster variant
+  {
+    int idx = loadMonsterModel("Monster05.bmd", "Thunder Lich", 1.1f, 80.0f, 150.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 70;
+      m_models[idx].defense = 70;
+      m_models[idx].defenseRate = 70;
+      m_models[idx].attackRate = 180;
+      m_models[idx].blendMesh = -1;
+    }
+    m_typeToModel[9] = idx;
+  }
+
+  // Dark Knight (type 10): Monster04.bmd (Main 5.2: MONSTER_MODEL_DARK_KNIGHT)
+  {
+    int idx = loadMonsterModel("Monster04.bmd", "Dark Knight", 1.0f, 90.0f, 170.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 80;
+      m_models[idx].defense = 80;
+      m_models[idx].defenseRate = 80;
+      m_models[idx].attackRate = 200;
+    }
+    m_typeToModel[10] = idx;
+  }
+
+  // Ghost (type 11): Monster08.bmd (Main 5.2: MONSTER_MODEL_GHOST)
+  // BlendMesh=1: staff mesh renders additive (glowing staff effect)
+  {
+    int idx = loadMonsterModel("Monster08.bmd", "Ghost", 1.0f, 70.0f, 140.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 40;
+      m_models[idx].defense = 40;
+      m_models[idx].defenseRate = 40;
+      m_models[idx].attackRate = 145;
+      m_models[idx].blendMesh = 1; // Main 5.2: BlendMesh=1 (staff glow)
+      m_models[idx].typeAlpha = 0.4f; // Main 5.2: Ghost is semi-transparent
+    }
+    m_typeToModel[11] = idx;
+  }
+
+  // Larva (type 12): Monster07.bmd (Main 5.2: MONSTER_MODEL_LARVA)
+  {
+    int idx = loadMonsterModel("Monster07.bmd", "Larva", 0.6f, 60.0f, 100.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 31;
+      m_models[idx].defense = 31;
+      m_models[idx].defenseRate = 31;
+      m_models[idx].attackRate = 120;
+    }
+    m_typeToModel[12] = idx;
+  }
+
+  // Hell Spider (type 13): Monster09.bmd (Main 5.2: MONSTER_MODEL_HELL_SPIDER)
+  // Main 5.2: Scale=1.1f, Weapon=MODEL_SERPENT_STAFF
+  {
+    int idx = loadMonsterModel("Monster09.bmd", "Hell Spider", 1.1f, 80.0f, 100.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 60;
+      m_models[idx].defense = 60;
+      m_models[idx].defenseRate = 60;
+      m_models[idx].attackRate = 170;
+    }
+    m_typeToModel[13] = idx;
+  }
+
+  // Cyclops (type 17): Monster11.bmd (Main 5.2: MONSTER_MODEL_CYCLOPS)
+  {
+    int idx = loadMonsterModel("Monster11.bmd", "Cyclops", 0.9f, 110.0f, 190.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 35;
+      m_models[idx].defense = 35;
+      m_models[idx].defenseRate = 35;
+      m_models[idx].attackRate = 130;
+    }
+    m_typeToModel[17] = idx;
+  }
+
+  // Gorgon (type 18): Monster12.bmd (Main 5.2: MONSTER_MODEL_GORGON)
+  {
+    int idx = loadMonsterModel("Monster12.bmd", "Gorgon", 1.5f, 120.0f, 200.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 100;
+      m_models[idx].defense = 100;
+      m_models[idx].defenseRate = 100;
+      m_models[idx].attackRate = 220;
+    }
+    m_typeToModel[18] = idx;
+  }
 
   // ── Skeleton monsters: Player.bmd animation rig + Skeleton0x.bmd mesh skins
   // ── Main 5.2: types 14,15,16 use MODEL_PLAYER bones + Skeleton01/02/03.bmd
@@ -372,10 +460,9 @@ void MonsterManager::InitModels(const std::string &dataPath) {
 
       // Pre-upload mesh buffers using Player.bmd identity bones
       auto identBones = ComputeBoneMatrices(m_playerBmd.get());
-      AABB dummyAABB{};
       for (auto &mesh : skelBmd->Meshes) {
         UploadMeshWithBones(mesh, skillPath, identBones, model.meshBuffers,
-                            dummyAABB, true);
+                            model.meshBounds, true);
       }
 
       m_ownedBmds.push_back(std::move(skelBmd));
@@ -477,11 +564,23 @@ void MonsterManager::InitModels(const std::string &dataPath) {
     // Main 5.2: c->Weapon[0].LinkBone = 41 (Monster05.bmd "knife_gdf")
     loadMonsterWeapon(6, "Staff03.bmd", 41, noRot, noOff);
 
+    // Thunder Lich (type 9): same model + staff as Lich
+    loadMonsterWeapon(9, "Staff03.bmd", 41, noRot, noOff);
+
+    // Hell Hound (type 5): MODEL_FALCHION = Sword08.bmd + MODEL_PLATE_SHIELD = Shield02.bmd
+    // Main 5.2: c->Weapon[0].LinkBone = 33, c->Weapon[1].LinkBone = 42
+    loadMonsterWeapon(5, "Sword08.bmd", 33, noRot, noOff);
+    loadMonsterWeapon(5, "Shield02.bmd", 42, noRot, noOff);
+
     // Giant (type 7): MODEL_AXE+2 = Axe03.bmd, DUAL WIELD (both hands)
     // Main 5.2: c->Weapon[0].LinkBone = 41, c->Weapon[1].LinkBone = 32
     // Monster06.bmd: bone 41 = "knife_bone" (R), bone 32 = "hand_bone01" (L)
     loadMonsterWeapon(7, "Axe03.bmd", 41, noRot, noOff);
     loadMonsterWeapon(7, "Axe03.bmd", 32, noRot, noOff);
+
+    // Poison Bull (type 8): MODEL_GREAT_SCYTHE
+    // Main 5.2: c->Weapon[0].LinkBone = 42 (Monster01.bmd same bone as Bull Fighter)
+    loadMonsterWeapon(8, "Spear10.bmd", 42, noRot, noOff);
   }
 
   // Load Debris models (not mapped to server types)
@@ -603,6 +702,32 @@ void MonsterManager::AddMonster(uint16_t monsterType, uint8_t gridX,
       }
     }
     mon.weaponMeshes.push_back(std::move(wms));
+
+    // Create shadow meshes for this weapon
+    MonsterInstance::WeaponShadowSet wss;
+    if (wd.bmd) {
+      for (auto &mesh : wd.bmd->Meshes) {
+        MonsterInstance::ShadowMesh sm;
+        int shadowVertCount = 0;
+        for (int t = 0; t < mesh.NumTriangles; ++t)
+          shadowVertCount += (mesh.Triangles[t].Polygon == 4) ? 6 : 3;
+        sm.vertexCount = shadowVertCount;
+        if (sm.vertexCount > 0) {
+          glGenVertexArrays(1, &sm.vao);
+          glGenBuffers(1, &sm.vbo);
+          glBindVertexArray(sm.vao);
+          glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+          glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3),
+                       nullptr, GL_DYNAMIC_DRAW);
+          glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                                (void *)0);
+          glEnableVertexAttribArray(0);
+          glBindVertexArray(0);
+        }
+        wss.meshes.push_back(sm);
+      }
+    }
+    mon.weaponShadowMeshes.push_back(std::move(wss));
   }
 
   m_monsters.push_back(std::move(mon));
@@ -756,8 +881,35 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
       case 6: // Lich (Larva sounds in Main 5.2)
         SoundManager::Play3D(SOUND_MONSTER_LARVA1 + rand() % 2, px, py, pz);
         break;
+      case 5: // Hell Hound — reuses Hound sounds
+        SoundManager::Play3D(SOUND_MONSTER_HOUND1 + rand() % 2, px, py, pz);
+        break;
       case 7: // Giant
         SoundManager::Play3D(SOUND_MONSTER_GIANT1 + rand() % 2, px, py, pz);
+        break;
+      case 8: // Poison Bull — reuses Bull sounds
+        SoundManager::Play3D(SOUND_MONSTER_BULL1 + rand() % 2, px, py, pz);
+        break;
+      case 9: // Thunder Lich — Wizard sound family (Main 5.2)
+        SoundManager::Play3D(SOUND_MONSTER_WIZARD1 + rand() % 2, px, py, pz);
+        break;
+      case 10: // Dark Knight monster
+        SoundManager::Play3D(SOUND_MONSTER_DARKKNIGHT1 + rand() % 2, px, py, pz);
+        break;
+      case 11: // Ghost — Main 5.2: mGhost sounds
+        SoundManager::Play3D(SOUND_MONSTER_GHOST1 + rand() % 2, px, py, pz);
+        break;
+      case 12: // Larva
+        SoundManager::Play3D(SOUND_MONSTER_LARVA1 + rand() % 2, px, py, pz);
+        break;
+      case 13: // Hell Spider — Main 5.2: mShadow sounds
+        SoundManager::Play3D(SOUND_MONSTER_SHADOW1 + rand() % 2, px, py, pz);
+        break;
+      case 17: // Cyclops — Main 5.2: mOgre sounds
+        SoundManager::Play3D(SOUND_MONSTER_OGRE1 + rand() % 2, px, py, pz);
+        break;
+      case 18: // Gorgon — Main 5.2: mGorgon sounds
+        SoundManager::Play3D(SOUND_MONSTER_GORGON1 + rand() % 2, px, py, pz);
         break;
       case 14: // Skeleton Warrior — Main 5.2: SOUND_BONE1 idle (rand()%16==0)
       case 15: // Skeleton Archer
@@ -861,24 +1013,38 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
     }
     mon.stateTimer -= dt;
     if (mon.stateTimer <= 0.0f) {
-      // After attack, smoothly move to deferred server position
+      // After attack, check deferred server position
       glm::vec3 diff = mon.serverTargetPos - mon.position;
       diff.y = 0.0f;
-      if (glm::length(diff) > 10.0f) {
-        mon.splinePoints.clear();
-        mon.splinePoints.push_back(mon.position);
-        mon.splinePoints.push_back(mon.serverTargetPos);
-        mon.splineT = 0.0f;
-        float totalDist = glm::length(diff);
-        float speed = CHASE_SPEED;
-        mon.splineRate =
-            (totalDist > 1.0f) ? speed / totalDist : 2.5f;
-        mon.state = mon.serverChasing ? MonsterState::CHASING
-                                      : MonsterState::WALKING;
-      } else if (mon.serverChasing) {
-        mon.state = MonsterState::CHASING;
+      float dist = glm::length(diff);
+      if (mon.serverChasing) {
+        // In combat: stay in place for small moves, only walk for large ones
+        // (prevents sliding/teleporting between attacks)
+        if (dist > 300.0f) {
+          // Very large reposition (player teleported/ran far): walk there
+          mon.splinePoints.clear();
+          mon.splinePoints.push_back(mon.position);
+          mon.splinePoints.push_back(mon.serverTargetPos);
+          mon.splineT = 0.0f;
+          mon.splineRate = (dist > 1.0f) ? CHASE_SPEED / dist : 2.5f;
+          mon.state = MonsterState::CHASING;
+        } else {
+          // Small/medium reposition: just stay put, face player, wait
+          mon.state = MonsterState::CHASING;
+          mon.splinePoints.clear();
+        }
       } else {
-        mon.state = MonsterState::IDLE;
+        // Not in combat: normal idle/walk transition
+        if (dist > 50.0f) {
+          mon.splinePoints.clear();
+          mon.splinePoints.push_back(mon.position);
+          mon.splinePoints.push_back(mon.serverTargetPos);
+          mon.splineT = 0.0f;
+          mon.splineRate = (dist > 1.0f) ? WANDER_SPEED / dist : 2.5f;
+          mon.state = MonsterState::WALKING;
+        } else {
+          mon.state = MonsterState::IDLE;
+        }
       }
     }
     break;
@@ -895,27 +1061,34 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
     }
     mon.stateTimer -= dt;
     if (mon.stateTimer <= 0.0f) {
-      // After hit stun, smoothly move to deferred server position
-      // (MON_MOVE packets received during HIT updated serverTargetPos
-      //  but were skipped — now catch up to avoid visual teleport)
+      // After hit stun, check deferred server position
       glm::vec3 diff = mon.serverTargetPos - mon.position;
       diff.y = 0.0f;
-      if (glm::length(diff) > 10.0f) {
-        // Build a direct spline from current pos to server target
-        mon.splinePoints.clear();
-        mon.splinePoints.push_back(mon.position);
-        mon.splinePoints.push_back(mon.serverTargetPos);
-        mon.splineT = 0.0f;
-        float totalDist = glm::length(diff);
-        float speed = CHASE_SPEED;
-        mon.splineRate =
-            (totalDist > 1.0f) ? speed / totalDist : 2.5f;
-        mon.state = mon.serverChasing ? MonsterState::CHASING
-                                      : MonsterState::WALKING;
-      } else if (mon.serverChasing) {
-        mon.state = MonsterState::CHASING;
+      float dist = glm::length(diff);
+      if (mon.serverChasing) {
+        // In combat: stay in place for small moves, only walk for large ones
+        if (dist > 300.0f) {
+          mon.splinePoints.clear();
+          mon.splinePoints.push_back(mon.position);
+          mon.splinePoints.push_back(mon.serverTargetPos);
+          mon.splineT = 0.0f;
+          mon.splineRate = (dist > 1.0f) ? CHASE_SPEED / dist : 2.5f;
+          mon.state = MonsterState::CHASING;
+        } else {
+          mon.state = MonsterState::CHASING;
+          mon.splinePoints.clear();
+        }
       } else {
-        mon.state = MonsterState::IDLE;
+        if (dist > 50.0f) {
+          mon.splinePoints.clear();
+          mon.splinePoints.push_back(mon.position);
+          mon.splinePoints.push_back(mon.serverTargetPos);
+          mon.splineT = 0.0f;
+          mon.splineRate = (dist > 1.0f) ? WANDER_SPEED / dist : 2.5f;
+          mon.state = MonsterState::WALKING;
+        } else {
+          mon.state = MonsterState::IDLE;
+        }
       }
     }
     break;
@@ -927,11 +1100,20 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
     mon.position.y =
         snapToTerrain(mon.position.x, mon.position.z) + mdl.bodyOffset;
 
-    // Giant death smoke burst (Main 5.2: MonsterDieSandSmoke at frame 8-9)
-    if (mon.monsterType == 7 && !mon.deathSmokeDone && m_vfxManager &&
-        mon.animFrame >= 8.0f) {
-      m_vfxManager->SpawnBurst(ParticleType::SMOKE, mon.position, 20);
-      mon.deathSmokeDone = true;
+    // Death smoke effects (Main 5.2: MonsterDieSandSmoke / smoke particles)
+    if (!mon.deathSmokeDone && m_vfxManager && mon.animFrame >= 8.0f) {
+      int type = mon.monsterType;
+      if (type == 5 || type == 7) {
+        // Hell Hound (5) + Giant (7): MonsterDieSandSmoke — 20 particle burst
+        m_vfxManager->SpawnBurst(ParticleType::SMOKE, mon.position, 20);
+        mon.deathSmokeDone = true;
+      } else if (type == 8 || type == 9 || type == 10 || type == 11 ||
+                 type == 12 || type == 13 || type == 15 || type == 16 ||
+                 type == 17 || type == 18) {
+        // Dungeon monsters: smoke puffs on death (Main 5.2: ~25% chance, 1-2 particles)
+        m_vfxManager->SpawnBurst(ParticleType::SMOKE, mon.position, 5);
+        mon.deathSmokeDone = true;
+      }
     }
 
     int numKeys = 1;
@@ -1032,746 +1214,6 @@ void MonsterManager::Update(float deltaTime) {
   updateArrows(deltaTime);
 }
 
-void MonsterManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
-                            const glm::vec3 &camPos, float deltaTime) {
-  if (!m_shader || m_monsters.empty())
-    return;
-
-  // Extract frustum planes from VP matrix for culling
-  glm::mat4 vp = proj * view;
-  glm::vec4 frustum[6];
-  frustum[0] = glm::vec4(vp[0][3] + vp[0][0], vp[1][3] + vp[1][0],
-                          vp[2][3] + vp[2][0], vp[3][3] + vp[3][0]); // Left
-  frustum[1] = glm::vec4(vp[0][3] - vp[0][0], vp[1][3] - vp[1][0],
-                          vp[2][3] - vp[2][0], vp[3][3] - vp[3][0]); // Right
-  frustum[2] = glm::vec4(vp[0][3] + vp[0][1], vp[1][3] + vp[1][1],
-                          vp[2][3] + vp[2][1], vp[3][3] + vp[3][1]); // Bottom
-  frustum[3] = glm::vec4(vp[0][3] - vp[0][1], vp[1][3] - vp[1][1],
-                          vp[2][3] - vp[2][1], vp[3][3] - vp[3][1]); // Top
-  frustum[4] = glm::vec4(vp[0][3] + vp[0][2], vp[1][3] + vp[1][2],
-                          vp[2][3] + vp[2][2], vp[3][3] + vp[3][2]); // Near
-  frustum[5] = glm::vec4(vp[0][3] - vp[0][2], vp[1][3] - vp[1][2],
-                          vp[2][3] - vp[2][2], vp[3][3] - vp[3][2]); // Far
-  for (int i = 0; i < 6; ++i)
-    frustum[i] /= glm::length(glm::vec3(frustum[i]));
-
-  m_shader->use();
-  m_shader->setMat4("projection", proj);
-  m_shader->setMat4("view", view);
-
-  glm::vec3 eye = glm::vec3(glm::inverse(view)[3]);
-  m_shader->setVec3("lightPos", eye + glm::vec3(0, 500, 0));
-  m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
-  m_shader->setVec3("viewPos", eye);
-  m_shader->setBool("useFog", true);
-  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
-  m_shader->setFloat("uFogNear", 1500.0f);
-  m_shader->setFloat("uFogFar", 3500.0f);
-  m_shader->setFloat("blendMeshLight", 1.0f);
-  m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
-  m_shader->setFloat("luminosity", m_luminosity);
-
-  // Point lights
-  int plCount = std::min((int)m_pointLights.size(), MAX_POINT_LIGHTS);
-  m_shader->setInt("numPointLights", plCount);
-  for (int i = 0; i < plCount; ++i) {
-    std::string idx = std::to_string(i);
-    m_shader->setVec3("pointLightPos[" + idx + "]", m_pointLights[i].position);
-    m_shader->setVec3("pointLightColor[" + idx + "]", m_pointLights[i].color);
-    m_shader->setFloat("pointLightRange[" + idx + "]", m_pointLights[i].range);
-  }
-
-  // Disable face culling — spider legs are thin planar geometry visible from
-  // both sides
-  glDisable(GL_CULL_FACE);
-
-  for (auto &mon : m_monsters) {
-    // Skip fully faded corpses
-    if (mon.state == MonsterState::DEAD && mon.corpseAlpha <= 0.01f)
-      continue;
-
-    auto &mdl = m_models[mon.modelIdx];
-
-    // Frustum culling: skip entities fully outside view frustum
-    {
-      float cullRadius = mdl.collisionHeight * mon.scale * 2.0f;
-      glm::vec3 center = mon.position + glm::vec3(0, cullRadius * 0.4f, 0);
-      bool outside = false;
-      for (int p = 0; p < 6; ++p) {
-        if (frustum[p].x * center.x + frustum[p].y * center.y +
-                frustum[p].z * center.z + frustum[p].w <
-            -cullRadius) {
-          outside = true;
-          break;
-        }
-      }
-      if (outside)
-        continue;
-    }
-
-    // Advance animation (use animBmd + actionMap for skeleton types)
-    BMDData *animBmd = mdl.getAnimBmd();
-    int mappedAction = (mon.action >= 0 && mon.action < 7)
-                           ? mdl.actionMap[mon.action]
-                           : mon.action;
-    int numKeys = 1;
-    bool lockPos = false;
-    if (mappedAction >= 0 && mappedAction < (int)animBmd->Actions.size()) {
-      numKeys = animBmd->Actions[mappedAction].NumAnimationKeys;
-      lockPos = animBmd->Actions[mappedAction].LockPositions;
-    }
-    if (numKeys > 1) {
-      float animSpeed = getAnimSpeed(mon.monsterType, mon.action);
-
-      // Scale walk animation speed to match actual movement speed.
-      // refMoveSpeed = the speed the walk animation was designed for.
-      // MU Online MoveSpeed=400 means 400ms per grid cell = 100/0.4 = 250 u/s.
-      // Skeletons (14-16): use Player.bmd walk, designed for player speed 334.
-      float refMoveSpeed = 250.0f;
-      if (mon.monsterType >= 14 && mon.monsterType <= 16)
-        refMoveSpeed = 334.0f;
-
-      if (mon.action == ACTION_WALK) {
-        if (mon.state == MonsterState::WALKING)
-          animSpeed *= WANDER_SPEED / refMoveSpeed;
-        else if (mon.state == MonsterState::CHASING)
-          animSpeed *= CHASE_SPEED / refMoveSpeed;
-      }
-
-      mon.animFrame += animSpeed * deltaTime;
-
-      // Die animation doesn't loop
-      if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD) {
-        if (mon.animFrame >= (float)(numKeys - 1))
-          mon.animFrame = (float)(numKeys - 1);
-      } else {
-        // LockPositions actions wrap at numKeys-1 (last frame == first frame)
-        int wrapKeys = lockPos ? (numKeys - 1) : numKeys;
-        if (wrapKeys < 1)
-          wrapKeys = 1;
-        if (mon.animFrame >= (float)wrapKeys)
-          mon.animFrame = std::fmod(mon.animFrame, (float)wrapKeys);
-      }
-    }
-
-    // Advance blending Alpha
-    if (mon.isBlending) {
-      mon.blendAlpha += deltaTime / mon.BLEND_DURATION;
-      if (mon.blendAlpha >= 1.0f) {
-        mon.blendAlpha = 1.0f;
-        mon.isBlending = false;
-      }
-    }
-
-    // Compute bone matrices with blending support (animBmd for skeleton types)
-    int mappedPrior = (mon.priorAction >= 0 && mon.priorAction < 7)
-                          ? mdl.actionMap[mon.priorAction]
-                          : mon.priorAction;
-    std::vector<BoneWorldMatrix> bones;
-    if (mon.isBlending && mon.priorAction != -1) {
-      bones = ComputeBoneMatricesBlended(animBmd, mappedPrior,
-                                         mon.priorAnimFrame, mappedAction,
-                                         mon.animFrame, mon.blendAlpha);
-    } else {
-      bones =
-          ComputeBoneMatricesInterpolated(animBmd, mappedAction, mon.animFrame);
-    }
-
-    // LockPositions: cancel root bone X/Y displacement to prevent animation
-    // from physically moving the model. In blending mode, we interpolate the
-    // offset.
-    if (mdl.rootBone >= 0) {
-      int rb = mdl.rootBone;
-      float dx = 0.0f, dy = 0.0f;
-
-      if (mon.isBlending && mon.priorAction != -1) {
-        bool lock1 = mappedPrior < (int)animBmd->Actions.size() &&
-                     animBmd->Actions[mappedPrior].LockPositions;
-        bool lock2 = mappedAction < (int)animBmd->Actions.size() &&
-                     animBmd->Actions[mappedAction].LockPositions;
-
-        float dx1 = 0.0f, dy1 = 0.0f, dx2 = 0.0f, dy2 = 0.0f;
-        if (lock1) {
-          auto &bm1 = animBmd->Bones[rb].BoneMatrixes[mappedPrior];
-          if (!bm1.Position.empty()) {
-            glm::vec3 p;
-            glm::vec4 q;
-            if (GetInterpolatedBoneData(animBmd, mappedPrior,
-                                        mon.priorAnimFrame, rb, p, q)) {
-              dx1 = p.x - bm1.Position[0].x;
-              dy1 = p.y - bm1.Position[0].y;
-            }
-          }
-        }
-        if (lock2) {
-          auto &bm2 = animBmd->Bones[rb].BoneMatrixes[mappedAction];
-          if (!bm2.Position.empty()) {
-            glm::vec3 p;
-            glm::vec4 q;
-            if (GetInterpolatedBoneData(animBmd, mappedAction, mon.animFrame,
-                                        rb, p, q)) {
-              dx2 = p.x - bm2.Position[0].x;
-              dy2 = p.y - bm2.Position[0].y;
-            }
-          }
-        }
-        dx = dx1 * (1.0f - mon.blendAlpha) + dx2 * mon.blendAlpha;
-        dy = dy1 * (1.0f - mon.blendAlpha) + dy2 * mon.blendAlpha;
-      } else if (mappedAction >= 0 &&
-                 mappedAction < (int)animBmd->Actions.size() &&
-                 animBmd->Actions[mappedAction].LockPositions) {
-        auto &bm = animBmd->Bones[rb].BoneMatrixes[mappedAction];
-        if (!bm.Position.empty()) {
-          dx = bones[rb][0][3] - bm.Position[0].x;
-          dy = bones[rb][1][3] - bm.Position[0].y;
-        }
-      }
-
-      if (dx != 0.0f || dy != 0.0f) {
-        for (int b = 0; b < (int)bones.size(); ++b) {
-          bones[b][0][3] -= dx;
-          bones[b][1][3] -= dy;
-        }
-      }
-    }
-
-    mon.cachedBones = bones;
-
-    // Monster ambient VFX (Main 5.2: MoveCharacterVisual)
-    if (m_vfxManager && mon.state != MonsterState::DYING &&
-        mon.state != MonsterState::DEAD) {
-      mon.ambientVfxTimer += deltaTime;
-
-      // Budge Dragon (type 2): fire breath during ATTACK1 only (bone 7 = mouth)
-      // Main 5.2: 1 particle per tick, frames 0-4, offset (0, 32-64, 0) in bone
-      // space
-      if (mon.monsterType == 2 && mon.action == ACTION_ATTACK1 &&
-          mon.animFrame <= 4.0f) {
-        if (7 < (int)bones.size()) {
-          glm::mat4 modelRot = glm::mat4(1.0f);
-          modelRot =
-              glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-          modelRot =
-              glm::rotate(modelRot, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-          modelRot = glm::rotate(modelRot, mon.facing, glm::vec3(0, 0, 1));
-
-          glm::vec3 localOff(0.0f, (float)(rand() % 32 + 32), 0.0f);
-
-          auto applyFireToBone = [&](int boneIdx) {
-            const auto &bm = bones[boneIdx];
-            glm::vec3 worldOff;
-            worldOff.x = bm[0][0] * localOff.x + bm[0][1] * localOff.y +
-                         bm[0][2] * localOff.z;
-            worldOff.y = bm[1][0] * localOff.x + bm[1][1] * localOff.y +
-                         bm[1][2] * localOff.z;
-            worldOff.z = bm[2][0] * localOff.x + bm[2][1] * localOff.y +
-                         bm[2][2] * localOff.z;
-            glm::vec3 bonePos(bm[0][3], bm[1][3], bm[2][3]);
-            glm::vec3 localPos = (bonePos + worldOff);
-            glm::vec3 worldPos =
-                glm::vec3(modelRot * glm::vec4(localPos, 1.0f));
-            glm::vec3 firePos = worldPos * mon.scale + mon.position;
-            m_vfxManager->SpawnBurst(ParticleType::FIRE, firePos, 1);
-          };
-
-          applyFireToBone(7);
-        }
-      }
-
-      // Lich (type 6): fire VFX along entire staff (Staff03.bmd)
-      if (mon.monsterType == 6) {
-        bool wantAttackFire =
-            mon.action == ACTION_ATTACK1 && mon.animFrame <= 4.0f;
-        bool wantAmbientFire = mon.ambientVfxTimer >= 0.08f;
-
-        if (wantAttackFire || wantAmbientFire) {
-          // Find staff weapon def (bone 41)
-          const WeaponDef *staffDef = nullptr;
-          for (const auto &wd : mdl.weaponDefs) {
-            if (wd.attachBone == 41 && wd.bmd) {
-              staffDef = &wd;
-              break;
-            }
-          }
-
-          glm::vec3 staffTopLocal(0.0f), staffBottomLocal(0.0f);
-          bool haveStaff = false;
-
-          if (staffDef && staffDef->attachBone < (int)bones.size()) {
-            // Weapon transform chain (same as weapon rendering code)
-            const auto &parentBone = bones[staffDef->attachBone];
-            BoneWorldMatrix weaponLocal =
-                MuMath::BuildWeaponOffsetMatrix(staffDef->rot,
-                                                staffDef->offset);
-            BoneWorldMatrix parentMat;
-            MuMath::ConcatTransforms((const float(*)[4])parentBone.data(),
-                                     (const float(*)[4])weaponLocal.data(),
-                                     (float(*)[4])parentMat.data());
-
-            const auto &wLocalBones = staffDef->cachedLocalBones;
-            std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
-            for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
-              MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
-                                       (const float(*)[4])wLocalBones[bi].data(),
-                                       (float(*)[4])wFinalBones[bi].data());
-            }
-
-            // Skin all staff vertices to model-local space
-            glm::vec3 handBonePos(bones[staffDef->attachBone][0][3],
-                                  bones[staffDef->attachBone][1][3],
-                                  bones[staffDef->attachBone][2][3]);
-            std::vector<glm::vec3> skinnedVerts;
-            for (const auto &mesh : staffDef->bmd->Meshes) {
-              for (const auto &vert : mesh.Vertices) {
-                int ni = std::clamp((int)vert.Node, 0,
-                                    (int)wFinalBones.size() - 1);
-                const auto &bm = wFinalBones[ni];
-                glm::vec3 vp;
-                vp.x = bm[0][0] * vert.Position[0] +
-                       bm[0][1] * vert.Position[1] +
-                       bm[0][2] * vert.Position[2] + bm[0][3];
-                vp.y = bm[1][0] * vert.Position[0] +
-                       bm[1][1] * vert.Position[1] +
-                       bm[1][2] * vert.Position[2] + bm[1][3];
-                vp.z = bm[2][0] * vert.Position[0] +
-                       bm[2][1] * vert.Position[1] +
-                       bm[2][2] * vert.Position[2] + bm[2][3];
-                skinnedVerts.push_back(vp);
-              }
-            }
-
-            // Find tip (farthest vertex from hand bone)
-            float maxDist = 0.0f;
-            staffTopLocal = handBonePos;
-            for (const auto &vp : skinnedVerts) {
-              float d = glm::length(vp - handBonePos);
-              if (d > maxDist) {
-                maxDist = d;
-                staffTopLocal = vp;
-              }
-            }
-            // Find bottom (farthest vertex from tip = opposite end)
-            float maxDist2 = 0.0f;
-            staffBottomLocal = staffTopLocal;
-            for (const auto &vp : skinnedVerts) {
-              float d = glm::length(vp - staffTopLocal);
-              if (d > maxDist2) {
-                maxDist2 = d;
-                staffBottomLocal = vp;
-              }
-            }
-            haveStaff = true;
-          }
-
-          if (haveStaff) {
-            glm::mat4 modelRot = glm::mat4(1.0f);
-            modelRot = glm::rotate(modelRot, glm::radians(-90.0f),
-                                   glm::vec3(0, 0, 1));
-            modelRot = glm::rotate(modelRot, glm::radians(-90.0f),
-                                   glm::vec3(0, 1, 0));
-            modelRot =
-                glm::rotate(modelRot, mon.facing, glm::vec3(0, 0, 1));
-
-            // Spawn fire along entire staff (bottom → top)
-            auto spawnFireAt = [&](float t) {
-              glm::vec3 p = glm::mix(staffBottomLocal, staffTopLocal, t);
-              glm::vec3 scatter((float)(rand() % 12 - 6),
-                                (float)(rand() % 12 - 6),
-                                (float)(rand() % 12 - 6));
-              glm::vec3 worldPos =
-                  glm::vec3(modelRot * glm::vec4(p + scatter, 1.0f));
-              glm::vec3 firePos = worldPos * mon.scale + mon.position;
-              m_vfxManager->SpawnBurst(ParticleType::FIRE, firePos, 1);
-            };
-
-            if (wantAttackFire) {
-              for (int i = 0; i < 5; ++i)
-                spawnFireAt((float)(rand() % 100) / 100.0f);
-            }
-            if (wantAmbientFire) {
-              for (int i = 0; i < 3; ++i)
-                spawnFireAt((float)(rand() % 100) / 100.0f);
-              mon.ambientVfxTimer = 0.0f;
-            }
-          }
-        }
-      }
-
-      // Ambient smoke: Hound (1), Budge Dragon (2)
-      // Main 5.2: rand()%4 per tick (~25fps) = ~6/sec. At 60fps, use timer.
-      if ((mon.monsterType == 1 || mon.monsterType == 2) &&
-          mon.ambientVfxTimer >= 0.5f) {
-        mon.ambientVfxTimer = 0.0f;
-        glm::vec3 smokePos =
-            mon.position + glm::vec3((float)(rand() % 64 - 32),
-                                     20.0f + (float)(rand() % 30),
-                                     (float)(rand() % 64 - 32));
-        m_vfxManager->SpawnBurst(ParticleType::SMOKE, smokePos, 1);
-      }
-    }
-
-    // Re-skin meshes
-    for (int mi = 0;
-         mi < (int)mon.meshBuffers.size() && mi < (int)mdl.bmd->Meshes.size();
-         ++mi) {
-      RetransformMeshWithBones(mdl.bmd->Meshes[mi], bones,
-                               mon.meshBuffers[mi]);
-    }
-
-    // Build model matrix
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), mon.position);
-    model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-    model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-    model = glm::rotate(model, mon.facing, glm::vec3(0, 0, 1));
-    model = glm::scale(model, glm::vec3(mon.scale));
-
-    m_shader->setMat4("model", model);
-
-    // Terrain lightmap at monster position
-    glm::vec3 tLight = sampleTerrainLightAt(mon.position);
-    // Elite Bull Fighter (type 4): darker skin tone (Main 5.2 visual reference)
-    if (mon.monsterType == 4)
-      tLight *= 0.45f;
-    m_shader->setVec3("terrainLight", tLight);
-
-    // Spawn fade-in (0→1 over ~0.4s)
-    if (mon.spawnAlpha < 1.0f) {
-      mon.spawnAlpha += deltaTime * 2.5f; // ~0.4s fade-in
-      if (mon.spawnAlpha > 1.0f)
-        mon.spawnAlpha = 1.0f;
-    }
-
-    // Combined alpha: corpse fade * spawn fade-in
-    float renderAlpha = mon.corpseAlpha * mon.spawnAlpha;
-    m_shader->setFloat("objectAlpha", renderAlpha);
-
-    // BlendMesh UV scroll (Main 5.2: Lich — texCoordV scrolls over time)
-    // -(float)((int)(WorldTime)%2000)*0.0005f
-    bool hasBlendMesh = (mdl.blendMesh >= 0);
-    float blendMeshUVOffset = 0.0f;
-    if (hasBlendMesh) {
-      int wt = (int)(m_worldTime * 1000.0f) % 2000;
-      blendMeshUVOffset = -(float)wt * 0.0005f;
-    }
-
-    // Draw all meshes
-    for (auto &mb : mon.meshBuffers) {
-      if (mb.indexCount == 0 || mb.hidden)
-        continue;
-      glBindTexture(GL_TEXTURE_2D, mb.texture);
-      glBindVertexArray(mb.vao);
-
-      // Main 5.2 BlendMesh: mesh with Texture==blendMesh renders additive
-      bool isBlendMesh = hasBlendMesh && (mb.bmdTextureId == mdl.blendMesh);
-      if (isBlendMesh) {
-        m_shader->setVec2("texCoordOffset", glm::vec2(0.0f, blendMeshUVOffset));
-        glBlendFunc(GL_ONE, GL_ONE);
-        glDepthMask(GL_FALSE);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-        glDepthMask(GL_TRUE);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
-      } else if (mb.noneBlend) {
-        glDisable(GL_BLEND);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-        glEnable(GL_BLEND);
-      } else if (mb.bright) {
-        glBlendFunc(GL_ONE, GL_ONE);
-        glDepthMask(GL_FALSE);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-        glDepthMask(GL_TRUE);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      } else {
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-      }
-    }
-
-    // Draw weapons (skeleton types: sword, shield, bow on Player.bmd bones)
-    for (int wi = 0;
-         wi < (int)mdl.weaponDefs.size() && wi < (int)mon.weaponMeshes.size();
-         ++wi) {
-      auto &wd = mdl.weaponDefs[wi];
-      auto &wms = mon.weaponMeshes[wi];
-      if (!wd.bmd || wms.meshBuffers.empty())
-        continue;
-      if (wd.attachBone >= (int)bones.size())
-        continue;
-
-      // Parent matrix: character bone * weapon local transform
-      // Main 5.2: ParentMatrix = BoneTransform[LinkBone] * AngleMatrix(rot) +
-      // offset
-      const auto &parentBone = bones[wd.attachBone];
-      BoneWorldMatrix weaponLocal =
-          MuMath::BuildWeaponOffsetMatrix(wd.rot, wd.offset);
-
-      BoneWorldMatrix parentMat;
-      MuMath::ConcatTransforms((const float(*)[4])parentBone.data(),
-                               (const float(*)[4])weaponLocal.data(),
-                               (float(*)[4])parentMat.data());
-
-      // Use cached weapon local bones (static bind-pose, computed once at load)
-      const auto &wLocalBones = wd.cachedLocalBones;
-      std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
-      for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
-        MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
-                                 (const float(*)[4])wLocalBones[bi].data(),
-                                 (float(*)[4])wFinalBones[bi].data());
-      }
-
-      // Re-skin and draw each weapon mesh
-      for (int mi = 0;
-           mi < (int)wms.meshBuffers.size() && mi < (int)wd.bmd->Meshes.size();
-           ++mi) {
-        RetransformMeshWithBones(wd.bmd->Meshes[mi], wFinalBones,
-                                 wms.meshBuffers[mi]);
-        auto &mb = wms.meshBuffers[mi];
-        if (mb.indexCount == 0)
-          continue;
-        glBindTexture(GL_TEXTURE_2D, mb.texture);
-        glBindVertexArray(mb.vao);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-      }
-    }
-  }
-
-  // Restore state
-  glEnable(GL_CULL_FACE);
-  m_shader->setFloat("objectAlpha", 1.0f);
-
-  renderDebris(view, proj, camPos);
-  renderArrows(view, proj, camPos);
-}
-
-void MonsterManager::RenderShadows(const glm::mat4 &view,
-                                   const glm::mat4 &proj) {
-  if (!m_shadowShader || m_monsters.empty())
-    return;
-
-  m_shadowShader->use();
-  m_shadowShader->setMat4("projection", proj);
-  m_shadowShader->setMat4("view", view);
-
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  glDepthMask(GL_FALSE);
-  glEnable(GL_POLYGON_OFFSET_FILL);
-  glPolygonOffset(-1.0f, -1.0f);
-  glDisable(GL_CULL_FACE);
-  glEnable(GL_STENCIL_TEST);
-
-  const float sx = 2000.0f;
-  const float sy = 4000.0f;
-
-  for (auto &mon : m_monsters) {
-    if (mon.cachedBones.empty())
-      continue;
-    // Skip faded corpses
-    if (mon.state == MonsterState::DEAD && mon.corpseAlpha <= 0.01f)
-      continue;
-
-    auto &mdl = m_models[mon.modelIdx];
-
-    // Shadow model matrix
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), mon.position);
-    model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-    model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-    model = glm::scale(model, glm::vec3(mon.scale));
-
-    m_shadowShader->setMat4("model", model);
-
-    // Clear stencil for this monster
-    glClear(GL_STENCIL_BUFFER_BIT);
-    glStencilFunc(GL_EQUAL, 0, 0xFF);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
-
-    float cosF = cosf(mon.facing);
-    float sinF = sinf(mon.facing);
-
-    for (int mi = 0;
-         mi < (int)mdl.bmd->Meshes.size() && mi < (int)mon.shadowMeshes.size();
-         ++mi) {
-      auto &sm = mon.shadowMeshes[mi];
-      if (sm.vertexCount == 0 || sm.vao == 0)
-        continue;
-
-      auto &mesh = mdl.bmd->Meshes[mi];
-      std::vector<glm::vec3> shadowVerts;
-      shadowVerts.reserve(sm.vertexCount);
-
-      for (int i = 0; i < mesh.NumTriangles; ++i) {
-        auto &tri = mesh.Triangles[i];
-        int steps = (tri.Polygon == 3) ? 3 : 4;
-        for (int v = 0; v < 3; ++v) {
-          auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
-          glm::vec3 pos = srcVert.Position;
-          int boneIdx = srcVert.Node;
-          if (boneIdx >= 0 && boneIdx < (int)mon.cachedBones.size()) {
-            pos = MuMath::TransformPoint(
-                (const float(*)[4])mon.cachedBones[boneIdx].data(), pos);
-          }
-          pos *= mon.scale;
-          float rx = pos.x * cosF - pos.y * sinF;
-          float ry = pos.x * sinF + pos.y * cosF;
-          pos.x = rx;
-          pos.y = ry;
-          if (pos.z < sy) {
-            float factor = 1.0f / (pos.z - sy);
-            pos.x += pos.z * (pos.x + sx) * factor;
-            pos.y += pos.z * (pos.y + sx) * factor;
-          }
-          pos.z = 5.0f;
-          shadowVerts.push_back(pos);
-        }
-        if (steps == 4) {
-          int quadIndices[3] = {0, 2, 3};
-          for (int v : quadIndices) {
-            auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
-            glm::vec3 pos = srcVert.Position;
-            int boneIdx = srcVert.Node;
-            if (boneIdx >= 0 && boneIdx < (int)mon.cachedBones.size()) {
-              pos = MuMath::TransformPoint(
-                  (const float(*)[4])mon.cachedBones[boneIdx].data(), pos);
-            }
-            pos *= mon.scale;
-            float rx = pos.x * cosF - pos.y * sinF;
-            float ry = pos.x * sinF + pos.y * cosF;
-            pos.x = rx;
-            pos.y = ry;
-            if (pos.z < sy) {
-              float factor = 1.0f / (pos.z - sy);
-              pos.x += pos.z * (pos.x + sx) * factor;
-              pos.y += pos.z * (pos.y + sx) * factor;
-            }
-            pos.z = 5.0f;
-            shadowVerts.push_back(pos);
-          }
-        }
-      }
-
-      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
-      glBufferSubData(GL_ARRAY_BUFFER, 0,
-                      shadowVerts.size() * sizeof(glm::vec3),
-                      shadowVerts.data());
-      glBindVertexArray(sm.vao);
-      glDrawArrays(GL_TRIANGLES, 0, (GLsizei)shadowVerts.size());
-    }
-  }
-
-  glBindVertexArray(0);
-  glDisable(GL_STENCIL_TEST);
-  glDisable(GL_POLYGON_OFFSET_FILL);
-  glDepthMask(GL_TRUE);
-  glEnable(GL_CULL_FACE);
-}
-
-void MonsterManager::RenderSilhouetteOutline(int monsterIndex,
-                                              const glm::mat4 &view,
-                                              const glm::mat4 &proj) {
-  if (!m_outlineShader || monsterIndex < 0 ||
-      monsterIndex >= (int)m_monsters.size())
-    return;
-
-  auto &mon = m_monsters[monsterIndex];
-  if (mon.state == MonsterState::DEAD && mon.corpseAlpha <= 0.01f)
-    return;
-
-  auto &mdl = m_models[mon.modelIdx];
-
-  // Build model matrix at normal scale (outline uses normal extrusion, not scale)
-  glm::mat4 baseModel = glm::translate(glm::mat4(1.0f), mon.position);
-  baseModel = glm::rotate(baseModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-  baseModel = glm::rotate(baseModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-  baseModel = glm::rotate(baseModel, mon.facing, glm::vec3(0, 0, 1));
-
-  glm::mat4 stencilModel = glm::scale(baseModel, glm::vec3(mon.scale));
-
-  m_outlineShader->use();
-  m_outlineShader->setMat4("projection", proj);
-  m_outlineShader->setMat4("view", view);
-
-  glDisable(GL_CULL_FACE);
-
-  // === Pass 1: Write COMPLETE silhouette to stencil ===
-  // Depth test OFF so ALL mesh pixels get stenciled (no gaps between parts)
-  glEnable(GL_STENCIL_TEST);
-  glStencilFunc(GL_ALWAYS, 1, 0xFF);
-  glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-  glStencilMask(0xFF);
-  glClear(GL_STENCIL_BUFFER_BIT);
-  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-  glDepthMask(GL_FALSE);
-  glDisable(GL_DEPTH_TEST);
-
-  m_outlineShader->setMat4("model", stencilModel);
-  m_outlineShader->setFloat("outlineThickness", 0.0f);
-
-  for (auto &mb : mon.meshBuffers) {
-    if (mb.indexCount == 0 || mb.hidden)
-      continue;
-    glBindVertexArray(mb.vao);
-    glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-  }
-  for (int wi = 0;
-       wi < (int)mdl.weaponDefs.size() && wi < (int)mon.weaponMeshes.size();
-       ++wi) {
-    for (auto &mb : mon.weaponMeshes[wi].meshBuffers) {
-      if (mb.indexCount == 0)
-        continue;
-      glBindVertexArray(mb.vao);
-      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-    }
-  }
-
-  // === Pass 2: Multi-layer soft glow where stencil != 1 ===
-  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
-  glStencilMask(0x00);
-
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-  m_outlineShader->setVec3("outlineColor", 0.8f, 0.4f, 0.15f);
-
-  // Render multiple layers from outermost (faint) to innermost (bright)
-  // for smooth soft glow falloff — normal extrusion for uniform width
-  constexpr float thicknesses[] = {5.0f, 3.5f, 2.0f};
-  constexpr float alphas[] = {0.08f, 0.18f, 0.35f};
-
-  m_outlineShader->setMat4("model", stencilModel);
-
-  for (int layer = 0; layer < 3; ++layer) {
-    m_outlineShader->setFloat("outlineThickness", thicknesses[layer]);
-    m_outlineShader->setFloat("outlineAlpha", alphas[layer]);
-
-    for (auto &mb : mon.meshBuffers) {
-      if (mb.indexCount == 0 || mb.hidden)
-        continue;
-      glBindVertexArray(mb.vao);
-      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-    }
-    for (int wi = 0;
-         wi < (int)mdl.weaponDefs.size() && wi < (int)mon.weaponMeshes.size();
-         ++wi) {
-      for (auto &mb : mon.weaponMeshes[wi].meshBuffers) {
-        if (mb.indexCount == 0)
-          continue;
-        glBindVertexArray(mb.vao);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-      }
-    }
-  }
-
-  // Restore state
-  glStencilMask(0xFF);
-  glStencilFunc(GL_ALWAYS, 0, 0xFF);
-  glDisable(GL_STENCIL_TEST);
-  glEnable(GL_DEPTH_TEST);
-  glDepthMask(GL_TRUE);
-  glEnable(GL_CULL_FACE);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  glBindVertexArray(0);
-}
-
 void MonsterManager::ClearMonsters() {
   for (auto &mon : m_monsters) {
     CleanupMeshBuffers(mon.meshBuffers);
@@ -1782,6 +1224,12 @@ void MonsterManager::ClearMonsters() {
         glDeleteVertexArrays(1, &sm.vao);
       if (sm.vbo)
         glDeleteBuffers(1, &sm.vbo);
+    }
+    for (auto &wss : mon.weaponShadowMeshes) {
+      for (auto &sm : wss.meshes) {
+        if (sm.vao) glDeleteVertexArrays(1, &sm.vao);
+        if (sm.vbo) glDeleteBuffers(1, &sm.vbo);
+      }
     }
   }
   m_monsters.clear();
@@ -1796,7 +1244,9 @@ MonsterInfo MonsterManager::GetMonsterInfo(int index) const {
   const auto &mdl = m_models[mon.modelIdx];
   info.position = mon.position;
   info.radius = mdl.collisionRadius;
-  info.height = mdl.collisionHeight;
+  // Use AABB-based height if available, fallback to collisionHeight
+  float aabbHeight = mdl.meshBounds.max.z * mdl.scale;
+  info.height = (aabbHeight > 10.0f) ? aabbHeight : mdl.collisionHeight;
   info.bodyOffset = mdl.bodyOffset;
   info.name = mon.name;
   info.type = mon.monsterType;
@@ -1876,17 +1326,40 @@ void MonsterManager::SetMonsterDying(int index) {
       case 2: // Budge Dragon
         SoundManager::Play3D(SOUND_MONSTER_BUDGEDIE, px, py, pz);
         break;
-      case 3: // Spider (all states use mSpider1.wav)
+      case 3: // Spider
         SoundManager::Play3D(SOUND_MONSTER_SPIDER1, px, py, pz);
         break;
       case 4: // Elite Bull Fighter (Wizard sounds)
         SoundManager::Play3D(SOUND_MONSTER_WIZARDDIE, px, py, pz);
         break;
+      case 5: // Hell Hound — reuses Hound sounds
+        SoundManager::Play3D(SOUND_MONSTER_HOUNDDIE, px, py, pz);
+        break;
       case 6: // Lich — death uses mLarva2
+      case 9: // Thunder Lich
+      case 12: // Larva
         SoundManager::Play3D(SOUND_MONSTER_LARVA2, px, py, pz);
         break;
       case 7: // Giant
         SoundManager::Play3D(SOUND_MONSTER_GIANTDIE, px, py, pz);
+        break;
+      case 8: // Poison Bull — reuses Bull sounds
+        SoundManager::Play3D(SOUND_MONSTER_BULLDIE, px, py, pz);
+        break;
+      case 10: // Dark Knight monster — reuses DarkKnight idle as death
+        SoundManager::Play3D(SOUND_MONSTER_DARKKNIGHT2, px, py, pz);
+        break;
+      case 11: // Ghost — Main 5.2: mGhostDie
+        SoundManager::Play3D(SOUND_MONSTER_GHOSTDIE, px, py, pz);
+        break;
+      case 13: // Hell Spider — Main 5.2: mShadowDie
+        SoundManager::Play3D(SOUND_MONSTER_SHADOWDIE, px, py, pz);
+        break;
+      case 17: // Cyclops — Main 5.2: mOgreDie
+        SoundManager::Play3D(SOUND_MONSTER_OGREDIE, px, py, pz);
+        break;
+      case 18: // Gorgon — Main 5.2: mGorgonDie
+        SoundManager::Play3D(SOUND_MONSTER_GORGONDIE, px, py, pz);
         break;
       case 14: // Skeleton Warrior — Main 5.2: SOUND_BONE2 on death
       case 15: // Skeleton Archer
@@ -1913,6 +1386,12 @@ void MonsterManager::TriggerHitAnimation(int index) {
     return;
   auto &mon = m_monsters[index];
   if (mon.state == MonsterState::DYING || mon.state == MonsterState::DEAD)
+    return;
+  // Don't interrupt attack animation with hit flinch — the server keeps the
+  // monster in ATTACKING state, so interrupting causes a visual glitch where
+  // the monster flinches mid-swing then immediately attacks again.
+  // Damage numbers still appear; only the flinch animation is suppressed.
+  if (mon.state == MonsterState::ATTACKING)
     return;
   std::cout << "[Client] Mon " << index << " (" << mon.name << "): HIT (was "
             << (int)mon.state << ")" << std::endl;
@@ -1973,8 +1452,36 @@ void MonsterManager::TriggerAttackAnimation(int index) {
       SoundManager::Play3D(SOUND_MONSTER_LARVA1 + rand() % 2, px, py, pz);
       SoundManager::Play3D(SOUND_LICH_THUNDER, px, py, pz);
       break;
+    case 5: // Hell Hound — reuses Hound attack sounds
+      SoundManager::Play3D(SOUND_MONSTER_HOUNDATTACK1 + rand() % 2, px, py, pz);
+      break;
     case 7: // Giant
       SoundManager::Play3D(SOUND_MONSTER_GIANTATTACK1 + rand() % 2, px, py, pz);
+      break;
+    case 8: // Poison Bull — reuses Bull attack sounds
+      SoundManager::Play3D(SOUND_MONSTER_BULLATTACK1 + rand() % 2, px, py, pz);
+      break;
+    case 9: // Thunder Lich — Main 5.2: Wizard attack + thunder
+      SoundManager::Play3D(SOUND_MONSTER_WIZARDATTACK1 + rand() % 2, px, py, pz);
+      SoundManager::Play3D(SOUND_LICH_THUNDER, px, py, pz);
+      break;
+    case 10: // Dark Knight monster
+      SoundManager::Play3D(SOUND_MONSTER_DARKKNIGHT1 + rand() % 2, px, py, pz);
+      break;
+    case 11: // Ghost — Main 5.2: mGhostAttack
+      SoundManager::Play3D(SOUND_MONSTER_GHOSTATTACK1 + rand() % 2, px, py, pz);
+      break;
+    case 12: // Larva
+      SoundManager::Play3D(SOUND_MONSTER_LARVA1 + rand() % 2, px, py, pz);
+      break;
+    case 13: // Hell Spider — Main 5.2: mShadowAttack
+      SoundManager::Play3D(SOUND_MONSTER_SHADOWATTACK1 + rand() % 2, px, py, pz);
+      break;
+    case 17: // Cyclops — Main 5.2: mOgreAttack
+      SoundManager::Play3D(SOUND_MONSTER_OGREATTACK1 + rand() % 2, px, py, pz);
+      break;
+    case 18: // Gorgon — Main 5.2: mGorgonAttack
+      SoundManager::Play3D(SOUND_MONSTER_GORGONATTACK1 + rand() % 2, px, py, pz);
       break;
     case 14: // Skeleton Warrior — Main 5.2: SOUND_BONE1 on attack
     case 15: // Skeleton Archer
@@ -1986,9 +1493,10 @@ void MonsterManager::TriggerAttackAnimation(int index) {
     }
   }
 
-  // Trigger Lich VFX (Monster Type 6) — Main 5.2: two BITMAP_JOINT_THUNDER
-  // ribbons (thick scale=50 + thin scale=10) from weapon bone to target
-  if (mon.monsterType == 6 && m_vfxManager) {
+  // Trigger Lich VFX (Monster Type 6 + Thunder Lich 9) — Main 5.2: two
+  // BITMAP_JOINT_THUNDER ribbons (thick scale=50 + thin scale=10) from weapon
+  // bone to target
+  if ((mon.monsterType == 6 || mon.monsterType == 9) && m_vfxManager) {
     glm::vec3 startPos = mon.position;
     // Try to get weapon bone position (bone 41, Main 5.2 Lich LinkBone)
     // Bone matrices are in model-local space — must apply model rotation
@@ -2193,206 +1701,6 @@ int MonsterManager::CalcXPReward(int monsterIndex, int playerLevel) const {
   return std::max(1, xp);
 }
 
-void MonsterManager::spawnDebris(int modelIdx, const glm::vec3 &pos,
-                                 int count) {
-  if (modelIdx < 0 || modelIdx >= (int)m_models.size())
-    return;
-
-  for (int i = 0; i < count; ++i) {
-    DebrisInstance d;
-    d.modelIdx = modelIdx;
-    d.position = pos;
-    float angle = (float)(rand() % 360) * 3.14159f / 180.0f;
-    float speed = 80.0f + (float)(rand() % 100);
-    d.velocity =
-        glm::vec3(std::cos(angle) * speed, 150.0f + (float)(rand() % 100),
-                  std::sin(angle) * speed);
-    d.rotation = glm::vec3((float)(rand() % 360), (float)(rand() % 360),
-                           (float)(rand() % 360));
-    d.rotVelocity =
-        glm::vec3((float)(rand() % 200 - 100), (float)(rand() % 200 - 100),
-                  (float)(rand() % 200 - 100));
-    d.scale = m_models[modelIdx].scale * (0.8f + (float)(rand() % 40) / 100.0f);
-    d.lifetime = 2.0f + (float)(rand() % 2000) / 1000.0f;
-    m_debris.push_back(d);
-  }
-}
-
-void MonsterManager::updateDebris(float dt) {
-  for (int i = (int)m_debris.size() - 1; i >= 0; --i) {
-    auto &d = m_debris[i];
-    d.lifetime -= dt;
-    if (d.lifetime <= 0.0f) {
-      m_debris[i] = m_debris.back();
-      m_debris.pop_back();
-      continue;
-    }
-
-    d.position += d.velocity * dt;
-    d.rotation += d.rotVelocity * dt;
-
-    float floorY = snapToTerrain(d.position.x, d.position.z);
-    if (d.position.y < floorY) {
-      d.position.y = floorY;
-      d.velocity.y = -d.velocity.y * 0.4f; // Bounce
-      d.velocity.x *= 0.6f;
-      d.velocity.z *= 0.6f;
-      d.rotVelocity *= 0.5f;
-    } else {
-      d.velocity.y -= 500.0f * dt; // Gravity
-    }
-  }
-}
-
-void MonsterManager::renderDebris(const glm::mat4 &view,
-                                  const glm::mat4 &projection,
-                                  const glm::vec3 &camPos) {
-  if (m_debris.empty() || !m_shader)
-    return;
-
-  m_shader->use();
-  m_shader->setMat4("view", view);
-  m_shader->setMat4("projection", projection);
-  m_shader->setFloat("luminosity", m_luminosity);
-  m_shader->setFloat("blendMeshLight", 1.0f);
-  m_shader->setInt("numPointLights", 0);
-  m_shader->setBool("useFog", true);
-  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
-  m_shader->setFloat("uFogNear", 1500.0f);
-  m_shader->setFloat("uFogFar", 3500.0f);
-  m_shader->setVec3("viewPos", camPos);
-  // We need camPos if we want fog to work correctly, passing it via Render
-  // For now let's assume viewPos is already set or passed.
-  // I'll update Render() to pass camPos to renderDebris.
-
-  for (const auto &d : m_debris) {
-    auto &mdl = m_models[d.modelIdx];
-    glm::mat4 model = glm::mat4(1.0f);
-    model = glm::translate(model, d.position);
-    model = glm::rotate(model, glm::radians(d.rotation.z), glm::vec3(0, 0, 1));
-    model = glm::rotate(model, glm::radians(d.rotation.y), glm::vec3(0, 1, 0));
-    model = glm::rotate(model, glm::radians(d.rotation.x), glm::vec3(1, 0, 0));
-    model = glm::scale(model, glm::vec3(d.scale));
-    m_shader->setMat4("model", model);
-
-    // Get terrain light
-    glm::vec3 light = sampleTerrainLightAt(d.position);
-    m_shader->setVec3("terrainLight", light);
-
-    // Debris fade out
-    float alpha = std::min(1.0f, d.lifetime * 2.0f);
-    m_shader->setFloat("objectAlpha", alpha);
-
-    // Draw pre-uploaded mesh buffers
-    for (size_t i = 0; i < mdl.meshBuffers.size(); ++i) {
-      auto &mb = mdl.meshBuffers[i];
-      glBindTexture(GL_TEXTURE_2D, mb.texture);
-      glBindVertexArray(mb.vao);
-      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-    }
-  }
-  glBindVertexArray(0);
-}
-
-void MonsterManager::SpawnArrow(const glm::vec3 &from, const glm::vec3 &to,
-                                float speed) {
-  ArrowProjectile a;
-  a.position = from;
-  glm::vec3 delta = to - from;
-  float dist = glm::length(delta);
-  if (dist < 1.0f)
-    return;
-  glm::vec3 dir = delta / dist;
-  a.direction = dir;
-  a.speed = speed;
-  a.yaw = atan2f(dir.x, dir.z);
-  a.pitch = asinf(-dir.y); // Negative: pitch up when target is higher
-  a.scale = 0.8f;
-  a.lifetime = std::min(1.2f, dist / speed + 0.1f);
-  m_arrows.push_back(a);
-}
-
-void MonsterManager::updateArrows(float dt) {
-  for (int i = (int)m_arrows.size() - 1; i >= 0; --i) {
-    auto &a = m_arrows[i];
-    a.lifetime -= dt;
-    if (a.lifetime <= 0.0f) {
-      m_arrows[i] = m_arrows.back();
-      m_arrows.pop_back();
-      continue;
-    }
-    // Move along direction
-    a.position += a.direction * a.speed * dt;
-    // Gravity: arrow pitches down over time (Main 5.2: Angle[0] += Gravity)
-    a.pitch += 1.5f * dt; // ~60°/sec pitch-down
-    // Apply pitch to direction (subtle arc)
-    a.direction.y -= 0.8f * dt;
-    a.direction = glm::normalize(a.direction);
-  }
-}
-
-void MonsterManager::renderArrows(const glm::mat4 &view,
-                                  const glm::mat4 &projection,
-                                  const glm::vec3 &camPos) {
-  if (m_arrows.empty() || !m_shader || m_arrowModelIdx < 0)
-    return;
-
-  auto &mdl = m_models[m_arrowModelIdx];
-  if (mdl.meshBuffers.empty())
-    return;
-
-  m_shader->use();
-  m_shader->setMat4("view", view);
-  m_shader->setMat4("projection", projection);
-  m_shader->setFloat("luminosity", m_luminosity);
-  m_shader->setFloat("blendMeshLight", 1.0f);
-  m_shader->setInt("numPointLights", 0);
-  m_shader->setBool("useFog", true);
-  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
-  m_shader->setFloat("uFogNear", 1500.0f);
-  m_shader->setFloat("uFogFar", 3500.0f);
-  m_shader->setVec3("viewPos", camPos);
-
-  for (const auto &a : m_arrows) {
-    // Arrow model matrix: position, then rotate to face direction, then scale
-    // Main 5.2: Arrow uses angle-based rotation (yaw from direction, pitch from
-    // gravity)
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), a.position);
-    // Standard BMD rotation base
-    model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-    model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-    // Arrow heading (yaw) and pitch
-    model = glm::rotate(model, a.yaw, glm::vec3(0, 0, 1));
-    model = glm::rotate(model, a.pitch, glm::vec3(1, 0, 0));
-    model = glm::scale(model, glm::vec3(a.scale));
-
-    m_shader->setMat4("model", model);
-    m_shader->setVec3("terrainLight", glm::vec3(1.0f));
-    m_shader->setFloat("objectAlpha", 1.0f);
-
-    // Main 5.2: BlendMesh=1 — mesh 0 (arrow shaft) renders normally,
-    // mesh 1 (fire glow) renders with additive blend
-    for (int mi = 0; mi < (int)mdl.meshBuffers.size(); ++mi) {
-      auto &mb = mdl.meshBuffers[mi];
-      if (mb.indexCount == 0)
-        continue;
-      bool isGlowMesh = (mb.bmdTextureId == 1); // BlendMesh=1
-      if (isGlowMesh) {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-        glDepthMask(GL_FALSE);
-      }
-      glBindTexture(GL_TEXTURE_2D, mb.texture);
-      glBindVertexArray(mb.vao);
-      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
-      if (isGlowMesh) {
-        glDepthMask(GL_TRUE);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      }
-    }
-  }
-  glBindVertexArray(0);
-}
-
 void MonsterManager::Cleanup() {
   for (auto &mon : m_monsters) {
     CleanupMeshBuffers(mon.meshBuffers);
@@ -2404,6 +1712,12 @@ void MonsterManager::Cleanup() {
       if (sm.vbo)
         glDeleteBuffers(1, &sm.vbo);
     }
+    for (auto &wss : mon.weaponShadowMeshes) {
+      for (auto &sm : wss.meshes) {
+        if (sm.vao) glDeleteVertexArrays(1, &sm.vao);
+        if (sm.vbo) glDeleteBuffers(1, &sm.vbo);
+      }
+    }
   }
   m_monsters.clear();
   m_arrows.clear();
@@ -2412,81 +1726,4 @@ void MonsterManager::Cleanup() {
   m_playerBmd.reset();
   m_shader.reset();
   m_shadowShader.reset();
-}
-
-void MonsterManager::RenderNameplates(ImDrawList *dl, ImFont *font,
-                                      const glm::mat4 &view,
-                                      const glm::mat4 &proj, int winW, int winH,
-                                      const glm::vec3 &camPos,
-                                      int hoveredMonster,
-                                      int attackTarget) {
-  // ── Top-center name/HP for hovered monster ──
-  if (hoveredMonster >= 0 && hoveredMonster < GetMonsterCount()) {
-    MonsterInfo mi = GetMonsterInfo(hoveredMonster);
-    if (mi.state != MonsterState::DEAD) {
-      float centerX = winW * 0.5f;
-      float curY = 12.0f;
-
-      char nameText[64];
-      snprintf(nameText, sizeof(nameText), "%s  Lv.%d", mi.name.c_str(), mi.level);
-      ImVec2 nameSize = font->CalcTextSizeA(16.0f, FLT_MAX, 0, nameText);
-
-      char hpText[32];
-      snprintf(hpText, sizeof(hpText), "%d / %d", mi.hp, mi.maxHp);
-      ImVec2 hpTextSize = font->CalcTextSizeA(13.0f, FLT_MAX, 0, hpText);
-
-      ImU32 nameCol = (mi.state == MonsterState::ATTACKING ||
-                       mi.state == MonsterState::CHASING)
-                          ? IM_COL32(255, 100, 100, 255)
-                          : IM_COL32(255, 255, 255, 230);
-
-      float nameX = centerX - nameSize.x * 0.5f;
-      dl->AddText(font, 16.0f, ImVec2(nameX + 1, curY + 1),
-                  IM_COL32(0, 0, 0, 180), nameText);
-      dl->AddText(font, 16.0f, ImVec2(nameX, curY), nameCol, nameText);
-      curY += nameSize.y + 3.0f;
-
-      float hpX = centerX - hpTextSize.x * 0.5f;
-      dl->AddText(font, 13.0f, ImVec2(hpX + 1, curY + 1),
-                  IM_COL32(0, 0, 0, 180), hpText);
-      dl->AddText(font, 13.0f, ImVec2(hpX, curY),
-                  IM_COL32(220, 220, 220, 230), hpText);
-    }
-  }
-
-  // ── Minimal world-space HP bar above attacked monster ──
-  if (attackTarget >= 0 && attackTarget < GetMonsterCount()) {
-    MonsterInfo mi = GetMonsterInfo(attackTarget);
-    if (mi.state != MonsterState::DEAD && mi.hp < mi.maxHp) {
-      // Project monster head position to screen
-      glm::vec4 worldPos(mi.position.x, mi.position.y + mi.height + 20.0f,
-                         mi.position.z, 1.0f);
-      glm::vec4 clip = proj * view * worldPos;
-      if (clip.w > 0.0f) {
-        glm::vec3 ndc = glm::vec3(clip) / clip.w;
-        float sx = (ndc.x * 0.5f + 0.5f) * winW;
-        float sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * winH;
-
-        float barW = 48.0f;
-        float barH = 4.0f;
-        float bx = sx - barW * 0.5f;
-        float by = sy - barH * 0.5f;
-
-        float hpFrac = mi.maxHp > 0 ? (float)mi.hp / mi.maxHp : 0.0f;
-        hpFrac = std::max(0.0f, std::min(1.0f, hpFrac));
-
-        // Background
-        dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + barW, by + barH),
-                          IM_COL32(0, 0, 0, 140));
-        // Fill
-        ImU32 hpCol = hpFrac > 0.5f    ? IM_COL32(60, 200, 60, 220)
-                      : hpFrac > 0.25f ? IM_COL32(220, 200, 60, 220)
-                                       : IM_COL32(220, 60, 60, 220);
-        if (hpFrac > 0.0f) {
-          dl->AddRectFilled(ImVec2(bx, by),
-                            ImVec2(bx + barW * hpFrac, by + barH), hpCol);
-        }
-      }
-    }
-  }
 }

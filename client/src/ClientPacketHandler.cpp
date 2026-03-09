@@ -1,17 +1,22 @@
 #include "ClientPacketHandler.hpp"
 #include "CharacterSelect.hpp"
+#include "InputHandler.hpp"
 #include "InventoryUI.hpp"
 #include "ItemDatabase.hpp"
 #include "PacketDefs.hpp"
 #include "SoundManager.hpp"
+#include "SystemMessageLog.hpp"
 #include <cstring>
 #include <iostream>
 
 namespace ClientPacketHandler {
 
 static ClientGameState *g_state = nullptr;
+static PendingMapChange s_pendingMapChange;
 
 void Init(ClientGameState *state) { g_state = state; }
+
+PendingMapChange &GetPendingMapChange() { return s_pendingMapChange; }
 
 // ── Equipment helpers ──
 
@@ -22,15 +27,21 @@ static void ApplyEquipToHero(uint8_t slot, const WeaponEquipInfo &weapon) {
     g_state->hero->EquipShield(weapon);
   } else if (slot == 8) {
     // Pet/Mount slot (category 13)
+    // Only re-equip if item actually changed (prevents reactivating dismounted mount)
     if (weapon.category == 13) {
       if (weapon.itemIndex == 0 || weapon.itemIndex == 1) {
         // Floating companions (Guardian Angel, Imp)
-        g_state->hero->UnequipMount();
-        g_state->hero->EquipPet(weapon.itemIndex);
+        if (!g_state->hero->HasMountEquipped() ||
+            g_state->hero->GetMountItemIndex() != weapon.itemIndex) {
+          g_state->hero->UnequipMount();
+          g_state->hero->EquipPet(weapon.itemIndex);
+        }
       } else if (weapon.itemIndex == 2 || weapon.itemIndex == 3) {
-        // Mounts (Uniria, Dinorant)
-        g_state->hero->UnequipPet();
-        g_state->hero->EquipMount(weapon.itemIndex);
+        // Mounts (Uniria, Dinorant) — skip if already equipped with same mount
+        if (g_state->hero->GetMountItemIndex() != weapon.itemIndex) {
+          g_state->hero->UnequipPet();
+          g_state->hero->EquipMount(weapon.itemIndex);
+        }
       }
     } else {
       g_state->hero->UnequipPet();
@@ -40,14 +51,14 @@ static void ApplyEquipToHero(uint8_t slot, const WeaponEquipInfo &weapon) {
     // Unequipped: revert to default naked body part (slots 2-6 → parts 0-4)
     int bodyPart = (int)slot - 2;
     if (bodyPart >= 0 && bodyPart <= 4)
-      g_state->hero->EquipBodyPart(bodyPart, ""); // empty = default DK Class02
+      g_state->hero->EquipBodyPart(bodyPart, "", 0);
   } else if (g_state->getBodyPartIndex) {
     int bodyPart = g_state->getBodyPartIndex(weapon.category);
     if (bodyPart >= 0 && g_state->getBodyPartModelFile) {
       std::string partModel =
           g_state->getBodyPartModelFile(weapon.category, weapon.itemIndex);
       if (!partModel.empty())
-        g_state->hero->EquipBodyPart(bodyPart, partModel);
+        g_state->hero->EquipBodyPart(bodyPart, partModel, weapon.itemLevel, weapon.itemIndex);
     }
   }
 }
@@ -99,6 +110,7 @@ static void SyncCharStats(const PMSG_CHARSTATS_SEND *stats) {
     if (g_state->skillBar)
       memcpy(g_state->skillBar, stats->skillBar, 10);
     *g_state->rmcSkillId = stats->rmcSkillId;
+    InputHandler::RestoreQuickSlotState();
     s_initialStatsReceived = true;
   }
   *g_state->serverXP =
@@ -106,9 +118,11 @@ static void SyncCharStats(const PMSG_CHARSTATS_SEND *stats) {
   *g_state->serverDefense = stats->defense;
   *g_state->serverAttackSpeed = stats->attackSpeed;
   *g_state->serverMagicSpeed = stats->magicSpeed;
-  // Pass attack speed to hero for agility-based animation scaling
-  if (g_state->hero)
+  // Pass attack/magic speed to hero for agility-based animation scaling
+  if (g_state->hero) {
     g_state->hero->SetAttackSpeed(stats->attackSpeed);
+    g_state->hero->SetMagicSpeed(stats->magicSpeed);
+  }
   if (g_state->heroCharacterId) {
     *g_state->heroCharacterId = stats->characterId;
   }
@@ -321,6 +335,27 @@ void HandleInitialPacket(const uint8_t *pkt, int pktSize, ServerData &result) {
         std::cout << "[Net] Initial skill list: " << (int)count << " skills\n";
       }
     }
+
+    // Chat log history (C2) — sent during initial sync
+    if (headcode == Opcode::CHAT_LOG_HISTORY && pktSize >= 6) {
+      uint16_t count = (uint16_t)((pkt[4] << 8) | pkt[5]);
+      int off = 6;
+      for (int i = 0; i < count; i++) {
+        if (off + 6 > pktSize) break;
+        uint8_t cat = pkt[off++];
+        uint32_t color = (uint32_t)pkt[off] |
+                         ((uint32_t)pkt[off+1] << 8) |
+                         ((uint32_t)pkt[off+2] << 16) |
+                         ((uint32_t)pkt[off+3] << 24);
+        off += 4;
+        uint8_t len = pkt[off++];
+        if (off + len > pktSize) break;
+        std::string msg((const char *)&pkt[off], len);
+        off += len;
+        SystemMessageLog::LogSilent((MessageCategory)cat, color, "%s", msg.c_str());
+      }
+      std::cout << "[Net] Chat log history: " << (int)count << " entries\n";
+    }
   }
 
   // C1 packets (2-byte header)
@@ -374,6 +409,41 @@ void HandleInitialPacket(const uint8_t *pkt, int pktSize, ServerData &result) {
                 << " STR=" << *g_state->serverStr
                 << " XP=" << *g_state->serverXP
                 << " Pts=" << *g_state->serverLevelUpPoints << std::endl;
+    }
+
+    // Map Change (0x1C) — arrives during initial sync if char was saved on non-default map
+    if (headcode == Opcode::MAP_CHANGE &&
+        pktSize >= (int)sizeof(PMSG_MAP_CHANGE_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_MAP_CHANGE_SEND *>(pkt);
+      auto &mc = GetPendingMapChange();
+      mc.pending = true;
+      mc.mapId = p->mapId;
+      mc.spawnX = p->spawnX;
+      mc.spawnY = p->spawnY;
+      std::cout << "[Net] Map change (initial): mapId=" << (int)p->mapId
+                << " spawn=(" << (int)p->spawnX << "," << (int)p->spawnY << ")"
+                << std::endl;
+    }
+
+    // Quest state (0x50:0x00) — arrives during initial sync
+    if (headcode == Opcode::QUEST && pktSize >= 4) {
+      uint8_t subcode = pkt[3];
+      if (subcode == Opcode::SUB_QUEST_STATE &&
+          pktSize >= (int)sizeof(PMSG_QUEST_STATE_SEND)) {
+        auto *p = reinterpret_cast<const PMSG_QUEST_STATE_SEND *>(pkt);
+        if (g_state->questIndex)
+          *g_state->questIndex = p->questIndex;
+        if (g_state->questTargetCount)
+          *g_state->questTargetCount = p->targetCount;
+        if (g_state->questKillCount && g_state->questRequired) {
+          for (int i = 0; i < 3; i++) {
+            g_state->questKillCount[i] = (i < p->targetCount) ? p->targets[i].killCount : 0;
+            g_state->questRequired[i] = (i < p->targetCount) ? p->targets[i].killsRequired : 0;
+          }
+        }
+        std::cout << "[Quest] Initial state: quest=" << (int)p->questIndex
+                  << " targets=" << (int)p->targetCount << "\n";
+      }
     }
   }
 }
@@ -441,13 +511,49 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
           if (heroSkill > 0 &&
               p->attackerCharId == (uint16_t)*g_state->heroCharacterId) {
             g_state->vfxManager->SpawnSkillImpact(heroSkill, monPos);
+            // DW spell impact sounds (Main 5.2: ZzzCharacter.cpp PlayBuffer)
+            switch (heroSkill) {
+            case 1:  // Poison
+              SoundManager::Play(SOUND_HEART);
+              SoundManager::Play(SOUND_MISSILE_HIT1 + rand() % 4);
+              break;
+            case 2:  // Meteorite
+              SoundManager::Play(SOUND_METEORITE01);
+              SoundManager::Play(SOUND_MISSILE_HIT1 + rand() % 4);
+              break;
+            case 3:  // Lightning — cast sound already plays; big thunder only on crit
+              if (p->damageType == 2 || p->damageType == 3)
+                SoundManager::Play(SOUND_THUNDER01);
+              SoundManager::Play(SOUND_MISSILE_HIT1 + rand() % 4);
+              break;
+            case 4:  // Fire Ball
+              SoundManager::Play(SOUND_METEORITE01);
+              SoundManager::Play(SOUND_MISSILE_HIT1 + rand() % 4);
+              break;
+            case 5:  // Flame
+              SoundManager::Play(SOUND_FLAME);
+              SoundManager::Play(SOUND_MISSILE_HIT1 + rand() % 4);
+              break;
+            case 7:  // Ice
+              SoundManager::Play(SOUND_ICE);
+              SoundManager::Play(SOUND_MISSILE_HIT1 + rand() % 4);
+              break;
+            case 8:  SoundManager::Play(SOUND_STORM); break;        // Twister
+            case 9:  SoundManager::Play(SOUND_EVIL); break;         // Evil Spirit
+            case 10: SoundManager::Play(SOUND_HELLFIRE); break;     // Hellfire
+            case 12: SoundManager::Play(SOUND_FLASH); break;        // Aqua Beam
+            case 17:                                                 // Energy Ball
+              SoundManager::Play(SOUND_MISSILE_HIT1 + rand() % 4);
+              break;
+            }
             // Note: Twister StormTime spin is applied by proximity check
             // in main loop when tornado VFX reaches the monster, not here
-            if (mi.type != 7)
+            // Main 5.2: Giant (7) and Ghost (11) excluded from blood
+            if (mi.type != 7 && mi.type != 11)
               g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 5);
           } else {
-            // Giant (type 7) excluded from blood
-            if (mi.type != 7)
+            // Main 5.2: Giant (7) and Ghost (11) excluded from blood
+            if (mi.type != 7 && mi.type != 11)
               g_state->vfxManager->SpawnBurst(ParticleType::BLOOD, hitPos, 10);
           }
         }
@@ -465,6 +571,16 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
         if (g_state->spawnDamageNumber)
           g_state->spawnDamageNumber(monPos + glm::vec3(0, 80, 0), p->damage,
                                      dmgType);
+
+        // Combat log: "You hit X for Y damage" / "You miss X"
+        if (p->attackerCharId == (uint16_t)*g_state->heroCharacterId) {
+          if (p->damage > 0)
+            SystemMessageLog::Log(MSG_COMBAT, IM_COL32(255, 255, 255, 255),
+                "You hit %s for %d damage.", mi.name.c_str(), (int)p->damage);
+          else
+            SystemMessageLog::Log(MSG_COMBAT, IM_COL32(180, 180, 180, 255),
+                "You miss %s.", mi.name.c_str());
+        }
       }
     }
 
@@ -479,14 +595,18 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
       uint32_t xp = p->xpReward;
       if (xp > 0) {
         g_state->hero->GainExperience(xp);
-        if (g_state->hero->LeveledUpThisFrame())
+        if (g_state->hero->LeveledUpThisFrame()) {
           SoundManager::Play(SOUND_LEVEL_UP);
+          SystemMessageLog::Log(MSG_SYSTEM, IM_COL32(255, 255, 100, 255),
+                                "Congratulations! Level %d reached!",
+                                g_state->hero->GetLevel());
+        }
         *g_state->serverXP = (int64_t)g_state->hero->GetExperience();
         *g_state->serverLevel = g_state->hero->GetLevel();
         *g_state->serverLevelUpPoints = g_state->hero->GetLevelUpPoints();
         *g_state->serverMaxHP = g_state->hero->GetMaxHP();
-        if (g_state->spawnDamageNumber)
-          g_state->spawnDamageNumber(g_state->hero->GetPosition(), (int)xp, 9);
+        SystemMessageLog::Log(MSG_COMBAT, IM_COL32(180, 120, 255, 255),
+                              "+%u Experience", xp);
       }
     }
 
@@ -507,6 +627,11 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
       if (p->remainingHp <= 0) {
         *g_state->serverHP = 0;
         g_state->hero->ForceDie();
+        // Death sound (Main 5.2: ZzzCharacter.cpp:1454)
+        bool isFemale = (g_state->hero->GetClass() == 32); // ELF
+        SoundManager::Play(isFemale ? SOUND_FEMALE_SCREAM2 : SOUND_MALE_DIE);
+        SystemMessageLog::Log(MSG_COMBAT, IM_COL32(255, 60, 60, 255),
+                              "You have died.");
       }
 
       if (p->damage == 0) {
@@ -514,9 +639,28 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
           g_state->spawnDamageNumber(g_state->hero->GetPosition(), 0, 7);
       } else {
         g_state->hero->ApplyHitReaction();
+        // Hit reaction sound (Main 5.2: ZzzCharacter.cpp:1318-1326)
+        bool isFemale = (g_state->hero->GetClass() == 32); // ELF
+        if (isFemale)
+          SoundManager::Play(SOUND_FEMALE_SCREAM1 + rand() % 2);
+        else
+          SoundManager::Play(SOUND_MALE_SCREAM1 + rand() % 3);
+        // Body blow impact sound (Main 5.2: eBlow1-4)
+        SoundManager::Play(SOUND_BLOW1 + rand() % 4);
         if (g_state->spawnDamageNumber)
           g_state->spawnDamageNumber(g_state->hero->GetPosition(), p->damage,
                                      8);
+      }
+
+      // Combat log: "X hits you for Y damage" / "X misses you"
+      if (idx >= 0) {
+        MonsterInfo mi = g_state->monsterManager->GetMonsterInfo(idx);
+        if (p->damage > 0)
+          SystemMessageLog::Log(MSG_COMBAT, IM_COL32(255, 140, 140, 255),
+              "%s hits you for %d damage.", mi.name.c_str(), (int)p->damage);
+        else
+          SystemMessageLog::Log(MSG_COMBAT, IM_COL32(180, 180, 180, 255),
+              "%s misses you.", mi.name.c_str());
       }
     }
 
@@ -593,7 +737,14 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
           gi.angle.y += (float)(rand() % 360);
 
           gi.active = true;
-          SoundManager::Play(SOUND_DROP_ITEM01);
+          // Jewel drop: distinctive gem sound (Main 5.2: eGem.wav)
+          {
+            uint8_t dCat, dIdx;
+            ItemDatabase::GetItemCategoryAndIndex(p->defIndex, dCat, dIdx);
+            bool isJewel = (dCat == 14 && (dIdx == 13 || dIdx == 14 || dIdx == 16 || dIdx == 22))
+                        || (dCat == 12 && dIdx == 15);
+            SoundManager::Play(isJewel ? SOUND_JEWEL01 : SOUND_DROP_ITEM01);
+          }
           break;
         }
       }
@@ -605,10 +756,31 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
       auto *p = reinterpret_cast<const PMSG_PICKUP_RESULT_SEND *>(pkt);
       if (p->success) {
         // Play appropriate pickup sound based on item type
-        if (p->defIndex == -1)
+        if (p->defIndex == -1) {
           SoundManager::Play(SOUND_DROP_GOLD01); // Zen pickup
-        else
-          SoundManager::Play(SOUND_GET_ITEM01); // Item pickup
+          SystemMessageLog::Log(MSG_GENERAL, IM_COL32(255, 215, 0, 255),
+                                "+%d Zen", (int)p->quantity);
+        } else {
+          uint8_t pCat, pIdx;
+          ItemDatabase::GetItemCategoryAndIndex(p->defIndex, pCat, pIdx);
+          bool isJewel = (pCat == 14 && (pIdx == 13 || pIdx == 14 || pIdx == 16 || pIdx == 22))
+                      || (pCat == 12 && pIdx == 15);
+          SoundManager::Play(isJewel ? SOUND_JEWEL01 : SOUND_GET_ITEM01);
+          const char *itemName = ItemDatabase::GetItemNameByDef(p->defIndex);
+          if (itemName && itemName[0])
+            SystemMessageLog::Log(MSG_GENERAL, IM_COL32(0, 200, 0, 255),
+                                  "Obtained: %s", itemName);
+        }
+        for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
+          if (g_state->groundItems[i].active &&
+              g_state->groundItems[i].dropIndex == p->dropIndex) {
+            g_state->groundItems[i].active = false;
+            break;
+          }
+        }
+      } else {
+        // Failed pickup — remove ghost item from client so player isn't stuck
+        // clicking an item that the server no longer has
         for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
           if (g_state->groundItems[i].active &&
               g_state->groundItems[i].dropIndex == p->dropIndex) {
@@ -642,6 +814,7 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
         pktSize >= (int)sizeof(PMSG_CHARSTATS_SEND)) {
       auto *stats = reinterpret_cast<const PMSG_CHARSTATS_SEND *>(pkt);
       int oldHP = *g_state->serverHP;
+      int oldLevel = *g_state->serverLevel;
       SyncCharStats(stats);
 
       g_state->hero->LoadStats(
@@ -651,11 +824,22 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
           *g_state->serverMaxHP, *g_state->serverMP, *g_state->serverMaxMP,
           stats->ag, stats->maxAg, stats->charClass);
 
+      // Detect level-up from stats sync (quest rewards, etc.)
+      if (stats->level > oldLevel && oldLevel > 0) {
+        g_state->hero->SetLevelUpFlag();
+        SoundManager::Play(SOUND_LEVEL_UP);
+        SystemMessageLog::Log(MSG_SYSTEM, IM_COL32(255, 255, 100, 255),
+                              "Congratulations! Level %d reached!",
+                              (int)stats->level);
+      }
+
       // Floating heal text if HP increased
       if (*g_state->serverHP > oldHP && oldHP > 0) {
+        int healed = *g_state->serverHP - oldHP;
         if (g_state->spawnDamageNumber)
-          g_state->spawnDamageNumber(g_state->hero->GetPosition(),
-                                     *g_state->serverHP - oldHP, 10);
+          g_state->spawnDamageNumber(g_state->hero->GetPosition(), healed, 10);
+        SystemMessageLog::Log(MSG_COMBAT, IM_COL32(80, 255, 80, 255),
+                              "Restored %d HP", healed);
       }
     }
 
@@ -665,10 +849,15 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
       auto *p = reinterpret_cast<const PMSG_SHOP_BUY_RESULT_SEND *>(pkt);
       if (p->result) {
         SoundManager::Play(SOUND_GET_ITEM01);
+        const char *bName = ItemDatabase::GetItemNameByDef(p->defIndex);
+        SystemMessageLog::Log(MSG_GENERAL, IM_COL32(200, 200, 200, 255),
+                              "Purchased: %s", bName ? bName : "Item");
         std::cout << "[Shop] Bought item defIndex=" << p->defIndex
                   << " qty=" << (int)p->quantity << "\n";
       } else {
         SoundManager::Play(SOUND_ERROR01);
+        SystemMessageLog::Log(MSG_GENERAL, IM_COL32(255, 80, 80, 255),
+                              "Purchase failed!");
         std::cout << "[Shop] Failed to buy item\n";
       }
     }
@@ -679,12 +868,63 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
       auto *p = reinterpret_cast<const PMSG_SHOP_SELL_RESULT_SEND *>(pkt);
       if (p->result) {
         SoundManager::Play(SOUND_DROP_GOLD01);
+        SystemMessageLog::Log(MSG_GENERAL, IM_COL32(200, 200, 200, 255),
+                              "Sold item for %u Zen", p->zenGained);
         std::cout << "[Shop] Sold item bagSlot=" << (int)p->bagSlot
                   << " gained " << p->zenGained << " zen\n";
       } else {
         SoundManager::Play(SOUND_ERROR01);
+        SystemMessageLog::Log(MSG_GENERAL, IM_COL32(255, 80, 80, 255),
+                              "Sell failed!");
         std::cout << "[Shop] Failed to sell item\n";
       }
+    }
+
+    // Quest State (0x50:0x00)
+    if (headcode == Opcode::QUEST && pktSize >= 4) {
+      uint8_t subcode = pkt[3];
+      if (subcode == Opcode::SUB_QUEST_STATE &&
+          pktSize >= (int)sizeof(PMSG_QUEST_STATE_SEND)) {
+        auto *p = reinterpret_cast<const PMSG_QUEST_STATE_SEND *>(pkt);
+        if (g_state->questIndex)
+          *g_state->questIndex = p->questIndex;
+        if (g_state->questTargetCount)
+          *g_state->questTargetCount = p->targetCount;
+        if (g_state->questKillCount && g_state->questRequired) {
+          for (int i = 0; i < 3; i++) {
+            g_state->questKillCount[i] = (i < p->targetCount) ? p->targets[i].killCount : 0;
+            g_state->questRequired[i] = (i < p->targetCount) ? p->targets[i].killsRequired : 0;
+          }
+        }
+        std::cout << "[Quest] State: quest=" << (int)p->questIndex
+                  << " targets=" << (int)p->targetCount << "\n";
+      }
+      // Quest Reward (0x50:0x03)
+      if (subcode == Opcode::SUB_QUEST_REWARD &&
+          pktSize >= (int)sizeof(PMSG_QUEST_REWARD_SEND)) {
+        auto *p = reinterpret_cast<const PMSG_QUEST_REWARD_SEND *>(pkt);
+        SoundManager::Play(SOUND_LEVEL_UP);
+        SystemMessageLog::Log(MSG_GENERAL, IM_COL32(255, 210, 50, 255),
+                              "Quest complete! +%u Zen, +%u XP",
+                              p->zenReward, p->xpReward);
+        std::cout << "[Quest] Reward: zen=" << p->zenReward
+                  << " xp=" << p->xpReward
+                  << " next=" << (int)p->nextQuestIndex << "\n";
+      }
+    }
+
+    // Map Change (0x1C) — server requests map transition
+    if (headcode == Opcode::MAP_CHANGE &&
+        pktSize >= (int)sizeof(PMSG_MAP_CHANGE_SEND)) {
+      auto *p = reinterpret_cast<const PMSG_MAP_CHANGE_SEND *>(pkt);
+      auto &mc = GetPendingMapChange();
+      mc.pending = true;
+      mc.mapId = p->mapId;
+      mc.spawnX = p->spawnX;
+      mc.spawnY = p->spawnY;
+      std::cout << "[Net] Map change: mapId=" << (int)p->mapId
+                << " spawn=(" << (int)p->spawnX << "," << (int)p->spawnY << ")"
+                << std::endl;
     }
   }
 
@@ -714,6 +954,61 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
         }
         std::cout << "[Net] Received " << (int)count << " learned skills\n";
       }
+    }
+
+    // Chat log history (on login)
+    if (headcode == Opcode::CHAT_LOG_HISTORY && pktSize >= 6) {
+      uint16_t count = (uint16_t)((pkt[4] << 8) | pkt[5]);
+      int off = 6;
+      for (int i = 0; i < count; i++) {
+        if (off + 6 > pktSize) break;
+        uint8_t cat = pkt[off++];
+        uint32_t color = (uint32_t)pkt[off] |
+                         ((uint32_t)pkt[off+1] << 8) |
+                         ((uint32_t)pkt[off+2] << 16) |
+                         ((uint32_t)pkt[off+3] << 24);
+        off += 4;
+        uint8_t len = pkt[off++];
+        if (off + len > pktSize) break;
+        std::string msg((const char *)&pkt[off], len);
+        off += len;
+        SystemMessageLog::LogSilent((MessageCategory)cat, color, "%s", msg.c_str());
+      }
+      std::cout << "[Net] Chat log history: " << (int)count << " entries\n";
+    }
+
+    // NPC viewport (0x13) — spawns NPCs after map change
+    if (headcode == Opcode::NPC_VIEWPORT && g_state->npcManager) {
+      uint8_t count = pkt[4];
+      for (int i = 0; i < count; i++) {
+        int off = 5 + i * 9;
+        if (off + 9 > pktSize) break;
+        uint16_t serverIndex = (uint16_t)(((pkt[off] & 0x7F) << 8) | pkt[off + 1]);
+        uint16_t npcType = (uint16_t)((pkt[off + 2] << 8) | pkt[off + 3]);
+        uint8_t gx = pkt[off + 4], gy = pkt[off + 5];
+        uint8_t dir = pkt[off + 8] >> 4;
+        g_state->npcManager->AddNpcByType(npcType, gx, gy, dir, serverIndex);
+      }
+      std::cout << "[Net] NPC viewport (game): " << (int)count << " NPCs\n";
+    }
+
+    // Monster viewport V2 (0x34) — spawns monsters after map change
+    if (headcode == Opcode::MON_VIEWPORT_V2 && g_state->monsterManager) {
+      uint8_t count = pkt[4];
+      for (int i = 0; i < count; i++) {
+        int off = 5 + i * 12;
+        if (off + 12 > pktSize) break;
+        uint16_t serverIndex = (uint16_t)((pkt[off] << 8) | pkt[off + 1]);
+        uint16_t monType = (uint16_t)((pkt[off + 2] << 8) | pkt[off + 3]);
+        uint8_t gx = pkt[off + 4], gy = pkt[off + 5];
+        uint8_t dir = pkt[off + 6];
+        uint16_t hp = (uint16_t)(pkt[off + 7] | (pkt[off + 8] << 8));
+        uint16_t maxHp = (uint16_t)(pkt[off + 9] | (pkt[off + 10] << 8));
+        uint8_t state = pkt[off + 11];
+        g_state->monsterManager->AddMonster(monType, gx, gy, dir, serverIndex,
+                                            hp, maxHp, state);
+      }
+      std::cout << "[Net] Monster viewport V2 (game): " << (int)count << " monsters\n";
     }
 
     // Shop List
@@ -780,10 +1075,11 @@ void HandleCharSelectPacket(const uint8_t *pkt, int pktSize) {
         slots[slot].name[10] = '\0';
         slots[slot].classCode = entry->classCode;
         slots[slot].level = GetWordBE(reinterpret_cast<const uint8_t *>(&entry->level));
-        // Parse equipment appearance from charSet[1..14]
+        // Parse equipment appearance from charSet[1..14] + equipLevels[0..6]
         for (int e = 0; e < 7; e++) {
           slots[slot].equip[e].category = entry->charSet[1 + e * 2];
           slots[slot].equip[e].itemIndex = entry->charSet[2 + e * 2];
+          slots[slot].equip[e].itemLevel = entry->equipLevels[e];
         }
         parsed++;
       }
@@ -814,6 +1110,10 @@ void HandleCharSelectPacket(const uint8_t *pkt, int pktSize) {
     CharacterSelect::OnDeleteResult(res->result);
     std::cout << "[Net] Delete result: " << (int)res->result << std::endl;
   }
+}
+
+void ResetForCharSwitch() {
+  s_initialStatsReceived = false;
 }
 
 } // namespace ClientPacketHandler

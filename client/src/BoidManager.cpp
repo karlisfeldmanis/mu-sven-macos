@@ -1,5 +1,6 @@
 #include "BoidManager.hpp"
 #include "SoundManager.hpp"
+#include "TerrainUtils.hpp"
 #include "TextureLoader.hpp"
 #include "ViewerCommon.hpp"
 #include <algorithm>
@@ -52,68 +53,19 @@ static int turnAngle(int iTheta, int iHeading, int maxTURN) {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 float BoidManager::getTerrainHeight(float worldX, float worldZ) const {
-  if (!m_terrainData)
-    return 0.0f;
-  const int S = TerrainParser::TERRAIN_SIZE;
-  float gz = worldX / 100.0f;
-  float gx = worldZ / 100.0f;
-  gz = std::clamp(gz, 0.0f, (float)(S - 2));
-  gx = std::clamp(gx, 0.0f, (float)(S - 2));
-  int xi = (int)gx, zi = (int)gz;
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  float h00 = m_terrainData->heightmap[zi * S + xi];
-  float h10 = m_terrainData->heightmap[zi * S + (xi + 1)];
-  float h01 = m_terrainData->heightmap[(zi + 1) * S + xi];
-  float h11 = m_terrainData->heightmap[(zi + 1) * S + (xi + 1)];
-  return h00 * (1 - xd) * (1 - zd) + h10 * xd * (1 - zd) +
-         h01 * (1 - xd) * zd + h11 * xd * zd;
+  return TerrainUtils::GetHeight(m_terrainData, worldX, worldZ);
 }
 
 glm::vec3 BoidManager::sampleTerrainLight(const glm::vec3 &pos) const {
-  const int SIZE = 256;
-  if (m_terrainLightmap.size() < (size_t)(SIZE * SIZE))
-    return glm::vec3(1.0f);
-  float gz = pos.x / 100.0f;
-  float gx = pos.z / 100.0f;
-  int xi = (int)gx, zi = (int)gz;
-  if (xi < 0 || zi < 0 || xi > SIZE - 2 || zi > SIZE - 2)
-    return glm::vec3(0.5f);
-  float xd = gx - (float)xi, zd = gz - (float)zi;
-  const glm::vec3 &c00 = m_terrainLightmap[zi * SIZE + xi];
-  const glm::vec3 &c10 = m_terrainLightmap[zi * SIZE + (xi + 1)];
-  const glm::vec3 &c01 = m_terrainLightmap[(zi + 1) * SIZE + xi];
-  const glm::vec3 &c11 = m_terrainLightmap[(zi + 1) * SIZE + (xi + 1)];
-  glm::vec3 left = c00 + (c01 - c00) * zd;
-  glm::vec3 right = c10 + (c11 - c10) * zd;
-  return left + (right - left) * xd;
+  return TerrainUtils::SampleLightAt(m_terrainLightmap, pos);
 }
 
 uint8_t BoidManager::getTerrainLayer1(float worldX, float worldZ) const {
-  if (!m_terrainData)
-    return 0;
-  const int S = TerrainParser::TERRAIN_SIZE;
-  int gz = (int)(worldX / 100.0f);
-  int gx = (int)(worldZ / 100.0f);
-  gz = std::clamp(gz, 0, S - 1);
-  gx = std::clamp(gx, 0, S - 1);
-  int idx = gz * S + gx;
-  if (idx < 0 || idx >= (int)m_terrainData->mapping.layer1.size())
-    return 0;
-  return m_terrainData->mapping.layer1[idx];
+  return TerrainUtils::GetLayer1(m_terrainData, worldX, worldZ);
 }
 
 uint8_t BoidManager::getTerrainAttribute(float worldX, float worldZ) const {
-  if (!m_terrainData)
-    return 0;
-  const int S = TerrainParser::TERRAIN_SIZE;
-  int gz = (int)(worldX / 100.0f);
-  int gx = (int)(worldZ / 100.0f);
-  gz = std::clamp(gz, 0, S - 1);
-  gx = std::clamp(gx, 0, S - 1);
-  int idx = gz * S + gx;
-  if (idx < 0 || idx >= (int)m_terrainData->mapping.attributes.size())
-    return 0;
-  return m_terrainData->mapping.attributes[idx];
+  return TerrainUtils::GetAttribute(m_terrainData, worldX, worldZ);
 }
 
 void BoidManager::alphaFade(float &alpha, float target, float dt) {
@@ -134,13 +86,8 @@ void BoidManager::alphaFade(float &alpha, float target, float dt) {
 
 void BoidManager::Init(const std::string &dataPath) {
   // Load shaders (same as NPC/Monster managers)
-  std::ifstream shaderTest("shaders/model.vert");
-  m_shader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/model.vert" : "../shaders/model.vert",
-      shaderTest.good() ? "shaders/model.frag" : "../shaders/model.frag");
-  m_shadowShader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/shadow.vert" : "../shaders/shadow.vert",
-      shaderTest.good() ? "shaders/shadow.frag" : "../shaders/shadow.frag");
+  m_shader = Shader::Load("model.vert", "model.frag");
+  m_shadowShader = Shader::Load("shadow.vert", "shadow.frag");
 
   // Load bird model: Data/Object1/Bird01.bmd + bird.ozt
   std::string birdPath = dataPath + "/Object1/Bird01.bmd";
@@ -177,6 +124,43 @@ void BoidManager::Init(const std::string &dataPath) {
               << std::endl;
   } else {
     std::cerr << "[Boid] Failed to load Bird01.bmd" << std::endl;
+  }
+
+  // Load bat model: Data/Object2/Bat01.bmd (dungeon critter)
+  std::string batPath = dataPath + "/Object2/Bat01.bmd";
+  auto batBmd = BMDParser::Parse(batPath);
+  if (batBmd) {
+    m_batBmd = std::move(batBmd);
+    std::string texDir = dataPath + "/Object2/";
+    m_batBones = ComputeBoneMatrices(m_batBmd.get());
+    AABB aabb{};
+    for (auto &mesh : m_batBmd->Meshes) {
+      UploadMeshWithBones(mesh, texDir, m_batBones, m_batMeshes, aabb, true);
+    }
+
+    // Create shadow buffer
+    int totalVerts = 0;
+    for (auto &mesh : m_batBmd->Meshes) {
+      for (int i = 0; i < mesh.NumTriangles; ++i) {
+        totalVerts += (mesh.Triangles[i].Polygon == 4) ? 6 : 3;
+      }
+    }
+    glGenVertexArrays(1, &m_batShadow.vao);
+    glGenBuffers(1, &m_batShadow.vbo);
+    glBindVertexArray(m_batShadow.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_batShadow.vbo);
+    glBufferData(GL_ARRAY_BUFFER, totalVerts * sizeof(glm::vec3), nullptr,
+                 GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void *)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+    m_batShadow.vertexCount = totalVerts;
+
+    std::cout << "[Boid] Loaded Bat01.bmd (" << m_batBmd->Bones.size()
+              << " bones, " << m_batBmd->Meshes.size() << " meshes)"
+              << std::endl;
+  } else {
+    std::cerr << "[Boid] Failed to load Bat01.bmd" << std::endl;
   }
 
   // Load fish model: Data/Object1/Fish01.bmd + fish.OZT
@@ -216,18 +200,20 @@ void BoidManager::Init(const std::string &dataPath) {
     std::cerr << "[Boid] Failed to load Fish01.bmd" << std::endl;
   }
 
-  // Initialize all boids/fish as dead with staggered spawn delay
+  // Initialize all boids/bats/fish as dead with staggered spawn delay
   for (int i = 0; i < MAX_BOIDS; ++i) {
     m_boids[i].live = false;
     m_boids[i].respawnDelay = 2.0f + (float)i * 3.0f; // Stagger: 2s, 5s, 8s, ...
+  }
+  for (int i = 0; i < MAX_BATS; ++i) {
+    m_bats[i].live = false;
+    m_bats[i].respawnDelay = 2.0f + (float)i * 3.0f;
   }
   for (auto &f : m_fishs)
     f.live = false;
 
   // ── Falling leaves (Main 5.2: ZzzEffectFireLeave.cpp) ──────────────
-  m_leafShader = std::make_unique<Shader>(
-      shaderTest.good() ? "shaders/leaf.vert" : "../shaders/leaf.vert",
-      shaderTest.good() ? "shaders/leaf.frag" : "../shaders/leaf.frag");
+  m_leafShader = Shader::Load("leaf.vert", "leaf.frag");
 
   // Load leaf texture (OZT for alpha, fallback to OZJ)
   std::string leafPath = dataPath + "/World1/leaf01.OZT";
@@ -278,19 +264,69 @@ void BoidManager::Init(const std::string &dataPath) {
 
 void BoidManager::moveBird(Boid &b, const glm::vec3 &heroPos, int heroAction) {
   // Main 5.2: MoveBird (GOBoid.cpp:948-1001)
-  // Coordinate mapping: MU Position[0]=worldX, Position[1]=worldZ (in our system)
-  //   MU Position[2] = height = our worldY
-
-  // Birds always fly — no landing/ground states
-  b.ai = BoidAI::FLY;
-  b.velocity = 1.0f;
-  b.position.y += (float)(rand() % 16 - 8);
   float terrainH = getTerrainHeight(b.position.x, b.position.z);
   float relH = b.position.y - terrainH;
-  if (relH < 200.0f)
-    b.direction.y = 10.0f;
-  else if (relH > 600.0f)
-    b.direction.y = -10.0f;
+
+  // Push away from hero to prevent birds appearing huge on screen
+  float dx = b.position.x - heroPos.x;
+  float dz = b.position.z - heroPos.z;
+  float heroDistSq = dx * dx + dz * dz;
+  if (heroDistSq < 400.0f * 400.0f && heroDistSq > 0.1f) {
+    float dist = std::sqrt(heroDistSq);
+    float push = (400.0f - dist) * 0.05f;
+    b.position.x += (dx / dist) * push;
+    b.position.z += (dz / dist) * push;
+  }
+
+  switch (b.ai) {
+  case BoidAI::FLY:
+    b.velocity = 1.0f;
+    b.position.y += (float)(rand() % 16 - 8);
+    if (relH < 200.0f)
+      b.direction.y = 10.0f;
+    else if (relH > 600.0f)
+      b.direction.y = -10.0f;
+
+    // Very rarely decide to land (1/4096 per tick ≈ once per ~3 minutes)
+    if (rand() % 4096 == 0 && relH > 50.0f) {
+      b.ai = BoidAI::DOWN;
+      b.timer = 0.0f;
+    }
+    break;
+
+  case BoidAI::DOWN:
+    // Descend toward ground
+    b.velocity = 0.6f;
+    b.direction.y = -12.0f;
+    if (relH <= 15.0f) {
+      b.position.y = terrainH + 5.0f;
+      b.ai = BoidAI::GROUND;
+      b.velocity = 0.0f;
+      b.direction.y = 0.0f;
+      b.timer = 3.0f + (float)(rand() % 50) * 0.1f; // Rest 3-8 seconds
+    }
+    break;
+
+  case BoidAI::GROUND:
+    // Resting on ground — no movement
+    b.velocity = 0.0f;
+    b.direction.y = 0.0f;
+    b.position.y = terrainH + 5.0f;
+    // Take off after timer expires or if hero gets close
+    if (b.timer <= 0.0f || heroDistSq < 300.0f * 300.0f) {
+      b.ai = BoidAI::UP;
+    }
+    break;
+
+  case BoidAI::UP:
+    // Ascend back to flight altitude
+    b.velocity = 0.8f;
+    b.direction.y = 15.0f;
+    if (relH >= 200.0f) {
+      b.ai = BoidAI::FLY;
+    }
+    break;
+  }
 }
 
 void BoidManager::moveBoidGroup(Boid &b) {
@@ -418,11 +454,16 @@ void BoidManager::updateBoids(float dt, const glm::vec3 &heroPos,
       continue;
     }
 
-    // Animate
+    // Tick ground rest timer
+    if (b.ai == BoidAI::GROUND)
+      b.timer -= dt;
+
+    // Animate (slower when grounded — subtle idle bob)
     if (b.action >= 0 && b.action < (int)m_birdBmd->Actions.size()) {
       int numKeys = m_birdBmd->Actions[b.action].NumAnimationKeys;
       if (numKeys > 1) {
-        b.animFrame += 1.0f * dt * 25.0f; // PlaySpeed=1.0 at 25fps
+        float animSpeed = (b.ai == BoidAI::GROUND) ? 0.3f : 1.0f;
+        b.animFrame += animSpeed * dt * 25.0f;
         if (b.animFrame >= (float)numKeys)
           b.animFrame = std::fmod(b.animFrame, (float)numKeys);
       }
@@ -430,8 +471,10 @@ void BoidManager::updateBoids(float dt, const glm::vec3 &heroPos,
 
     // Move
     moveBird(b, heroPos, heroAction);
-    moveBoidFlock(b, i); // Flocking: steer toward/away from neighbors
-    moveBoidGroup(b);    // Apply velocity in facing direction
+    if (b.ai != BoidAI::GROUND) {
+      moveBoidFlock(b, i); // Flocking: steer toward/away from neighbors
+      moveBoidGroup(b);    // Apply velocity in facing direction
+    }
 
     // Distance check — despawn if > 1500 units from hero
     float dx = b.position.x - heroPos.x;
@@ -460,6 +503,139 @@ void BoidManager::updateBoids(float dt, const glm::vec3 &heroPos,
     if (b.subType >= 2) {
       b.live = false;
       b.respawnDelay = 4.0f;
+    }
+
+    // Alpha fade
+    alphaFade(b.alpha, b.alphaTarget, dt);
+  }
+}
+
+// ── Bat AI (Main 5.2: GOBoid.cpp — dungeon bats, always flying, erratic) ──
+
+void BoidManager::moveBat(Boid &b, const glm::vec3 &heroPos) {
+  float terrainH = getTerrainHeight(b.position.x, b.position.z);
+  float relH = b.position.y - terrainH;
+
+  // Push away from hero
+  float dx = b.position.x - heroPos.x;
+  float dz = b.position.z - heroPos.z;
+  float heroDistSq = dx * dx + dz * dz;
+  if (heroDistSq < 300.0f * 300.0f && heroDistSq > 0.1f) {
+    float dist = std::sqrt(heroDistSq);
+    float push = (300.0f - dist) * 0.06f;
+    b.position.x += (dx / dist) * push;
+    b.position.z += (dz / dist) * push;
+  }
+
+  // Boundary clamping — reverse direction if near map edges
+  constexpr float MAP_MIN = 500.0f;
+  constexpr float MAP_MAX = 25100.0f;
+  if (b.position.x < MAP_MIN || b.position.x > MAP_MAX) {
+    b.position.x = std::clamp(b.position.x, MAP_MIN, MAP_MAX);
+    b.angle.z += 180.0f; // Reverse heading
+  }
+  if (b.position.z < MAP_MIN || b.position.z > MAP_MAX) {
+    b.position.z = std::clamp(b.position.z, MAP_MIN, MAP_MAX);
+    b.angle.z += 180.0f;
+  }
+
+  // Bats always fly — erratic altitude changes, lower ceiling than birds
+  b.velocity = 1.2f; // Slightly faster than birds
+  b.position.y += (float)(rand() % 20 - 10); // More vertical jitter
+  if (relH < 100.0f)
+    b.direction.y = 12.0f;
+  else if (relH > 350.0f)
+    b.direction.y = -12.0f;
+
+  // Random direction changes more frequent than birds
+  if (rand() % 64 == 0)
+    b.angle.z += (float)(rand() % 60 - 30); // Sudden heading shifts
+}
+
+void BoidManager::updateBats(float dt, const glm::vec3 &heroPos) {
+  if (!m_batBmd)
+    return;
+
+  for (int i = 0; i < MAX_BATS; ++i) {
+    Boid &b = m_bats[i];
+
+    // Spawn new bat
+    if (!b.live) {
+      b.respawnDelay -= dt;
+      if (b.respawnDelay > 0.0f)
+        continue;
+
+      float spawnX = heroPos.x + (float)(rand() % 800 - 400);
+      float spawnZ = heroPos.z + (float)(rand() % 800 - 400);
+
+      b = Boid{};
+      b.live = true;
+      b.velocity = 1.2f;
+      b.alpha = 0.0f;
+      b.alphaTarget = 1.0f;
+      b.scale = 0.8f; // Main 5.2: bat scale 0.8
+      b.shadowScale = 8.0f;
+      b.ai = BoidAI::FLY; // Bats always fly
+      b.timer = (float)(rand() % 314) * 0.01f;
+      b.subType = 0;
+      b.lifetime = 0;
+      b.action = 0;
+      b.angle = glm::vec3(0.0f, 0.0f, (float)(rand() % 360));
+      b.gravity = 15.0f; // Faster turning than birds
+
+      b.position.x = spawnX;
+      b.position.z = spawnZ;
+      float terrainH = getTerrainHeight(b.position.x, b.position.z);
+      b.position.y = terrainH + (float)(rand() % 150 + 80); // Lower altitude
+      continue;
+    }
+
+    // Animate
+    if (b.action >= 0 && b.action < (int)m_batBmd->Actions.size()) {
+      int numKeys = m_batBmd->Actions[b.action].NumAnimationKeys;
+      if (numKeys > 1) {
+        b.animFrame += 1.2f * dt * 25.0f; // Faster wing beats
+        if (b.animFrame >= (float)numKeys)
+          b.animFrame = std::fmod(b.animFrame, (float)numKeys);
+      }
+    }
+
+    // Move
+    b.prevPosition = b.position;
+    moveBat(b, heroPos);
+    moveBoidGroup(b); // Apply velocity in facing direction
+
+    // Stuck detection: if barely moved in 2 seconds, force despawn
+    float movedDist = glm::length(b.position - b.prevPosition);
+    if (movedDist < 0.5f) {
+      b.stuckTimer += dt;
+      if (b.stuckTimer > 2.0f) {
+        b.live = false;
+        b.respawnDelay = 2.0f + (float)(rand() % 3);
+        continue;
+      }
+    } else {
+      b.stuckTimer = 0.0f;
+    }
+
+    // Distance check — despawn if > 1200 units from hero
+    float dx = b.position.x - heroPos.x;
+    float dz = b.position.z - heroPos.z;
+    float range = std::sqrt(dx * dx + dz * dz);
+    if (range >= 1200.0f) {
+      b.live = false;
+      b.respawnDelay = 3.0f + (float)(rand() % 5);
+    }
+
+    // Main 5.2 GOBoid.cpp: bat sounds — reduced frequency to prevent spam
+    if (range < 600.0f && rand() % 1024 == 0) {
+      SoundManager::Play3D(SOUND_BAT01, b.position.x, b.position.y, b.position.z);
+    }
+
+    // Random despawn
+    if (rand() % 512 == 0) {
+      b.live = false;
+      b.respawnDelay = 5.0f + (float)(rand() % 8);
     }
 
     // Alpha fade
@@ -628,9 +804,15 @@ void BoidManager::updateLeaves(float dt, const glm::vec3 &heroPos) {
 void BoidManager::Update(float deltaTime, const glm::vec3 &heroPos,
                           int heroAction, float worldTime) {
   m_worldTime = worldTime;
-  updateBoids(deltaTime, heroPos, heroAction);
-  updateFishs(deltaTime, heroPos);
-  updateLeaves(deltaTime, heroPos);
+  if (m_mapId == 0) {
+    // Lorencia: birds, fish, leaves
+    updateBoids(deltaTime, heroPos, heroAction);
+    updateFishs(deltaTime, heroPos);
+    updateLeaves(deltaTime, heroPos);
+  } else if (m_mapId == 1) {
+    // Dungeon: bats only (no birds, fish, or leaves underground)
+    updateBats(deltaTime, heroPos);
+  }
 }
 
 // ── Render ───────────────────────────────────────────────────────────
@@ -662,6 +844,36 @@ void BoidManager::renderBoid(const Boid &b, const glm::mat4 &view,
   m_shader->setVec3("terrainLight", sampleTerrainLight(b.position));
 
   for (auto &mb : m_birdMeshes) {
+    if (mb.indexCount == 0 || mb.hidden)
+      continue;
+    glBindTexture(GL_TEXTURE_2D, mb.texture);
+    glBindVertexArray(mb.vao);
+    glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+  }
+}
+
+void BoidManager::renderBat(const Boid &b, const glm::mat4 &view,
+                             const glm::mat4 &proj) {
+  if (!b.live || b.alpha <= 0.001f || !m_batBmd)
+    return;
+
+  auto bones = ComputeBoneMatricesInterpolated(m_batBmd.get(), b.action,
+                                                b.animFrame);
+  for (int mi = 0; mi < (int)m_batMeshes.size() && mi < (int)m_batBmd->Meshes.size(); ++mi) {
+    RetransformMeshWithBones(m_batBmd->Meshes[mi], bones, m_batMeshes[mi]);
+  }
+
+  glm::mat4 model = glm::translate(glm::mat4(1.0f), b.position);
+  model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
+  model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
+  model = glm::rotate(model, glm::radians(b.angle.z + 90.0f), glm::vec3(0, 0, 1));
+  model = glm::scale(model, glm::vec3(b.scale));
+
+  m_shader->setMat4("model", model);
+  m_shader->setFloat("objectAlpha", b.alpha);
+  m_shader->setVec3("terrainLight", sampleTerrainLight(b.position));
+
+  for (auto &mb : m_batMeshes) {
     if (mb.indexCount == 0 || mb.hidden)
       continue;
     glBindTexture(GL_TEXTURE_2D, mb.texture);
@@ -718,34 +930,39 @@ void BoidManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
   m_shader->setVec3("lightColor", 1.0f, 1.0f, 1.0f);
   m_shader->setVec3("viewPos", eye);
   m_shader->setBool("useFog", true);
-  m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
-  m_shader->setFloat("uFogNear", 1500.0f);
-  m_shader->setFloat("uFogFar", 3500.0f);
+  if (m_mapId == 1) {
+    m_shader->setVec3("uFogColor", glm::vec3(0.0f, 0.0f, 0.0f));
+    m_shader->setFloat("uFogNear", 800.0f);
+    m_shader->setFloat("uFogFar", 2500.0f);
+  } else {
+    m_shader->setVec3("uFogColor", glm::vec3(0.117f, 0.078f, 0.039f));
+    m_shader->setFloat("uFogNear", 1500.0f);
+    m_shader->setFloat("uFogFar", 3500.0f);
+  }
   m_shader->setFloat("blendMeshLight", 1.0f);
   m_shader->setVec2("texCoordOffset", glm::vec2(0.0f));
   m_shader->setFloat("luminosity", m_luminosity);
 
-  // Point lights
+  // Point lights (pre-cached locations)
   int plCount = std::min((int)m_pointLights.size(), MAX_POINT_LIGHTS);
-  m_shader->setInt("numPointLights", plCount);
-  for (int i = 0; i < plCount; ++i) {
-    std::string idx = std::to_string(i);
-    m_shader->setVec3("pointLightPos[" + idx + "]", m_pointLights[i].position);
-    m_shader->setVec3("pointLightColor[" + idx + "]", m_pointLights[i].color);
-    m_shader->setFloat("pointLightRange[" + idx + "]", m_pointLights[i].range);
-  }
+  m_shader->uploadPointLights(plCount, m_pointLights.data());
 
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  // Render birds
-  for (int i = 0; i < MAX_BOIDS; ++i) {
-    renderBoid(m_boids[i], view, proj);
-  }
-
-  // Render fish
-  for (int i = 0; i < MAX_FISHS; ++i) {
-    renderFish(m_fishs[i], view, proj);
+  // Render birds (Lorencia) or bats (Dungeon)
+  if (m_mapId == 0) {
+    for (int i = 0; i < MAX_BOIDS; ++i) {
+      renderBoid(m_boids[i], view, proj);
+    }
+    // Render fish
+    for (int i = 0; i < MAX_FISHS; ++i) {
+      renderFish(m_fishs[i], view, proj);
+    }
+  } else if (m_mapId == 1) {
+    for (int i = 0; i < MAX_BATS; ++i) {
+      renderBat(m_bats[i], view, proj);
+    }
   }
 
   // Reset objectAlpha
@@ -790,7 +1007,8 @@ void BoidManager::RenderShadows(const glm::mat4 &view, const glm::mat4 &proj) {
       float cosF = std::cos(facingRad);
       float sinF = std::sin(facingRad);
 
-      std::vector<glm::vec3> shadowVerts;
+      static std::vector<glm::vec3> shadowVerts;
+      shadowVerts.clear();
       for (auto &mesh : m_birdBmd->Meshes) {
         for (int ti = 0; ti < mesh.NumTriangles; ++ti) {
           auto &tri = mesh.Triangles[ti];
@@ -869,7 +1087,8 @@ void BoidManager::RenderShadows(const glm::mat4 &view, const glm::mat4 &proj) {
       float cosF = std::cos(facingRad);
       float sinF = std::sin(facingRad);
 
-      std::vector<glm::vec3> shadowVerts;
+      static std::vector<glm::vec3> shadowVerts;
+      shadowVerts.clear();
       for (auto &mesh : m_fishBmd->Meshes) {
         for (int ti = 0; ti < mesh.NumTriangles; ++ti) {
           auto &tri = mesh.Triangles[ti];

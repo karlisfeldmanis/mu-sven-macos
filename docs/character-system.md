@@ -218,11 +218,57 @@ Pet and mount are mutually exclusive in slot 8:
 - Equipping a mount calls `UnequipPet()` first
 - Equipping a pet calls `UnequipMount()` first
 
+## Item Enhancement Glow (Chrome Passes)
+
+Enhanced items (+7 and above) render additive chrome/metal glow passes over the base model. Each pass uses an environment-map texture with normals-derived UVs.
+
+### Pass Structure by Enhancement Level
+
+| Level | Passes | Textures |
+|-------|--------|----------|
+| +7 | 1: CHROME | Chrome01.OZJ |
+| +9 | 2: CHROME + METAL | Chrome01.OZJ + Shiny01.OZJ |
+| +11 | 3: CHROME2 + METAL + CHROME | Chrome02.OZJ + Shiny01.OZJ + Chrome01.OZJ |
+| +13 | 3: CHROME4 + METAL + CHROME | Chrome02.OZJ (dynamic) + Shiny01.OZJ + Chrome01.OZJ |
+
+### Color Functions
+
+Two color lookup functions determine glow tint per item type:
+
+- **`GetPartObjectColor(category, itemIndex)`** — Used for CHROME and METAL passes. 43-color palette, default warm gold `(1.0, 0.5, 0.0)`. Per-item overrides for all armor (cat 7-11), weapon (cat 0-5), and shield (cat 6) types.
+
+- **`GetPartObjectColor2(category, itemIndex)`** — Used for CHROME2 and CHROME4 passes only. 4-color modulator:
+
+| Color | RGB | Effect |
+|-------|-----|--------|
+| 0 (default) | (1, 1, 1) | Neutral (keep original) |
+| 1 | (1, 0.5, 0) | Warm orange |
+| 2 | (0, 0.5, 1) | Cyan/blue |
+| 3 | (1, 1, 1) | Pure white |
+
+Armor overrides: items 4, 14, 15, 17 → orange; 18, 43 → cyan; 21, 44 → white.
+Weapon overrides: Sword 14, Bow 5/13, Staff 5 → cyan.
+
+### Render State
+
+All glow passes: `glBlendFunc(GL_ONE, GL_ONE)` additive, `glDepthMask(GL_FALSE)`, face culling disabled.
+
 ## Weapon Blur Trail
 
 - **WeaponTrail**: 30-point tip/base position history captured during attack animations
 - Two blur modes: `blur01.OZJ` for regular attacks (level-based color), `motion_blur_r.OZJ` for skills (white)
 - Auto-stops on swing end or attack cancel, fades out over 0.3s
+
+### Trail Colors
+
+| Weapon Level | Color | RGB |
+|---|---|---|
+| +7+ | Orange-gold | (1.0, 0.6, 0.2) |
+| +5 to +6 | Blue | (0.2, 0.4, 1.0) |
+| +3 to +4 | Red | (1.0, 0.2, 0.2) |
+| Below +3 | Gray/white | (0.8, 0.8, 0.8) |
+
+**Per-weapon overrides** (always red regardless of level): Sword idx 13, Mace idx 6, Spear idx 9.
 
 ## Sit / Pose System
 

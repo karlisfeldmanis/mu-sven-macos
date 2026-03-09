@@ -7,6 +7,7 @@ in vec3 FragPos;
 
 uniform sampler2D skyTexture;
 uniform vec3 fogColor;
+uniform float luminosity;
 
 // Edge fog: darken sky near terrain boundaries
 // edgeMargin pushes full-opacity fog inward so map borders are fully hidden
@@ -25,18 +26,19 @@ void main() {
 
     if (Alpha > 1.5) {
         // Bottom cap: solid fog color to fill void below terrain
-        resultColor = fogColor;
+        resultColor = fogColor * luminosity;
         resultAlpha = 1.0;
     } else {
         // Cylinder band: sky texture blended with fog, fading out at top
         vec4 texColor = texture(skyTexture, TexCoord);
-        resultColor = mix(fogColor, texColor.rgb, 0.8);
+        resultColor = mix(fogColor, texColor.rgb, 0.8) * luminosity;
         resultAlpha = Alpha;
     }
 
-    // Edge fog: darken toward black at map boundaries
+    // Edge fog: darken at map boundaries (semi-transparent, not pure black)
     float edgeFactor = computeEdgeFog(FragPos);
-    resultColor = mix(vec3(0.0), resultColor, edgeFactor);
+    float edgeBlend = mix(0.75, 1.0, edgeFactor); // fade to 75% brightness at edges
+    resultColor *= edgeBlend;
 
     FragColor = vec4(resultColor, resultAlpha);
 }
