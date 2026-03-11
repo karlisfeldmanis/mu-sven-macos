@@ -4,14 +4,27 @@ A native C++20 restoration of the MU Online engine for macOS with OpenGL 3.3+. F
 
 ## Features
 
-- **Multi-World Support**: Lorencia (2800+ objects) and Devias (Rift/Void rendering, bridge safety fixes)
-- **Dark Knight Class**: 5-part body model, weapon attachment, 8 skills, mount system (Uniria/Dinorant)
-- **Combat System**: Server-authoritative hit resolution, DK stat formulas, AG (stamina) system, skill orb learning
-- **Monster AI**: Server-driven state machine, A* pathfinding, pack assist, chase failure leashing
-- **Inventory & Equipment**: 64-slot bag, 12 equipment slots, drag-drop, stat allocation, NPC shops
-- **Diablo HUD**: Custom resource orbs (HP/AG/Mana), expanded 10-skill quickbar, 3 potion slots
-- **VFX & Effects**: Particle bursts, ribbon trails, level-up effects, **Chrome Glow** (+7 item enhancements)
-- **Networking**: Binary TCP protocol, SQLite persistence, 60s autosave, map name overlays (OZT)
+- **Multi-World Support**: 
+    - **Lorencia**: 2800+ objects, procedural fire, interactive grass, and sky dome.
+    - **Devias**: Rift/Void rendering, bridge safety fixes, and snow atmosphere.
+- **Character Systems**:
+    - **Classes**: Dark Knight (DK) and Dark Wizard (DW) with class-specific stats and visual assets.
+    - **Progression**: Stat allocation, level-up effects, and skill-learning via orbs/scrolls.
+    - **Mounts & Pets**: Support for Uniria, Dinorant, and Boid-based pet AI.
+- **Combat & AI**:
+    - **Combat**: Server-authoritative hits, DK/DW formulas, AG (Ability Gauge) system.
+    - **Monster AI**: 7-state server machine, A* pathfinding, Pack Assist, and Chase Failure leashing.
+- **UI & Interaction**:
+    - **Character Select**: High-fidelity scene with FBO-rendered face portraits and interactive emotes.
+    - **Diablo HUD**: Custom resource orbs (HP/AG/Mana) and expanded 13-slot quickbar (1-0, QWE).
+    - **Message Log**: Persistent, filtered system/combat log with auto-fade and WoW-style interaction.
+    - **Panels**: Full inventory/equipment (64 slots), skill window, NPC shops, and name markers.
+- **Visuals & Media**:
+    - **VFX**: Particle bursts, ribbon trails, and **Chrome Glow** (+7 item levels).
+    - **Capture**: High-performance JPEG screenshots and animated GIF recording (frame-diffed).
+- **Engine & Net**:
+    - **Networking**: Binary TCP protocol with map-switching and OZT texture overlays.
+    - **Persistence**: SQLite-backed server with 60s autosaves and item/monster databases.
 
 ## Project Structure
 
