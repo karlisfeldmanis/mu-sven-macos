@@ -85,7 +85,47 @@ static std::map<uint16_t, std::vector<std::pair<uint8_t, uint8_t>>> s_shops = {
      {{14, 9},  {14, 10},              // Potions (Ale, Town Portal)
       {13, 0},  {13, 1},  {13, 2},  {13, 3},  // Guardian Angel, Imp, Uniria, Dinorant
       {13, 8},  {13, 9},  {13, 10},    // Ring of Ice, Poison, Transformation
-      {13, 12}, {13, 13}}}};           // Pendant of Lighting, Fire
+      {13, 12}, {13, 13}}},             // Pendant of Lighting, Fire
+    // ── Devias Vendors ──
+    // Caren the Barmaid (302) - Potions, Rings, Pendants & Pets
+    {302,
+     {{14, 0}, {14, 1}, {14, 2}, {14, 3}, {14, 4}, {14, 5}, {14, 6}, {14, 8},
+      {14, 9},  {14, 10},              // Ale, Town Portal
+      {13, 0},  {13, 1},  {13, 2},  {13, 3},  // Guardian Angel, Imp, Uniria, Dinorant
+      {13, 8},  {13, 9},  {13, 10},    // Ring of Ice, Poison, Transformation
+      {13, 12}, {13, 13}}},            // Pendant of Lighting, Fire
+    // Izabel the Wizard (303) - DW Scrolls, Staves & Armor (mid-high level)
+    {303,
+     {// Scrolls (all)
+      {15, 0}, {15, 1}, {15, 2}, {15, 3}, {15, 4}, {15, 5},
+      {15, 6}, {15, 7}, {15, 8}, {15, 9}, {15, 11}, {15, 12}, {15, 13},
+      // Staves (Serpent through Legendary)
+      {5, 2}, {5, 3}, {5, 4}, {5, 5},
+      // Bone Set (mid DW)
+      {7, 4}, {8, 4}, {9, 4}, {10, 4}, {11, 4},
+      // Sphinx Set (mid-high DW)
+      {7, 7}, {8, 7}, {9, 7}, {10, 7}, {11, 7},
+      // Legendary Set (high DW)
+      {7, 3}, {8, 3}, {9, 3}, {10, 3}, {11, 3}}},
+    // Zienna the Arms Dealer (304) - DK Weapons, Shields & Armor (mid-high level)
+    {304,
+     {// Swords (Gladius through Heliacal)
+      {0, 6}, {0, 7}, {0, 8}, {0, 9}, {0, 10}, {0, 11}, {0, 12},
+      // Axes (mid-high)
+      {1, 2}, {1, 3}, {1, 4},
+      // Maces (mid-high)
+      {2, 2}, {2, 3}, {2, 4},
+      // Spears
+      {3, 2}, {3, 3},
+      // Shields
+      {6, 0}, {6, 1}, {6, 2}, {6, 3},
+      // Plate Set (mid DK)
+      {7, 5}, {8, 5}, {9, 5}, {10, 5}, {11, 5},
+      // Dragon Set (high DK)
+      {7, 6}, {8, 6}, {9, 6}, {10, 6}, {11, 6},
+      // Skill Orbs
+      {12, 20}, {12, 21}, {12, 22}, {12, 23}, {12, 24},
+      {12, 7}, {12, 13}, {12, 14}}}}; // Twisting Slash, Impale, Greater Fortitude
 
 void HandleShopOpen(Session &session, const std::vector<uint8_t> &packet,
                     Database &db) {

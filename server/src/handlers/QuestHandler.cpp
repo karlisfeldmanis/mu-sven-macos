@@ -33,9 +33,10 @@ struct QuestDef {
   QuestItemReward scrollReward; // DW spell scroll
 };
 
-static constexpr int QUEST_COUNT = 9;
+static constexpr int QUEST_COUNT = 18;
 
 static const QuestDef g_quests[QUEST_COUNT] = {
+    // ── Lorencia quest chain (0-8) ──
     // Quest 0 (Kill): Kael — Spider + Budge Dragon
     {248, 0, 2, {{3, 10}, {2, 5}, {0, 0}}, 5000, 60000, {0, 0}, {160, 0}, {404, 0}, {483, 0}},
     // Quest 1 (Travel): → Corporal Brynn
@@ -54,6 +55,26 @@ static const QuestDef g_quests[QUEST_COUNT] = {
     {249, 1, 0, {{0, 0}, {0, 0}, {0, 0}}, 10000, 100000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
     // Quest 8 (Kill): Marcus — Skeleton Warrior + Lich
     {249, 0, 2, {{14, 5}, {6, 4}, {0, 0}}, 50000, 350000, {6, 0}, {161, 3}, {408, 0}, {486, 0}},
+    // ── Dungeon quest chain (9-11) ──
+    // Quest 9 (Kill): Marcus — Skeleton Warrior + Larva (Dungeon 1 entrance)
+    {249, 0, 2, {{14, 10}, {12, 8}, {0, 0}}, 60000, 400000, {5, 0}, {162, 0}, {391, 0}, {484, 0}},
+    // Quest 10 (Kill): Marcus — Elite Skeleton + Cyclops (Dungeon 2)
+    {249, 0, 2, {{16, 8}, {17, 6}, {0, 0}}, 80000, 500000, {7, 2}, {163, 0}, {391, 0}, {487, 0}},
+    // Quest 11 (Kill): Marcus — Ghost + Gorgon (Dungeon 3)
+    {249, 0, 2, {{11, 10}, {18, 1}, {0, 0}}, 100000, 700000, {8, 3}, {164, 0}, {391, 0}, {488, 0}},
+    // ── Devias quest chain (12-17) ──
+    // Quest 12 (Kill): Ranger Elise — Worm + Assassin
+    {310, 0, 2, {{24, 10}, {21, 8}, {0, 0}}, 30000, 200000, {3, 2}, {161, 2}, {397, 0}, {480, 0}},
+    // Quest 13 (Travel): → Tracker Nolan
+    {311, 1, 0, {{0, 0}, {0, 0}, {0, 0}}, 15000, 100000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
+    // Quest 14 (Kill): Tracker Nolan — Hommerd + Assassin
+    {311, 0, 2, {{23, 8}, {21, 6}, {0, 0}}, 50000, 300000, {6, 2}, {162, 1}, {391, 0}, {485, 0}},
+    // Quest 15 (Travel): → Warden Hale
+    {312, 1, 0, {{0, 0}, {0, 0}, {0, 0}}, 20000, 120000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
+    // Quest 16 (Kill): Warden Hale — Elite Yeti
+    {312, 0, 1, {{20, 16}, {0, 0}, {0, 0}}, 70000, 450000, {8, 1}, {163, 0}, {391, 0}, {486, 0}},
+    // Quest 17 (Kill): Warden Hale — Ice Queen (boss)
+    {312, 0, 1, {{25, 1}, {0, 0}, {0, 0}}, 120000, 800000, {10, 0}, {164, 0}, {398, 0}, {487, 0}},
 };
 
 // ═══════════════════════════════════════════════════════
@@ -105,25 +126,100 @@ static void GiveItemReward(Session &session, Database &db,
          def.name.c_str(), reward.itemLevel, outSlot);
 }
 
+// ═══════════════════════════════════════════════════════
+// Quest chain helpers — Lorencia (0-11) vs Devias (12-17)
+// ═══════════════════════════════════════════════════════
+
+static constexpr int DEVIAS_QUEST_START = 12;
+
+static bool IsDeviasGuard(uint16_t npcType) {
+  return npcType == 310 || npcType == 311 || npcType == 312;
+}
+
+// Get the active quest index, kill counts, and accepted flag for a chain
+static void GetChainState(Session &session, bool devias,
+                           int &questIdx, int &kc0, int &kc1, int &kc2,
+                           bool &accepted) {
+  if (devias) {
+    questIdx = session.deviasQuestIndex;
+    kc0 = session.deviasKillCount0;
+    kc1 = session.deviasKillCount1;
+    kc2 = session.deviasKillCount2;
+    accepted = session.deviasQuestAccepted;
+  } else {
+    questIdx = session.questIndex;
+    kc0 = session.questKillCount0;
+    kc1 = session.questKillCount1;
+    kc2 = session.questKillCount2;
+    accepted = session.questAccepted;
+  }
+}
+
+static void SetChainState(Session &session, bool devias,
+                           int questIdx, int kc0, int kc1, int kc2,
+                           bool accepted) {
+  if (devias) {
+    session.deviasQuestIndex = questIdx;
+    session.deviasKillCount0 = kc0;
+    session.deviasKillCount1 = kc1;
+    session.deviasKillCount2 = kc2;
+    session.deviasQuestAccepted = accepted;
+  } else {
+    session.questIndex = questIdx;
+    session.questKillCount0 = kc0;
+    session.questKillCount1 = kc1;
+    session.questKillCount2 = kc2;
+    session.questAccepted = accepted;
+  }
+}
+
+static void SaveChainState(Session &session, Database &db, bool devias) {
+  if (devias) {
+    db.SaveDeviasQuestState(session.characterId, session.deviasQuestIndex,
+                             session.deviasKillCount0, session.deviasKillCount1,
+                             session.deviasKillCount2, session.deviasQuestAccepted);
+  } else {
+    db.SaveQuestState(session.characterId, session.questIndex,
+                       session.questKillCount0, session.questKillCount1,
+                       session.questKillCount2, session.questAccepted);
+  }
+}
+
 namespace QuestHandler {
 
 void SendQuestState(Session &session) {
   PMSG_QUEST_STATE_SEND pkt{};
   pkt.h = MakeC1SubHeader(sizeof(pkt), Opcode::QUEST, Opcode::SUB_QUEST_STATE);
-  pkt.questIndex = (uint8_t)session.questIndex;
 
-  if (session.questIndex < QUEST_COUNT && session.questAccepted) {
-    const auto &q = g_quests[session.questIndex];
+  // Always send BOTH chain indices so client knows progress on both
+  pkt.questIndex = (uint8_t)session.questIndex;           // Lorencia chain (0-11)
+  pkt.deviasQuestIndex = (uint8_t)session.deviasQuestIndex; // Devias chain (12-17)
+
+  // Kill counts are for the map-appropriate active chain
+  bool devias = (session.mapId == 2);
+  int activeIdx = devias ? session.deviasQuestIndex : session.questIndex;
+  bool activeAccepted = devias ? session.deviasQuestAccepted : session.questAccepted;
+
+  if (activeIdx < QUEST_COUNT && activeAccepted) {
+    const auto &q = g_quests[activeIdx];
     if (q.questType == 0) { // Kill quest
       pkt.targetCount = q.targetCount;
-      int kc[3] = {session.questKillCount0, session.questKillCount1,
-                   session.questKillCount2};
+      int kc[3];
+      if (devias) {
+        kc[0] = session.deviasKillCount0;
+        kc[1] = session.deviasKillCount1;
+        kc[2] = session.deviasKillCount2;
+      } else {
+        kc[0] = session.questKillCount0;
+        kc[1] = session.questKillCount1;
+        kc[2] = session.questKillCount2;
+      }
       for (int i = 0; i < q.targetCount; i++) {
         pkt.targets[i].killCount = (uint8_t)kc[i];
         pkt.targets[i].killsRequired = q.targets[i].killsRequired;
       }
     } else {
-      pkt.targetCount = 0; // Travel quest — no kill targets
+      pkt.targetCount = 0;
     }
   } else {
     pkt.targetCount = 0;
@@ -138,27 +234,31 @@ void HandleQuestAccept(Session &session, const std::vector<uint8_t> &packet,
     return;
   auto *recv = reinterpret_cast<const PMSG_QUEST_ACCEPT_RECV *>(packet.data());
 
-  if (session.questIndex >= QUEST_COUNT) {
-    printf("[Quest] fd=%d tried accept but all quests done\n", session.GetFd());
+  // Determine which chain based on the NPC the player is talking to
+  bool devias = IsDeviasGuard(recv->guardNpcType);
+
+  int questIdx, kc0, kc1, kc2;
+  bool accepted;
+  GetChainState(session, devias, questIdx, kc0, kc1, kc2, accepted);
+
+  if (questIdx >= QUEST_COUNT) {
+    printf("[Quest] fd=%d tried accept but chain done (idx=%d)\n",
+           session.GetFd(), questIdx);
     return;
   }
 
-  // Already accepted
-  if (session.questAccepted) {
-    printf("[Quest] fd=%d quest %d already accepted\n", session.GetFd(),
-           session.questIndex);
+  if (accepted) {
+    printf("[Quest] fd=%d quest %d already accepted\n", session.GetFd(), questIdx);
     return;
   }
 
-  // If current quest is a TRAVEL quest and the guard matches the destination,
-  // auto-complete the travel quest first, then accept the kill quest
-  const auto &curQ = g_quests[session.questIndex];
+  // If current quest is a TRAVEL quest and the guard matches,
+  // auto-complete travel then accept next kill quest
+  const auto &curQ = g_quests[questIdx];
   if (curQ.questType == 1 && recv->guardNpcType == curQ.guardNpcType) {
-    // Complete the travel quest — award travel rewards
     session.zen += curQ.zenReward;
     session.experience += curQ.xpReward;
 
-    // Check for level ups from travel reward
     bool leveledUp = false;
     while (true) {
       uint64_t nextXP = Database::GetXPForLevel(session.level);
@@ -184,13 +284,12 @@ void HandleQuestAccept(Session &session, const std::vector<uint8_t> &packet,
       }
     }
 
-    // Send travel reward notification
     PMSG_QUEST_REWARD_SEND reward{};
     reward.h = MakeC1SubHeader(sizeof(reward), Opcode::QUEST,
                                Opcode::SUB_QUEST_REWARD);
     reward.zenReward = curQ.zenReward;
     reward.xpReward = curQ.xpReward;
-    reward.nextQuestIndex = (uint8_t)(session.questIndex + 1);
+    reward.nextQuestIndex = (uint8_t)(questIdx + 1);
     session.Send(&reward, sizeof(reward));
 
     db.UpdateCharacterMoney(session.characterId, session.zen);
@@ -206,43 +305,35 @@ void HandleQuestAccept(Session &session, const std::vector<uint8_t> &packet,
     }
 
     printf("[Quest] fd=%d completed travel quest %d (zen+%u xp+%u)\n",
-           session.GetFd(), session.questIndex, curQ.zenReward, curQ.xpReward);
+           session.GetFd(), questIdx, curQ.zenReward, curQ.xpReward);
 
-    // Advance to the kill quest
-    session.questIndex++;
+    questIdx++;
+    SetChainState(session, devias, questIdx, 0, 0, 0, false);
+    SaveChainState(session, db, devias);
 
-    // Fall through to accept the next quest (which should be the kill quest)
-    if (session.questIndex >= QUEST_COUNT) {
-      db.SaveQuestState(session.characterId, session.questIndex, 0, 0, 0,
-                        false);
+    if (questIdx >= QUEST_COUNT) {
       SendQuestState(session);
       CharacterHandler::SendCharStats(session);
       return;
     }
   }
 
-  // Now accept the current quest (should be a kill quest)
-  const auto &q = g_quests[session.questIndex];
+  // Accept the current quest (should be a kill quest)
+  const auto &q = g_quests[questIdx];
   if (recv->guardNpcType != q.guardNpcType) {
     printf("[Quest] fd=%d wrong guard %d for quest %d (expected %d)\n",
-           session.GetFd(), recv->guardNpcType, session.questIndex,
-           q.guardNpcType);
+           session.GetFd(), recv->guardNpcType, questIdx, q.guardNpcType);
     return;
   }
 
-  // Mark as accepted
-  session.questAccepted = true;
-  session.questKillCount0 = 0;
-  session.questKillCount1 = 0;
-  session.questKillCount2 = 0;
-  db.SaveQuestState(session.characterId, session.questIndex, 0, 0, 0, true);
+  SetChainState(session, devias, questIdx, 0, 0, 0, true);
+  SaveChainState(session, db, devias);
 
-  // Send state back to client
   SendQuestState(session);
   CharacterHandler::SendCharStats(session);
 
   printf("[Quest] fd=%d accepted quest %d from guard %d\n", session.GetFd(),
-         session.questIndex, recv->guardNpcType);
+         questIdx, recv->guardNpcType);
 }
 
 void HandleQuestComplete(Session &session, const std::vector<uint8_t> &packet,
@@ -252,34 +343,36 @@ void HandleQuestComplete(Session &session, const std::vector<uint8_t> &packet,
   auto *recv =
       reinterpret_cast<const PMSG_QUEST_COMPLETE_RECV *>(packet.data());
 
-  if (session.questIndex >= QUEST_COUNT) {
-    printf("[Quest] fd=%d tried complete but all quests done\n",
-           session.GetFd());
+  bool devias = IsDeviasGuard(recv->guardNpcType);
+  int questIdx, kc0, kc1, kc2;
+  bool accepted;
+  GetChainState(session, devias, questIdx, kc0, kc1, kc2, accepted);
+
+  if (questIdx >= QUEST_COUNT) {
+    printf("[Quest] fd=%d tried complete but chain done\n", session.GetFd());
     return;
   }
 
-  const auto &q = g_quests[session.questIndex];
+  const auto &q = g_quests[questIdx];
 
-  // Only kill quests can be completed via this handler
   if (q.questType != 0) {
     printf("[Quest] fd=%d tried complete non-kill quest %d\n", session.GetFd(),
-           session.questIndex);
+           questIdx);
     return;
   }
 
   if (recv->guardNpcType != q.guardNpcType) {
     printf("[Quest] fd=%d wrong guard %d for completing quest %d\n",
-           session.GetFd(), recv->guardNpcType, session.questIndex);
+           session.GetFd(), recv->guardNpcType, questIdx);
     return;
   }
 
   // Verify all targets are complete
-  int kc[3] = {session.questKillCount0, session.questKillCount1,
-               session.questKillCount2};
+  int kc[3] = {kc0, kc1, kc2};
   for (int i = 0; i < q.targetCount; i++) {
     if (kc[i] < q.targets[i].killsRequired) {
       printf("[Quest] fd=%d quest %d target %d not complete (%d/%d)\n",
-             session.GetFd(), session.questIndex, i, kc[i],
+             session.GetFd(), questIdx, i, kc[i],
              q.targets[i].killsRequired);
       return;
     }
@@ -289,7 +382,7 @@ void HandleQuestComplete(Session &session, const std::vector<uint8_t> &packet,
   session.zen += q.zenReward;
   session.experience += q.xpReward;
 
-  // Give item rewards (weapons + skill orbs/scrolls)
+  // Give item rewards
   GiveItemReward(session, db, q.dkReward);
   GiveItemReward(session, db, q.dwReward);
   GiveItemReward(session, db, q.orbReward);
@@ -320,15 +413,10 @@ void HandleQuestComplete(Session &session, const std::vector<uint8_t> &packet,
     }
   }
 
-  // Advance quest (next quest NOT accepted yet)
-  int nextIndex = session.questIndex + 1;
-  session.questIndex = nextIndex;
-  session.questKillCount0 = 0;
-  session.questKillCount1 = 0;
-  session.questKillCount2 = 0;
-  session.questAccepted = false;
-
-  db.SaveQuestState(session.characterId, nextIndex, 0, 0, 0, false);
+  // Advance quest
+  int nextIndex = questIdx + 1;
+  SetChainState(session, devias, nextIndex, 0, 0, 0, false);
+  SaveChainState(session, db, devias);
   db.UpdateCharacterMoney(session.characterId, session.zen);
 
   // Send reward notification
@@ -340,16 +428,10 @@ void HandleQuestComplete(Session &session, const std::vector<uint8_t> &packet,
   reward.nextQuestIndex = (uint8_t)nextIndex;
   session.Send(&reward, sizeof(reward));
 
-  // Send updated quest state
   SendQuestState(session);
-
-  // Send updated inventory (for item rewards)
   InventoryHandler::SendInventorySync(session);
-
-  // Send updated stats (zen, XP, level)
   CharacterHandler::SendCharStats(session);
 
-  // Log reward to chat
   char buf[128];
   snprintf(buf, sizeof(buf), "Quest complete! +%u Zen, +%u Experience",
            q.zenReward, q.xpReward);
@@ -361,77 +443,87 @@ void HandleQuestComplete(Session &session, const std::vector<uint8_t> &packet,
   }
 
   printf("[Quest] fd=%d completed quest %d -> next=%d (zen+%u xp+%u)\n",
-         session.GetFd(), session.questIndex - 1, nextIndex, q.zenReward,
-         q.xpReward);
+         session.GetFd(), questIdx, nextIndex, q.zenReward, q.xpReward);
 }
 
 void HandleQuestAbandon(Session &session, Database &db) {
-  if (session.questIndex >= QUEST_COUNT) {
-    printf("[Quest] fd=%d tried abandon but all quests done\n", session.GetFd());
+  // Abandon the active chain based on current map
+  bool devias = (session.mapId == 2);
+  int questIdx, kc0, kc1, kc2;
+  bool accepted;
+  GetChainState(session, devias, questIdx, kc0, kc1, kc2, accepted);
+
+  if (questIdx >= QUEST_COUNT) {
+    printf("[Quest] fd=%d tried abandon but chain done\n", session.GetFd());
     return;
   }
 
-  // Only abandon if quest is accepted
-  if (!session.questAccepted) {
+  if (!accepted) {
     printf("[Quest] fd=%d tried abandon but quest %d not accepted\n",
-           session.GetFd(), session.questIndex);
+           session.GetFd(), questIdx);
     return;
   }
 
-  // Can only abandon kill quests (travel quests have no progress to reset)
-  const auto &q = g_quests[session.questIndex];
+  const auto &q = g_quests[questIdx];
   if (q.questType != 0) {
     printf("[Quest] fd=%d tried abandon travel quest %d\n", session.GetFd(),
-           session.questIndex);
+           questIdx);
     return;
   }
 
   printf("[Quest] fd=%d abandoned quest %d (was %d/%d/%d)\n", session.GetFd(),
-         session.questIndex, session.questKillCount0, session.questKillCount1,
-         session.questKillCount2);
+         questIdx, kc0, kc1, kc2);
 
-  // Reset kill counts and acceptance
-  session.questKillCount0 = 0;
-  session.questKillCount1 = 0;
-  session.questKillCount2 = 0;
-  session.questAccepted = false;
-
-  db.SaveQuestState(session.characterId, session.questIndex, 0, 0, 0, false);
+  SetChainState(session, devias, questIdx, 0, 0, 0, false);
+  SaveChainState(session, db, devias);
   SendQuestState(session);
 }
 
-void OnMonsterKill(Session &session, uint16_t monsterType, Database &db) {
-  if (session.questIndex >= QUEST_COUNT || !session.questAccepted)
-    return;
+// Helper: try to advance kill count for a specific chain
+static bool TryMonsterKillForChain(Session &session, uint16_t monsterType,
+                                    Database &db, bool devias) {
+  int questIdx, kc0, kc1, kc2;
+  bool accepted;
+  GetChainState(session, devias, questIdx, kc0, kc1, kc2, accepted);
 
-  const auto &q = g_quests[session.questIndex];
+  if (questIdx >= QUEST_COUNT || !accepted)
+    return false;
 
-  // Only kill quests track monster kills
+  const auto &q = g_quests[questIdx];
   if (q.questType != 0)
-    return;
+    return false;
 
-  int *kc[3] = {&session.questKillCount0, &session.questKillCount1,
-                &session.questKillCount2};
+  int *kcPtrs[3];
+  if (devias) {
+    kcPtrs[0] = &session.deviasKillCount0;
+    kcPtrs[1] = &session.deviasKillCount1;
+    kcPtrs[2] = &session.deviasKillCount2;
+  } else {
+    kcPtrs[0] = &session.questKillCount0;
+    kcPtrs[1] = &session.questKillCount1;
+    kcPtrs[2] = &session.questKillCount2;
+  }
 
-  bool matched = false;
   for (int i = 0; i < q.targetCount; i++) {
     if (q.targets[i].monsterType == monsterType &&
-        *kc[i] < q.targets[i].killsRequired) {
-      (*kc[i])++;
-      matched = true;
+        *kcPtrs[i] < q.targets[i].killsRequired) {
+      (*kcPtrs[i])++;
       printf("[Quest] fd=%d quest %d target %d: kill %d/%d (monType=%d)\n",
-             session.GetFd(), session.questIndex, i, *kc[i],
+             session.GetFd(), questIdx, i, *kcPtrs[i],
              q.targets[i].killsRequired, monsterType);
-      break;
+      SaveChainState(session, db, devias);
+      SendQuestState(session);
+      return true;
     }
   }
+  return false;
+}
 
-  if (matched) {
-    db.SaveQuestState(session.characterId, session.questIndex,
-                      session.questKillCount0, session.questKillCount1,
-                      session.questKillCount2, true);
-    SendQuestState(session);
-  }
+void OnMonsterKill(Session &session, uint16_t monsterType, Database &db) {
+  // Check both chains — a monster kill could count for either
+  if (TryMonsterKillForChain(session, monsterType, db, false))
+    return;
+  TryMonsterKillForChain(session, monsterType, db, true);
 }
 
 } // namespace QuestHandler

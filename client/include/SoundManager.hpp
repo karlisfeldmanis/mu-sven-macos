@@ -156,6 +156,35 @@ enum SoundId {
   // Dark Knight monster (type 10) — Main 5.2: mDarkKnight sounds
   SOUND_MONSTER_DARKKNIGHT1 = 271,
   SOUND_MONSTER_DARKKNIGHT2 = 272,
+  // Devias monsters — Yeti (type 19) / Elite Yeti (type 20, reuses Yeti sounds)
+  SOUND_MONSTER_YETI1 = 290,
+  SOUND_MONSTER_YETI2 = 291,
+  SOUND_MONSTER_YETIATTACK1 = 292,
+  SOUND_MONSTER_YETIDIE = 293,
+  // Assassin (type 21) — idle sound (attack/die already registered above)
+  SOUND_MONSTER_ASSASSIN1 = 294,
+  // Ice Monster (type 22)
+  SOUND_MONSTER_ICEMONSTER1 = 295,
+  SOUND_MONSTER_ICEMONSTER2 = 296,
+  SOUND_MONSTER_ICEMONSTERDIE = 297,
+  // Hommerd (type 23)
+  SOUND_MONSTER_HOMMERD1 = 298,
+  SOUND_MONSTER_HOMMERD2 = 299,
+  SOUND_MONSTER_HOMMERDATTACK1 = 300,
+  SOUND_MONSTER_HOMMERDDIE = 301,
+  // Worm (type 24)
+  SOUND_MONSTER_WORM1 = 302,
+  SOUND_MONSTER_WORM2 = 303,
+  SOUND_MONSTER_WORMDIE = 304,
+  // Ice Queen (type 25)
+  SOUND_MONSTER_ICEQUEEN1 = 305,
+  SOUND_MONSTER_ICEQUEEN2 = 306,
+  SOUND_MONSTER_ICEQUEENATTACK1 = 307,
+  SOUND_MONSTER_ICEQUEENATTACK2 = 308,
+  SOUND_MONSTER_ICEQUEENDIE = 309,
+  // Door sounds (Main 5.2: aDoor.wav, aCastleDoor.wav)
+  SOUND_DOOR01 = 280, // Swinging wood door
+  SOUND_DOOR02 = 281, // Sliding castle door
 };
 
 namespace SoundManager {

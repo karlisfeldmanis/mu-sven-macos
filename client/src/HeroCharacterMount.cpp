@@ -62,7 +62,8 @@ void HeroCharacter::renderMountModel(const glm::mat4 &view, const glm::mat4 &pro
     // Sync mount animation frame to player's ride animation frame.
     // Apply stride scale to match visual stride with actual ground speed.
     // >1.0 = faster legs (mount stride < ground speed), <1.0 = slower legs.
-    constexpr float MOUNT_STRIDE_SCALE = 1.25f; // Tune empirically for perfect sync
+    // Sync mount animation frame to player frame (1:1 ratio, no stride scale)
+    // Player ride walk and mount walk have matching 7-key patterns (CLAUDE.md)
     int mountNumKeys = m_mount.bmd->Actions[mountAction].NumAnimationKeys;
     bool mountLockPos = m_mount.bmd->Actions[mountAction].LockPositions;
     int mountWrapKeys = mountLockPos ? (mountNumKeys - 1) : mountNumKeys;
@@ -72,8 +73,7 @@ void HeroCharacter::renderMountModel(const glm::mat4 &view, const glm::mat4 &pro
       int playerWrapKeys = playerLockPos ? (playerNumKeys - 1) : playerNumKeys;
       if (playerWrapKeys > 0) {
         float progress = m_animFrame / (float)playerWrapKeys;
-        m_mount.animFrame = std::fmod(progress * MOUNT_STRIDE_SCALE *
-                                      (float)mountWrapKeys, (float)mountWrapKeys);
+        m_mount.animFrame = std::fmod(progress * (float)mountWrapKeys, (float)mountWrapKeys);
       } else {
         m_mount.animFrame = 0.0f;
       }

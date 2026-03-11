@@ -15,6 +15,10 @@ uniform bool useSkinning;
 const int MAX_BONES = 48;
 uniform mat4 boneMatrices[MAX_BONES];
 
+// Per-instance tree sway: phase offset + time for unique wind per tree
+uniform float swayPhase; // unique per instance (derived from position)
+uniform float swayTime;  // global time
+
 out vec2 TexCoord;
 out vec3 Normal;
 out vec3 FragPos;
@@ -28,6 +32,22 @@ void main() {
         if (bi >= 0 && bi < MAX_BONES) {
             localPos = vec3(boneMatrices[bi] * vec4(aPos, 1.0));
             localNorm = mat3(boneMatrices[bi]) * aNormal;
+        }
+
+        // Per-instance wind sway: gentle vertex displacement on top of bone animation
+        float heightWeight = clamp((localPos.z - 50.0) / 250.0, 0.0, 1.0);
+        if (heightWeight > 0.0 && swayPhase >= 0.0) {
+            float t = swayTime + swayPhase;
+            // Per-instance amplitude variation (0.3 to 1.0) so each tree sways differently
+            float ampScale = 0.3 + 0.7 * fract(swayPhase * 2.17 + 0.5);
+            // Two overlapping sine waves with different frequencies per instance
+            float freqVar = 0.8 + 0.4 * fract(swayPhase * 1.53);
+            float swayX = sin(t * 0.7 * freqVar + swayPhase * 3.7) * 3.0
+                        + sin(t * 1.5 * freqVar + swayPhase * 5.1) * 1.2;
+            float swayY = sin(t * 0.6 * freqVar + swayPhase * 2.3) * 2.5
+                        + cos(t * 1.1 * freqVar + swayPhase * 4.2) * 1.0;
+            localPos.x += swayX * heightWeight * ampScale;
+            localPos.y += swayY * heightWeight * ampScale;
         }
     }
 

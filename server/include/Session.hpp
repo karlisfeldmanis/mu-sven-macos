@@ -109,7 +109,9 @@ public:
 
   // Potion cooldown timer (seconds)
   float potionCooldown = 0.0f;
-  float hpRemainder = 0.0f;   // Fractional HP for safe zone regeneration
+  float hpRemainder = 0.0f;     // Fractional HP for safe zone regeneration
+  float idleHpRemainder = 0.0f; // Fractional HP for idle world regeneration
+  float idleTimer = 0.0f;       // Seconds since player last moved (for idle regen)
   float manaRemainder = 0.0f; // Fractional mana for regeneration
   int8_t skillBar[10];
   int16_t potionBar[4];
@@ -126,12 +128,18 @@ public:
   // Learned skills (skill IDs)
   std::vector<uint8_t> learnedSkills;
 
-  // Quest system
-  int questIndex = 0;      // Current quest (0-8), 9=all done
+  // Quest system — Lorencia/Dungeon chain (quests 0-11)
+  int questIndex = 0;      // Current quest (0-11), 12=all done
   int questKillCount0 = 0; // Kill progress for target 0
   int questKillCount1 = 0; // Kill progress for target 1
   int questKillCount2 = 0; // Kill progress for target 2
   bool questAccepted = false; // Whether current quest has been accepted
+  // Quest system — Devias chain (quests 12-17), independent from Lorencia
+  int deviasQuestIndex = 12;
+  int deviasKillCount0 = 0;
+  int deviasKillCount1 = 0;
+  int deviasKillCount2 = 0;
+  bool deviasQuestAccepted = false;
 
 private:
   int m_fd;

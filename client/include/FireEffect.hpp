@@ -16,10 +16,12 @@ struct FireOffsetEntry {
 };
 
 // Returns MU-local fire offsets for a given object type, or empty if no fire
-const std::vector<glm::vec3> &GetFireOffsets(int objectType);
+// mapId is required because object types are map-specific (e.g. type 30 = stone
+// in Lorencia but fireplace in Devias)
+const std::vector<glm::vec3> &GetFireOffsets(int objectType, int mapId);
 
 // Returns MU-local smoke offsets for a given object type, or empty if no smoke
-const std::vector<glm::vec3> &GetSmokeOffsets(int objectType);
+const std::vector<glm::vec3> &GetSmokeOffsets(int objectType, int mapId);
 
 // Returns the object type for a BMD filename, or -1 if not a fire/smoke object
 int GetFireTypeFromFilename(const std::string &bmdFilename);

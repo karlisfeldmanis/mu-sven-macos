@@ -59,10 +59,11 @@ struct ClientGameState {
   std::vector<uint8_t> *learnedSkills = nullptr;
 
   // Quest state (synced from server)
-  int *questIndex = nullptr;
-  int *questKillCount = nullptr;  // [3] array
-  int *questRequired = nullptr;   // [3] array
+  int *questIndex = nullptr;          // Active quest for current map
+  int *questKillCount = nullptr;      // [3] array
+  int *questRequired = nullptr;       // [3] array
   int *questTargetCount = nullptr;
+  int *deviasQuestIndex = nullptr;    // Devias chain index (12-17)
 
   // Callbacks for main.cpp-specific functionality
   std::function<void(const glm::vec3 &, int, uint8_t)> spawnDamageNumber;

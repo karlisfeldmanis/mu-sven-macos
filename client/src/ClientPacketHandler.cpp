@@ -25,6 +25,13 @@ static void ApplyEquipToHero(uint8_t slot, const WeaponEquipInfo &weapon) {
     g_state->hero->EquipWeapon(weapon);
   } else if (slot == 1) {
     g_state->hero->EquipShield(weapon);
+  } else if (slot == 7) {
+    // Wings (category 12)
+    if (weapon.category == 12 && weapon.itemIndex <= 6) {
+      g_state->hero->EquipWings(weapon);
+    } else if (weapon.category == 0xFF) {
+      g_state->hero->UnequipWings();
+    }
   } else if (slot == 8) {
     // Pet/Mount slot (category 13)
     // Only re-equip if item actually changed (prevents reactivating dismounted mount)
@@ -441,7 +448,10 @@ void HandleInitialPacket(const uint8_t *pkt, int pktSize, ServerData &result) {
             g_state->questRequired[i] = (i < p->targetCount) ? p->targets[i].killsRequired : 0;
           }
         }
+        if (g_state->deviasQuestIndex)
+          *g_state->deviasQuestIndex = p->deviasQuestIndex;
         std::cout << "[Quest] Initial state: quest=" << (int)p->questIndex
+                  << " devias=" << (int)p->deviasQuestIndex
                   << " targets=" << (int)p->targetCount << "\n";
       }
     }
@@ -888,6 +898,8 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
         auto *p = reinterpret_cast<const PMSG_QUEST_STATE_SEND *>(pkt);
         if (g_state->questIndex)
           *g_state->questIndex = p->questIndex;
+        if (g_state->deviasQuestIndex)
+          *g_state->deviasQuestIndex = p->deviasQuestIndex;
         if (g_state->questTargetCount)
           *g_state->questTargetCount = p->targetCount;
         if (g_state->questKillCount && g_state->questRequired) {
@@ -896,14 +908,15 @@ void HandleGamePacket(const uint8_t *pkt, int pktSize) {
             g_state->questRequired[i] = (i < p->targetCount) ? p->targets[i].killsRequired : 0;
           }
         }
-        std::cout << "[Quest] State: quest=" << (int)p->questIndex
+        std::cout << "[Quest] State: lorc=" << (int)p->questIndex
+                  << " devias=" << (int)p->deviasQuestIndex
                   << " targets=" << (int)p->targetCount << "\n";
       }
       // Quest Reward (0x50:0x03)
       if (subcode == Opcode::SUB_QUEST_REWARD &&
           pktSize >= (int)sizeof(PMSG_QUEST_REWARD_SEND)) {
         auto *p = reinterpret_cast<const PMSG_QUEST_REWARD_SEND *>(pkt);
-        SoundManager::Play(SOUND_LEVEL_UP);
+        SoundManager::Play(SOUND_QUEST_ACCEPT);
         SystemMessageLog::Log(MSG_GENERAL, IM_COL32(255, 210, 50, 255),
                               "Quest complete! +%u Zen, +%u XP",
                               p->zenReward, p->xpReward);
@@ -1081,6 +1094,13 @@ void HandleCharSelectPacket(const uint8_t *pkt, int pktSize) {
           slots[slot].equip[e].itemIndex = entry->charSet[2 + e * 2];
           slots[slot].equip[e].itemLevel = entry->equipLevels[e];
         }
+        // Slot 7: wings from charSet[17..18] + equipLevels[7]
+        slots[slot].wingEquip.category = entry->charSet[17];
+        slots[slot].wingEquip.itemIndex = entry->charSet[18];
+        slots[slot].wingEquip.itemLevel = entry->equipLevels[7];
+        // Slot 8: pet/mount from charSet[15..16]
+        slots[slot].petMount.category = entry->charSet[15];
+        slots[slot].petMount.itemIndex = entry->charSet[16];
         parsed++;
       }
       entryOff += sizeof(PMSG_CHARLIST_ENTRY);

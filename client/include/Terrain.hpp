@@ -14,7 +14,9 @@ public:
   ~Terrain();
 
   void Init(); // Added Init for OpenGL setup
-  void Load(const TerrainData &data, int worldID, const std::string &data_path);
+  void Load(const TerrainData &data, int worldID, const std::string &data_path,
+            const std::vector<uint8_t> &rawAttributes = {},
+            const std::vector<bool> &bridgeMask = {});
   void Render(const glm::mat4 &view, const glm::mat4 &projection, float time,
               const glm::vec3 &viewPos = glm::vec3(0.0f));
   void SetDebugMode(int mode) { debugMode = mode; }
@@ -33,7 +35,9 @@ public:
 
 private:
   void setupMesh(const std::vector<float> &heightmap,
-                 const std::vector<glm::vec3> &lightmap);
+                 const std::vector<glm::vec3> &lightmap,
+                 const std::vector<uint8_t> &rawAttributes,
+                 const std::vector<bool> &bridgeMask = {});
   void setupShader();
   void setupTextures(const TerrainData &data, const std::string &base_path);
   void

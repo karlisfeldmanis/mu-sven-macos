@@ -249,6 +249,22 @@ void Database::CreateTables() {
   sqlite3_exec(m_db,
       "ALTER TABLE character_quests ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0",
       nullptr, nullptr, nullptr);
+  // Migrate: add Devias quest chain columns (independent from Lorencia)
+  sqlite3_exec(m_db,
+      "ALTER TABLE character_quests ADD COLUMN devias_quest_index INTEGER NOT NULL DEFAULT 12",
+      nullptr, nullptr, nullptr);
+  sqlite3_exec(m_db,
+      "ALTER TABLE character_quests ADD COLUMN devias_kc0 INTEGER NOT NULL DEFAULT 0",
+      nullptr, nullptr, nullptr);
+  sqlite3_exec(m_db,
+      "ALTER TABLE character_quests ADD COLUMN devias_kc1 INTEGER NOT NULL DEFAULT 0",
+      nullptr, nullptr, nullptr);
+  sqlite3_exec(m_db,
+      "ALTER TABLE character_quests ADD COLUMN devias_kc2 INTEGER NOT NULL DEFAULT 0",
+      nullptr, nullptr, nullptr);
+  sqlite3_exec(m_db,
+      "ALTER TABLE character_quests ADD COLUMN devias_accepted INTEGER NOT NULL DEFAULT 0",
+      nullptr, nullptr, nullptr);
 }
 
 void Database::CreateDefaultAccount() {
@@ -384,19 +400,19 @@ bool Database::CharacterNameExists(const std::string &name) {
 
 int Database::CreateCharacter(int accountId, const std::string &name,
                               uint8_t classCode) {
-  // Find next free slot (0-4) for this account
+  // Find next free slot (0-3) for this account
   auto chars = GetCharacterList(accountId);
-  if (chars.size() >= 5)
-    return -1; // Max 5 characters
+  if (chars.size() >= 4)
+    return -1; // Max 4 characters
 
   // Find lowest unused slot
-  bool slotUsed[5] = {};
+  bool slotUsed[4] = {};
   for (auto &c : chars) {
-    if (c.slot >= 0 && c.slot < 5)
+    if (c.slot >= 0 && c.slot < 4)
       slotUsed[c.slot] = true;
   }
   int freeSlot = -1;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 4; i++) {
     if (!slotUsed[i]) {
       freeSlot = i;
       break;
@@ -692,14 +708,24 @@ void Database::SaveCharacterFull(int charId, uint16_t level, uint16_t strength,
   sqlite3_finalize(stmt);
 }
 
-void Database::UpdatePosition(int charId, uint8_t x, uint8_t y) {
+void Database::UpdatePosition(int charId, uint8_t x, uint8_t y, int mapId) {
   sqlite3_stmt *stmt = nullptr;
-  const char *sql = "UPDATE characters SET pos_x=?, pos_y=? WHERE id=?";
-  if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return;
-  sqlite3_bind_int(stmt, 1, x);
-  sqlite3_bind_int(stmt, 2, y);
-  sqlite3_bind_int(stmt, 3, charId);
+  if (mapId >= 0) {
+    const char *sql = "UPDATE characters SET pos_x=?, pos_y=?, map_id=? WHERE id=?";
+    if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+      return;
+    sqlite3_bind_int(stmt, 1, x);
+    sqlite3_bind_int(stmt, 2, y);
+    sqlite3_bind_int(stmt, 3, mapId);
+    sqlite3_bind_int(stmt, 4, charId);
+  } else {
+    const char *sql = "UPDATE characters SET pos_x=?, pos_y=? WHERE id=?";
+    if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+      return;
+    sqlite3_bind_int(stmt, 1, x);
+    sqlite3_bind_int(stmt, 2, y);
+    sqlite3_bind_int(stmt, 3, charId);
+  }
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 }
@@ -732,7 +758,7 @@ void Database::SeedNpcSpawns() {
             (255, 0, 123, 135, 2, 'Lumen the Barmaid'),
             (240, 0, 146, 110, 4, 'Safety Guardian'),
             (240, 0, 147, 145, 2, 'Safety Guardian'),
-            (245, 0, 94,  125, 2, 'Warden Aldric'),
+            (245, 0, 94,  125, 3, 'Warden Aldric'),
             (246, 0, 123, 84,  3, 'Corporal Brynn'),
             (247, 0, 130, 115, 4, 'Sergeant Dorian'),
             (248, 0, 173, 125, 5, 'Lieutenant Kael'),
@@ -744,6 +770,37 @@ void Database::SeedNpcSpawns() {
     sqlite3_free(err);
   } else {
     printf("[DB] Seeded 12 Lorencia NPC spawns (7 vendors + 5 guards)\n");
+  }
+
+  // Seed Devias (map_id=2) NPCs if not already present
+  sqlite3_prepare_v2(m_db, "SELECT COUNT(*) FROM npc_spawns WHERE map_id=2",
+                     -1, &stmt, nullptr);
+  int deviasNpcCount = 0;
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    deviasNpcCount = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  if (deviasNpcCount > 0) {
+    printf("[DB] Devias NPC spawns already seeded (%d entries)\n", deviasNpcCount);
+    return;
+  }
+
+  const char *deviasSql = R"(
+        INSERT INTO npc_spawns (type, map_id, pos_x, pos_y, direction, name) VALUES
+            (300, 2, 218, 63, 4, 'Baz the Vault Keeper'),
+            (301, 2, 215, 45, 3, 'Guild Master'),
+            (302, 2, 226, 25, 5, 'Caren the Barmaid'),
+            (303, 2, 225, 41, 5, 'Izabel the Wizard'),
+            (304, 2, 186, 47, 5, 'Zienna the Arms Dealer'),
+            (310, 2, 218, 79, 4, 'Ranger Elise'),
+            (311, 2, 195, 55, 5, 'Tracker Nolan'),
+            (312, 2, 180, 70, 4, 'Warden Hale');
+    )";
+  err = nullptr;
+  if (sqlite3_exec(m_db, deviasSql, nullptr, nullptr, &err) != SQLITE_OK) {
+    printf("[DB] SeedDeviasNpcSpawns error: %s\n", err);
+    sqlite3_free(err);
+  } else {
+    printf("[DB] Seeded 8 Devias NPC spawns (5 vendors + 3 quest guards)\n");
   }
 }
 
@@ -979,18 +1036,18 @@ void Database::SeedItemDefinitions() {
              (12, 5, 'Wings of Dragon', 'Wing06.bmd', 180, 0, 0, 20, 0, 0, 4, 3, 0, 0, 0, 0, 2),
              (12, 6, 'Wings of Darkness', 'Wing07.bmd', 180, 0, 0, 20, 0, 0, 4, 3, 0, 0, 0, 0, 8),
              -- Orbs (Research confirmed: GemXX.bmd)
-             (12, 7, 'Orb of Twisting Slash', 'Gem01.bmd', 47, 0, 0, 0, 0, 0, 1, 1, 80, 0, 0, 0, 10),
+             (12, 7, 'Orb of Twisting Slash', 'Gem01.bmd', 30, 0, 0, 0, 0, 0, 1, 1, 80, 0, 0, 0, 10),
              (12, 8, 'Orb of Healing', 'Gem02.bmd', 8, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
              (12, 9, 'Orb of Greater Defense', 'Gem03.bmd', 13, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
              (12, 10, 'Orb of Greater Damage', 'Gem04.bmd', 18, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 100, 4),
              (12, 11, 'Orb of Summoning', 'Gem05.bmd', 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 4),
-             (12, 12, 'Orb of Rageful Blow', 'Gem06.bmd', 78, 0, 0, 0, 0, 0, 1, 1, 170, 0, 0, 0, 2),
+             (12, 12, 'Orb of Rageful Blow', 'Gem06.bmd', 170, 0, 0, 0, 0, 0, 1, 1, 170, 0, 0, 0, 2),
              (12, 13, 'Orb of Impale', 'Gem07.bmd', 20, 0, 0, 0, 0, 0, 1, 1, 28, 0, 0, 0, 2),
              (12, 14, 'Orb of Greater Fortitude', 'Gem08.bmd', 60, 0, 0, 0, 0, 0, 1, 1, 120, 0, 0, 0, 2),
              (12, 16, 'Orb of Fire Slash', 'Gem10.bmd', 60, 0, 0, 0, 0, 0, 1, 1, 320, 0, 0, 0, 8),
              (12, 17, 'Orb of Penetration', 'Gem11.bmd', 64, 0, 0, 0, 0, 0, 1, 1, 130, 0, 0, 0, 4),
              (12, 18, 'Orb of Ice Arrow', 'Gem12.bmd', 81, 0, 0, 0, 0, 0, 1, 1, 0, 258, 0, 0, 4),
-             (12, 19, 'Orb of Death Stab', 'Gem13.bmd', 72, 0, 0, 0, 0, 0, 1, 1, 160, 0, 0, 0, 2),
+             (12, 19, 'Orb of Death Stab', 'Gem13.bmd', 160, 0, 0, 0, 0, 0, 1, 1, 160, 0, 0, 0, 2),
              -- Basic DK skill orbs (indices 20-24)
              (12, 20, 'Orb of Falling Slash', 'Gem01.bmd', 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2),
              (12, 21, 'Orb of Lunge', 'Gem01.bmd', 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2),
@@ -1527,6 +1584,90 @@ void Database::SeedMonsterSpawns() {
     printf("[DB] Seeded Dungeon monster spawns (258 spawns, 12 types from "
            "OpenMU Version075 Dungeon.cs)\n");
   }
+
+  // Seed Devias (map_id=2) spawns if not already present
+  sqlite3_prepare_v2(m_db, "SELECT COUNT(*) FROM monster_spawns WHERE map_id=2",
+                     -1, &stmt, nullptr);
+  int deviasCount = 0;
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    deviasCount = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  if (deviasCount > 0) {
+    printf("[DB] Devias spawns already seeded (%d entries)\n", deviasCount);
+    return;
+  }
+
+  // Devias monster spawns — converted from OpenMU Version075 Devias.cs
+  // OpenMU uses rectangular area spawns; we distribute representative points within each.
+  // Safe zone: x=[169,255], y=[0,78] — all spawns MUST be outside this region.
+  // Total OpenMU: 545 spawns across 6 types. We use ~145 representative points.
+  const char *deviasMSql = R"(
+        INSERT INTO monster_spawns (type, map_id, pos_x, pos_y, direction) VALUES
+            -- Worm (type 24): OpenMU rect x=128-251,y=0-128, qty 65 → 20 points
+            -- Avoid safe zone: x>=169 AND y<=78 is forbidden
+            -- Region A: x=128-168 (west strip, any y)
+            (24,2,130,10,2),(24,2,135,25,4),(24,2,140,42,6),(24,2,145,58,1),
+            (24,2,150,72,3),(24,2,155,88,5),(24,2,160,105,0),(24,2,165,118,7),
+            (24,2,132,50,2),(24,2,148,95,4),
+            -- Region B: x=169-245, y=79-128 (south of safe zone)
+            (24,2,175,82,6),(24,2,185,90,1),(24,2,195,85,3),(24,2,205,95,5),
+            (24,2,215,88,0),(24,2,225,100,7),(24,2,235,92,2),(24,2,240,110,4),
+            (24,2,180,105,6),(24,2,200,118,1),
+            -- Assassin (type 21): OpenMU rect x=128-251,y=0-128, qty 35 → 15 points
+            -- Region A: x=128-168
+            (21,2,130,30,2),(21,2,138,60,4),(21,2,146,90,6),(21,2,155,120,1),
+            (21,2,135,75,3),(21,2,162,45,5),(21,2,142,110,0),
+            -- Region B: x=169-245, y=79-128
+            (21,2,178,95,7),(21,2,192,100,2),(21,2,208,88,4),(21,2,222,108,6),
+            (21,2,238,95,1),(21,2,248,115,3),(21,2,185,118,5),(21,2,215,82,0),
+            -- Ice Monster (type 22): OpenMU rect x=0-128,y=0-128, qty 75 → 25 points
+            (22,2,10,12,2),(22,2,25,28,4),(22,2,40,45,6),(22,2,55,58,1),
+            (22,2,70,72,3),(22,2,85,88,5),(22,2,100,102,0),(22,2,115,118,7),
+            (22,2,15,55,2),(22,2,30,78,4),(22,2,45,100,6),(22,2,60,120,1),
+            (22,2,75,15,3),(22,2,90,42,5),(22,2,105,68,0),(22,2,120,95,7),
+            (22,2,20,92,2),(22,2,38,112,4),(22,2,52,22,6),(22,2,68,48,1),
+            (22,2,82,75,3),(22,2,98,110,5),(22,2,112,35,0),(22,2,125,62,7),
+            (22,2,8,85,2),
+            -- Hommerd (type 23): OpenMU rect x=0-128,y=0-128, qty 75 → 25 points
+            (23,2,5,18,2),(23,2,20,35,4),(23,2,35,52,6),(23,2,50,68,1),
+            (23,2,65,82,3),(23,2,80,98,5),(23,2,95,112,0),(23,2,110,125,7),
+            (23,2,12,62,2),(23,2,28,85,4),(23,2,42,108,6),(23,2,58,10,1),
+            (23,2,72,38,3),(23,2,88,55,5),(23,2,102,78,0),(23,2,118,100,7),
+            (23,2,18,95,2),(23,2,32,115,4),(23,2,48,28,6),(23,2,62,52,1),
+            (23,2,78,72,3),(23,2,92,105,5),(23,2,108,42,0),(23,2,122,18,7),
+            (23,2,6,48,2),
+            -- Elite Yeti (type 20): OpenMU multiple rects, total 235 → 50 points
+            -- Point spawns (194,165) and (36,25) from OpenMU
+            (20,2,194,165,2),(20,2,190,162,4),(20,2,198,168,6),
+            (20,2,36,25,1),(20,2,32,22,3),(20,2,40,28,5),
+            -- Rect x=210-242,y=210-220 (15 spawns) → 5 points
+            (20,2,215,212,0),(20,2,222,215,7),(20,2,228,218,2),(20,2,234,213,4),(20,2,240,216,6),
+            -- Rect x=0-251,y=128-245 (200 spawns) → 39 points spread across south
+            (20,2,10,132,1),(20,2,25,142,3),(20,2,42,155,5),(20,2,58,168,0),
+            (20,2,72,178,7),(20,2,88,188,2),(20,2,102,198,4),(20,2,118,210,6),
+            (20,2,132,222,1),(20,2,148,235,3),(20,2,162,240,5),(20,2,178,138,0),
+            (20,2,192,148,7),(20,2,208,158,2),(20,2,225,168,4),(20,2,240,178,6),
+            (20,2,15,188,1),(20,2,32,200,3),(20,2,48,215,5),(20,2,65,228,0),
+            (20,2,80,238,7),(20,2,95,135,2),(20,2,112,145,4),(20,2,128,158,6),
+            (20,2,145,170,1),(20,2,160,182,3),(20,2,175,195,5),(20,2,190,208,0),
+            (20,2,205,220,7),(20,2,220,232,2),(20,2,238,242,4),(20,2,22,150,6),
+            (20,2,55,180,1),(20,2,85,210,3),(20,2,115,240,5),(20,2,140,130,0),
+            (20,2,170,160,7),(20,2,200,190,2),(20,2,230,225,4),
+            -- Ice Queen (type 25): OpenMU rect x=0-128,y=128-245, qty 75 → 20 points
+            (25,2,10,135,2),(25,2,25,152,4),(25,2,40,168,6),(25,2,55,182,1),
+            (25,2,70,198,3),(25,2,85,212,5),(25,2,100,228,0),(25,2,115,242,7),
+            (25,2,15,162,2),(25,2,30,178,4),(25,2,45,195,6),(25,2,60,208,1),
+            (25,2,75,225,3),(25,2,90,238,5),(25,2,105,148,0),(25,2,120,168,7),
+            (25,2,20,188,2),(25,2,35,205,4),(25,2,50,218,6),(25,2,65,235,1)
+    )";
+  err = nullptr;
+  if (sqlite3_exec(m_db, deviasMSql, nullptr, nullptr, &err) != SQLITE_OK) {
+    printf("[DB] SeedMonsterSpawns (Devias) error: %s\n", err);
+    sqlite3_free(err);
+  } else {
+    printf("[DB] Seeded Devias monster spawns (155 spawns, 6 types from OpenMU "
+           "Version075 Devias.cs)\n");
+  }
 }
 
 std::vector<MonsterSpawnData> Database::GetMonsterSpawns(uint8_t mapId) {
@@ -1798,8 +1939,9 @@ Database::QuestState Database::LoadQuestState(int characterId) {
   QuestState qs;
   sqlite3_stmt *stmt = nullptr;
   if (sqlite3_prepare_v2(m_db,
-          "SELECT quest_index, kill_count_0, kill_count_1, kill_count_2, accepted "
-          "FROM character_quests WHERE character_id=?",
+          "SELECT quest_index, kill_count_0, kill_count_1, kill_count_2, accepted,"
+          " devias_quest_index, devias_kc0, devias_kc1, devias_kc2, devias_accepted"
+          " FROM character_quests WHERE character_id=?",
           -1, &stmt, nullptr) != SQLITE_OK)
     return qs;
   sqlite3_bind_int(stmt, 1, characterId);
@@ -1809,6 +1951,11 @@ Database::QuestState Database::LoadQuestState(int characterId) {
     qs.killCount1 = sqlite3_column_int(stmt, 2);
     qs.killCount2 = sqlite3_column_int(stmt, 3);
     qs.accepted = sqlite3_column_int(stmt, 4) != 0;
+    qs.deviasQuestIndex = sqlite3_column_int(stmt, 5);
+    qs.deviasKc0 = sqlite3_column_int(stmt, 6);
+    qs.deviasKc1 = sqlite3_column_int(stmt, 7);
+    qs.deviasKc2 = sqlite3_column_int(stmt, 8);
+    qs.deviasAccepted = sqlite3_column_int(stmt, 9) != 0;
   }
   sqlite3_finalize(stmt);
   return qs;
@@ -1834,6 +1981,25 @@ void Database::SaveQuestState(int characterId, int questIndex,
   sqlite3_bind_int(stmt, 4, kc1);
   sqlite3_bind_int(stmt, 5, kc2);
   sqlite3_bind_int(stmt, 6, accepted ? 1 : 0);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+}
+
+void Database::SaveDeviasQuestState(int characterId, int questIndex,
+                                    int kc0, int kc1, int kc2, bool accepted) {
+  sqlite3_stmt *stmt = nullptr;
+  if (sqlite3_prepare_v2(m_db,
+          "UPDATE character_quests SET "
+          "devias_quest_index=?, devias_kc0=?, devias_kc1=?, devias_kc2=?, devias_accepted=? "
+          "WHERE character_id=?",
+          -1, &stmt, nullptr) != SQLITE_OK)
+    return;
+  sqlite3_bind_int(stmt, 1, questIndex);
+  sqlite3_bind_int(stmt, 2, kc0);
+  sqlite3_bind_int(stmt, 3, kc1);
+  sqlite3_bind_int(stmt, 4, kc2);
+  sqlite3_bind_int(stmt, 5, accepted ? 1 : 0);
+  sqlite3_bind_int(stmt, 6, characterId);
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 }

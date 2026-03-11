@@ -13,11 +13,6 @@
 #include <string>
 #include <vector>
 
-// Main 5.2 PartObjectColor: per-item-type glow color for chrome enhancement passes
-glm::vec3 GetPartObjectColor(int category, int itemIndex);
-// Main 5.2 PartObjectColor2: secondary glow color for CHROME2/CHROME4 passes
-glm::vec3 GetPartObjectColor2(int category, int itemIndex);
-
 struct PointLight {
   glm::vec3 position;
   glm::vec3 color;
@@ -106,6 +101,10 @@ public:
   // Equipment equipping (called after server sends equipment packet)
   void EquipWeapon(const WeaponEquipInfo &weapon);
   void EquipShield(const WeaponEquipInfo &shield);
+
+  // Wings (category 12, items 0-6 — attached to back bone 47)
+  void EquipWings(const WeaponEquipInfo &wing);
+  void UnequipWings();
 
   // Pet companion (Guardian Angel / Imp — floating orbit)
   void EquipPet(uint8_t itemIndex);
@@ -543,17 +542,21 @@ private:
   int m_weaponBlendMesh = -1;  // Mesh index to render additively (-1 = none)
   int m_shieldBlendMesh = -1;  // Shield glow mesh index (-1 = none)
 
-  // Chrome/Shiny environment-map textures (Main 5.2 RENDER_CHROME/CHROME2/METAL)
-  GLuint m_chromeTexture = 0;   // Effect/Chrome01.OZJ (BITMAP_CHROME)
-  GLuint m_chrome2Texture = 0;  // Effect/Chrome02.OZJ (BITMAP_CHROME2)
-  GLuint m_shinyTexture = 0;    // Effect/Shiny01.OZJ  (BITMAP_SHINY)
-
   // Shield (attached item model — left hand)
   WeaponEquipInfo m_shieldInfo;
   std::unique_ptr<BMDData> m_shieldBmd;
   std::vector<MeshBuffers> m_shieldMeshBuffers;
   std::vector<ShadowMesh> m_shieldShadowMeshes;
   std::vector<BoneWorldMatrix> m_shieldLocalBones; // Cached static bind-pose
+
+  // Wings (attached to back bone 47 — Main 5.2 RenderCharacterBackItem)
+  WeaponEquipInfo m_wingInfo;
+  std::unique_ptr<BMDData> m_wingBmd;
+  std::vector<MeshBuffers> m_wingMeshBuffers;
+  std::vector<ShadowMesh> m_wingShadowMeshes;
+  std::vector<BoneWorldMatrix> m_wingLocalBones; // Cached static bind-pose
+  int m_wingBlendMesh = -1;  // Wing glow mesh index (-1 = none)
+  float m_wingAnimFrame = 0.0f;  // Independent wing animation frame
 
   // Pet companion (Guardian Angel / Imp — Main 5.2 GOBoid.cpp Direction-vector movement)
   struct PetCompanion {

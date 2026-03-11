@@ -1,4 +1,5 @@
 #include "HeroCharacter.hpp"
+#include "ChromeGlow.hpp"
 #include "ItemModelManager.hpp"
 #include "SoundManager.hpp"
 #include "TerrainUtils.hpp"
@@ -20,247 +21,6 @@ static const char *GetClassBodySuffix(uint8_t classCode) {
   case 48: return "Class04"; // MG
   default: return "Class02";
   }
-}
-
-// ─── Main 5.2 PartObjectColor: per-item-type glow colors (ZzzObject.cpp:6483-6768) ───
-// Maps (category, itemIndex) to the glow RGB used for chrome enhancement passes.
-// Color table has 43 entries; most items default to Color 0 (warm gold).
-glm::vec3 GetPartObjectColor(int category, int itemIndex) {
-  // Main 5.2 color palette (Bright=1.0 baked in)
-  static const glm::vec3 kColors[] = {
-    {1.0f, 0.5f, 0.0f},   //  0: default gold
-    {1.0f, 0.2f, 0.0f},   //  1: red-orange
-    {0.0f, 0.5f, 1.0f},   //  2: blue
-    {0.0f, 0.5f, 1.0f},   //  3: blue (alt)
-    {0.0f, 0.8f, 0.4f},   //  4: teal
-    {1.0f, 1.0f, 1.0f},   //  5: white
-    {0.6f, 0.8f, 0.4f},   //  6: green-gray
-    {0.9f, 0.8f, 1.0f},   //  7: lavender
-    {0.8f, 0.8f, 1.0f},   //  8: light blue
-    {0.5f, 0.5f, 0.8f},   //  9: muted blue
-    {0.75f,0.65f,0.5f},   // 10: warm beige
-    {0.35f,0.35f,0.6f},   // 11: dusk blue
-    {0.47f,0.67f,0.6f},   // 12: seafoam
-    {0.0f, 0.3f, 0.6f},   // 13: deep blue
-    {0.65f,0.65f,0.55f},  // 14: sandy
-    {0.2f, 0.3f, 0.6f},   // 15: dark blue
-    {0.8f, 0.46f,0.25f},  // 16: copper
-    {0.65f,0.45f,0.3f},   // 17: bronze
-    {0.5f, 0.4f, 0.3f},   // 18: dark bronze
-    {0.37f,0.37f,1.0f},   // 19: vivid blue
-    {0.3f, 0.7f, 0.3f},   // 20: green
-    {0.5f, 0.4f, 1.0f},   // 21: purple-blue
-    {0.45f,0.45f,0.23f},  // 22: olive
-    {0.3f, 0.3f, 0.45f},  // 23: slate
-    {0.6f, 0.5f, 0.2f},   // 24: amber
-    {0.6f, 0.6f, 0.6f},   // 25: silver
-    {0.3f, 0.7f, 0.3f},   // 26: green (alt)
-    {0.5f, 0.6f, 0.7f},   // 27: steel blue
-    {0.45f,0.45f,0.23f},  // 28: olive (alt)
-    {0.2f, 0.7f, 0.3f},   // 29: emerald
-    {0.7f, 0.3f, 0.3f},   // 30: crimson
-    {0.7f, 0.5f, 0.3f},   // 31: warm orange
-    {0.5f, 0.2f, 0.7f},   // 32: purple
-    {0.8f, 0.4f, 0.6f},   // 33: pink
-    {0.6f, 0.4f, 0.8f},   // 34: violet
-    {0.7f, 0.4f, 0.4f},   // 35: dusty rose
-    {0.5f, 0.5f, 0.7f},   // 36: periwinkle
-    {0.7f, 0.5f, 0.7f},   // 37: mauve
-    {0.2f, 0.4f, 0.7f},   // 38: royal blue
-    {0.3f, 0.6f, 0.4f},   // 39: sage
-    {0.7f, 0.2f, 0.2f},   // 40: dark red
-    {0.7f, 0.2f, 0.7f},   // 41: magenta
-    {0.8f, 0.4f, 0.0f},   // 42: dark gold
-    {0.8f, 0.6f, 0.2f},   // 43: golden
-  };
-  static const int kNumColors = sizeof(kColors) / sizeof(kColors[0]);
-
-  int color = 0;
-
-  // Armor categories 7-11 (helm, armor, pants, gloves, boots): color by itemIndex
-  // Main 5.2 ZzzObject.cpp lines 6661-6718
-  if (category >= 7 && category <= 11) {
-    switch (itemIndex) {
-    case 1:  color = 1;  break; // Pad set
-    case 3:  color = 3;  break; // Vine set
-    case 4:  color = 5;  break; // Silk set
-    case 6:  color = 6;  break; // Wind set
-    case 9:  color = 2;  break; // Legendary set
-    case 12: color = 2;  break; // Guardian set
-    case 13: color = 4;  break; // Storm set
-    case 14: color = 5;  break; // Adamantine set
-    case 15: color = 7;  break; // Dark set
-    case 16: color = 10; break; // Great Dragon set
-    case 17: color = 9;  break; // Red Spirit set
-    case 18: color = 5;  break; // Dark Phoenix set
-    case 19: color = 9;  break; // Grand Soul set
-    case 20: color = 9;  break; // Divine set
-    case 21: color = 16; break;
-    case 22: color = 17; break;
-    case 23: color = 11; break;
-    case 24: color = 16; break;
-    case 25: color = 11; break;
-    case 26: color = 12; break;
-    case 27: color = 10; break;
-    case 28: color = 15; break;
-    case 29: color = 18; break;
-    case 30: color = 19; break;
-    case 31: color = 20; break;
-    case 32: color = 21; break;
-    case 33: color = 22; break;
-    case 34: color = 24; break;
-    case 35: color = 25; break;
-    case 36: color = 26; break;
-    case 37: color = 27; break;
-    case 38: color = 28; break;
-    case 39: color = 29; break;
-    case 40: color = 30; break;
-    case 41: color = 31; break;
-    case 42: color = 32; break;
-    case 43: color = 33; break;
-    case 44: color = 34; break;
-    case 45: color = 36; break;
-    case 46: color = 42; break;
-    case 47: color = 37; break;
-    default: color = 0;  break; // Gold
-    }
-  }
-  // Weapon-specific overrides (Main 5.2 ZzzObject.cpp lines 6487-6658)
-  else if (category == 0) { // Swords
-    switch (itemIndex) {
-    case 14: color = 2;  break; // Lighting Sword → blue
-    case 20: color = 10; break;
-    case 21: color = 5;  break;
-    case 22: color = 18; break;
-    case 23: color = 23; break;
-    case 24: color = 24; break;
-    case 25: color = 27; break;
-    case 28: color = 8;  break;
-    case 31: color = 10; break;
-    default: color = 0;  break;
-    }
-  } else if (category == 1) { // Axes
-    // No specific overrides in 0.97d scope
-    color = 0;
-  } else if (category == 2) { // Maces
-    switch (itemIndex) {
-    case 8:  color = 9;  break;
-    case 9:  color = 10; break;
-    case 10: color = 12; break;
-    case 12: color = 16; break;
-    case 14: color = 22; break;
-    case 15: color = 28; break;
-    case 17: color = 40; break;
-    case 18: color = 5;  break;
-    default: color = 0;  break;
-    }
-  } else if (category == 3) { // Spears
-    switch (itemIndex) {
-    case 9:  color = 1;  break;
-    case 10: color = 9;  break;
-    case 11: color = 20; break;
-    default: color = 0;  break;
-    }
-  } else if (category == 4) { // Bows
-    switch (itemIndex) {
-    case 5:  color = 5;  break;
-    case 7:  color = 0;  break;
-    case 13: color = 5;  break;
-    case 15: color = 0;  break;
-    case 17: color = 9;  break;
-    case 18: color = 10; break;
-    case 19: color = 9;  break;
-    case 20: color = 16; break;
-    case 21: color = 20; break;
-    case 22: color = 26; break;
-    case 23: color = 35; break;
-    case 24: color = 36; break;
-    default: color = 0;  break;
-    }
-  } else if (category == 5) { // Staffs
-    switch (itemIndex) {
-    case 5:  color = 2;  break; // Staff of Destruction → blue
-    case 9:  color = 5;  break;
-    case 11: color = 17; break;
-    case 12: color = 19; break;
-    case 13: color = 25; break;
-    case 14: color = 24; break;
-    case 15: color = 15; break;
-    case 16: color = 1;  break;
-    case 17: color = 3;  break;
-    case 18: color = 30; break;
-    case 19: color = 21; break;
-    case 20: color = 5;  break;
-    case 22: color = 1;  break;
-    case 30: color = 1;  break;
-    case 31: color = 19; break;
-    case 33: color = 43; break;
-    case 34: color = 5;  break;
-    default: color = 0;  break;
-    }
-  } else if (category == 6) { // Shields
-    switch (itemIndex) {
-    case 16: color = 6;  break;
-    case 19: color = 29; break;
-    case 20: color = 36; break;
-    case 21: color = 30; break;
-    default: color = 0;  break;
-    }
-  }
-
-  if (color < 0 || color >= kNumColors) color = 0;
-  return kColors[color];
-}
-
-// Main 5.2 PartObjectColor2: secondary color modulator for CHROME2/CHROME4 passes
-// ZzzObject.cpp lines 6771-6853
-// Color 0 = neutral (1,1,1), Color 1 = warm orange (1,0.5,0), Color 2 = cyan (0,0.5,1), Color 3 = white (1,1,1)
-glm::vec3 GetPartObjectColor2(int category, int itemIndex) {
-  static const glm::vec3 kColors2[] = {
-    {1.0f, 1.0f, 1.0f},   // 0: neutral (keep original)
-    {1.0f, 0.5f, 0.0f},   // 1: warm orange (no blue)
-    {0.0f, 0.5f, 1.0f},   // 2: cyan/blue (no red)
-    {1.0f, 1.0f, 1.0f},   // 3: pure white
-  };
-
-  int color = 0;
-
-  // Armor categories 7-11: shared mapping across all armor slots
-  if (category >= 7 && category <= 11) {
-    switch (itemIndex) {
-    case 4:  color = 1; break; // Silk set
-    case 14: color = 1; break; // Adamantine set
-    case 15: color = 1; break; // Dark set
-    case 17: color = 1; break; // Red Spirit set
-    case 18: color = 2; break; // Dark Phoenix set
-    case 21: color = 3; break;
-    case 39: color = 1; break;
-    case 40: color = 1; break;
-    case 41: color = 1; break;
-    case 42: color = 1; break;
-    case 43: color = 2; break;
-    case 44: color = 3; break;
-    default: color = 0; break;
-    }
-  }
-  // Weapon/shield-specific overrides
-  else if (category == 0) { // Swords
-    if (itemIndex == 14) color = 2;      // Lighting Sword → cyan
-    else if (itemIndex == 18) color = 0; // neutral
-    else color = 0;
-  } else if (category == 4) { // Bows
-    if (itemIndex == 5 || itemIndex == 13) color = 2; // cyan
-    else if (itemIndex == 17) color = 0;
-    else color = 0;
-  } else if (category == 5) { // Staffs
-    if (itemIndex == 5) color = 2;       // Staff of Destruction → cyan
-    else if (itemIndex == 9) color = 0;
-    else color = 0;
-  } else {
-    color = 0; // All other weapons/shields: neutral
-  }
-
-  return kColors2[color];
 }
 
 // ─── DK Stat Formulas (MuEmu-0.97k ObjectManager.cpp) ──────────────────
@@ -717,11 +477,6 @@ void HeroCharacter::Init(const std::string &dataPath) {
   // Create shadow shader
   m_shadowShader = Shader::Load("shadow.vert", "shadow.frag");
 
-  // Load chrome/shiny environment-map textures (Main 5.2 +7/+9/+11 glow)
-  m_chromeTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome01.OZJ");
-  m_chrome2Texture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome02.OZJ");
-  m_shinyTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Shiny01.OZJ");
-
   // Compute initial stats from DK formulas
   RecalcStats();
   m_hp = m_maxHp;
@@ -811,6 +566,20 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
     } else {
       m_foot[0] = false;
       m_foot[1] = false;
+    }
+  }
+
+  // Wing animation — independent from character (Main 5.2: PlaySpeed 0.25f idle)
+  if (m_wingBmd && !m_wingBmd->Actions.empty()) {
+    static constexpr float WING_PLAY_SPEED_IDLE = 0.25f;
+    float wingSpeed = WING_PLAY_SPEED_IDLE * 25.0f; // Convert tick-based to per-second
+    m_wingAnimFrame += wingSpeed * deltaTime;
+    int wingKeys = m_wingBmd->Actions[0].NumAnimationKeys;
+    if (wingKeys > 1) {
+      if (m_wingAnimFrame >= (float)wingKeys)
+        m_wingAnimFrame = std::fmod(m_wingAnimFrame, (float)wingKeys);
+    } else {
+      m_wingAnimFrame = 0.0f;
     }
   }
 
@@ -1072,67 +841,24 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
   // +7:  1 pass  = CHROME+BRIGHT (Chrome01.OZJ)
   // +9:  2 passes = CHROME+BRIGHT + METAL+BRIGHT (Chrome01 + Shiny01)
   // +11: 3 passes = CHROME2+BRIGHT + METAL+BRIGHT + CHROME+BRIGHT
-  // Color from PartObjectColor: default (Color 0) = (1.0, 0.5, 0.0) warm gold
+  // ── +7/+9/+11/+13 armor glow passes (ChromeGlow module) ──
   {
-    float t = (float)glfwGetTime();
     bool anyGlow = false;
     for (int p = 0; p < PART_COUNT; ++p) {
       if (m_partLevels[p] >= 7) { anyGlow = true; break; }
     }
-    if (anyGlow && m_chromeTexture) {
-      glBlendFunc(GL_ONE, GL_ONE); // Additive (Main 5.2 EnableAlphaBlend)
-      glDepthMask(GL_FALSE);
-      glDisable(GL_CULL_FACE);
-
-      // chromeMode: 1=CHROME, 2=CHROME2, 3=METAL
-      // Main 5.2 passes Bright=1.0 to PartObjectColor which sets BodyLight
-      struct GlowPass { int chromeMode; };
-      // Main 5.2 ZzzObject.cpp RenderPartObjectEffect:
-      // +7:  1 pass  = CHROME
-      // +9:  2 passes = CHROME + METAL
-      // +11: 3 passes = CHROME2 + METAL + CHROME
-      // +13: 3 passes = CHROME4 + METAL + CHROME (most intense)
-      auto getGlowPasses = [](uint8_t level, GlowPass *passes) -> int {
-        if (level >= 13) {
-          passes[0] = {4};  // CHROME4 (Chrome02.OZJ, dynamic light vector)
-          passes[1] = {3};  // METAL   (Shiny01.OZJ)
-          passes[2] = {1};  // CHROME  (Chrome01.OZJ)
-          return 3;
-        } else if (level >= 11) {
-          passes[0] = {2};  // CHROME2 (Chrome02.OZJ)
-          passes[1] = {3};  // METAL   (Shiny01.OZJ)
-          passes[2] = {1};  // CHROME  (Chrome01.OZJ)
-          return 3;
-        } else if (level >= 9) {
-          passes[0] = {1};  // CHROME
-          passes[1] = {3};  // METAL
-          return 2;
-        } else { // level >= 7
-          passes[0] = {1};  // CHROME
-          return 1;
-        }
-      };
-
+    if (anyGlow && ChromeGlow::GetTextures().chrome1) {
+      float t = (float)glfwGetTime();
+      ChromeGlow::BeginGlow();
       for (int p = 0; p < PART_COUNT; ++p) {
         if (m_partLevels[p] < 7) continue;
-        // Part 0=Helm(cat7), 1=Armor(cat8), 2=Pants(cat9), 3=Gloves(cat10), 4=Boots(cat11)
-        GlowPass passes[3];
-        int numPasses = getGlowPasses(m_partLevels[p], passes);
-        for (int gp = 0; gp < numPasses; ++gp) {
-          // Main 5.2: CHROME2/CHROME4 use PartObjectColor2, others use PartObjectColor
-          glm::vec3 glowColor = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
-              ? GetPartObjectColor2(7 + p, m_partItemIndices[p])
-              : GetPartObjectColor(7 + p, m_partItemIndices[p]);
-          m_shader->setVec3("glowColor", glowColor);
+        ChromeGlow::GlowPass passes[3];
+        int n = ChromeGlow::GetGlowPasses(m_partLevels[p], 7 + p, m_partItemIndices[p], passes);
+        for (int gp = 0; gp < n; ++gp) {
+          m_shader->setVec3("glowColor", passes[gp].color);
           m_shader->setInt("chromeMode", passes[gp].chromeMode);
           m_shader->setFloat("chromeTime", t);
-          // Bind the correct environment-map texture (NOT the item diffuse)
-          // CHROME4 uses Chrome02 texture (same as CHROME2)
-          GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
-                               ? m_chrome2Texture
-                         : (passes[gp].chromeMode == 3) ? m_shinyTexture
-                         : m_chromeTexture;
-          glBindTexture(GL_TEXTURE_2D, glowTex);
+          glBindTexture(GL_TEXTURE_2D, passes[gp].texture);
           for (auto &mb : m_parts[p].meshBuffers) {
             if (mb.indexCount == 0 || mb.hidden) continue;
             glBindVertexArray(mb.vao);
@@ -1140,12 +866,7 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
           }
         }
       }
-
-      glEnable(GL_CULL_FACE);
-      glDepthMask(GL_TRUE);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      m_shader->setVec3("glowColor", glm::vec3(0.0f));
-      m_shader->setInt("chromeMode", 0);
+      ChromeGlow::EndGlow(m_shader->ID);
     }
   }
 
@@ -1291,61 +1012,26 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
         m_shader->setFloat("blendMeshLight", 1.0f);
     }
 
-    // ── +7/+9/+11 weapon glow passes (Main 5.2 RENDER_CHROME|RENDER_BRIGHT) ──
-    // Main 5.2 PartObjectColor: default weapon (Color 0) = (1.0, 0.5, 0.0)
-    if (m_weaponInfo.itemLevel >= 7 && m_chromeTexture) {
+    // ── +7/+9/+11/+13 weapon glow passes (ChromeGlow module) ──
+    if (m_weaponInfo.itemLevel >= 7 && ChromeGlow::GetTextures().chrome1) {
       float t = (float)glfwGetTime();
-      glBlendFunc(GL_ONE, GL_ONE);
-      glDepthMask(GL_FALSE);
-      glDisable(GL_CULL_FACE);
-
-      struct GlowPass { int chromeMode; };
-      GlowPass passes[3];
-      int numPasses = 0;
-      uint8_t wlv = m_weaponInfo.itemLevel;
-      if (wlv >= 13) {
-        passes[0] = {4}; passes[1] = {3}; passes[2] = {1}; // CHROME4+METAL+CHROME
-        numPasses = 3;
-      } else if (wlv >= 11) {
-        passes[0] = {2}; passes[1] = {3}; passes[2] = {1};
-        numPasses = 3;
-      } else if (wlv >= 9) {
-        passes[0] = {1}; passes[1] = {3};
-        numPasses = 2;
-      } else {
-        passes[0] = {1};
-        numPasses = 1;
-      }
-
-      for (int gp = 0; gp < numPasses; ++gp) {
-        // Main 5.2: CHROME2/CHROME4 use PartObjectColor2, others use PartObjectColor
-        glm::vec3 weaponGlowColor = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
-            ? GetPartObjectColor2(m_weaponInfo.category, m_weaponInfo.itemIndex)
-            : GetPartObjectColor(m_weaponInfo.category, m_weaponInfo.itemIndex);
-        m_shader->setVec3("glowColor", weaponGlowColor);
+      ChromeGlow::GlowPass passes[3];
+      int n = ChromeGlow::GetGlowPasses(m_weaponInfo.itemLevel, m_weaponInfo.category, m_weaponInfo.itemIndex, passes);
+      ChromeGlow::BeginGlow();
+      for (int gp = 0; gp < n; ++gp) {
+        m_shader->setVec3("glowColor", passes[gp].color);
         m_shader->setInt("chromeMode", passes[gp].chromeMode);
         m_shader->setFloat("chromeTime", t);
-        // Bind the correct environment-map texture (CHROME4 uses Chrome02 like CHROME2)
-        GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
-                             ? m_chrome2Texture
-                       : (passes[gp].chromeMode == 3) ? m_shinyTexture
-                       : m_chromeTexture;
-        glBindTexture(GL_TEXTURE_2D, glowTex);
+        glBindTexture(GL_TEXTURE_2D, passes[gp].texture);
         for (int mi2 = 0; mi2 < (int)m_weaponMeshBuffers.size(); ++mi2) {
           auto &mb2 = m_weaponMeshBuffers[mi2];
           if (mb2.indexCount == 0) continue;
-          // Skip BlendMesh (fire glow etc) — already additive, don't double-glow
           if (m_weaponBlendMesh >= 0 && mi2 == m_weaponBlendMesh) continue;
           glBindVertexArray(mb2.vao);
           glDrawElements(GL_TRIANGLES, mb2.indexCount, GL_UNSIGNED_INT, 0);
         }
       }
-
-      glEnable(GL_CULL_FACE);
-      glDepthMask(GL_TRUE);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      m_shader->setVec3("glowColor", glm::vec3(0.0f));
-      m_shader->setInt("chromeMode", 0);
+      ChromeGlow::EndGlow(m_shader->ID);
     }
 
   }
@@ -1468,56 +1154,183 @@ void HeroCharacter::Render(const glm::mat4 &view, const glm::mat4 &proj,
         m_shader->setFloat("blendMeshLight", 1.0f);
     }
 
-    // ── +7/+9/+11 shield glow passes (same system as weapon) ──
-    if (m_shieldInfo.itemLevel >= 7 && m_chromeTexture) {
+    // ── +7/+9/+11/+13 shield glow passes (ChromeGlow module) ──
+    if (m_shieldInfo.itemLevel >= 7 && ChromeGlow::GetTextures().chrome1) {
       float t = (float)glfwGetTime();
-      glBlendFunc(GL_ONE, GL_ONE);
-      glDepthMask(GL_FALSE);
-      glDisable(GL_CULL_FACE);
-
-      struct GlowPass { int chromeMode; };
-      GlowPass passes[3];
-      int numPasses = 0;
-      uint8_t slv = m_shieldInfo.itemLevel;
-      if (slv >= 13) {
-        passes[0] = {4}; passes[1] = {3}; passes[2] = {1}; // CHROME4+METAL+CHROME
-        numPasses = 3;
-      } else if (slv >= 11) {
-        passes[0] = {2}; passes[1] = {3}; passes[2] = {1};
-        numPasses = 3;
-      } else if (slv >= 9) {
-        passes[0] = {1}; passes[1] = {3};
-        numPasses = 2;
-      } else {
-        passes[0] = {1};
-        numPasses = 1;
-      }
-
-      for (int gp = 0; gp < numPasses; ++gp) {
-        // Main 5.2: CHROME2/CHROME4 use PartObjectColor2, others use PartObjectColor
-        glm::vec3 shieldGlowColor = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
-            ? GetPartObjectColor2(6, m_shieldInfo.itemIndex)
-            : GetPartObjectColor(6, m_shieldInfo.itemIndex);
-        m_shader->setVec3("glowColor", shieldGlowColor);
+      ChromeGlow::GlowPass passes[3];
+      int n = ChromeGlow::GetGlowPasses(m_shieldInfo.itemLevel, 6, m_shieldInfo.itemIndex, passes);
+      ChromeGlow::BeginGlow();
+      for (int gp = 0; gp < n; ++gp) {
+        m_shader->setVec3("glowColor", passes[gp].color);
         m_shader->setInt("chromeMode", passes[gp].chromeMode);
         m_shader->setFloat("chromeTime", t);
-        GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
-                             ? m_chrome2Texture
-                       : (passes[gp].chromeMode == 3) ? m_shinyTexture
-                       : m_chromeTexture;
-        glBindTexture(GL_TEXTURE_2D, glowTex);
+        glBindTexture(GL_TEXTURE_2D, passes[gp].texture);
         for (auto &mb : m_shieldMeshBuffers) {
           if (mb.indexCount == 0) continue;
           glBindVertexArray(mb.vao);
           glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
         }
       }
+      ChromeGlow::EndGlow(m_shader->ID);
+    }
+  }
 
-      glEnable(GL_CULL_FACE);
-      glDepthMask(GL_TRUE);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      m_shader->setVec3("glowColor", glm::vec3(0.0f));
+  // ── Wings rendering (Main 5.2 RenderCharacterBackItem — bone 47) ──
+  static constexpr int WING_BONE = 47;
+  if (m_wingBmd && !m_wingMeshBuffers.empty() &&
+      WING_BONE < (int)bones.size()) {
+
+    // Wing05/06 have full Player.bmd-compatible biped skeletons (75-80 bones).
+    // Their vertices reference player bone indices directly — skin them using
+    // the player's animated bones so wings follow body movement naturally.
+    // Standalone wings (01-04, 07) attach rigidly to bone 47 with offset.
+    static constexpr int PLAYER_BONE_COUNT = 60;
+    bool isBipedWing = ((int)m_wingBmd->Bones.size() > PLAYER_BONE_COUNT);
+
+    std::vector<BoneWorldMatrix> wFinalBones;
+
+    if (isBipedWing) {
+      // Hybrid bone approach: biped wing BMDs (75-80 bones) share the player
+      // skeleton layout for bones 0-59 and add wing-specific bones at 60+.
+      // Bones 0-59: use player's animated bones (prevents body clipping).
+      // Bones 60+: compute from wing BMD's own animation, parented to the
+      // appropriate bone in wFinalBones (player bone if parent < 60).
+      static constexpr int PLAYER_BONE_COUNT = 60;
+      int wingBoneCount = (int)m_wingBmd->Bones.size();
+      wFinalBones.resize(wingBoneCount);
+
+      // Copy player bones for body range (0-59)
+      int copyCount = std::min(PLAYER_BONE_COUNT, wingBoneCount);
+      for (int bi = 0; bi < copyCount && bi < (int)bones.size(); ++bi) {
+        wFinalBones[bi] = bones[bi];
+      }
+
+      // Compute wing-specific bones (60+) from wing animation
+      for (int bi = PLAYER_BONE_COUNT; bi < wingBoneCount; ++bi) {
+        glm::vec3 pos;
+        glm::vec4 q;
+        if (!GetInterpolatedBoneData(m_wingBmd.get(), 0, m_wingAnimFrame, bi,
+                                     pos, q))
+          continue;
+        float quat[4] = {q.x, q.y, q.z, q.w};
+        float local[3][4];
+        MuMath::QuaternionMatrix(quat, local);
+        local[0][3] = pos.x;
+        local[1][3] = pos.y;
+        local[2][3] = pos.z;
+
+        int parent = m_wingBmd->Bones[bi].Parent;
+        if (parent >= 0 && parent < (int)wFinalBones.size()) {
+          MuMath::ConcatTransforms(
+              (const float(*)[4])wFinalBones[parent].data(), local,
+              (float(*)[4])wFinalBones[bi].data());
+        } else {
+          memcpy(wFinalBones[bi].data(), local, sizeof(float) * 12);
+        }
+      }
+    } else {
+      // Standalone wing: attach to bone 47 with offset (0, 0, 15)
+      BoneWorldMatrix wingOffsetMat =
+          MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
+                                          glm::vec3(0, 0, 15));
+      BoneWorldMatrix wingParentMat;
+      MuMath::ConcatTransforms((const float(*)[4])bones[WING_BONE].data(),
+                               (const float(*)[4])wingOffsetMat.data(),
+                               (float(*)[4])wingParentMat.data());
+
+      // Use animated wing bones if wing has animation, otherwise static
+      std::vector<BoneWorldMatrix> wingAnimBones;
+      const std::vector<BoneWorldMatrix> *wLocalBonesPtr = &m_wingLocalBones;
+      if (!m_wingBmd->Actions.empty() &&
+          m_wingBmd->Actions[0].NumAnimationKeys > 1) {
+        wingAnimBones = ComputeBoneMatricesInterpolated(m_wingBmd.get(), 0,
+                                                        m_wingAnimFrame);
+        wLocalBonesPtr = &wingAnimBones;
+      }
+      const auto &wLocalBones = *wLocalBonesPtr;
+      wFinalBones.resize(wLocalBones.size());
+      for (int bi = 0; bi < (int)wLocalBones.size(); ++bi) {
+        MuMath::ConcatTransforms((const float(*)[4])wingParentMat.data(),
+                                 (const float(*)[4])wLocalBones[bi].data(),
+                                 (float(*)[4])wFinalBones[bi].data());
+      }
+    }
+
+    // Re-skin wing vertices
+    for (int mi = 0; mi < (int)m_wingMeshBuffers.size() &&
+                     mi < (int)m_wingBmd->Meshes.size();
+         ++mi) {
+      auto &mesh = m_wingBmd->Meshes[mi];
+      auto &mb = m_wingMeshBuffers[mi];
+      if (mb.indexCount == 0)
+        continue;
+
+      std::vector<ViewerVertex> verts;
+      verts.reserve(mesh.NumTriangles * 3);
+      for (int ti = 0; ti < mesh.NumTriangles; ++ti) {
+        auto &tri = mesh.Triangles[ti];
+        for (int v = 0; v < 3; ++v) {
+          ViewerVertex vv;
+          auto &srcVert = mesh.Vertices[tri.VertexIndex[v]];
+          glm::vec3 srcPos = srcVert.Position;
+          glm::vec3 srcNorm = (tri.NormalIndex[v] < mesh.NumNormals)
+                                  ? mesh.Normals[tri.NormalIndex[v]].Normal
+                                  : glm::vec3(0, 0, 1);
+
+          int boneIdx = srcVert.Node;
+          if (boneIdx >= 0 && boneIdx < (int)wFinalBones.size()) {
+            vv.pos = MuMath::TransformPoint(
+                (const float(*)[4])wFinalBones[boneIdx].data(), srcPos);
+            vv.normal = MuMath::RotateVector(
+                (const float(*)[4])wFinalBones[boneIdx].data(), srcNorm);
+          } else {
+            // Fallback: identity transform
+            vv.pos = srcPos;
+            vv.normal = srcNorm;
+          }
+          vv.tex =
+              (tri.TexCoordIndex[v] < mesh.NumTexCoords)
+                  ? glm::vec2(mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordU,
+                              mesh.TexCoords[tri.TexCoordIndex[v]].TexCoordV)
+                  : glm::vec2(0);
+          verts.push_back(vv);
+        }
+      }
+
+      glBindBuffer(GL_ARRAY_BUFFER, mb.vbo);
+      glBufferSubData(GL_ARRAY_BUFFER, 0,
+                      verts.size() * sizeof(ViewerVertex), verts.data());
+    }
+
+    // Wing rendering: Main 5.2 LightEnable=false for ALL wings — bypass
+    // per-vertex lighting. Wings render with flat BodyLight(1,1,1).
+    // Use glowColor shader path (chromeMode=0) for flat white lighting.
+    {
+      // glowColor with chromeMode=0 → finalLight = glowColor (bypasses lighting)
+      m_shader->setVec3("glowColor", glm::vec3(1.0f));
       m_shader->setInt("chromeMode", 0);
+
+      glDisable(GL_CULL_FACE);
+      for (int mi = 0; mi < (int)m_wingMeshBuffers.size(); ++mi) {
+        auto &mb = m_wingMeshBuffers[mi];
+        if (mb.indexCount == 0)
+          continue;
+
+        glBindTexture(GL_TEXTURE_2D, mb.texture);
+        glBindVertexArray(mb.vao);
+        if (mb.bright) {
+          glBlendFunc(GL_ONE, GL_ONE);
+          glDepthMask(GL_FALSE);
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+          glDepthMask(GL_TRUE);
+          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        } else {
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
+        }
+      }
+      glEnable(GL_CULL_FACE);
+
+      m_shader->setVec3("glowColor", glm::vec3(0.0f));
     }
   }
 
@@ -1853,6 +1666,32 @@ void HeroCharacter::RenderShadow(const glm::mat4 &view, const glm::mat4 &proj) {
                                  (const float(*)[4])sLocalBones[bi].data(),
                                  (float(*)[4])sFinalBones[bi].data());
       renderShadowBatch(m_shieldBmd.get(), m_shieldShadowMeshes, -1, &sFinalBones);
+    }
+  }
+
+  // Wing shadow
+  if (m_wingBmd && !m_wingShadowMeshes.empty()) {
+    static constexpr int WING_SHADOW_BONE = 47;
+    bool isBipedShadow = ((int)m_wingBmd->Bones.size() > 60);
+    if (isBipedShadow) {
+      // Biped wings use player bones — shadow uses m_cachedBones directly
+      renderShadowBatch(m_wingBmd.get(), m_wingShadowMeshes, -1,
+                        &m_cachedBones);
+    } else if (WING_SHADOW_BONE < (int)m_cachedBones.size()) {
+      BoneWorldMatrix off =
+          MuMath::BuildWeaponOffsetMatrix(glm::vec3(0, 0, 0),
+                                          glm::vec3(0, 0, 15));
+      BoneWorldMatrix parentMat;
+      MuMath::ConcatTransforms(
+          (const float(*)[4])m_cachedBones[WING_SHADOW_BONE].data(),
+          (const float(*)[4])off.data(), (float(*)[4])parentMat.data());
+      const auto &wLocalBones = m_wingLocalBones;
+      std::vector<BoneWorldMatrix> wFinalBones(wLocalBones.size());
+      for (int bi = 0; bi < (int)wLocalBones.size(); ++bi)
+        MuMath::ConcatTransforms((const float(*)[4])parentMat.data(),
+                                 (const float(*)[4])wLocalBones[bi].data(),
+                                 (float(*)[4])wFinalBones[bi].data());
+      renderShadowBatch(m_wingBmd.get(), m_wingShadowMeshes, -1, &wFinalBones);
     }
   }
 
@@ -2263,6 +2102,111 @@ void HeroCharacter::EquipShield(const WeaponEquipInfo &shield) {
             << m_shieldMeshBuffers.size() << " GPU meshes)" << std::endl;
 }
 
+// ── Wing equip/unequip (Main 5.2 RenderCharacterBackItem — bone 47) ──
+
+void HeroCharacter::EquipWings(const WeaponEquipInfo &wing) {
+  UnequipWings();
+
+  if (wing.category == 0xFF) {
+    m_wingInfo = wing;
+    return;
+  }
+
+  m_wingInfo = wing;
+  std::string fullPath = m_dataPath + "/Item/" + wing.modelFile;
+  auto bmd = BMDParser::Parse(fullPath);
+  if (!bmd) {
+    std::cerr << "[Hero] Failed to load wings: " << fullPath << std::endl;
+    return;
+  }
+
+  AABB wingAABB{};
+  std::string texPath = m_dataPath + "/Item/";
+  for (auto &mesh : bmd->Meshes) {
+    UploadMeshWithBones(mesh, texPath, {}, m_wingMeshBuffers, wingAABB, false);
+  }
+
+  // Shadow meshes
+  static auto createShadowMeshes = [](const BMDData *bmd) {
+    std::vector<HeroCharacter::ShadowMesh> meshes;
+    if (!bmd)
+      return meshes;
+    for (auto &mesh : bmd->Meshes) {
+      HeroCharacter::ShadowMesh sm;
+      sm.vertexCount = mesh.NumTriangles * 3;
+      sm.indexCount = sm.vertexCount;
+      if (sm.vertexCount == 0) {
+        meshes.push_back(sm);
+        continue;
+      }
+      glGenVertexArrays(1, &sm.vao);
+      glGenBuffers(1, &sm.vbo);
+      glBindVertexArray(sm.vao);
+      glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+      glBufferData(GL_ARRAY_BUFFER, sm.vertexCount * sizeof(glm::vec3), nullptr,
+                   GL_DYNAMIC_DRAW);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                            (void *)0);
+      glEnableVertexAttribArray(0);
+      glBindVertexArray(0);
+      meshes.push_back(sm);
+    }
+    return meshes;
+  };
+  m_wingShadowMeshes = createShadowMeshes(bmd.get());
+
+  m_wingBmd = std::move(bmd);
+  if (!m_wingBmd->Bones.empty()) {
+    m_wingLocalBones = ComputeBoneMatrices(m_wingBmd.get());
+  } else {
+    BoneWorldMatrix identity{};
+    identity[0] = {1, 0, 0, 0};
+    identity[1] = {0, 1, 0, 0};
+    identity[2] = {0, 0, 1, 0};
+    m_wingLocalBones = {identity};
+  }
+
+  // Re-upload with bones pre-applied
+  CleanupMeshBuffers(m_wingMeshBuffers);
+  for (auto &mesh : m_wingBmd->Meshes) {
+    UploadMeshWithBones(mesh, texPath, m_wingLocalBones, m_wingMeshBuffers,
+                        wingAABB, true);
+  }
+
+  // Main 5.2: Wing05/06 (biped, >60 bones) use standard RENDER_TEXTURE —
+  // no additive blending. Only standalone JPEG wings (01-04) need additive
+  // to hide black backgrounds. TGA wings (Wing07) have proper alpha.
+  bool isBipedWingModel = ((int)m_wingBmd->Bones.size() > 60);
+  if (!isBipedWingModel) {
+    for (auto &mb : m_wingMeshBuffers) {
+      if (!mb.hasAlpha)
+        mb.bright = true;
+    }
+  }
+
+  m_wingBlendMesh = ItemModelManager::GetItemBlendMesh(wing.category, wing.itemIndex);
+  m_wingAnimFrame = 0.0f;
+
+  std::cout << "[Hero] Wings equipped: " << wing.modelFile << " ("
+            << m_wingMeshBuffers.size() << " meshes, "
+            << m_wingBmd->Bones.size() << " bones, blendMesh="
+            << m_wingBlendMesh << ")" << std::endl;
+}
+
+void HeroCharacter::UnequipWings() {
+  CleanupMeshBuffers(m_wingMeshBuffers);
+  for (auto &sm : m_wingShadowMeshes) {
+    if (sm.vao) glDeleteVertexArrays(1, &sm.vao);
+    if (sm.vbo) glDeleteBuffers(1, &sm.vbo);
+  }
+  m_wingShadowMeshes.clear();
+  m_wingBmd.reset();
+  m_wingLocalBones.clear();
+  m_wingBlendMesh = -1;
+  m_wingAnimFrame = 0.0f;
+  m_wingInfo = {};
+}
+
 // Main 5.2 ZzzCharacter.cpp:11718 — helm model indices that show the base head
 // underneath (accessory helms that don't cover the full face).
 // MODEL_HELM + index: 0=Bronze, 2=Pad, 10=Vine, 11=Silk, 12=Wind, 13=Spirit
@@ -2421,7 +2365,7 @@ void HeroCharacter::CheckFullArmorSet() {
   case 31: m_setGlowColor = glm::vec3(0.0f, 0.32f, 0.24f);  break; // Teal
   case 32: m_setGlowColor = glm::vec3(0.5f, 0.24f, 0.8f);   break; // Purple
   case 33: m_setGlowColor = glm::vec3(0.6f, 0.4f, 0.0f);    break; // Gold
-  default: m_setGlowColor = GetPartObjectColor(11, firstIdx); break; // Use boots glow
+  default: m_setGlowColor = ChromeGlow::GetPartObjectColor(11, firstIdx); break; // Use boots glow
   }
 }
 
@@ -3405,6 +3349,11 @@ void HeroCharacter::Cleanup() {
   cleanupShadows(m_shieldShadowMeshes);
   m_shieldBmd.reset();
 
+  // Wings
+  CleanupMeshBuffers(m_wingMeshBuffers);
+  cleanupShadows(m_wingShadowMeshes);
+  m_wingBmd.reset();
+
   // Mount
   CleanupMeshBuffers(m_mount.meshBuffers);
   cleanupShadows(m_mount.shadowMeshes);
@@ -3416,11 +3365,6 @@ void HeroCharacter::Cleanup() {
   CleanupMeshBuffers(m_pet.meshBuffers);
   m_pet.bmd.reset();
   m_pet.active = false;
-
-  // Chrome/shiny glow textures
-  if (m_chromeTexture) { glDeleteTextures(1, &m_chromeTexture); m_chromeTexture = 0; }
-  if (m_chrome2Texture) { glDeleteTextures(1, &m_chrome2Texture); m_chrome2Texture = 0; }
-  if (m_shinyTexture) { glDeleteTextures(1, &m_shinyTexture); m_shinyTexture = 0; }
 
   m_shader.reset();
   m_shadowShader.reset();

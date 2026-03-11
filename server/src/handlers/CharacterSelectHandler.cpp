@@ -36,16 +36,19 @@ void SendCharList(Session &session, Database &db) {
     SetWordBE(reinterpret_cast<uint8_t *>(&e.level), chars[i].level);
     e.classCode = chars[i].charClass;
     e.ctlCode = 0;
-    std::memset(e.charSet, 0xFF, 18);
+    std::memset(e.charSet, 0xFF, 20);
     e.charSet[0] = static_cast<uint8_t>((chars[i].charClass >> 4) << 4);
-    e.charSet[15] = 0;
-    e.charSet[16] = 0;
-    e.charSet[17] = 0;
-    std::memset(e.equipLevels, 0, 7);
+    e.charSet[15] = 0xFF; // Slot 8 category (pet/mount) — 0xFF = empty
+    e.charSet[16] = 0;    // Slot 8 itemIndex
+    e.charSet[17] = 0xFF; // Slot 7 wing category — 0xFF = empty
+    e.charSet[18] = 0;    // Slot 7 wing itemIndex
+    e.charSet[19] = 0;
+    std::memset(e.equipLevels, 0, 8);
 
     // Encode equipment appearance into charSet[1..14]
     // Layout: [1..2]=rightHand, [3..4]=leftHand, [5..6]=helm,
     //         [7..8]=armor, [9..10]=pants, [11..12]=gloves, [13..14]=boots
+    // charSet[15..16] = slot 8 (pet/mount): category, itemIndex
     auto equip = db.GetCharacterEquipment(chars[i].id);
     for (auto &eq : equip) {
       int offset = -1;
@@ -58,6 +61,15 @@ void SendCharList(Session &session, Database &db) {
       case 4: offset = 9;  lvlIdx = 4; break;  // Pants
       case 5: offset = 11; lvlIdx = 5; break;  // Gloves
       case 6: offset = 13; lvlIdx = 6; break;  // Boots
+      case 7:                                    // Wings (slot 7)
+        e.charSet[17] = eq.category;
+        e.charSet[18] = eq.itemIndex;
+        e.equipLevels[7] = eq.itemLevel;
+        break;
+      case 8:                                    // Pet/mount (slot 8)
+        e.charSet[15] = eq.category;
+        e.charSet[16] = eq.itemIndex;
+        break;
       }
       if (offset >= 0) {
         e.charSet[offset] = eq.category;
@@ -397,7 +409,7 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
     }
   }
 
-  // Load quest state and send to client
+  // Load quest state (both Lorencia + Devias chains) and send to client
   {
     auto qs = db.LoadQuestState(c.id);
     session.questIndex = qs.questIndex;
@@ -405,6 +417,11 @@ void HandleCharSelect(Session &session, const std::vector<uint8_t> &packet,
     session.questKillCount1 = qs.killCount1;
     session.questKillCount2 = qs.killCount2;
     session.questAccepted = qs.accepted;
+    session.deviasQuestIndex = qs.deviasQuestIndex;
+    session.deviasKillCount0 = qs.deviasKc0;
+    session.deviasKillCount1 = qs.deviasKc1;
+    session.deviasKillCount2 = qs.deviasKc2;
+    session.deviasQuestAccepted = qs.deviasAccepted;
     QuestHandler::SendQuestState(session);
   }
 

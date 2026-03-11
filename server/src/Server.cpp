@@ -30,7 +30,11 @@ static const char *GetMonsterName(uint16_t type) {
       {12, "Larva"},           {13, "Hell Spider"},
       {14, "Skeleton Warrior"},{15, "Skeleton Archer"},
       {16, "Elite Skeleton"},  {17, "Cyclops"},
-      {18, "Gorgon"}};
+      {18, "Gorgon"},
+      {19, "Yeti"},           {20, "Elite Yeti"},
+      {21, "Assassin"},       {22, "Ice Monster"},
+      {23, "Hommerd"},        {24, "Worm"},
+      {25, "Ice Queen"}};
   auto it = names.find(type);
   return it != names.end() ? it->second : "Monster";
 }
@@ -55,6 +59,7 @@ bool Server::Start(uint16_t port) {
   // CMake symlinks client/Data/ into server/build/Data/
   m_world.LoadTerrainAttributesForMap(0, "Data/World1/EncTerrain1.att");
   m_world.LoadTerrainAttributesForMap(1, "Data/World2/EncTerrain2.att");
+  m_world.LoadTerrainAttributesForMap(2, "Data/World3/EncTerrain3.att");
   m_world.SetActiveMap(0);
 
   // Load NPC and monster data from database
@@ -439,6 +444,21 @@ void Server::Run() {
         }
       }
 
+      // Idle HP Regeneration (standing still 5+ seconds, outside safe zone)
+      // Very slow: ~0.5% maxHP per second
+      if (session->inWorld && !session->dead && session->hp < session->maxHp && !inSafe) {
+        session->idleTimer += dt;
+        if (session->idleTimer >= 5.0f) {
+          session->idleHpRemainder += 0.005f * (float)session->maxHp * dt;
+          if (session->idleHpRemainder >= 1.0f) {
+            int gain = (int)session->idleHpRemainder;
+            session->hp = std::min(session->hp + gain, (int)session->maxHp);
+            session->idleHpRemainder -= (float)gain;
+            CharacterHandler::SendCharStats(*session);
+          }
+        }
+      }
+
       // AG/Mana recovery logic
       if (session->inWorld && !session->dead) {
         bool isDK = session->classCode == 16;
@@ -661,12 +681,45 @@ void Server::CheckGateZones(Session &session) {
   uint8_t gy = static_cast<uint8_t>(session.worldX / 100.0f);
 
   if (session.mapId == 0 && gx >= 121 && gx <= 123 && gy >= 232 && gy <= 233) {
-    // Lorencia → Dungeon (gate at south Lorencia near cobra gate)
+    // Lorencia → Dungeon 1 (gate at south Lorencia near cobra gate)
     // OpenMU: maps[0].EnterGate(1, target=2, 121,232,123,233)
     TransitionMap(session, 1, 108, 247);
   } else if (session.mapId == 1 && gx >= 108 && gx <= 109 && gy >= 248 && gy <= 249) {
-    // Dungeon → Lorencia (return near cobra gate entrance)
+    // Dungeon 1 → Lorencia (return near cobra gate entrance)
+    // OpenMU: maps[1].EnterGate(3, target=4, 108,248,109,248)
     TransitionMap(session, 0, 121, 228);
+  } else if (session.mapId == 1 && gx == 239 && gy >= 149 && gy <= 150) {
+    // Dungeon 1 → Dungeon 2 (forward)
+    // OpenMU: maps[1].EnterGate(5, target=6, 239,149,239,150) → spawn (231-234,126-127)
+    TransitionMap(session, 1, 232, 126);
+  } else if (session.mapId == 1 && gx >= 232 && gx <= 233 && gy >= 127 && gy <= 128) {
+    // Dungeon 2 → Dungeon 1 (return)
+    // OpenMU: maps[1].EnterGate(7, target=8, 232,127,233,128) → spawn (240-241,149-151)
+    TransitionMap(session, 1, 240, 150);
+  } else if (session.mapId == 1 && gx == 2 && gy >= 17 && gy <= 18) {
+    // Dungeon 2 → Dungeon 3 (forward)
+    // OpenMU: maps[1].EnterGate(9, target=10, 2,17,2,18) → spawn (3-4,83-86)
+    TransitionMap(session, 1, 3, 84);
+  } else if (session.mapId == 1 && gx == 2 && gy >= 84 && gy <= 85) {
+    // Dungeon 3 → Dungeon 2 (return)
+    // OpenMU: maps[1].EnterGate(11, target=12, 2,84,2,85) → spawn (3-6,16-17)
+    TransitionMap(session, 1, 4, 16);
+  } else if (session.mapId == 1 && gx >= 5 && gx <= 6 && gy == 34) {
+    // Dungeon 3 passage forward
+    // OpenMU: maps[1].EnterGate(13, target=14, 5,34,6,34) → spawn (29-30,125-126)
+    TransitionMap(session, 1, 29, 125);
+  } else if (session.mapId == 1 && gx >= 29 && gx <= 30 && gy == 127) {
+    // Dungeon 3 passage return
+    // OpenMU: maps[1].EnterGate(15, target=16, 29,127,30,127) → spawn (5-7,32-33)
+    TransitionMap(session, 1, 6, 32);
+  }
+  // ── Lorencia ↔ Devias gates ──
+  else if (session.mapId == 0 && gx >= 5 && gx <= 6 && gy >= 38 && gy <= 41) {
+    // Lorencia → Devias (Gate.txt gate 17→18: spawn at Devias east entry)
+    TransitionMap(session, 2, 229, 35);
+  } else if (session.mapId == 2 && gx >= 244 && gx <= 245 && gy >= 34 && gy <= 37) {
+    // Devias → Lorencia (east edge return)
+    TransitionMap(session, 0, 5, 36);
   }
 }
 
@@ -681,8 +734,8 @@ void Server::TransitionMap(Session &session, uint8_t newMapId,
   session.worldX = spawnY * 100.0f;
   session.worldZ = spawnX * 100.0f;
 
-  // Save position to DB immediately
-  m_db.UpdatePosition(session.characterId, spawnX, spawnY);
+  // Save position to DB immediately (including map change)
+  m_db.UpdatePosition(session.characterId, spawnX, spawnY, newMapId);
 
   // Reload world data for new map
   m_world.ClearWorldData();
@@ -698,9 +751,9 @@ void Server::TransitionMap(Session &session, uint8_t newMapId,
   pkt.spawnY = spawnY;
   session.Send(&pkt, sizeof(pkt));
 
-  // Defer NPC/monster viewport sending — client needs time to process MAP_CHANGE
-  // and reload terrain before receiving monster positions
-  session.pendingViewportDelay = 0.15f; // 150ms delay
+  // Defer NPC/monster viewport sending — wait for client "ready" signal
+  // (SendPrecisePosition after ChangeMap completes). 5s safety fallback.
+  session.pendingViewportDelay = 5.0f;
 
   printf("[Server] Map %d loaded: %zu NPCs, %zu monsters (viewport deferred)\n",
          newMapId, m_world.GetNpcs().size(),

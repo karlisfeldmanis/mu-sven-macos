@@ -61,10 +61,31 @@ public:
     int type;
     glm::mat4 modelMatrix;
     glm::vec3 terrainLight = glm::vec3(1.0f); // Lightmap color at object position
+    float animPhaseOffset = 0.0f; // Per-instance animation frame offset (trees)
   };
   const std::vector<ObjectInstance> &GetInstances() const { return instances; }
 
+  // Door animation: proximity-based rotation/translation (Main 5.2: ZzzObject.cpp:3871)
+  // Call after LoadObjects/LoadObjectsGeneric to detect doors.
+  void InitDoors();
+  // Call each frame with hero position. Updates door instance transforms.
+  void UpdateDoors(const glm::vec3 &heroPos, float deltaTime);
+
 private:
+  // Devias door state (types 20,65,88 = swinging, 86 = sliding)
+  // Main 5.2: ZzzObject.cpp:3871-3913
+  struct DoorState {
+    int instanceIdx;        // Index into instances[]
+    glm::vec3 origPos;      // Original GL position (for distance check)
+    float origAngleDeg;     // Original MU Z rotation in degrees (HeadAngle[2])
+    float currentAngleDeg;  // Current MU Z rotation in degrees
+    glm::vec3 rotRad;       // Original rotation xyz in radians (for matrix rebuild)
+    float scale;            // Original scale
+    bool isSliding;         // true = type 86 (translate), false = rotate
+    bool soundPlayed;       // Prevent door sound spam
+  };
+  std::vector<DoorState> m_doors;
+  float m_doorCooldown = 0.0f; // Suppress door sounds after map load
   struct ModelCache {
     std::vector<MeshBuffers> meshBuffers;
     std::vector<BoneWorldMatrix> boneMatrices;
@@ -116,7 +137,8 @@ private:
 
   void UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
                   const std::vector<BoneWorldMatrix> &bones,
-                  std::vector<MeshBuffers> &out, bool dynamic = false);
+                  std::vector<MeshBuffers> &out, bool dynamic = false,
+                  const std::string &fallbackTexDir = "");
 
   // GPU-skinned upload: stores RAW vertex positions + bone indices (no CPU transform)
   void UploadMeshGPUSkinned(const Mesh_t &mesh, const std::string &baseDir,

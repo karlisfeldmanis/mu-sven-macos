@@ -1,11 +1,11 @@
-#include "InventoryUI_Internal.hpp"
 #include "HeroCharacter.hpp"
 #include "InputHandler.hpp"
+#include "InventoryUI_Internal.hpp"
 #include "SoundManager.hpp"
+#include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <GLFW/glfw3.h>
 #include <iostream>
 
 // ─── File-local helpers ─────────────────────────────────────────────────────
@@ -49,9 +49,11 @@ static void RenderSkillIcon(ImDrawList *dl, int8_t skillId, float sx, float sy,
 
 static const char *GetSkillName(uint8_t skillId) {
   for (int i = 0; i < NUM_DK_SKILLS; i++)
-    if (g_dkSkills[i].skillId == skillId) return g_dkSkills[i].name;
+    if (g_dkSkills[i].skillId == skillId)
+      return g_dkSkills[i].name;
   for (int i = 0; i < NUM_DW_SPELLS; i++)
-    if (g_dwSpells[i].skillId == skillId) return g_dwSpells[i].name;
+    if (g_dwSpells[i].skillId == skillId)
+      return g_dwSpells[i].name;
   return nullptr;
 }
 
@@ -82,11 +84,17 @@ void RenderSkillDragCursor(ImDrawList *dl) {
   // Look up skill name from both DK and DW tables
   const char *skillName = nullptr;
   for (int i = 0; i < NUM_DK_SKILLS; i++) {
-    if (g_dkSkills[i].skillId == skillId) { skillName = g_dkSkills[i].name; break; }
+    if (g_dkSkills[i].skillId == skillId) {
+      skillName = g_dkSkills[i].name;
+      break;
+    }
   }
   if (!skillName) {
     for (int i = 0; i < NUM_DW_SPELLS; i++) {
-      if (g_dwSpells[i].skillId == skillId) { skillName = g_dwSpells[i].name; break; }
+      if (g_dwSpells[i].skillId == skillId) {
+        skillName = g_dwSpells[i].name;
+        break;
+      }
     }
   }
   if (skillName) {
@@ -111,8 +119,8 @@ void RenderRmcSlot(ImDrawList *dl, float screenX, float screenY, float size) {
   int currentResource = isDK ? (s_ctx->serverAG ? *s_ctx->serverAG : 0)
                              : (s_ctx->serverMP ? *s_ctx->serverMP : 0);
   bool canAfford = currentResource >= cost;
-  ImU32 tint = canAfford ? IM_COL32(255, 255, 255, 255)
-                         : IM_COL32(100, 100, 100, 180);
+  ImU32 tint =
+      canAfford ? IM_COL32(255, 255, 255, 255) : IM_COL32(100, 100, 100, 180);
 
   ImVec2 p0(screenX, screenY);
   ImVec2 p1(screenX + size, screenY + size);
@@ -161,8 +169,7 @@ void RenderRmcSlot(ImDrawList *dl, float screenX, float screenY, float size) {
       char buf[64];
       BeginPendingTooltip(200, 18 * 4 + 10);
       AddPendingTooltipLine(IM_COL32(255, 210, 80, 255), found->name);
-      snprintf(buf, sizeof(buf), "%s Cost: %d", resLabel,
-               found->resourceCost);
+      snprintf(buf, sizeof(buf), "%s Cost: %d", resLabel, found->resourceCost);
       AddPendingTooltipLine(IM_COL32(100, 180, 255, 255), buf);
       snprintf(buf, sizeof(buf), "Damage: +%d", found->damageBonus);
       AddPendingTooltipLine(IM_COL32(255, 200, 100, 255), buf);
@@ -180,75 +187,164 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
   glfwGetWindowSize(glfwGetCurrentContext(), &winW, &winH);
   float screenBottom = (float)winH;
 
-  // -- Layout constants (virtual coords, 1280x720) --
-  // Slot size and spacing
-  static constexpr float SLOT = 44.0f;
-  static constexpr float GAP = 5.0f;
-  static constexpr float BAR_W = 140.0f;
-  static constexpr float BAR_H = 22.0f;
-  static constexpr float XP_H = 10.0f;
+  using namespace HudLayout;
 
-  // Menu button constants
-  static constexpr float BTN = 36.0f;
-  static constexpr float BTN_GAP = 3.0f;
-  static constexpr float MENU_W = GAP + BTN * 4 + BTN_GAP * 3;
+  ImVec2 mp = ImGui::GetIO().MousePos;
 
-  // Compute total width: HP + gap + 4pots + gap + 4skills + gap + RMC + gap + AG
-  static constexpr float CONTENT_W =
-      BAR_W + GAP * 2 + (SLOT + GAP) * 4 + GAP + (SLOT + GAP) * 4 + GAP +
-      SLOT + GAP * 2 + BAR_W;
-
-  // Center horizontally
-  static constexpr float START_VX = (1280.0f - CONTENT_W) * 0.5f;
-  // Anchor to actual screen bottom (virtual Y ~874 = screen bottom at 0.7 scale)
-  static constexpr float ROW_VY = 818.0f; // Slot row
-  static constexpr float XP_VY = 864.0f;  // XP bar below slots (bottom at ~874)
-
-  // -- Background bar --
+  // ══════════════ Background panel (dark gothic stone) ══════════════
   {
-    float bgX = c.ToScreenX(START_VX - 8.0f);
-    float bgY = c.ToScreenY(ROW_VY - 6.0f);
-    float bgX1 = c.ToScreenX(START_VX + CONTENT_W + 8.0f);
-    float bgY1 = c.ToScreenY(XP_VY + XP_H + 4.0f);
-    // Gradient background
+    float bgX = c.ToScreenX(PANEL_LEFT - 4.0f);
+    float bgY = c.ToScreenY(ROW_VY - 8.0f);
+    float bgX1 = c.ToScreenX(PANEL_RIGHT + 4.0f);
+    float bgY1 = c.ToScreenY(ROW_VY + SLOT + 8.0f);
+    // Dark stone gradient
     dl->AddRectFilledMultiColor(
-        ImVec2(bgX, bgY), ImVec2(bgX1, bgY1),
-        IM_COL32(6, 6, 14, 200), IM_COL32(6, 6, 14, 200),
-        IM_COL32(14, 14, 26, 190), IM_COL32(14, 14, 26, 190));
+        ImVec2(bgX, bgY), ImVec2(bgX1, bgY1), IM_COL32(12, 10, 8, 240),
+        IM_COL32(12, 10, 8, 240), IM_COL32(18, 15, 12, 235),
+        IM_COL32(18, 15, 12, 235));
     // Outer dark border
-    dl->AddRect(ImVec2(bgX, bgY), ImVec2(bgX1, bgY1),
-                IM_COL32(5, 5, 10, 230), 6.0f, 0, 2.0f);
-    // Inner gold border
+    dl->AddRect(ImVec2(bgX, bgY), ImVec2(bgX1, bgY1), IM_COL32(8, 6, 4, 255),
+                4.0f, 0, 2.5f);
+    // Inner gold trim
     dl->AddRect(ImVec2(bgX + 2, bgY + 2), ImVec2(bgX1 - 2, bgY1 - 2),
-                IM_COL32(70, 65, 45, 120), 5.0f);
+                IM_COL32(120, 100, 55, 100), 3.0f);
+    // Top decorative line (filigree accent)
+    dl->AddLine(ImVec2(bgX + 10, bgY + 1), ImVec2(bgX1 - 10, bgY + 1),
+                IM_COL32(160, 135, 70, 80));
   }
 
-  float curVX = START_VX;
-
-  // -- HP Bar --
+  // ══════════════ HP Orb (left) ══════════════
   {
-    float barVY = ROW_VY + (SLOT - BAR_H) * 0.5f; // Vertically centered
-    float sx = c.ToScreenX(curVX);
-    float sy = c.ToScreenY(barVY);
-    float sw = c.ToScreenX(curVX + BAR_W) - sx;
-    float sh = c.ToScreenY(barVY + BAR_H) - sy;
-
     int curHP = hero.GetHP();
     int maxHP = hero.GetMaxHP();
     float hpFrac = maxHP > 0 ? (float)curHP / (float)maxHP : 0.0f;
+
+    float orbSX = c.ToScreenX(HP_ORB_CX);
+    float orbSY = c.ToScreenY(ORB_CY);
+    float orbSR = (c.ToScreenX(HP_ORB_CX + ORB_RADIUS) - orbSX);
+
+    // Show value on the orb itself
     char hpLabel[32];
-    snprintf(hpLabel, sizeof(hpLabel), "HP %d/%d", std::max(curHP, 0), maxHP);
-    DrawStyledBar(dl, sx, sy, sw, sh, hpFrac,
-                  IM_COL32(220, 50, 50, 230), IM_COL32(160, 30, 30, 230),
-                  hpLabel);
-    curVX += BAR_W + GAP * 2;
+    snprintf(hpLabel, sizeof(hpLabel), "%d/%d", std::max(curHP, 0), maxHP);
+
+    DrawOrb(dl, orbSX, orbSY, orbSR, hpFrac,
+            IM_COL32(200, 40, 30, 240),  // fill top: bright red
+            IM_COL32(120, 15, 10, 240),  // fill bottom: dark red
+            IM_COL32(20, 8, 8, 220),     // empty: very dark red
+            IM_COL32(140, 115, 60, 200), // frame: gold
+            hpLabel);
+
+    // "HP" label above orb
+    ImVec2 hpsz = ImGui::CalcTextSize("HP");
+    float hlx = orbSX - hpsz.x * 0.5f;
+    float hly = orbSY - orbSR - hpsz.y - 3.0f;
+    dl->AddText(ImVec2(hlx + 1, hly + 1), IM_COL32(0, 0, 0, 200), "HP");
+    dl->AddText(ImVec2(hlx, hly), IM_COL32(200, 80, 80, 200), "HP");
   }
 
-  // -- Potion slots (Q, W, E, R) --
-  ImVec2 mp = ImGui::GetIO().MousePos;
+  // ══════════════ MP/AG Orb (right) ══════════════
+  {
+    bool isDK = (hero.GetClass() == 16);
+    int curVal = isDK ? hero.GetAG() : hero.GetMana();
+    int maxVal = isDK ? hero.GetMaxAG() : hero.GetMaxMana();
+    float frac = maxVal > 0 ? (float)curVal / (float)maxVal : 0.0f;
+
+    float orbSX = c.ToScreenX(MP_ORB_CX);
+    float orbSY = c.ToScreenY(ORB_CY);
+    float orbSR = (c.ToScreenX(MP_ORB_CX + ORB_RADIUS) - orbSX);
+
+    ImU32 fillTop, fillBot, emptyCol;
+    const char *resName;
+    if (isDK) {
+      fillTop = IM_COL32(230, 150, 30, 240); // orange top
+      fillBot = IM_COL32(170, 90, 10, 240);  // dark orange
+      emptyCol = IM_COL32(20, 12, 5, 220);   // dark orange-brown
+      resName = "AG";
+    } else {
+      fillTop = IM_COL32(40, 80, 220, 240); // blue top
+      fillBot = IM_COL32(15, 35, 140, 240); // blue bottom
+      emptyCol = IM_COL32(8, 8, 20, 220);   // dark blue
+      resName = "MP";
+    }
+
+    // Show value on the orb itself
+    char resLabel[32];
+    snprintf(resLabel, sizeof(resLabel), "%d/%d", std::max(curVal, 0), maxVal);
+
+    DrawOrb(dl, orbSX, orbSY, orbSR, frac, fillTop, fillBot, emptyCol,
+            IM_COL32(140, 115, 60, 200), // frame: gold
+            resLabel);
+
+    // Resource name above orb
+    ImVec2 nsz = ImGui::CalcTextSize(resName);
+    float nlx = orbSX - nsz.x * 0.5f;
+    float nly = orbSY - orbSR - nsz.y - 3.0f;
+    dl->AddText(ImVec2(nlx + 1, nly + 1), IM_COL32(0, 0, 0, 200), resName);
+    ImU32 nameCol =
+        isDK ? IM_COL32(230, 170, 50, 200) : IM_COL32(80, 120, 220, 200);
+    dl->AddText(ImVec2(nlx, nly), nameCol, resName);
+  }
+
+  // ══════════════ CISTM buttons (screen-pixel, bottom-right corner)
+  // ══════════════
+  {
+    const char *btnLabels[] = {"C", "I", "S", "T", "M"};
+    bool tDisabled = (s_ctx->hero && s_ctx->hero->IsInSafeZone());
+    bool mDisabled = !(s_ctx->hero && s_ctx->hero->HasMountEquipped());
+
+    // Position in screen pixels: bottom-right corner
+    float scrW = (float)winW, scrH = (float)winH;
+    float bs = MBTN_SCREEN_BTN;
+    float bStartX = scrW - MBTN_SCREEN_RIGHT_PAD - MBTN_SCREEN_TOTAL_W;
+    float bStartY =
+        scrH - XP_SCREEN_BOTTOM - XP_SCREEN_H - MBTN_SCREEN_BOTTOM_PAD - bs;
+
+    for (int i = 0; i < MBTN_COUNT; i++) {
+      float bx = bStartX + i * (bs + MBTN_SCREEN_GAP);
+      float by = bStartY;
+      ImVec2 bp0(bx, by), bp1(bx + bs, by + bs);
+      bool hov = mp.x >= bp0.x && mp.x < bp1.x && mp.y >= bp0.y && mp.y < bp1.y;
+      bool disabled = (i == 3 && tDisabled) || (i == 4 && mDisabled);
+      // Gothic dark stone button
+      ImU32 topFill = disabled ? IM_COL32(12, 10, 8, 200)
+                      : hov    ? IM_COL32(40, 32, 22, 240)
+                               : IM_COL32(18, 14, 10, 230);
+      ImU32 botFill = disabled ? IM_COL32(8, 6, 5, 200)
+                      : hov    ? IM_COL32(30, 24, 16, 240)
+                               : IM_COL32(12, 10, 8, 230);
+      dl->AddRectFilledMultiColor(bp0, bp1, topFill, topFill, botFill, botFill);
+      ImU32 borderCol = disabled ? IM_COL32(40, 35, 25, 100)
+                        : hov    ? IM_COL32(200, 170, 80, 230)
+                                 : IM_COL32(100, 85, 45, 160);
+      dl->AddRect(bp0, bp1, borderCol, 3.0f);
+      ImVec2 tsz = ImGui::CalcTextSize(btnLabels[i]);
+      ImU32 textCol =
+          disabled ? IM_COL32(80, 70, 55, 140) : IM_COL32(200, 185, 150, 240);
+      DrawShadowText(dl,
+                     ImVec2(bx + (bs - tsz.x) * 0.5f, by + (bs - tsz.y) * 0.5f),
+                     textCol, btnLabels[i]);
+      // Teleport cooldown overlay
+      if (i == 3 && s_ctx->hero && s_ctx->hero->GetTeleportCooldown() > 0.0f) {
+        float cd = s_ctx->hero->GetTeleportCooldown();
+        float cdMax = s_ctx->hero->GetTeleportCooldownMax();
+        float cdFrac = cd / cdMax;
+        float fillH = bs * cdFrac;
+        dl->AddRectFilled(bp0, ImVec2(bp1.x, bp0.y + fillH),
+                          IM_COL32(10, 10, 10, 180), 3.0f);
+        char cdBuf[8];
+        snprintf(cdBuf, sizeof(cdBuf), "%d", (int)ceil(cd));
+        ImVec2 cdsz = ImGui::CalcTextSize(cdBuf);
+        DrawShadowText(dl,
+                       ImVec2(bx + (bs - cdsz.x) * 0.5f, by + bs - cdsz.y - 2),
+                       IM_COL32(255, 180, 80, 255), cdBuf);
+      }
+    }
+  }
+
+  // ══════════════ Potion slots (Q, W, E, R) ══════════════
   const char *potLabels[] = {"Q", "W", "E", "R"};
   for (int i = 0; i < 4; i++) {
-    float vx = curVX;
+    float vx = PotionSlotX(i);
     float vy = ROW_VY;
     float sx = c.ToScreenX(vx);
     float sy = c.ToScreenY(vy);
@@ -257,15 +353,14 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
     ImVec2 p0(sx, sy), p1(sx + sz, sy + sz);
     bool slotHov = mp.x >= p0.x && mp.x < p1.x && mp.y >= p0.y && mp.y < p1.y;
     DrawStyledSlot(dl, p0, p1, slotHov);
-    DrawShadowText(dl, ImVec2(sx + 2, sy + 1),
-                   IM_COL32(255, 255, 255, 180), potLabels[i]);
+    DrawShadowText(dl, ImVec2(sx + 2, sy + 1), IM_COL32(200, 185, 150, 180),
+                   potLabels[i]);
 
     int16_t defIdx = s_ctx->potionBar[i];
     if (defIdx != -1) {
       int count = 0;
       for (int slot = 0; slot < INVENTORY_SLOTS; slot++) {
-        if (s_ctx->inventory[slot].occupied &&
-            s_ctx->inventory[slot].primary &&
+        if (s_ctx->inventory[slot].occupied && s_ctx->inventory[slot].primary &&
             s_ctx->inventory[slot].defIndex == defIdx)
           count += s_ctx->inventory[slot].quantity;
       }
@@ -285,9 +380,11 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
     }
 
     if (*s_ctx->potionCooldown > 0.0f) {
-      // Defer to second ImGui pass (renders on top of 3D item models)
       DeferredCooldown cd;
-      cd.x = sx; cd.y = sy; cd.w = sz; cd.h = sz;
+      cd.x = sx;
+      cd.y = sy;
+      cd.w = sz;
+      cd.h = sz;
       snprintf(cd.text, sizeof(cd.text), "%d",
                (int)ceil(*s_ctx->potionCooldown));
       g_deferredCooldowns.push_back(cd);
@@ -306,21 +403,17 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
         }
         char buf[64];
         BeginPendingTooltip(180, 18 * 2 + 10);
-        AddPendingTooltipLine(IM_COL32(255, 210, 80, 255),
-                              it->second.name);
+        AddPendingTooltipLine(IM_COL32(255, 210, 80, 255), it->second.name);
         snprintf(buf, sizeof(buf), "Quantity: %d", count);
         AddPendingTooltipLine(IM_COL32(170, 170, 190, 255), buf);
       }
     }
-
-    curVX += SLOT + GAP;
   }
-  curVX += GAP; // Extra gap between potion and skill groups
 
-  // -- Skill slots (1, 2, 3, 4) --
+  // ══════════════ Skill slots (1, 2, 3, 4) ══════════════
   const char *skillLabels[] = {"1", "2", "3", "4"};
   for (int i = 0; i < 4; i++) {
-    float vx = curVX;
+    float vx = SkillSlotX(i);
     float vy = ROW_VY;
     float sx = c.ToScreenX(vx);
     float sy = c.ToScreenY(vy);
@@ -332,8 +425,8 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
     // Gold border for active quickslot toggle
     if (i == InputHandler::GetActiveQuickSlot())
       dl->AddRect(p0, p1, IM_COL32(255, 210, 80, 255), 3.0f, 0, 2.0f);
-    DrawShadowText(dl, ImVec2(sx + 2, sy + 1),
-                   IM_COL32(255, 255, 255, 180), skillLabels[i]);
+    DrawShadowText(dl, ImVec2(sx + 2, sy + 1), IM_COL32(200, 185, 150, 180),
+                   skillLabels[i]);
 
     int8_t sid = s_ctx->skillBar[i];
     int skillCost = (sid > 0) ? GetSkillResourceCost(sid) : 0;
@@ -341,19 +434,19 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
     int curRes = isDKClass ? (s_ctx->serverAG ? *s_ctx->serverAG : 0)
                            : (s_ctx->serverMP ? *s_ctx->serverMP : 0);
     bool canAfford = curRes >= skillCost;
-    ImU32 tint = canAfford ? IM_COL32(255, 255, 255, 255)
-                           : IM_COL32(100, 100, 100, 180);
+    ImU32 tint =
+        canAfford ? IM_COL32(255, 255, 255, 255) : IM_COL32(100, 100, 100, 180);
     RenderSkillIcon(dl, sid, sx, sy, sz, tint);
     if (sid > 0 && !canAfford)
       dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 120), 3.0f);
 
-    // GCD overlay -- dark sweep from top, proportional to remaining cooldown
+    // GCD overlay
     if (sid > 0 && s_ctx->hero) {
       float gcd = s_ctx->hero->GetGlobalCooldown();
       float gcdMax = s_ctx->hero->GetGlobalCooldownMax();
       if (gcd > 0.0f && gcdMax > 0.0f) {
-        float frac = gcd / gcdMax; // 1.0 = full, 0.0 = ready
-        float fillH = sz * frac;   // Height of darkened portion
+        float gcdFrac = gcd / gcdMax;
+        float fillH = sz * gcdFrac;
         dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + fillH),
                           IM_COL32(10, 10, 10, 180), 3.0f);
       }
@@ -386,107 +479,19 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
         AddPendingTooltipLine(IM_COL32(170, 170, 190, 255), found->desc);
       }
     }
-
-    curVX += SLOT + GAP;
   }
-  curVX += GAP;
 
-  // -- RMC Slot --
+  // ══════════════ RMC Slot ══════════════
   {
-    float sx = c.ToScreenX(curVX);
+    float sx = c.ToScreenX(RmcSlotX());
     float sy = c.ToScreenY(ROW_VY);
-    float sz = c.ToScreenX(curVX + SLOT) - sx;
+    float sz = c.ToScreenX(RmcSlotX() + SLOT) - sx;
     RenderRmcSlot(dl, sx, sy, sz);
-    curVX += SLOT + GAP * 2;
   }
 
-  // -- AG / MP Bar --
+  // ══════════════ XP Bar (screen-pixel, full-width, fragmented, screen bottom)
+  // ══════════════
   {
-    float barVY = ROW_VY + (SLOT - BAR_H) * 0.5f;
-    float sx = c.ToScreenX(curVX);
-    float sy = c.ToScreenY(barVY);
-    float sw = c.ToScreenX(curVX + BAR_W) - sx;
-    float sh = c.ToScreenY(barVY + BAR_H) - sy;
-
-    // DK (class 16) uses AG, other classes use MP/Mana
-    bool isDK = (hero.GetClass() == 16);
-    int curVal = isDK ? hero.GetAG() : hero.GetMana();
-    int maxVal = isDK ? hero.GetMaxAG() : hero.GetMaxMana();
-    float frac = maxVal > 0 ? (float)curVal / (float)maxVal : 0.0f;
-    const char *resLabel = isDK ? "AG" : "MP";
-    ImU32 topCol = isDK ? IM_COL32(160, 60, 220, 230)
-                        : IM_COL32(50, 70, 220, 230);
-    ImU32 botCol = isDK ? IM_COL32(110, 35, 160, 230)
-                        : IM_COL32(30, 45, 160, 230);
-
-    char barLabel[32];
-    snprintf(barLabel, sizeof(barLabel), "%s %d/%d", resLabel,
-             std::max(curVal, 0), maxVal);
-    DrawStyledBar(dl, sx, sy, sw, sh, frac, topCol, botCol, barLabel);
-    curVX += BAR_W;
-  }
-
-  // -- Menu buttons: C, I, L, T, M — bottom-right corner (at quickbar row level) --
-  {
-    static constexpr int MBTN_COUNT = 5;
-    static constexpr float MBTN_VX = 1280.0f - (BTN * MBTN_COUNT + BTN_GAP * (MBTN_COUNT - 1)) - 4.0f;
-    static constexpr float MBTN_VY = ROW_VY + (SLOT - BTN) * 0.5f;
-    const char *btnLabels[] = {"C", "I", "L", "T", "M"};
-    bool tDisabled = (s_ctx->hero && s_ctx->hero->IsInSafeZone());
-    bool mDisabled = !(s_ctx->hero && s_ctx->hero->HasMountEquipped());
-    for (int i = 0; i < MBTN_COUNT; i++) {
-      float bx = c.ToScreenX(MBTN_VX + i * (BTN + BTN_GAP));
-      float by = c.ToScreenY(MBTN_VY);
-      float bs = c.ToScreenX(MBTN_VX + i * (BTN + BTN_GAP) + BTN) - bx;
-      ImVec2 bp0(bx, by), bp1(bx + bs, by + bs);
-      bool hov = mp.x >= bp0.x && mp.x < bp1.x &&
-                 mp.y >= bp0.y && mp.y < bp1.y;
-      bool disabled = (i == 3 && tDisabled) || (i == 4 && mDisabled);
-      // Gradient fill
-      ImU32 topFill = disabled ? IM_COL32(15, 15, 20, 200)
-                     : hov     ? IM_COL32(35, 35, 55, 230)
-                               : IM_COL32(20, 20, 35, 220);
-      ImU32 botFill = disabled ? IM_COL32(10, 10, 16, 200)
-                     : hov     ? IM_COL32(25, 25, 42, 230)
-                               : IM_COL32(14, 14, 26, 220);
-      dl->AddRectFilledMultiColor(bp0, bp1, topFill, topFill, botFill, botFill);
-      ImU32 borderCol = disabled ? IM_COL32(40, 35, 25, 120)
-                       : hov     ? IM_COL32(180, 160, 90, 220)
-                                 : IM_COL32(65, 60, 45, 180);
-      dl->AddRect(bp0, bp1, borderCol, 4.0f);
-      ImVec2 tsz = ImGui::CalcTextSize(btnLabels[i]);
-      ImU32 textCol = disabled ? IM_COL32(100, 95, 80, 140)
-                               : IM_COL32(220, 215, 200, 240);
-      DrawShadowText(dl,
-          ImVec2(bx + (bs - tsz.x) * 0.5f, by + (bs - tsz.y) * 0.5f),
-          textCol, btnLabels[i]);
-      // Teleport cooldown overlay on T button (now index 3)
-      if (i == 3 && s_ctx->hero && s_ctx->hero->GetTeleportCooldown() > 0.0f) {
-        float cd = s_ctx->hero->GetTeleportCooldown();
-        float cdMax = s_ctx->hero->GetTeleportCooldownMax();
-        float frac = cd / cdMax;
-        float fillH = bs * frac;
-        dl->AddRectFilled(bp0, ImVec2(bp1.x, bp0.y + fillH),
-                          IM_COL32(10, 10, 10, 180), 4.0f);
-        char cdBuf[8];
-        snprintf(cdBuf, sizeof(cdBuf), "%d", (int)ceil(cd));
-        ImVec2 cdsz = ImGui::CalcTextSize(cdBuf);
-        DrawShadowText(dl,
-            ImVec2(bx + (bs - cdsz.x) * 0.5f, by + bs - cdsz.y - 2),
-            IM_COL32(255, 180, 80, 255), cdBuf);
-      }
-    }
-  }
-
-  // -- XP Bar (spans full HUD width, below slots) --
-  {
-    float xpVX = START_VX;
-    float xpW = CONTENT_W;
-    float sx = c.ToScreenX(xpVX);
-    float sy = c.ToScreenY(XP_VY);
-    float sw = c.ToScreenX(xpVX + xpW) - sx;
-    float sh = c.ToScreenY(XP_VY + XP_H) - sy;
-
     uint64_t curXp = hero.GetExperience();
     int curLv = hero.GetLevel();
     uint64_t nextXp = hero.GetNextExperience();
@@ -494,13 +499,55 @@ void RenderQuickbar(ImDrawList *dl, const UICoords &c) {
     float xpFrac = 0.0f;
     if (nextXp > prevXp)
       xpFrac = (float)(curXp - prevXp) / (float)(nextXp - prevXp);
+    xpFrac = std::clamp(xpFrac, 0.0f, 1.0f);
 
+    // Render in screen pixels directly
+    float scrW = (float)winW, scrH = (float)winH;
+    float barLeft = XP_SCREEN_PAD;
+    float barRight = scrW - XP_SCREEN_PAD;
+    float barY = scrH - XP_SCREEN_BOTTOM - XP_SCREEN_H;
+    float barH = XP_SCREEN_H;
+    float totalW = barRight - barLeft;
+    float gapScreen = XP_SEG_GAP;
+    float segW = (totalW - gapScreen * (XP_SEGMENTS - 1)) / (float)XP_SEGMENTS;
+
+    for (int i = 0; i < XP_SEGMENTS; i++) {
+      float sx = barLeft + i * (segW + gapScreen);
+      ImVec2 sp0(sx, barY);
+      ImVec2 sp1(sx + segW, barY + barH);
+
+      // Segment background
+      dl->AddRectFilled(sp0, sp1, IM_COL32(8, 8, 12, 200), 1.0f);
+
+      // Fill based on XP fraction
+      float segStart = (float)i / (float)XP_SEGMENTS;
+      float segEnd = (float)(i + 1) / (float)XP_SEGMENTS;
+      if (xpFrac > segStart) {
+        float segFrac =
+            std::clamp((xpFrac - segStart) / (segEnd - segStart), 0.0f, 1.0f);
+        float fillW = segW * segFrac;
+        dl->AddRectFilledMultiColor(
+            sp0, ImVec2(sx + fillW, barY + barH), IM_COL32(50, 180, 220, 220),
+            IM_COL32(50, 180, 220, 220), IM_COL32(30, 130, 170, 220),
+            IM_COL32(30, 130, 170, 220));
+        // Subtle highlight at top
+        dl->AddLine(ImVec2(sx + 1, barY + 1), ImVec2(sx + fillW - 1, barY + 1),
+                    IM_COL32(255, 255, 255, 30));
+      }
+
+      // Thin border
+      dl->AddRect(sp0, sp1, IM_COL32(40, 40, 50, 120), 1.0f);
+    }
+
+    // Level + XP text centered above the bar
     char xpLabel[64];
     snprintf(xpLabel, sizeof(xpLabel), "Lv.%d  -  %.1f%%", curLv,
-             std::clamp(xpFrac, 0.0f, 1.0f) * 100.0f);
-    DrawStyledBar(dl, sx, sy, sw, sh, xpFrac,
-                  IM_COL32(50, 180, 220, 230), IM_COL32(30, 130, 170, 230),
-                  xpLabel);
+             xpFrac * 100.0f);
+    ImVec2 tsz = ImGui::CalcTextSize(xpLabel);
+    float tx = barLeft + (totalW - tsz.x) * 0.5f;
+    float ty = barY - tsz.y - 2.0f;
+    dl->AddText(ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 200), xpLabel);
+    dl->AddText(ImVec2(tx, ty), IM_COL32(200, 190, 140, 220), xpLabel);
   }
 }
 
@@ -545,8 +592,8 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
   char buf[256];
 
   // Background
-  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py),
-                  c.ToScreenX(px + pw), c.ToScreenY(py + ph), 6.0f);
+  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py), c.ToScreenX(px + pw),
+                  c.ToScreenY(py + ph), 6.0f);
 
   // Title -- centered with strong shadow
   {
@@ -749,12 +796,14 @@ void RenderSkillPanel(ImDrawList *dl, const UICoords &c) {
 }
 
 void RenderCastBar(ImDrawList *dl) {
-  if (!s_ctx) return;
+  if (!s_ctx)
+    return;
 
   bool isTeleport = s_ctx->teleportingToTown && *s_ctx->teleportingToTown;
   bool isLearning = s_ctx->isLearningSkill && *s_ctx->isLearningSkill;
   bool isMounting = s_ctx->mountToggling && *s_ctx->mountToggling;
-  if (!isTeleport && !isLearning && !isMounting) return;
+  if (!isTeleport && !isLearning && !isMounting)
+    return;
 
   // Build label and progress
   char label[64];

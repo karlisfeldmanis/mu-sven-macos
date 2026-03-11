@@ -44,6 +44,14 @@ static const MonsterTypeDef s_monsterDefs[] = {
     {13, 1600, 60, 60, 130, 135, 170, 40, 1.6f, 0.4f, 2, 7, 4, true}, // Hell Spider (ranged)
     {17, 850, 35, 35, 100, 105, 130, 28, 2.0f, 0.4f, 2, 3, 2, true},  // Cyclops
     {18, 6000, 100, 100, 165, 175, 220, 55, 1.2f, 0.4f, 2, 5, 1, true}, // Gorgon
+    // --- Devias monsters ---
+    {19, 900, 37, 37, 105, 110, 150, 30, 1.6f, 0.4f, 3, 5, 1, true},    // Yeti
+    {20, 1200, 50, 50, 120, 125, 180, 36, 1.4f, 0.4f, 3, 5, 1, true},   // Elite Yeti
+    {21, 800, 33, 33, 95, 100, 130, 26, 1.4f, 0.4f, 3, 5, 1, true},     // Assassin
+    {22, 650, 27, 27, 80, 85, 110, 22, 1.8f, 0.4f, 3, 5, 1, true},      // Ice Monster
+    {23, 700, 29, 29, 85, 90, 120, 24, 1.6f, 0.4f, 3, 5, 1, true},      // Hommerd
+    {24, 600, 25, 25, 75, 80, 100, 20, 1.8f, 0.4f, 3, 4, 1, true},      // Worm
+    {25, 4000, 90, 90, 155, 165, 260, 52, 1.2f, 0.4f, 2, 5, 4, true},   // Ice Queen
 };
 static constexpr int NUM_MONSTER_DEFS =
     sizeof(s_monsterDefs) / sizeof(s_monsterDefs[0]);

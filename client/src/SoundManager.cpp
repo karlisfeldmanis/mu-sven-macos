@@ -220,6 +220,8 @@ void Init(const std::string &dataPath) {
   LoadSound(SOUND_WIND01, sndPath + "aWind.wav", 1);
   LoadSound(SOUND_DUNGEON01, sndPath + "aDungeon.wav", 1);
   LoadSound(SOUND_BAT01, sndPath + "aBat.wav", 1, true); // 3D positional
+  LoadSound(SOUND_DOOR01, sndPath + "aDoor.wav", 1);
+  LoadSound(SOUND_DOOR02, sndPath + "aCastleDoor.wav", 1);
   LoadSound(SOUND_WALK_GRASS, sndPath + "pWalk(Grass).wav", 2);
   LoadSound(SOUND_WALK_SOIL, sndPath + "pWalk(Soil).wav", 2);
   LoadSound(SOUND_CLICK01, sndPath + "iButtonClick.wav", 1);
@@ -369,6 +371,33 @@ void Init(const std::string &dataPath) {
   // Dark Knight monster (type 10) — Main 5.2: mDarkKnight sounds
   LoadSound(SOUND_MONSTER_DARKKNIGHT1, sndPath + "mDarkKnight1.wav", 2, true);
   LoadSound(SOUND_MONSTER_DARKKNIGHT2, sndPath + "mDarkKnight2.wav", 2, true);
+  // Devias monsters
+  // Yeti (type 19) / Elite Yeti (type 20, reuses Yeti sounds)
+  LoadSound(SOUND_MONSTER_YETI1, sndPath + "mYeti1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_YETI2, sndPath + "mYeti2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_YETIATTACK1, sndPath + "mYetiAttack1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_YETIDIE, sndPath + "mYetiDie.wav", 2, true);
+  // Assassin (type 21) — idle sound
+  LoadSound(SOUND_MONSTER_ASSASSIN1, sndPath + "mAssassin1.wav", 2, true);
+  // Ice Monster (type 22)
+  LoadSound(SOUND_MONSTER_ICEMONSTER1, sndPath + "mIceMonster1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_ICEMONSTER2, sndPath + "mIceMonster2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_ICEMONSTERDIE, sndPath + "mIceMonsterDie.wav", 2, true);
+  // Hommerd (type 23)
+  LoadSound(SOUND_MONSTER_HOMMERD1, sndPath + "mHomord1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_HOMMERD2, sndPath + "mHomord2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_HOMMERDATTACK1, sndPath + "mHomordAttack1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_HOMMERDDIE, sndPath + "mHomordDie.wav", 2, true);
+  // Worm (type 24)
+  LoadSound(SOUND_MONSTER_WORM1, sndPath + "mWorm1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_WORM2, sndPath + "mWorm2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_WORMDIE, sndPath + "mWormDie.wav", 2, true);
+  // Ice Queen (type 25)
+  LoadSound(SOUND_MONSTER_ICEQUEEN1, sndPath + "mIceQueen1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_ICEQUEEN2, sndPath + "mIceQueen2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_ICEQUEENATTACK1, sndPath + "mIceQueenAttack1.wav", 2, true);
+  LoadSound(SOUND_MONSTER_ICEQUEENATTACK2, sndPath + "mIceQueenAttack2.wav", 2, true);
+  LoadSound(SOUND_MONSTER_ICEQUEENDIE, sndPath + "mIceQueenDie.wav", 2, true);
   // NPC sounds (3D positional)
   LoadSound(SOUND_NPC_BLACKSMITH, sndPath + "nBlackSmith.wav", 1, true);
   LoadSound(SOUND_NPC_HARP, sndPath + "nHarp.wav", 1, true);

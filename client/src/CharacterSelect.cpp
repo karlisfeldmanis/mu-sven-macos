@@ -1,12 +1,15 @@
 #include "CharacterSelect.hpp"
 #include "BMDParser.hpp"
 #include "BMDUtils.hpp"
+#include "BoidManager.hpp"
+#include "ChromeGlow.hpp"
 #include "ClientTypes.hpp"
 #include "GrassRenderer.hpp"
 #include "ItemDatabase.hpp"
 #include "ItemModelManager.hpp"
 #include "ObjectRenderer.hpp"
 #include "PacketDefs.hpp"
+#include "Sky.hpp"
 #include "SoundManager.hpp"
 #include "TextureLoader.hpp"
 #include "imgui.h"
@@ -54,6 +57,12 @@ static ObjectRenderer s_objectRenderer;
 // Grass billboards
 static GrassRenderer s_grassRenderer;
 
+// Sky dome
+static Sky s_sky;
+
+// Ambient creatures (birds, fish, falling leaves)
+static BoidManager s_boidManager;
+
 // Player.bmd skeleton (shared across all characters)
 static std::unique_ptr<BMDData> s_playerSkeleton;
 
@@ -72,11 +81,19 @@ struct ShadowMesh {
 };
 
 // Per-slot rendering data
+static constexpr int ACTION_IDLE = 1;
+// Per-class emotes: males=Salute(218), ELF=Greeting female(188)
+static constexpr int CLASS_EMOTES[4] = {218, 218, 188, 218};
+
 struct SlotRender {
   std::vector<MeshBuffers> meshes[PART_COUNT];
   std::vector<ShadowMesh> shadowMeshes[PART_COUNT];
   std::unique_ptr<BMDData> partOverrideBmd[PART_COUNT]; // null = use class default
   float animFrame = 0.0f;
+  int action = ACTION_IDLE;        // Current animation action
+  bool emotePlaying = false;       // True while emote is in progress
+  float emoteBlend = 0.0f;        // 0=idle, 1=full emote (lerp factor)
+  float idleFrame = 0.0f;         // Idle frame preserved during blend
 
   // Weapon (right hand) — attached to bone 47 with back offsets
   std::unique_ptr<BMDData> weaponBmd;
@@ -95,21 +112,29 @@ struct SlotRender {
   std::vector<ShadowMesh> baseHeadShadowMeshes;
   bool showBaseHead = false;
 
+  // Wings (attached to bone 47 — Main 5.2 RenderCharacterBackItem)
+  std::unique_ptr<BMDData> wingBmd;
+  std::vector<MeshBuffers> wingMeshes;
+  std::vector<ShadowMesh> wingShadowMeshes;
+  std::vector<BoneWorldMatrix> wingLocalBones;
+
   // BlendMesh glow indices (-1 = none)
   int weaponBlendMesh = -1;
   int shieldBlendMesh = -1;
+  int wingBlendMesh = -1;
+
+  // Wing item index (0-6) for per-wing rendering behavior
+  int wingItemIndex = -1;
+
+  // Wing animation frame (independent from character animation)
+  float wingAnimFrame = 0.0f;
+
 };
 static SlotRender s_slotRender[MAX_SLOTS];
 
 // Model shader (reuse existing model.vert/frag)
 static std::unique_ptr<Shader> s_modelShader;
 static std::unique_ptr<Shader> s_shadowShader;
-static std::unique_ptr<Shader> s_outlineShader;
-
-// Chrome/Shiny environment-map textures (Main 5.2 +7/+9/+11 glow)
-static GLuint s_chromeTexture = 0;   // Effect/Chrome01.OZJ
-static GLuint s_chrome2Texture = 0;  // Effect/Chrome02.OZJ
-static GLuint s_shinyTexture = 0;    // Effect/Shiny01.OZJ
 
 static float s_time = 0.0f;
 
@@ -125,6 +150,15 @@ static constexpr int CS_MAX_POINT_LIGHTS = 64;
 
 // Luminosity — near full daylight
 static constexpr float CS_LUMINOSITY = 1.0f;
+
+// Selection spotlight — tall light cone around selected character
+static GLuint s_spotlightTex = 0;
+static GLuint s_spotlightVAO = 0, s_spotlightVBO = 0, s_spotlightEBO = 0;
+static int s_spotlightIndexCount = 0;
+static std::unique_ptr<Shader> s_spotlightShader;
+static constexpr int CONE_SEGMENTS = 32;
+static constexpr float CONE_HEIGHT = 800.0f;
+static constexpr float CONE_RADIUS = 55.0f;
 
 // Sun direction: high warm directional light for realistic top-down illumination
 // Position is relative to scene — far above and slightly behind camera
@@ -191,22 +225,23 @@ struct SlotPos {
   float worldX, worldZ, facingDeg;
 };
 // Character slots: 5 positions on the road
-// Camera at (24524, 520, 21331), yaw=156.7° pitch=-17.3°
-// forward*720 from new camera ≈ same world position as before
-static constexpr float SCENE_CX = 23863.0f;
-static constexpr float SCENE_CZ = 21615.5f;
-static constexpr float FWD_X = -0.919f;
-static constexpr float FWD_Z = 0.395f;
-static constexpr float RIGHT_X = 0.395f;
-static constexpr float RIGHT_Z = 0.919f;
-static constexpr float FACE_DEG = 203.3f;
-// Spread 120 units apart along right axis, slight arc forward
+// Camera at (21743, 668, 13133), yaw=297.3° pitch=-14.8°
+// Scene center ~700 units forward from camera
+static constexpr float SCENE_CX = 22065.0f;
+static constexpr float SCENE_CZ = 12511.0f;
+static constexpr float FWD_X = 0.459f;
+static constexpr float FWD_Z = -0.889f;
+static constexpr float RIGHT_X = 0.889f;
+static constexpr float RIGHT_Z = 0.459f;
+static constexpr float FACE_DEG = 62.7f;
+// 4 slots, 320 units apart, centered on scene
+// Positive RIGHT = screen-left, Negative RIGHT = screen-right
+// Reversed: slot 0 (first char = DK) on screen-left
 static constexpr SlotPos SLOT_POSITIONS[MAX_SLOTS] = {
-    {SCENE_CX + RIGHT_X * -240 + FWD_X * 30, SCENE_CZ + RIGHT_Z * -240 + FWD_Z * 30, FACE_DEG},
-    {SCENE_CX + RIGHT_X * -120 + FWD_X * 8, SCENE_CZ + RIGHT_Z * -120 + FWD_Z * 8, FACE_DEG},
-    {SCENE_CX, SCENE_CZ, FACE_DEG},
-    {SCENE_CX + RIGHT_X * 120 + FWD_X * 8, SCENE_CZ + RIGHT_Z * 120 + FWD_Z * 8, FACE_DEG},
-    {SCENE_CX + RIGHT_X * 240 + FWD_X * 30, SCENE_CZ + RIGHT_Z * 240 + FWD_Z * 30, FACE_DEG},
+    {SCENE_CX + RIGHT_X * -480 + FWD_X * 510, SCENE_CZ + RIGHT_Z * -480 + FWD_Z * 510, FACE_DEG},
+    {SCENE_CX + RIGHT_X * -160 + FWD_X * 490, SCENE_CZ + RIGHT_Z * -160 + FWD_Z * 490, FACE_DEG},
+    {SCENE_CX + RIGHT_X * 160 + FWD_X * 490, SCENE_CZ + RIGHT_Z * 160 + FWD_Z * 490, FACE_DEG},
+    {SCENE_CX + RIGHT_X * 480 + FWD_X * 510, SCENE_CZ + RIGHT_Z * 480 + FWD_Z * 510, FACE_DEG},
 };
 
 // Camera
@@ -656,6 +691,51 @@ static void InitSlotMeshes(int slot) {
     }
   }
 
+  // --- Wings (slot 7, category 12, items 0-6) ---
+  auto &we = s_slots[slot].wingEquip;
+  if (we.category == 12 && we.itemIndex <= 6) {
+    int16_t defIdx = (int16_t)we.category * 32 + (int16_t)we.itemIndex;
+    auto &defs = ItemDatabase::GetItemDefs();
+    auto it = defs.find(defIdx);
+    if (it != defs.end() && !it->second.modelFile.empty()) {
+      auto bmd = BMDParser::Parse(texDirItem + it->second.modelFile);
+      if (bmd) {
+        auto localBones = ComputeBoneMatrices(bmd.get());
+        if (localBones.empty()) {
+          BoneWorldMatrix identity{};
+          identity[0] = {1, 0, 0, 0};
+          identity[1] = {0, 1, 0, 0};
+          identity[2] = {0, 0, 1, 0};
+          localBones = {identity};
+        }
+        AABB wingAABB;
+        for (auto &mesh : bmd->Meshes) {
+          UploadMeshWithBones(mesh, texDirItem, localBones,
+                              s_slotRender[slot].wingMeshes, wingAABB, true);
+        }
+        s_slotRender[slot].wingShadowMeshes = CreateShadowMeshes(bmd.get());
+        s_slotRender[slot].wingLocalBones = std::move(localBones);
+        // Main 5.2: Wing05/06 (biped, >60 bones) use standard RENDER_TEXTURE —
+        // no additive blending. Only standalone JPEG wings (01-04) need additive
+        // to hide black backgrounds. TGA wings (Wing07) have proper alpha.
+        bool isBipedWingModel = ((int)bmd->Bones.size() > 60);
+        if (!isBipedWingModel) {
+          for (auto &mb : s_slotRender[slot].wingMeshes) {
+            if (!mb.hasAlpha)
+              mb.bright = true;
+          }
+        }
+        s_slotRender[slot].wingBmd = std::move(bmd);
+        s_slotRender[slot].wingBlendMesh =
+            ItemModelManager::GetItemBlendMesh(we.category, we.itemIndex);
+        s_slotRender[slot].wingItemIndex = we.itemIndex;
+        printf("[CharSelect] Slot %d: wings loaded (%d meshes, blendMesh=%d, biped=%d)\n", slot,
+               (int)s_slotRender[slot].wingMeshes.size(),
+               s_slotRender[slot].wingBlendMesh, isBipedWingModel);
+      }
+    }
+  }
+
   s_slotRender[slot].animFrame = 0.0f;
 }
 
@@ -737,10 +817,32 @@ static void ReskinSlot(int slot) {
   if (!s_classParts[ci].loaded)
     return;
 
-  // Idle action = 1 (ACTION_STOP_MALE) — interpolated for smooth sub-frame blending
-  static constexpr int IDLE_ACTION = 1;
-  auto bones = ComputeBoneMatricesInterpolated(s_playerSkeleton.get(), IDLE_ACTION,
-                                               s_slotRender[slot].animFrame);
+  // Compute bones with idle↔emote blending
+  int act = s_slotRender[slot].action;
+  if (act < 0 || act >= (int)s_playerSkeleton->Actions.size())
+    act = ACTION_IDLE;
+
+  std::vector<BoneWorldMatrix> bones;
+  float blend = s_slotRender[slot].emoteBlend;
+  if (blend > 0.001f && blend < 0.999f && act != ACTION_IDLE) {
+    // Lerp between idle and emote bone matrices
+    auto idleBones = ComputeBoneMatricesInterpolated(
+        s_playerSkeleton.get(), ACTION_IDLE, s_slotRender[slot].idleFrame);
+    auto emoteBones = ComputeBoneMatricesInterpolated(
+        s_playerSkeleton.get(), act, s_slotRender[slot].animFrame);
+    bones.resize(idleBones.size());
+    for (size_t b = 0; b < bones.size(); ++b) {
+      for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c)
+          bones[b][r][c] = idleBones[b][r][c] * (1.0f - blend) +
+                           emoteBones[b][r][c] * blend;
+    }
+  } else {
+    int useAct = (blend >= 0.999f) ? act : ACTION_IDLE;
+    float useFrame = (blend >= 0.999f) ? s_slotRender[slot].animFrame
+                                       : s_slotRender[slot].idleFrame;
+    bones = ComputeBoneMatricesInterpolated(s_playerSkeleton.get(), useAct, useFrame);
+  }
 
   // Re-skin body parts (use override BMD if present)
   for (int p = 0; p < PART_COUNT; p++) {
@@ -779,6 +881,71 @@ static void ReskinSlot(int slot) {
                      s_slotRender[slot].shieldLocalBones,
                      s_slotRender[slot].shieldMeshes,
                      glm::vec3(70.f, 0.f, 90.f), glm::vec3(-10.f, 0.f, 0.f));
+
+  // Re-skin wings — biped wings (05/06, >60 bones) use player bones directly,
+  // standalone wings (01-04, 07) attach to bone 47 with offset.
+  if (s_slotRender[slot].wingBmd && !s_slotRender[slot].wingMeshes.empty()) {
+    auto *wingBmd = s_slotRender[slot].wingBmd.get();
+    float wingFrame = s_slotRender[slot].wingAnimFrame;
+    static constexpr int PLAYER_BONE_COUNT = 60;
+    bool isBipedWing = ((int)wingBmd->Bones.size() > PLAYER_BONE_COUNT);
+
+    if (isBipedWing) {
+      // Hybrid bone approach: biped wing BMDs (75-80 bones) share the player
+      // skeleton layout for bones 0-59 and add wing-specific bones at 60+.
+      // Bones 0-59: use player's animated bones (prevents body clipping).
+      // Bones 60+: compute from wing BMD's own animation, parented to the
+      // appropriate bone in wingBones (player bone if parent < 60).
+      int wingBoneCount = (int)wingBmd->Bones.size();
+      std::vector<BoneWorldMatrix> wingBones(wingBoneCount);
+
+      // Copy player bones for body range (0-59)
+      int copyCount = std::min(PLAYER_BONE_COUNT, wingBoneCount);
+      for (int bi = 0; bi < copyCount && bi < (int)bones.size(); ++bi) {
+        wingBones[bi] = bones[bi];
+      }
+
+      // Compute wing-specific bones (60+) from wing animation
+      for (int bi = PLAYER_BONE_COUNT; bi < wingBoneCount; ++bi) {
+        glm::vec3 pos;
+        glm::vec4 q;
+        if (!GetInterpolatedBoneData(wingBmd, 0, wingFrame, bi, pos, q))
+          continue;
+        float quat[4] = {q.x, q.y, q.z, q.w};
+        float local[3][4];
+        MuMath::QuaternionMatrix(quat, local);
+        local[0][3] = pos.x;
+        local[1][3] = pos.y;
+        local[2][3] = pos.z;
+
+        int parent = wingBmd->Bones[bi].Parent;
+        if (parent >= 0 && parent < (int)wingBones.size()) {
+          MuMath::ConcatTransforms(
+              (const float(*)[4])wingBones[parent].data(), local,
+              (float(*)[4])wingBones[bi].data());
+        } else {
+          memcpy(wingBones[bi].data(), local, sizeof(float) * 12);
+        }
+      }
+
+      for (int mi = 0; mi < (int)s_slotRender[slot].wingMeshes.size() &&
+                       mi < (int)wingBmd->Meshes.size();
+           ++mi) {
+        RetransformMeshWithBones(wingBmd->Meshes[mi], wingBones,
+                                 s_slotRender[slot].wingMeshes[mi]);
+      }
+    } else {
+      // Standalone wing: recompute animated wing bones each frame
+      auto &localBones = s_slotRender[slot].wingLocalBones;
+      if (!wingBmd->Actions.empty() &&
+          wingBmd->Actions[0].NumAnimationKeys > 1) {
+        localBones = ComputeBoneMatricesInterpolated(wingBmd, 0, wingFrame);
+      }
+      ReskinAttachedItem(bones, wingBmd, localBones,
+                         s_slotRender[slot].wingMeshes,
+                         glm::vec3(0.f, 0.f, 0.f), glm::vec3(0.f, 0.f, 15.f));
+    }
+  }
 }
 
 // Sample terrain lightmap at world position (same as HeroCharacter)
@@ -823,25 +990,22 @@ void Init(const Context &ctx) {
   if (!s_terrainData.heightmap.empty()) {
     s_terrain.Load(s_terrainData, 1, s_ctx.dataPath);
     // Dark smoke fog — hides distant fields evenly
-    s_terrain.SetFogColor(glm::vec3(0.08f, 0.07f, 0.06f));
-    s_terrain.SetFogRange(2500.0f, 5500.0f);
+    s_terrain.SetFogColor(glm::vec3(0.04f, 0.04f, 0.04f));
+    s_terrain.SetFogRange(1800.0f, 5500.0f);
     s_terrainLoaded = true;
     printf("[CharSelect] Lorencia terrain loaded\n");
   } else {
     printf("[CharSelect] WARNING: Failed to load Lorencia terrain\n");
   }
 
-  // Load Lorencia objects — only those near the visible scene area
+  // Load Lorencia objects within visible scene radius
   if (s_terrainLoaded && !s_terrainData.objects.empty()) {
-    // Filter objects within radius of camera to avoid loading/rendering
-    // distant invisible objects
-    const float cullRadius = 3000.0f;
-    glm::vec3 camXZ(s_camPos.x, 0.0f, s_camPos.z);
+    const float CULL_RADIUS = 3500.0f; // Only load objects near the scene
     std::vector<ObjectData> visibleObjects;
     for (auto &obj : s_terrainData.objects) {
-      float dx = obj.position.x - camXZ.x;
-      float dz = obj.position.z - camXZ.z;
-      if (dx * dx + dz * dz < cullRadius * cullRadius)
+      float dx = obj.position.x - SCENE_CX;
+      float dz = obj.position.z - SCENE_CZ;
+      if (dx * dx + dz * dz < CULL_RADIUS * CULL_RADIUS)
         visibleObjects.push_back(obj);
     }
 
@@ -850,15 +1014,14 @@ void Init(const Context &ctx) {
     s_objectRenderer.SetTerrainMapping(&s_terrainData.mapping);
     s_objectRenderer.SetTerrainHeightmap(s_terrainData.heightmap);
     s_objectRenderer.SetFogEnabled(true);
-    s_objectRenderer.SetFogColor(glm::vec3(0.08f, 0.07f, 0.06f));
-    s_objectRenderer.SetFogRange(2500.0f, 5500.0f);
+    s_objectRenderer.SetFogColor(glm::vec3(0.04f, 0.04f, 0.04f));
+    s_objectRenderer.SetFogRange(1800.0f, 5500.0f);
     std::string objectDir = s_ctx.dataPath + "/Object1";
     s_objectRenderer.LoadObjects(visibleObjects, objectDir);
     s_objectRenderer.SetLuminosity(CS_LUMINOSITY);
-    printf("[CharSelect] Lorencia objects loaded: %d/%d instances (culled to "
-           "%.0f radius), %d models\n",
+    printf("[CharSelect] Lorencia objects loaded: %d/%d instances, %d models\n",
            s_objectRenderer.GetInstanceCount(),
-           (int)s_terrainData.objects.size(), cullRadius,
+           (int)s_terrainData.objects.size(),
            s_objectRenderer.GetModelCount());
 
     // Collect point lights from light-emitting world objects (same as main.cpp)
@@ -889,7 +1052,22 @@ void Init(const Context &ctx) {
       }
       s_objectRenderer.SetPointLights(plPos, plCol, plRange);
     }
-    printf("[CharSelect] Collected %d point lights from world objects\n",
+    // Add ambient warm lights near each character slot (simulated lanterns)
+    for (int i = 0; i < MAX_SLOTS; i++) {
+      auto &sp = SLOT_POSITIONS[i];
+      CSPointLight lantern;
+      // Warm torch light slightly above and behind each character
+      lantern.position = glm::vec3(sp.worldX + FWD_X * 300.0f,
+                                    350.0f,
+                                    sp.worldZ + FWD_Z * 300.0f);
+      lantern.color = glm::vec3(1.4f, 0.85f, 0.4f); // Warm orange torch
+      lantern.range = 600.0f;
+      lantern.objectType = 50; // fire type
+      s_pointLights.push_back(lantern);
+    }
+    if ((int)s_pointLights.size() > CS_MAX_POINT_LIGHTS)
+      s_pointLights.resize(CS_MAX_POINT_LIGHTS);
+    printf("[CharSelect] Collected %d point lights (incl. slot lanterns)\n",
            (int)s_pointLights.size());
   }
 
@@ -897,9 +1075,34 @@ void Init(const Context &ctx) {
   if (s_terrainLoaded) {
     s_grassRenderer.Init();
     s_grassRenderer.Load(s_terrainData, 1, s_ctx.dataPath);
-    s_grassRenderer.SetFogColor(glm::vec3(0.08f, 0.07f, 0.06f));
-    s_grassRenderer.SetFogRange(2500.0f, 5500.0f);
+    s_grassRenderer.SetFogColor(glm::vec3(0.04f, 0.04f, 0.04f));
+    s_grassRenderer.SetFogRange(1500.0f, 5000.0f);
     printf("[CharSelect] Grass loaded\n");
+  }
+
+  // Sky dome (renders behind everything)
+  s_sky.Init(s_ctx.dataPath + "/");
+  printf("[CharSelect] Sky dome initialized\n");
+
+  // Ambient creatures: birds + falling leaves (Lorencia = map 0)
+  s_boidManager.Init(s_ctx.dataPath);
+  if (s_terrainLoaded) {
+    s_boidManager.SetTerrainData(&s_terrainData);
+    s_boidManager.SetTerrainLightmap(s_terrainData.lightmap);
+    s_boidManager.SetMapId(0); // Lorencia
+    s_boidManager.SetLuminosity(CS_LUMINOSITY);
+    // Pass point lights for bird/leaf lighting
+    std::vector<PointLight> boidLights;
+    for (auto &pl : s_pointLights) {
+      PointLight bpl;
+      bpl.position = pl.position;
+      bpl.color = pl.color;
+      bpl.range = pl.range;
+      bpl.objectType = pl.objectType;
+      boidLights.push_back(bpl);
+    }
+    s_boidManager.SetPointLights(boidLights);
+    printf("[CharSelect] Boid system initialized (birds + leaves)\n");
   }
 
   // Set luminosity on terrain for moody atmosphere
@@ -920,9 +1123,10 @@ void Init(const Context &ctx) {
   }
 
   // Camera: locked position and angle from exploration
-  s_camPos = glm::vec3(24524.4f, 520.3f, 21331.1f);
-  s_camYaw = 156.7f;
-  s_camPitch = -17.3f;
+  // Camera pulled back to fit wider character spacing with side margins
+  s_camPos = glm::vec3(21743.4f, 667.7f, 13132.7f);
+  s_camYaw = 297.3f;
+  s_camPitch = -14.8f;
 
   // Compute target from yaw/pitch
   float yR = glm::radians(s_camYaw), pR = glm::radians(s_camPitch);
@@ -930,9 +1134,10 @@ void Init(const Context &ctx) {
   s_camTarget = s_camPos + fwd * 1000.0f;
   s_window = ctx.window;
 
-  // Sun position: high above and slightly behind/left of the scene center
-  // Creates a warm top-down directional light that adds realistic sun effect
-  s_sunLightPos = glm::vec3(SCENE_CX + 2000.0f, 3000.0f, SCENE_CZ - 1000.0f);
+  // Sun position: from camera side (front of characters), high above
+  // This makes character shading brighter on front, shadow falls behind
+  s_sunLightPos = glm::vec3(SCENE_CX - FWD_X * 2000.0f, 3000.0f,
+                             SCENE_CZ - FWD_Z * 2000.0f);
 
   s_viewMatrix =
       glm::lookAt(s_camPos, s_camTarget, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -952,17 +1157,86 @@ void Init(const Context &ctx) {
     } catch (...) {
       printf("[CharSelect] WARNING: Failed to load shadow shader\n");
     }
-    try {
-      s_outlineShader = Shader::Load("outline.vert", "outline.frag");
-    } catch (...) {
-      printf("[CharSelect] WARNING: Failed to load outline shader\n");
-    }
   }
 
-  // Load chrome/shiny environment-map textures (Main 5.2 +7/+9/+11 glow)
-  s_chromeTexture = TextureLoader::LoadOZJ(s_ctx.dataPath + "/Effect/Chrome01.OZJ");
-  s_chrome2Texture = TextureLoader::LoadOZJ(s_ctx.dataPath + "/Effect/Chrome02.OZJ");
-  s_shinyTexture = TextureLoader::LoadOZJ(s_ctx.dataPath + "/Effect/Shiny01.OZJ");
+  // Selection spotlight — ground glow circle
+  {
+    try {
+      s_spotlightShader = Shader::Load("leaf.vert", "leaf.frag");
+    } catch (...) {
+      printf("[CharSelect] WARNING: Failed to load spotlight shader\n");
+    }
+    s_spotlightTex = TextureLoader::LoadOZJ(s_ctx.dataPath + "/Effect/Flare01.OZJ");
+
+    // Build cylinder mesh: same radius top and bottom
+    // Vertex layout: pos(x,y,z) + uv(u,v) = 5 floats
+    // Vertices 0..SEGS-1 = top ring, SEGS..2*SEGS-1 = bottom ring
+    std::vector<float> verts;
+    std::vector<unsigned int> indices;
+
+    // Top ring — UV mapped to flare center (bright)
+    for (int i = 0; i < CONE_SEGMENTS; ++i) {
+      float a = (float)i / CONE_SEGMENTS * 2.0f * 3.14159f;
+      float cx = cosf(a), cz = sinf(a);
+      verts.insert(verts.end(), {
+        cx * CONE_RADIUS, CONE_HEIGHT, cz * CONE_RADIUS,
+        0.5f + cx * 0.15f, 0.5f + cz * 0.15f  // Near center = bright
+      });
+    }
+
+    // Bottom ring — UV mapped to flare edge (fades out)
+    for (int i = 0; i < CONE_SEGMENTS; ++i) {
+      float a = (float)i / CONE_SEGMENTS * 2.0f * 3.14159f;
+      float cx = cosf(a), cz = sinf(a);
+      verts.insert(verts.end(), {
+        cx * CONE_RADIUS, 0.0f, cz * CONE_RADIUS,
+        0.5f + cx * 0.48f, 0.5f + cz * 0.48f  // Edge = dim
+      });
+    }
+
+    // Side quads (two triangles each): top[i]→bottom[i]→bottom[next], top[i]→bottom[next]→top[next]
+    for (int i = 0; i < CONE_SEGMENTS; ++i) {
+      int next = (i + 1) % CONE_SEGMENTS;
+      unsigned t0 = i, t1 = next;                          // Top ring
+      unsigned b0 = CONE_SEGMENTS + i, b1 = CONE_SEGMENTS + next; // Bottom ring
+      indices.insert(indices.end(), {t0, b0, b1});
+      indices.insert(indices.end(), {t0, b1, t1});
+    }
+
+    // Top cap: triangle fan
+    int topCenter = (int)(verts.size() / 5);
+    verts.insert(verts.end(), {0.0f, CONE_HEIGHT, 0.0f,  0.5f, 0.5f});
+    for (int i = 0; i < CONE_SEGMENTS; ++i) {
+      int next = (i + 1) % CONE_SEGMENTS;
+      indices.insert(indices.end(), {(unsigned)topCenter, (unsigned)i, (unsigned)next});
+    }
+
+    // Bottom cap: triangle fan
+    int botCenter = (int)(verts.size() / 5);
+    verts.insert(verts.end(), {0.0f, 0.5f, 0.0f,  0.5f, 0.5f});
+    for (int i = 0; i < CONE_SEGMENTS; ++i) {
+      int next = (i + 1) % CONE_SEGMENTS;
+      indices.insert(indices.end(), {(unsigned)botCenter, (unsigned)(CONE_SEGMENTS + next), (unsigned)(CONE_SEGMENTS + i)});
+    }
+
+    s_spotlightIndexCount = (int)indices.size();
+
+    glGenVertexArrays(1, &s_spotlightVAO);
+    glGenBuffers(1, &s_spotlightVBO);
+    glGenBuffers(1, &s_spotlightEBO);
+    glBindVertexArray(s_spotlightVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, s_spotlightVBO);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_spotlightEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glBindVertexArray(0);
+    printf("[CharSelect] Spotlight cylinder initialized (%d segments, h=%.0f, r=%.0f)\n",
+           CONE_SEGMENTS, CONE_HEIGHT, CONE_RADIUS);
+  }
 
   // Load Player.bmd skeleton + class body parts (same as main game)
   LoadPlayerModels();
@@ -975,6 +1249,15 @@ void Init(const Context &ctx) {
 }
 
 void Shutdown() {
+  // Spotlight cleanup
+  if (s_spotlightVAO) { glDeleteVertexArrays(1, &s_spotlightVAO); s_spotlightVAO = 0; }
+  if (s_spotlightVBO) { glDeleteBuffers(1, &s_spotlightVBO); s_spotlightVBO = 0; }
+  if (s_spotlightEBO) { glDeleteBuffers(1, &s_spotlightEBO); s_spotlightEBO = 0; }
+  if (s_spotlightTex) { glDeleteTextures(1, &s_spotlightTex); s_spotlightTex = 0; }
+  s_spotlightShader.reset();
+
+  s_boidManager.Cleanup();
+  s_sky.Cleanup();
   s_grassRenderer.Cleanup();
   s_objectRenderer.Cleanup();
   for (int i = 0; i < MAX_SLOTS; i++) {
@@ -1013,6 +1296,15 @@ void Shutdown() {
     s_slotRender[i].shieldShadowMeshes.clear();
     s_slotRender[i].shieldLocalBones.clear();
     s_slotRender[i].shieldBmd.reset();
+    // Wing cleanup
+    CleanupMeshBuffers(s_slotRender[i].wingMeshes);
+    for (auto &sm : s_slotRender[i].wingShadowMeshes) {
+      if (sm.vao) glDeleteVertexArrays(1, &sm.vao);
+      if (sm.vbo) glDeleteBuffers(1, &sm.vbo);
+    }
+    s_slotRender[i].wingShadowMeshes.clear();
+    s_slotRender[i].wingLocalBones.clear();
+    s_slotRender[i].wingBmd.reset();
   }
   s_playerSkeleton.reset();
   for (int i = 0; i < 4; i++)
@@ -1020,7 +1312,6 @@ void Shutdown() {
       s_classParts[i].bmd[p].reset();
   s_modelShader.reset();
   s_shadowShader.reset();
-  s_outlineShader.reset();
 
   // Face portrait cleanup
   CleanupMeshBuffers(s_faceMeshes);
@@ -1052,6 +1343,9 @@ void SetCharacterList(const CharSlot *slots, int count) {
     CleanupMeshBuffers(s_slotRender[i].shieldMeshes);
     s_slotRender[i].shieldBmd.reset();
     s_slotRender[i].shieldLocalBones.clear();
+    CleanupMeshBuffers(s_slotRender[i].wingMeshes);
+    s_slotRender[i].wingBmd.reset();
+    s_slotRender[i].wingLocalBones.clear();
   }
   s_slotCount = std::min(count, MAX_SLOTS);
 
@@ -1068,7 +1362,7 @@ void SetCharacterList(const CharSlot *slots, int count) {
   }
 
   // Build character meshes for occupied slots with staggered animation
-  const float animOffsets[MAX_SLOTS] = {0.0f, 7.3f, 14.1f, 4.8f, 11.6f};
+  const float animOffsets[MAX_SLOTS] = {0.0f, 7.3f, 14.1f, 4.8f};
   for (int i = 0; i < MAX_SLOTS; i++) {
     if (s_slots[i].occupied) {
       s_slotRender[i].animFrame = animOffsets[i];
@@ -1121,15 +1415,55 @@ void Update(float dt) {
   if (s_statusTimer > 0.0f)
     s_statusTimer -= dt;
 
-  // Animate character models (idle animation using Player.bmd, action 1)
-  if (s_playerSkeleton && s_playerSkeleton->Actions.size() > 1) {
-    float maxFrame = (float)s_playerSkeleton->Actions[1].NumAnimationKeys;
+  // Animate character models with idle↔emote blending
+  if (s_playerSkeleton && (int)s_playerSkeleton->Actions.size() > 218) {
+    float idleMax = (float)s_playerSkeleton->Actions[ACTION_IDLE].NumAnimationKeys;
     for (int i = 0; i < MAX_SLOTS; i++) {
       if (!s_slots[i].occupied)
         continue;
-      s_slotRender[i].animFrame += dt * 5.0f; // Slow, smooth idle for char select
-      if (s_slotRender[i].animFrame >= maxFrame)
-        s_slotRender[i].animFrame -= maxFrame;
+
+      // Always advance idle frame (for blending back smoothly)
+      s_slotRender[i].idleFrame += dt * 5.0f;
+      if (s_slotRender[i].idleFrame >= idleMax)
+        s_slotRender[i].idleFrame -= idleMax;
+
+      if (s_slotRender[i].emotePlaying) {
+        // Blend in: ramp emoteBlend toward 1.0
+        s_slotRender[i].emoteBlend = std::min(1.0f, s_slotRender[i].emoteBlend + dt * 4.0f);
+
+        // Advance emote frame
+        int act = s_slotRender[i].action;
+        if (act >= 0 && act < (int)s_playerSkeleton->Actions.size()) {
+          float emoteMax = (float)s_playerSkeleton->Actions[act].NumAnimationKeys;
+          s_slotRender[i].animFrame += dt * 8.0f;
+          if (s_slotRender[i].animFrame >= emoteMax) {
+            // Emote finished — start blending out
+            s_slotRender[i].emotePlaying = false;
+          }
+        }
+      } else if (s_slotRender[i].emoteBlend > 0.0f) {
+        // Blend out: ramp emoteBlend back to 0
+        s_slotRender[i].emoteBlend = std::max(0.0f, s_slotRender[i].emoteBlend - dt * 3.0f);
+        if (s_slotRender[i].emoteBlend <= 0.0f) {
+          s_slotRender[i].action = ACTION_IDLE;
+          s_slotRender[i].animFrame = s_slotRender[i].idleFrame;
+        }
+      } else {
+        // Pure idle
+        s_slotRender[i].animFrame = s_slotRender[i].idleFrame;
+      }
+
+      // Advance wing animation frame (PlaySpeed 0.25 * 25fps tick rate)
+      if (s_slotRender[i].wingBmd && !s_slotRender[i].wingBmd->Actions.empty()) {
+        int wingKeys = s_slotRender[i].wingBmd->Actions[0].NumAnimationKeys;
+        if (wingKeys > 1) {
+          s_slotRender[i].wingAnimFrame += dt * 0.25f * 25.0f;
+          if (s_slotRender[i].wingAnimFrame >= (float)wingKeys)
+            s_slotRender[i].wingAnimFrame =
+                std::fmod(s_slotRender[i].wingAnimFrame, (float)wingKeys);
+        }
+      }
+
       ReskinSlot(i);
     }
   }
@@ -1146,6 +1480,11 @@ void Update(float dt) {
       s_faceAnimFrame -= maxFrame;
     ReskinFace();
   }
+
+  // Update ambient creatures (birds, falling leaves)
+  // Use scene center as "hero position" for boid spawning reference
+  glm::vec3 boidCenter(SCENE_CX, 0.0f, SCENE_CZ);
+  s_boidManager.Update(dt, boidCenter, 0, s_time);
 }
 
 // Project world position to screen coordinates
@@ -1168,15 +1507,19 @@ void Render(int windowWidth, int windowHeight) {
   float aspect = (float)windowWidth / (float)std::max(windowHeight, 1);
   s_projMatrix = glm::perspective(glm::radians(35.0f), aspect, 10.0f, 50000.0f);
 
-  // Fixed camera: lookAt from camera position to character slots center
+  // Camera is locked — no controls
+
   glm::vec3 camPos = s_camPos;
   s_viewMatrix = glm::lookAt(camPos, s_camTarget, glm::vec3(0.0f, 1.0f, 0.0f));
 
   // Clear
-  glClearColor(0.08f, 0.07f, 0.06f, 1.0f);
+  glClearColor(0.04f, 0.04f, 0.04f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   glEnable(GL_DEPTH_TEST);
   glDepthFunc(GL_LEQUAL);
+
+  // Sky dome renders first (behind everything, no depth write)
+  s_sky.Render(s_viewMatrix, s_projMatrix, camPos, CS_LUMINOSITY);
 
   // Render terrain
   if (s_terrainLoaded) {
@@ -1190,6 +1533,10 @@ void Render(int windowWidth, int windowHeight) {
 
   // Render grass billboards
   s_grassRenderer.Render(s_viewMatrix, s_projMatrix, s_time, camPos);
+
+  // Birds + falling leaves
+  s_boidManager.Render(s_viewMatrix, s_projMatrix, camPos);
+  s_boidManager.RenderLeaves(s_viewMatrix, s_projMatrix);
 
   // Render drop shadows BEFORE characters so characters draw on top
   if (s_shadowShader && s_playerSkeleton) {
@@ -1210,8 +1557,9 @@ void Render(int windowWidth, int windowHeight) {
     glStencilFunc(GL_EQUAL, 0, 0xFF);
     glStencilOp(GL_KEEP, GL_INCR, GL_INCR);
 
-    // Shadow projection constants (from ZzzBMD.cpp RenderBodyShadow)
-    const float sx = 2000.0f;
+    // Shadow projection: light from front-above so shadow falls behind character
+    const float sx = 0.0f;      // No side offset — centered
+    const float sxY = -2500.0f; // Light in front of character (-Y = toward camera)
     const float sy = 4000.0f;
 
     for (int i = 0; i < MAX_SLOTS; i++) {
@@ -1300,7 +1648,7 @@ void Render(int windowWidth, int windowHeight) {
                 if (pos.z < sy) {
                   float factor = 1.0f / (pos.z - sy);
                   pos.x += pos.z * (pos.x + sx) * factor;
-                  pos.y += pos.z * (pos.y + sx) * factor;
+                  pos.y += pos.z * (pos.y + sxY) * factor;
                 }
                 pos.z = 5.0f;
                 shadowVerts.push_back(pos);
@@ -1371,6 +1719,62 @@ void Render(int windowWidth, int windowHeight) {
     glEnable(GL_CULL_FACE);
   }
 
+  // Render selection spotlight — tall light cone around selected character
+  if (s_spotlightShader && s_spotlightTex && s_spotlightVAO &&
+      s_selectedSlot >= 0 && s_slots[s_selectedSlot].occupied && !s_createOpen) {
+    auto &sp = SLOT_POSITIONS[s_selectedSlot];
+    float slotY = s_terrainLoaded ? s_terrain.GetHeight(sp.worldX, sp.worldZ) : 0.0f;
+
+    // Orient cylinder along camera's screen-up so it appears perfectly vertical
+    // Extract camera axes from view matrix
+    glm::vec3 camRight(s_viewMatrix[0][0], s_viewMatrix[1][0], s_viewMatrix[2][0]);
+    glm::vec3 camUp(s_viewMatrix[0][1], s_viewMatrix[1][1], s_viewMatrix[2][1]);
+    glm::vec3 camFwd(s_viewMatrix[0][2], s_viewMatrix[1][2], s_viewMatrix[2][2]);
+
+    // Build orientation: cylinder Y axis → camera up (screen vertical)
+    glm::mat4 orient(1.0f);
+    orient[0] = glm::vec4(camRight, 0.0f);
+    orient[1] = glm::vec4(camUp, 0.0f);
+    orient[2] = glm::vec4(camFwd, 0.0f);
+
+    glm::mat4 spotModel = glm::translate(glm::mat4(1.0f),
+                                          glm::vec3(sp.worldX, slotY, sp.worldZ));
+    spotModel = spotModel * orient;
+
+    s_spotlightShader->use();
+    s_spotlightShader->setMat4("projection", s_projMatrix);
+    s_spotlightShader->setMat4("view", s_viewMatrix);
+    s_spotlightShader->setInt("leafTexture", 0);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, s_spotlightTex);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE); // Additive
+    glDepthMask(GL_FALSE);
+    glDisable(GL_CULL_FACE);
+
+    // Outer cylinder — main beam
+    s_spotlightShader->setMat4("model", spotModel);
+    s_spotlightShader->setFloat("leafAlpha", 0.45f);
+    glBindVertexArray(s_spotlightVAO);
+    glDrawElements(GL_TRIANGLES, s_spotlightIndexCount, GL_UNSIGNED_INT, nullptr);
+
+    // Inner cylinder — brighter core, slightly smaller
+    glm::mat4 innerModel = glm::translate(glm::mat4(1.0f),
+                                           glm::vec3(sp.worldX, slotY, sp.worldZ));
+    innerModel = innerModel * orient;
+    innerModel = glm::scale(innerModel, glm::vec3(0.6f, 1.0f, 0.6f));
+    s_spotlightShader->setMat4("model", innerModel);
+    s_spotlightShader->setFloat("leafAlpha", 0.25f);
+    glDrawElements(GL_TRIANGLES, s_spotlightIndexCount, GL_UNSIGNED_INT, nullptr);
+
+    glBindVertexArray(0);
+    glDepthMask(GL_TRUE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_CULL_FACE);
+  }
+
   // Render character models at slot positions
   if (s_modelShader) {
     s_modelShader->use();
@@ -1384,15 +1788,16 @@ void Render(int windowWidth, int windowHeight) {
     s_modelShader->setFloat("blendMeshLight", 1.0f);
     s_modelShader->setFloat("luminosity", CS_LUMINOSITY);
     s_modelShader->setBool("useFog", false);
+    s_modelShader->setBool("useSkinning", false);
+    s_modelShader->setFloat("swayPhase", -1.0f);
     s_modelShader->setVec2("texCoordOffset", glm::vec2(0.0f));
     s_modelShader->setFloat("outlineOffset", 0.0f);
     s_modelShader->setInt("chromeMode", 0);
     s_modelShader->setVec3("glowColor", glm::vec3(0.0f));
     s_modelShader->setVec3("baseTint", glm::vec3(1.0f));
 
-    // Set point lights from nearby fire/torch world objects (pre-cached locations)
-    int numPL = (int)s_pointLights.size();
-    s_modelShader->uploadPointLights(numPL, s_pointLights.data());
+    // Base point lights from world objects
+    int basePL = (int)s_pointLights.size();
 
     for (int i = 0; i < MAX_SLOTS; i++) {
       if (!s_slots[i].occupied)
@@ -1405,6 +1810,32 @@ void Render(int windowWidth, int windowHeight) {
       float slotY = s_terrainLoaded ? s_terrain.GetHeight(sp.worldX, sp.worldZ)
                                     : 0.0f;
 
+      // Upload point lights per-character: add spotlight for selected slot
+      bool isSelected = (i == s_selectedSlot);
+      if (isSelected && basePL < CS_MAX_POINT_LIGHTS - 2) {
+        // Strong overhead spotlight — key light on selected character
+        CSPointLight spot;
+        spot.position = glm::vec3(sp.worldX, slotY + 200.0f, sp.worldZ);
+        spot.color = glm::vec3(1.4f, 1.3f, 1.1f); // Bright warm white
+        spot.range = 500.0f;
+        spot.objectType = 0;
+        s_pointLights.push_back(spot);
+        // Subtle rim light from behind — gives edge definition
+        CSPointLight rim;
+        rim.position = glm::vec3(sp.worldX + FWD_X * 120.0f,
+                                  slotY + 120.0f,
+                                  sp.worldZ + FWD_Z * 120.0f);
+        rim.color = glm::vec3(0.5f, 0.6f, 0.8f); // Cool blue rim
+        rim.range = 300.0f;
+        rim.objectType = 0;
+        s_pointLights.push_back(rim);
+        s_modelShader->uploadPointLights(basePL + 2, s_pointLights.data());
+        s_pointLights.pop_back();
+        s_pointLights.pop_back();
+      } else {
+        s_modelShader->uploadPointLights(basePL, s_pointLights.data());
+      }
+
       // Same model matrix as HeroCharacter (no extra scale needed)
       glm::mat4 model = glm::translate(glm::mat4(1.0f),
                                         glm::vec3(sp.worldX, slotY, sp.worldZ));
@@ -1414,10 +1845,13 @@ void Render(int windowWidth, int windowHeight) {
 
       // Terrain lightmap lighting at character position
       glm::vec3 tLight = SampleTerrainLight(sp.worldX, sp.worldZ);
+      // Boost terrain light for selected character
+      if (isSelected)
+        tLight = glm::max(tLight, glm::vec3(0.4f));
       s_modelShader->setVec3("terrainLight", tLight);
 
-      // Selected character slightly brighter sun
-      float brightness = (i == s_selectedSlot) ? 1.2f : 1.0f;
+      // Selected character brighter, non-selected dimmed for clear focus
+      float brightness = isSelected ? 1.5f : 0.55f;
       s_modelShader->setVec3("lightColor",
                              CS_SUN_COLOR * brightness);
       s_modelShader->setMat4("model", model);
@@ -1497,52 +1931,63 @@ void Render(int windowWidth, int windowHeight) {
         }
       }
 
-      // ── +7/+9/+11 item glow passes (Main 5.2 RENDER_CHROME|RENDER_BRIGHT) ──
-      // Binds chrome/shiny env-map textures, NOT item diffuse textures
+      // Draw wings (pre-skinned in ReskinSlot)
+      // Main 5.2: LightEnable=false for ALL wings — bypass per-vertex lighting.
+      // Wings render with flat BodyLight(1,1,1). Wing05/06 set oscillating
+      // BlendMeshLight in ZzzObject.cpp but have no BlendMesh target (not set),
+      // so the oscillation only affects a non-existent overlay — effectively a no-op.
+      // Use glowColor shader path (chromeMode=0) for flat white lighting.
       {
-        float t = (float)glfwGetTime();
+        // glowColor with chromeMode=0 → finalLight = glowColor (bypasses lighting)
+        s_modelShader->setVec3("glowColor", glm::vec3(1.0f));
+        s_modelShader->setInt("chromeMode", 0);
+
+        glDisable(GL_CULL_FACE);
+        for (auto &mb : s_slotRender[i].wingMeshes) {
+          if (mb.indexCount == 0) continue;
+
+          glActiveTexture(GL_TEXTURE0);
+          glBindTexture(GL_TEXTURE_2D, mb.texture);
+          s_modelShader->setInt("texture_diffuse", 0);
+          glBindVertexArray(mb.vao);
+          if (mb.bright) {
+            glBlendFunc(GL_ONE, GL_ONE);
+            glDepthMask(GL_FALSE);
+            glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
+            glDepthMask(GL_TRUE);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+          } else {
+            glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
+          }
+        }
+        glEnable(GL_CULL_FACE);
+
+        s_modelShader->setVec3("glowColor", glm::vec3(0.0f));
+      }
+
+      // ── +7/+9/+11/+13 item glow passes (ChromeGlow module) ──
+      {
         bool anyGlow = false;
         for (int p = 0; p < PART_COUNT; p++) {
           if (s_slots[i].equip[2 + p].itemLevel >= 7) { anyGlow = true; break; }
         }
         if (s_slots[i].equip[0].itemLevel >= 7) anyGlow = true;
 
-        if (anyGlow && s_chromeTexture) {
-          glBlendFunc(GL_ONE, GL_ONE);
-          glDepthMask(GL_FALSE);
-          glDisable(GL_CULL_FACE);
-
-          struct GlowPass { int chromeMode; };
-          auto getGlowPasses = [](uint8_t level, GlowPass *passes) -> int {
-            if (level >= 11) {
-              passes[0] = {2}; passes[1] = {3}; passes[2] = {1};
-              return 3;
-            } else if (level >= 9) {
-              passes[0] = {1}; passes[1] = {3};
-              return 2;
-            } else {
-              passes[0] = {1};
-              return 1;
-            }
-          };
+        if (anyGlow && ChromeGlow::GetTextures().chrome1) {
+          float t = (float)glfwGetTime();
+          ChromeGlow::BeginGlow();
 
           // Armor body parts glow
           for (int p = 0; p < PART_COUNT; p++) {
             uint8_t lvl = s_slots[i].equip[2 + p].itemLevel;
             if (lvl < 7) continue;
-            // Main 5.2 PartObjectColor: per-item-type glow color
-            glm::vec3 armorGlowColor = GetPartObjectColor(
-                7 + p, s_slots[i].equip[2 + p].itemIndex);
-            GlowPass passes[3];
-            int numPasses = getGlowPasses(lvl, passes);
-            for (int gp = 0; gp < numPasses; ++gp) {
-              s_modelShader->setVec3("glowColor", armorGlowColor);
+            ChromeGlow::GlowPass passes[3];
+            int n = ChromeGlow::GetGlowPasses(lvl, 7 + p, s_slots[i].equip[2 + p].itemIndex, passes);
+            for (int gp = 0; gp < n; ++gp) {
+              s_modelShader->setVec3("glowColor", passes[gp].color);
               s_modelShader->setInt("chromeMode", passes[gp].chromeMode);
               s_modelShader->setFloat("chromeTime", t);
-              GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4) ? s_chrome2Texture
-                             : (passes[gp].chromeMode == 3) ? s_shinyTexture
-                             : s_chromeTexture;
-              glBindTexture(GL_TEXTURE_2D, glowTex);
+              glBindTexture(GL_TEXTURE_2D, passes[gp].texture);
               for (auto &mb : s_slotRender[i].meshes[p]) {
                 if (mb.indexCount == 0 || mb.hidden) continue;
                 glBindVertexArray(mb.vao);
@@ -1554,21 +1999,15 @@ void Render(int windowWidth, int windowHeight) {
           // Weapon glow (equip[0])
           uint8_t wlv = s_slots[i].equip[0].itemLevel;
           if (wlv >= 7) {
-            // Main 5.2 PartObjectColor: per-weapon-type glow color
-            glm::vec3 weaponGlowColor = GetPartObjectColor(
-                s_slots[i].equip[0].category, s_slots[i].equip[0].itemIndex);
-            GlowPass passes[3];
-            int numPasses = getGlowPasses(wlv, passes);
-            float wPassScale = 0.7f / (float)numPasses;
+            ChromeGlow::GlowPass passes[3];
+            int n = ChromeGlow::GetGlowPasses(wlv, s_slots[i].equip[0].category, s_slots[i].equip[0].itemIndex, passes);
+            float wPassScale = 0.7f / (float)n;
             int wBlend = s_slotRender[i].weaponBlendMesh;
-            for (int gp = 0; gp < numPasses; ++gp) {
-              s_modelShader->setVec3("glowColor", weaponGlowColor * wPassScale);
+            for (int gp = 0; gp < n; ++gp) {
+              s_modelShader->setVec3("glowColor", passes[gp].color * wPassScale);
               s_modelShader->setInt("chromeMode", passes[gp].chromeMode);
               s_modelShader->setFloat("chromeTime", t);
-              GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4) ? s_chrome2Texture
-                             : (passes[gp].chromeMode == 3) ? s_shinyTexture
-                             : s_chromeTexture;
-              glBindTexture(GL_TEXTURE_2D, glowTex);
+              glBindTexture(GL_TEXTURE_2D, passes[gp].texture);
               int wmi = 0;
               for (auto &mb : s_slotRender[i].weaponMeshes) {
                 if (mb.indexCount == 0 || (wBlend >= 0 && wmi == wBlend)) { wmi++; continue; }
@@ -1579,125 +2018,13 @@ void Render(int windowWidth, int windowHeight) {
             }
           }
 
-          glEnable(GL_CULL_FACE);
-          glDepthMask(GL_TRUE);
-          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-          s_modelShader->setVec3("glowColor", glm::vec3(0.0f));
-          s_modelShader->setInt("chromeMode", 0);
+          ChromeGlow::EndGlow(s_modelShader->ID);
         }
       }
 
     }
   }
 
-  // Render silhouette outline for selected character
-  if (s_outlineShader && s_selectedSlot >= 0 &&
-      s_slots[s_selectedSlot].occupied && !s_createOpen) {
-    int i = s_selectedSlot;
-    auto &sp = SLOT_POSITIONS[i];
-    float facing = sp.facingDeg * (3.14159f / 180.0f);
-    float slotY = s_terrainLoaded ? s_terrain.GetHeight(sp.worldX, sp.worldZ)
-                                  : 0.0f;
-
-    glm::mat4 model = glm::translate(glm::mat4(1.0f),
-                                      glm::vec3(sp.worldX, slotY, sp.worldZ));
-    model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 0, 1));
-    model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0, 1, 0));
-    model = glm::rotate(model, facing, glm::vec3(0, 0, 1));
-
-    s_outlineShader->use();
-    s_outlineShader->setMat4("projection", s_projMatrix);
-    s_outlineShader->setMat4("view", s_viewMatrix);
-
-    glDisable(GL_CULL_FACE);
-
-    // Pass 1: Write silhouette to stencil (depth off for complete coverage)
-    glEnable(GL_STENCIL_TEST);
-    glStencilFunc(GL_ALWAYS, 1, 0xFF);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-    glStencilMask(0xFF);
-    glClear(GL_STENCIL_BUFFER_BIT);
-    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_DEPTH_TEST);
-
-    s_outlineShader->setMat4("model", model);
-    s_outlineShader->setFloat("outlineThickness", 0.0f);
-
-    for (int p = 0; p < PART_COUNT; p++) {
-      for (auto &mb : s_slotRender[i].meshes[p]) {
-        if (mb.indexCount == 0 || mb.hidden) continue;
-        glBindVertexArray(mb.vao);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
-      }
-    }
-    if (s_slotRender[i].showBaseHead) {
-      for (auto &mb : s_slotRender[i].baseHeadMeshes) {
-        if (mb.indexCount == 0 || mb.hidden) continue;
-        glBindVertexArray(mb.vao);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
-      }
-    }
-    for (auto &mb : s_slotRender[i].weaponMeshes) {
-      if (mb.indexCount == 0) continue;
-      glBindVertexArray(mb.vao);
-      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
-    }
-    for (auto &mb : s_slotRender[i].shieldMeshes) {
-      if (mb.indexCount == 0) continue;
-      glBindVertexArray(mb.vao);
-      glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
-    }
-
-    // Pass 2: Draw outline layers where stencil != 1
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
-    glStencilMask(0x00);
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    s_outlineShader->setVec3("outlineColor", 0.8f, 0.4f, 0.15f);
-    s_outlineShader->setMat4("model", model);
-
-    constexpr float thicknesses[] = {5.0f, 3.5f, 2.0f};
-    constexpr float alphas[] = {0.08f, 0.18f, 0.35f};
-
-    for (int layer = 0; layer < 3; ++layer) {
-      s_outlineShader->setFloat("outlineThickness", thicknesses[layer]);
-      s_outlineShader->setFloat("outlineAlpha", alphas[layer]);
-
-      for (int p = 0; p < PART_COUNT; p++) {
-        for (auto &mb : s_slotRender[i].meshes[p]) {
-          if (mb.indexCount == 0 || mb.hidden) continue;
-          glBindVertexArray(mb.vao);
-          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
-        }
-      }
-      if (s_slotRender[i].showBaseHead) {
-        for (auto &mb : s_slotRender[i].baseHeadMeshes) {
-          if (mb.indexCount == 0 || mb.hidden) continue;
-          glBindVertexArray(mb.vao);
-          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
-        }
-      }
-      for (auto &mb : s_slotRender[i].weaponMeshes) {
-        if (mb.indexCount == 0) continue;
-        glBindVertexArray(mb.vao);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
-      }
-      for (auto &mb : s_slotRender[i].shieldMeshes) {
-        if (mb.indexCount == 0) continue;
-        glBindVertexArray(mb.vao);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, nullptr);
-      }
-    }
-
-    glDisable(GL_STENCIL_TEST);
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
-    glEnable(GL_CULL_FACE);
-  }
 
   // Render face portrait to FBO (if create window is open)
   if (s_createOpen && s_faceLoadedClass >= 0) {
@@ -1719,6 +2046,8 @@ void Render(int windowWidth, int windowHeight) {
 
   ImDrawList *dl = ImGui::GetWindowDrawList();
   float cx = windowWidth * 0.5f;
+
+  // Camera HUD removed — position locked
 
   // Title (hidden during character creation)
   if (!s_createOpen) {
@@ -1936,9 +2265,9 @@ void Render(int windowWidth, int windowHeight) {
     // ImGui window for interactive controls
     ImGui::SetNextWindowPos(ImVec2(panelX - 5, panelY - 5));
     ImGui::SetNextWindowSize(ImVec2(panelW + 10, panelH + 10));
+    ImGui::SetNextWindowFocus();
     ImGui::Begin("##CreatePanel", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
-                 ImGuiWindowFlags_NoBringToFrontOnFocus);
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground);
 
     ImDrawList *cdl = ImGui::GetWindowDrawList();
 
@@ -2248,7 +2577,14 @@ void OnMouseClick(double screenX, double screenY, int windowWidth,
                        (float)(screenY - sy) * (float)(screenY - sy));
     if (dist < 80.0f) { // Click radius in pixels
       SoundManager::Play(SOUND_CLICK01);
-      s_selectedSlot = i;
+      if (s_selectedSlot != i) {
+        s_selectedSlot = i;
+        int ci = ClassToIndex(s_slots[i].classCode);
+        s_slotRender[i].action = CLASS_EMOTES[ci];
+        s_slotRender[i].emotePlaying = true;
+        s_slotRender[i].emoteBlend = 0.0f;
+        s_slotRender[i].animFrame = 0.0f;
+      }
       printf("[CharSelect] Selected slot %d: '%s'\n", i, s_slots[i].name);
       return;
     }
@@ -2280,6 +2616,11 @@ void OnKeyPress(int key) {
       if (s_slots[idx].occupied) {
         SoundManager::Play(SOUND_CLICK01);
         s_selectedSlot = idx;
+        int ci = ClassToIndex(s_slots[idx].classCode);
+        s_slotRender[idx].action = CLASS_EMOTES[ci];
+        s_slotRender[idx].emotePlaying = true;
+        s_slotRender[idx].emoteBlend = 0.0f;
+        s_slotRender[idx].animFrame = 0.0f;
         break;
       }
     }

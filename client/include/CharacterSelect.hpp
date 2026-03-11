@@ -16,7 +16,7 @@ struct ImDrawList;
 
 namespace CharacterSelect {
 
-static constexpr int MAX_SLOTS = 5;
+static constexpr int MAX_SLOTS = 4;
 
 struct CharSlotEquip {
   uint8_t category = 0xFF; // 0xFF = empty/default
@@ -32,6 +32,10 @@ struct CharSlot {
   // Equipment appearance from charSet encoding
   // 0=rightHand, 1=leftHand, 2=helm, 3=armor, 4=pants, 5=gloves, 6=boots
   CharSlotEquip equip[7];
+  // Slot 7: wings (category 12: 0=Elf, 1=Heaven, 2=Satan, 3=Spirits, 4=Soul, 5=Dragon, 6=Darkness)
+  CharSlotEquip wingEquip;
+  // Slot 8: pet/mount (category 13: 0=Angel, 1=Imp, 2=Uniria, 3=Dinorant)
+  CharSlotEquip petMount;
 };
 
 struct Context {

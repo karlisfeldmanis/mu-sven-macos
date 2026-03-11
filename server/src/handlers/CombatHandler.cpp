@@ -362,12 +362,19 @@ void HandleAttack(Session &session, const std::vector<uint8_t> &packet,
                   GameWorld &world, Server &server) {
   if (session.dead)
     return;
+  // Combat resets idle HP regen
+  session.idleTimer = 0.0f;
+  session.idleHpRemainder = 0.0f;
   // Server-side attack rate limiting (prevents speed hack / GCD bypass)
   if (session.attackCooldown > 0.0f)
     return;
   if (packet.size() < sizeof(PMSG_ATTACK_RECV))
     return;
   const auto *atk = reinterpret_cast<const PMSG_ATTACK_RECV *>(packet.data());
+
+  // Block attacks from players standing in safe zones
+  if (world.IsSafeZone(session.worldX, session.worldZ))
+    return;
 
   auto *mon = world.FindMonster(atk->monsterIndex);
   if (!mon || mon->aiState == MonsterInstance::AIState::DYING ||
@@ -393,6 +400,9 @@ static void SkillLog(const char *fmt, ...) {
 void HandleSkillAttack(Session &session, const std::vector<uint8_t> &packet,
                        GameWorld &world, Server &server) {
   if (session.dead)
+    return;
+  // Block attacks from players standing in safe zones
+  if (world.IsSafeZone(session.worldX, session.worldZ))
     return;
   // Server-side attack rate limiting (prevents speed hack / GCD bypass)
   if (session.attackCooldown > 0.0f)

@@ -35,6 +35,14 @@ See [character-system.md](character-system.md) for the full pass structure and c
 - **Blend state**: `GL_ONE, GL_ONE` additive, depth write off, face culling off
 - **Color selection**: `GetPartObjectColor()` for CHROME/METAL, `GetPartObjectColor2()` for CHROME2/CHROME4
 
+## ChromeGlow Item Enhancement
+
+Items with +7 or higher level display a dynamic "chrome" enhancement effect.
+- **Module**: `ChromeGlow.cpp` / `ChromeGlow.hpp`.
+- **Implementation**: Second rendering pass with additive blend and environment-mapping.
+- **Visuals**: Pulsing glow that flows across the item's surface.
+- **Logic**: Linked to item's `lvl` attribute in `ItemModelManager`.
+
 ## Blob Shadow (ZzzBMD.cpp RenderBodyShadow)
 
 Shadow projection formula in MU-local space:

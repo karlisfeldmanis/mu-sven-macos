@@ -240,7 +240,8 @@ static void HandlePickupClick(GLFWwindow *window, double mx, double my) {
 }
 
 static bool IsGuardNpc(uint16_t npcType) {
-  return npcType >= 245 && npcType <= 249;
+  return (npcType >= 245 && npcType <= 249) ||
+         (npcType >= 310 && npcType <= 312);
 }
 
 static void OpenNpcDialog(int npcIdx, const NpcInfo &info) {

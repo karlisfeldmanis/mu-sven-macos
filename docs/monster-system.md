@@ -169,10 +169,18 @@ Melee monsters (attackRange <= 1) use an additional Euclidean world-space distan
 
 ### Pack Assist
 
-When an aggressive monster is attacked, same-type allies within viewRange join the chase.
-- Skips monsters already CHASING/ATTACKING/RETURNING
-- Skips monsters with chaseFailCount >= 5 (prevents infinite aggro loop)
-- Resets on return to spawn or respawn
+When an aggressive monster is attacked, same-type allies within `viewRange` join the chase against the attacker.
+- Skips monsters already in an active state (CHASING/ATTACKING/RETURNING).
+- **Chase Failure Limit**: Allies will NOT participate if their `chaseFailCount` is >= 5. This prevents monsters from entering an infinite loop of attempting to aggro and immediately giving up due to invalid paths (e.g. across rifts).
+- `chaseFailCount` is reset when the monster successfully returns to its spawn point or respawns.
+
+### Chase Failure Count
+
+Monsters track consecutive A* pathfinding failures during a chase.
+- If `chaseFailCount` reaches 5, the monster transitions to `RETURNING` state.
+- This represents the monster "giving up" when the target is unreachable (e.g. across a chasm or rift in Devias).
+- Prevents CPU spikes from repeated pathfinding failures.
+- State resets on arrival at spawn or death.
 
 ### Wander Emission
 

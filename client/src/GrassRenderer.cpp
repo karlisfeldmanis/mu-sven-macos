@@ -82,6 +82,7 @@ uniform vec3 uFogColor;
 uniform float uFogNear;
 uniform float uFogFar;
 uniform float luminosity;
+uniform float uAlphaMult; // Per-world transparency (1.0 = opaque, <1 = semi-transparent)
 
 void main() {
     vec4 color;
@@ -89,7 +90,8 @@ void main() {
     else if (TexLayer == 2) color = texture(grassTex2, TexCoord);
     else color = texture(grassTex0, TexCoord);
 
-    if (color.a < 0.25) discard; // Match original glAlphaFunc(GL_GREATER, 0.25)
+    float finalAlpha = color.a * uAlphaMult;
+    if (finalAlpha < 0.25) discard; // Match original glAlphaFunc(GL_GREATER, 0.25)
 
     vec3 lit = color.rgb * VertColor * luminosity;
 
@@ -107,15 +109,19 @@ void main() {
     float edgeFactor = smoothstep(edgeMargin, edgeMargin + edgeWidth, dEdge);
     lit = mix(vec3(0.0), lit, edgeFactor);
 
-    FragColor = vec4(lit, color.a);
+    FragColor = vec4(lit, finalAlpha);
 }
 )";
 
 // --- Constants ---
 
-// Reference: Height = pBitmap->Height * 2.0f; TileGrass01/02 are 256x64, so 64*2=128
-static constexpr float GRASS_HEIGHT = 128.0f;
-// Reference: Width = 64.0f / 256.0f = 0.25 (four grass blade variants per texture)
+// Reference: Height = pBitmap->Height * 2.0f; TileGrass01/02 are 256x64, so
+// 64*2=128
+static constexpr float GRASS_HEIGHT_DEFAULT = 128.0f;
+static constexpr float GRASS_HEIGHT_DEVIAS = 70.0f; // Shorter snowy grass
+static constexpr float GRASS_ALPHA_DEVIAS = 0.9f;   // Slightly transparent
+// Reference: Width = 64.0f / 256.0f = 0.25 (four grass blade variants per
+// texture)
 static constexpr float UV_WIDTH = 64.0f / 256.0f;
 
 // --- Implementation ---
@@ -165,6 +171,7 @@ void GrassRenderer::setupShader() {
   u_fogNear = glGetUniformLocation(shaderProgram, "uFogNear");
   u_fogFar = glGetUniformLocation(shaderProgram, "uFogFar");
   u_luminosity = glGetUniformLocation(shaderProgram, "luminosity");
+  u_alphaMult = glGetUniformLocation(shaderProgram, "uAlphaMult");
   u_numPushers = glGetUniformLocation(shaderProgram, "numPushers");
   for (int i = 0; i < 17; ++i) {
     char buf[32];
@@ -179,19 +186,60 @@ void GrassRenderer::setupShader() {
 }
 
 void GrassRenderer::Load(const TerrainData &data, int worldID,
-                          const std::string &dataPath,
-                          const std::vector<bool> *objectOccupancy) {
+                         const std::string &dataPath,
+                         const std::vector<bool> *objectOccupancy) {
+  m_worldID = worldID;
   const int SIZE = TerrainParser::TERRAIN_SIZE; // 256
 
-  // Load grass textures (OZT for alpha, fall back to OZJ)
+  // Per-world grass configuration
+  bool isSnowWorld = (worldID == 3); // Devias
+  float grassHeight = isSnowWorld ? GRASS_HEIGHT_DEVIAS : GRASS_HEIGHT_DEFAULT;
+  m_alphaMult = isSnowWorld ? GRASS_ALPHA_DEVIAS : 1.0f;
+
+  // Load grass textures (OZT for alpha, fall back to same-world alternate, then
+  // World1) Grass billboards REQUIRE alpha for transparency. OZJ (JPEG) has no
+  // alpha.
   std::string worldDir = dataPath + "/World" + std::to_string(worldID);
+  std::string fallbackDir = dataPath + "/World1";
   const char *names[3] = {"TileGrass01", "TileGrass02", "TileGrass03"};
+
+  // For snowy worlds: prefer TileGrass02 (white/snowy) for ALL slots
+  // This prevents falling back to World1's green TileGrass01
+  const char *snowyPreferred = "TileGrass02";
+
   for (int i = 0; i < 3; ++i) {
+    // Try world-specific OZT first (has alpha)
     std::string ozt = worldDir + "/" + names[i] + ".OZT";
     grassTextures[i] = TextureLoader::LoadOZT(ozt);
+    // Fall back to same-world alternate OZT (keeps correct color scheme)
     if (grassTextures[i] == 0) {
-      std::string ozj = worldDir + "/" + names[i] + ".OZJ";
-      grassTextures[i] = TextureLoader::LoadOZJ(ozj);
+      // For snowy worlds, try the preferred snowy texture first
+      if (isSnowWorld) {
+        std::string snowOzt = worldDir + "/" + snowyPreferred + ".OZT";
+        grassTextures[i] = TextureLoader::LoadOZT(snowOzt);
+        if (grassTextures[i] != 0)
+          std::cout << "[GrassRenderer] " << names[i] << " using snowy "
+                    << snowyPreferred << std::endl;
+      }
+      // Try other same-world alternates
+      for (int alt = 0; alt < 3 && grassTextures[i] == 0; ++alt) {
+        if (alt == i)
+          continue;
+        std::string altOzt = worldDir + "/" + names[alt] + ".OZT";
+        grassTextures[i] = TextureLoader::LoadOZT(altOzt);
+        if (grassTextures[i] != 0)
+          std::cout << "[GrassRenderer] " << names[i] << " using " << names[alt]
+                    << " from same world" << std::endl;
+      }
+    }
+    // Fall back to World1 OZT (green grass, last resort with alpha)
+    // Skip World1 fallback for snowy worlds — green grass would look wrong
+    if (grassTextures[i] == 0 && worldID != 1 && !isSnowWorld) {
+      std::string fallbackOzt = fallbackDir + "/" + names[i] + ".OZT";
+      grassTextures[i] = TextureLoader::LoadOZT(fallbackOzt);
+      if (grassTextures[i] != 0)
+        std::cout << "[GrassRenderer] " << names[i] << " fallback from World1"
+                  << std::endl;
     }
     if (grassTextures[i] != 0) {
       std::cout << "[GrassRenderer] Loaded " << names[i] << std::endl;
@@ -205,7 +253,8 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
   std::vector<GrassVertex> vertices;
   std::vector<unsigned int> indices;
 
-  // Seed RNG for per-row UV randomization (matches reference TerrainGrassTexture)
+  // Seed RNG for per-row UV randomization (matches reference
+  // TerrainGrassTexture)
   srand(42);
 
   // Pre-compute per-row random UV offsets (reference: TerrainGrassTexture[yi])
@@ -232,28 +281,28 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
           (data.mapping.attributes[idx] & 0x08) != 0)
         continue;
 
-      // Skip cells with large height discontinuity to neighbors
-      // (fountain edges, cliff edges, structural boundaries)
-      float hCenter = data.heightmap[idx];
-      bool steep = false;
-      const int neighbors[4][2] = {{0, 1}, {0, -1}, {1, 0}, {-1, 0}};
-      for (auto &n : neighbors) {
-        int nz = z + n[0], nx = x + n[1];
-        if (nz >= 0 && nz < SIZE && nx >= 0 && nx < SIZE) {
-          float hNeighbor = data.heightmap[nz * SIZE + nx];
-          if (std::abs(hCenter - hNeighbor) > 40.0f) {
-            steep = true;
-            break;
+      // Skip cells adjacent to NOGROUND (within 3 cells) to prevent
+      // floating grass over sunk rift edge terrain
+      {
+        bool nearRift = false;
+        const int GRASS_RIFT_MARGIN = 3;
+        for (int dz2 = -GRASS_RIFT_MARGIN;
+             dz2 <= GRASS_RIFT_MARGIN && !nearRift; ++dz2) {
+          for (int dx2 = -GRASS_RIFT_MARGIN;
+               dx2 <= GRASS_RIFT_MARGIN && !nearRift; ++dx2) {
+            int nz = z + dz2, nx = x + dx2;
+            if (nz >= 0 && nz < SIZE && nx >= 0 && nx < SIZE) {
+              int ni = nz * SIZE + nx;
+              if (ni < (int)data.mapping.attributes.size() &&
+                  (data.mapping.attributes[ni] & 0x08) != 0) {
+                nearRift = true;
+              }
+            }
           }
         }
+        if (nearRift)
+          continue;
       }
-      if (steep)
-        continue;
-
-      // Skip cells occupied by world objects (buildings, rocks, statues)
-      if (objectOccupancy && idx < (int)objectOccupancy->size() &&
-          (*objectOccupancy)[idx])
-        continue;
 
       // Get heightmap at SW and NE corners (diagonal billboard)
       float h_sw = data.heightmap[z * SIZE + x];
@@ -281,8 +330,7 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
       unsigned int baseIdx = (unsigned int)vertices.size();
 
       glm::vec3 posSW((float)z * 100.0f, h_sw, (float)x * 100.0f);
-      glm::vec3 posNE((float)(z + 1) * 100.0f, h_ne,
-                      (float)(x + 1) * 100.0f);
+      glm::vec3 posNE((float)(z + 1) * 100.0f, h_ne, (float)(x + 1) * 100.0f);
 
       // Bottom-left (SW, anchored at terrain)
       GrassVertex bl;
@@ -307,8 +355,7 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
       // Top-right (NE, elevated + wind)
       // Reference: MU_Z += Height, MU_X -= 50 → GL: Y += Height, Z -= 50
       GrassVertex tr;
-      tr.position =
-          glm::vec3(posNE.x, posNE.y + GRASS_HEIGHT, posNE.z - 50.0f);
+      tr.position = glm::vec3(posNE.x, posNE.y + grassHeight, posNE.z - 50.0f);
       tr.texCoord = glm::vec2(uRight, 0.0f); // V=0 at tips
       tr.windWeight = 1.0f;
       tr.gridX = (float)(x + 1);
@@ -318,8 +365,7 @@ void GrassRenderer::Load(const TerrainData &data, int worldID,
 
       // Top-left (SW, elevated + wind)
       GrassVertex tl;
-      tl.position =
-          glm::vec3(posSW.x, posSW.y + GRASS_HEIGHT, posSW.z - 50.0f);
+      tl.position = glm::vec3(posSW.x, posSW.y + grassHeight, posSW.z - 50.0f);
       tl.texCoord = glm::vec2(uLeft, 0.0f);
       tl.windWeight = 1.0f;
       tl.gridX = (float)x;
@@ -408,6 +454,7 @@ void GrassRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
   glUniform1f(u_fogNear, fogNear);
   glUniform1f(u_fogFar, fogFar);
   glUniform1f(u_luminosity, m_luminosity);
+  glUniform1f(u_alphaMult, m_alphaMult);
 
   // Upload push sources (hero + monsters)
   int count = std::min((int)pushSources.size(), 17);

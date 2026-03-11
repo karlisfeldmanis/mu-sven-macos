@@ -75,6 +75,7 @@ Detailed reference docs are in `docs/`:
 | [docs/character-system.md](docs/character-system.md) | DK stats, Player.bmd action indices, weapon config, combat formulas |
 | [docs/rendering.md](docs/rendering.md) | Coordinate system, blend states, shadows, world objects, EncTerrain.obj format |
 | [docs/terrain-and-environment.md](docs/terrain-and-environment.md) | Terrain, water, lightmap, point lights, BlendMesh, fire, grass, luminosity |
+| [docs/ui-system.md](docs/ui-system.md) | Diablo HUD (resource orbs), expanded quickbar, map name display, notifications |
 | [docs/reference-navigation.md](docs/reference-navigation.md) | Key functions and files in original Main 5.2 source |
 
 ## Database

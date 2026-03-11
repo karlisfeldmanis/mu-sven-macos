@@ -74,6 +74,7 @@ set(COMMON_SRC
     src/VFXManagerElemental.cpp
     src/VFXManagerSpirit.cpp
     src/VFXManagerMelee.cpp
+    src/ChromeGlow.cpp
 )
 
 # Main Game Executable

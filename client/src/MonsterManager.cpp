@@ -30,7 +30,14 @@ static const std::unordered_map<uint16_t, std::string> s_monsterNames = {
     {15, "Skeleton Archer"},
     {16, "Skeleton Captain"},
     {17, "Cyclops"},
-    {18, "Gorgon"}};
+    {18, "Gorgon"},
+    {19, "Yeti"},
+    {20, "Elite Yeti"},
+    {21, "Assassin"},
+    {22, "Ice Monster"},
+    {23, "Hommerd"},
+    {24, "Worm"},
+    {25, "Ice Queen"}};
 
 glm::vec3
 MonsterManager::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
@@ -388,6 +395,98 @@ void MonsterManager::InitModels(const std::string &dataPath) {
       m_models[idx].attackRate = 220;
     }
     m_typeToModel[18] = idx;
+  }
+
+  // ── Devias monsters (map 2) ──
+  // Main 5.2 EMonsterModelType enum → BMD filename mapping:
+  // Model 12=Yeti→Monster13, 13=EliteYeti→Monster14, 14=Assassin→Monster15,
+  // 15=IceMonster→Monster16, 16=Hommerd→Monster17, 17=Worm→Monster18,
+  // 18=IceQueen→Monster19
+
+  // Yeti (type 19): Monster13.bmd (Main 5.2: Scale=1.1)
+  {
+    int idx = loadMonsterModel("Monster13.bmd", "Yeti", 1.1f, 90.0f, 170.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 30;
+      m_models[idx].defense = 37;
+      m_models[idx].defenseRate = 37;
+      m_models[idx].attackRate = 150;
+    }
+    m_typeToModel[19] = idx;
+  }
+
+  // Elite Yeti (type 20): Monster14.bmd (Main 5.2: Scale=1.4)
+  {
+    int idx = loadMonsterModel("Monster14.bmd", "Elite Yeti", 1.4f, 100.0f, 190.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 36;
+      m_models[idx].defense = 50;
+      m_models[idx].defenseRate = 50;
+      m_models[idx].attackRate = 180;
+    }
+    m_typeToModel[20] = idx;
+  }
+
+  // Assassin (type 21): Monster15.bmd (Main 5.2: Scale=0.95)
+  {
+    int idx = loadMonsterModel("Monster15.bmd", "Assassin", 0.95f, 80.0f, 150.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 26;
+      m_models[idx].defense = 33;
+      m_models[idx].defenseRate = 33;
+      m_models[idx].attackRate = 130;
+    }
+    m_typeToModel[21] = idx;
+  }
+
+  // Ice Monster (type 22): Monster16.bmd (Main 5.2: Scale=1.0, BlendMesh=0)
+  {
+    int idx = loadMonsterModel("Monster16.bmd", "Ice Monster", 1.0f, 80.0f, 140.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 22;
+      m_models[idx].defense = 27;
+      m_models[idx].defenseRate = 27;
+      m_models[idx].attackRate = 110;
+      m_models[idx].blendMesh = 0; // Icy glow on mesh 0
+    }
+    m_typeToModel[22] = idx;
+  }
+
+  // Hommerd (type 23): Monster17.bmd (Main 5.2: Scale=1.15)
+  {
+    int idx = loadMonsterModel("Monster17.bmd", "Hommerd", 1.15f, 90.0f, 160.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 24;
+      m_models[idx].defense = 29;
+      m_models[idx].defenseRate = 29;
+      m_models[idx].attackRate = 120;
+    }
+    m_typeToModel[23] = idx;
+  }
+
+  // Worm (type 24): Monster18.bmd (Main 5.2: Scale=1.0, low profile)
+  {
+    int idx = loadMonsterModel("Monster18.bmd", "Worm", 1.0f, 70.0f, 100.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 20;
+      m_models[idx].defense = 25;
+      m_models[idx].defenseRate = 25;
+      m_models[idx].attackRate = 100;
+    }
+    m_typeToModel[24] = idx;
+  }
+
+  // Ice Queen (type 25): Monster19.bmd (Main 5.2: Scale=1.1, boss)
+  {
+    int idx = loadMonsterModel("Monster19.bmd", "Ice Queen", 1.1f, 100.0f, 180.0f);
+    if (idx >= 0) {
+      m_models[idx].level = 52;
+      m_models[idx].defense = 90;
+      m_models[idx].defenseRate = 90;
+      m_models[idx].attackRate = 260;
+      m_models[idx].blendMesh = 2; // Boss glow effect
+    }
+    m_typeToModel[25] = idx;
   }
 
   // ── Skeleton monsters: Player.bmd animation rig + Skeleton0x.bmd mesh skins
@@ -783,8 +882,7 @@ float MonsterManager::getAnimSpeed(uint16_t monsterType, int action) const {
   // Global per-type multipliers (ZzzOpenData.cpp:2370-2376)
   if (monsterType == 3) { // Spider
     speed *= 1.2f;
-  } else if (monsterType == 5 ||
-             monsterType == 25) { // Larva / Golem variations
+  } else if (monsterType == 5) { // Larva
     speed *= 0.7f;
   }
 
@@ -794,6 +892,12 @@ float MonsterManager::getAnimSpeed(uint16_t monsterType, int action) const {
       speed = 0.7f; // Budge Dragon (flying)
     else if (monsterType == 6)
       speed = 0.6f; // Lich (slower walk)
+    else if (monsterType == 19)
+      speed = 0.3f; // Yeti
+    else if (monsterType == 20)
+      speed = 0.28f; // Elite Yeti
+    else if (monsterType == 24)
+      speed = 0.5f; // Worm
   }
 
   return speed * 25.0f; // Scale to 25fps base
@@ -915,6 +1019,26 @@ void MonsterManager::updateStateMachine(MonsterInstance &mon, float dt) {
       case 15: // Skeleton Archer
       case 16: // Skeleton Captain
         SoundManager::Play3D(SOUND_BONE1, px, py, pz);
+        break;
+      // Devias monsters (types 19-25) — Main 5.2 SetMonsterSound idle slots
+      case 19: // Yeti — Sounds[0]=mYeti1, Sounds[1]=mYeti1 (same)
+        SoundManager::Play3D(SOUND_MONSTER_YETI1, px, py, pz);
+        break;
+      case 20: // Elite Yeti — Sounds[0]=mYeti1, Sounds[1]=mYeti2
+        SoundManager::Play3D(SOUND_MONSTER_YETI1 + rand() % 2, px, py, pz);
+        break;
+      // case 21: Assassin — NO idle sounds (Sounds[0]=-1, Sounds[1]=-1)
+      case 22: // Ice Monster — Sounds[0]=mIceMonster1, Sounds[1]=mIceMonster2
+        SoundManager::Play3D(SOUND_MONSTER_ICEMONSTER1 + rand() % 2, px, py, pz);
+        break;
+      case 23: // Hommerd — Sounds[0]=mHomord1, Sounds[1]=mHomord2
+        SoundManager::Play3D(SOUND_MONSTER_HOMMERD1 + rand() % 2, px, py, pz);
+        break;
+      case 24: // Worm — Sounds[0]=mWorm1, Sounds[1]=mWorm1 (same)
+        SoundManager::Play3D(SOUND_MONSTER_WORM1, px, py, pz);
+        break;
+      case 25: // Ice Queen — Sounds[0]=mIceQueen1, Sounds[1]=mIceQueen2
+        SoundManager::Play3D(SOUND_MONSTER_ICEQUEEN1 + rand() % 2, px, py, pz);
         break;
       default: break;
       }
@@ -1366,6 +1490,26 @@ void MonsterManager::SetMonsterDying(int index) {
       case 16: // Skeleton Captain
         SoundManager::Play3D(SOUND_BONE2, px, py, pz);
         break;
+      // Devias monsters (types 19-25)
+      case 19: // Yeti
+      case 20: // Elite Yeti
+        SoundManager::Play3D(SOUND_MONSTER_YETIDIE, px, py, pz);
+        break;
+      case 21: // Assassin
+        SoundManager::Play3D(SOUND_MONSTER_ASSASSINDIE, px, py, pz);
+        break;
+      case 22: // Ice Monster
+        SoundManager::Play3D(SOUND_MONSTER_ICEMONSTERDIE, px, py, pz);
+        break;
+      case 23: // Hommerd
+        SoundManager::Play3D(SOUND_MONSTER_HOMMERDDIE, px, py, pz);
+        break;
+      case 24: // Worm
+        SoundManager::Play3D(SOUND_MONSTER_WORMDIE, px, py, pz);
+        break;
+      case 25: // Ice Queen
+        SoundManager::Play3D(SOUND_MONSTER_ICEQUEENDIE, px, py, pz);
+        break;
       default: break;
       }
       }
@@ -1487,6 +1631,26 @@ void MonsterManager::TriggerAttackAnimation(int index) {
     case 15: // Skeleton Archer
     case 16: // Skeleton Captain
       SoundManager::Play3D(SOUND_BONE1, px, py, pz);
+      break;
+    // Devias monsters (types 19-25) — Main 5.2 SetMonsterSound attack slots
+    case 19: // Yeti — Sounds[2]=mYetiAttack1, Sounds[3]=mYetiAttack1
+    case 20: // Elite Yeti — same attack sounds as Yeti
+      SoundManager::Play3D(SOUND_MONSTER_YETIATTACK1, px, py, pz);
+      break;
+    case 21: // Assassin — Sounds[2]=mAssassinAttack1, Sounds[3]=mAssassinAttack2
+      SoundManager::Play3D(SOUND_MONSTER_ASSASSINATTACK1 + rand() % 2, px, py, pz);
+      break;
+    case 22: // Ice Monster — Sounds[2]=mIceMonster1, Sounds[3]=mIceMonster1 (reuse idle)
+      SoundManager::Play3D(SOUND_MONSTER_ICEMONSTER1, px, py, pz);
+      break;
+    case 23: // Hommerd — Sounds[2]=mHomordAttack1, Sounds[3]=mHomordAttack1
+      SoundManager::Play3D(SOUND_MONSTER_HOMMERDATTACK1, px, py, pz);
+      break;
+    case 24: // Worm — Sounds[2]=mWormDie, Sounds[3]=mWormDie (uses die sound!)
+      SoundManager::Play3D(SOUND_MONSTER_WORMDIE, px, py, pz);
+      break;
+    case 25: // Ice Queen — Sounds[2]=mIceQueenAttack1, Sounds[3]=mIceQueenAttack2
+      SoundManager::Play3D(SOUND_MONSTER_ICEQUEENATTACK1 + rand() % 2, px, py, pz);
       break;
     default: break;
     }

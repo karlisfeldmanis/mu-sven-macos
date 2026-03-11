@@ -86,8 +86,9 @@ void main() {
     } else if (chromeMode == 2) {
         // RENDER_CHROME2: g_chrome[j][0] = (Normal[2]+Normal[0])*0.8 + Wave2*2
         //                 g_chrome[j][1] = (Normal[1]+Normal[0])*1.0 + Wave2*3
-        // Smooth chrome sweep: ~10s period, range -0.4 to +0.8, elegant slow drift
-        float wave2 = sin(chromeTime * 0.6283) * 0.6 + 0.2;
+        // Main 5.2: Wave2 = (int)WorldTime%5000 * 0.00024f - 0.4f (linear sawtooth)
+        // Range: -0.4 to +0.8, period 5 seconds, sharp reset
+        float wave2 = mod(chromeTime, 5.0) * 0.24 - 0.4;
         finalUV.x = (norm.z + norm.x) * 0.8 + wave2 * 2.0;
         finalUV.y = (norm.y + norm.x) * 1.0 + wave2 * 3.0;
     } else if (chromeMode == 3) {
@@ -109,10 +110,21 @@ void main() {
     vec4 texColor = texture(texture_diffuse, finalUV);
     if (texColor.a < 0.1) discard;
 
-    // Item glow: self-illuminating additive pass bypasses scene lighting
-    vec3 finalLight = (glowColor.r + glowColor.g + glowColor.b > 0.001)
-        ? glowColor
-        : lighting * blendMeshLight * luminosity * baseTint;
+    // Item glow: additive enhancement pass
+    // Main 5.2: CHROME/METAL use PartObjectColor (fixed palette, self-illuminating)
+    //           CHROME2/CHROME4 use PartObjectColor2 (modulates scene light)
+    vec3 finalLight;
+    if (glowColor.r + glowColor.g + glowColor.b > 0.001) {
+        if (chromeMode == 2 || chromeMode == 4) {
+            // CHROME2/CHROME4: color modulates scene light (Main 5.2 PartObjectColor2)
+            finalLight = glowColor * lighting * luminosity;
+        } else {
+            // CHROME/METAL: fixed palette color bypasses scene lighting
+            finalLight = glowColor;
+        }
+    } else {
+        finalLight = lighting * blendMeshLight * luminosity * baseTint;
+    }
     FragColor = vec4(finalLight, objectAlpha) * texColor;
 
     if (useFog) {

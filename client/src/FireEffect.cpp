@@ -35,24 +35,36 @@ static const std::vector<glm::vec3> kDungeonTorch41Offsets = {
 static const std::vector<glm::vec3> kDungeonTorch42Offsets = {
     glm::vec3(0.0f, 0.0f, 190.0f)};
 
-const std::vector<glm::vec3> &GetFireOffsets(int objectType) {
+// Devias fireplaces (Main 5.2: ZzzObject.cpp WD_2DEVIAS)
+// Type 30 (Stone01): fireplace — fire+smoke at z+160 (BITMAP_TRUE_FIRE particles)
+// Type 66 (SteelWall02): wall fire — CreateFire(0, o, 0, 0, 50)
+static const std::vector<glm::vec3> kDeviasFireplaceOffsets = {
+    glm::vec3(0.0f, 0.0f, 160.0f)};
+static const std::vector<glm::vec3> kDeviasWallFireOffsets = {
+    glm::vec3(0.0f, 0.0f, 50.0f)};
+
+const std::vector<glm::vec3> &GetFireOffsets(int objectType, int mapId) {
   switch (objectType) {
-  case 41:
-    return kDungeonTorch41Offsets;
+  case 30: // Devias fireplace only (Lorencia type 30 = Stone01, no fire)
+    return (mapId == 2) ? kDeviasFireplaceOffsets : kNoOffsets;
+  case 41: // Dungeon torches
+    return (mapId == 1) ? kDungeonTorch41Offsets : kNoOffsets;
   case 42:
-    return kDungeonTorch42Offsets;
-  case 50:
-    return kFireLight01Offsets;
-  case 51:
-    return kFireLight02Offsets;
-  case 52:
-    return kBonfireOffsets;
-  case 55:
-    return kDungeonGateOffsets;
-  case 80:
-    return kBridgeOffsets;
-  case 130:
-    return kLight01Offsets;
+    return (mapId == 1) ? kDungeonTorch42Offsets : kNoOffsets;
+  case 50: // FireLight01 — Lorencia only (Devias type 50 is a different model)
+    return (mapId == 0) ? kFireLight01Offsets : kNoOffsets;
+  case 51: // FireLight02 — Lorencia only
+    return (mapId == 0) ? kFireLight02Offsets : kNoOffsets;
+  case 52: // Bonfire01 — Lorencia only
+    return (mapId == 0) ? kBonfireOffsets : kNoOffsets;
+  case 55: // DoungeonGate01 — Lorencia only (dungeon gates use separate VFX)
+    return (mapId == 0) ? kDungeonGateOffsets : kNoOffsets;
+  case 66: // Devias wall fire only (Lorencia type 66 = different object)
+    return (mapId == 2) ? kDeviasWallFireOffsets : kNoOffsets;
+  case 80: // Bridge01 — Lorencia only
+    return (mapId == 0) ? kBridgeOffsets : kNoOffsets;
+  case 130: // Light01 — Lorencia only
+    return (mapId == 0) ? kLight01Offsets : kNoOffsets;
   default:
     return kNoOffsets;
   }
@@ -63,11 +75,14 @@ const std::vector<glm::vec3> &GetFireOffsets(int objectType) {
 static const std::vector<glm::vec3> kSmokeTorchOffsets = {
     glm::vec3(0.0f, 0.0f, 0.0f)};
 
-const std::vector<glm::vec3> &GetSmokeOffsets(int objectType) {
+
+const std::vector<glm::vec3> &GetSmokeOffsets(int objectType, int mapId) {
   switch (objectType) {
-  case 131:
-  case 132:
-    return kSmokeTorchOffsets;
+  case 30: // Devias fireplace smoke (Main 5.2: BITMAP_SMOKE subtype 21 at z+160)
+    return (mapId == 2) ? kDeviasFireplaceOffsets : kNoOffsets;
+  case 131: // Light02 torch smoke — Lorencia only
+  case 132: // Light03 smoke variant — Lorencia only
+    return (mapId == 0) ? kSmokeTorchOffsets : kNoOffsets;
   default:
     return kNoOffsets;
   }
@@ -112,9 +127,14 @@ void FireEffect::Init(const std::string &effectDataPath) {
   }
 
   // Override wrap mode to clamp (prevent frame bleeding in sprite sheet)
+  // Override mipmap filtering: fire particles are small (60-100 units) and
+  // trigger lower mipmap levels which cause heavy blur. Use GL_LINEAR (no mipmaps)
+  // to keep fire sharp at any distance.
   glBindTexture(GL_TEXTURE_2D, fireTexture);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
   std::cout << "[FireEffect] Loaded fire texture: " << firePath << std::endl;
 
@@ -128,6 +148,8 @@ void FireEffect::Init(const std::string &effectDataPath) {
     glBindTexture(GL_TEXTURE_2D, waterTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     std::cout << "[FireEffect] Loaded smoke texture: " << smokePath
               << std::endl;
   }

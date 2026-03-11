@@ -53,10 +53,6 @@ private:
   static Shader *s_shader;
   static std::unique_ptr<Shader> s_shadowShader;
   static std::string s_dataPath;
-  // Chrome environment map textures for +7/+9/+11 glow
-  static GLuint s_chromeTexture;
-  static GLuint s_chrome2Texture;
-  static GLuint s_shinyTexture;
   // Player.bmd skeleton for computing idle-pose bones for body part items
   static std::shared_ptr<BMDData> s_playerBmd;
   static std::vector<BoneWorldMatrix> s_playerIdleBones;

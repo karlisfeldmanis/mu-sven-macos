@@ -100,12 +100,20 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
 
   // ─── Pre-calculate data ─────────────────────────────────────────────────
 
+  // OpenMU Version075: Enhancement bonus table for weapons and armor
+  // Shields use +1/level instead (separate rule)
+  static const int kEnhanceTable[16] = {0,  3,  6,  9,  12, 15, 18, 21,
+                                         24, 27, 31, 36, 42, 49, 57, 66};
+
   int levelDmgBonus = 0, levelDefBonus = 0;
   if (itemLevel > 0) {
+    int lvl = std::min(itemLevel, 15);
     if (def->category <= 5)
-      levelDmgBonus = itemLevel * 3;
-    if (def->category == 6 || (def->category >= 7 && def->category <= 11))
-      levelDefBonus = itemLevel;
+      levelDmgBonus = kEnhanceTable[lvl]; // Weapon damage bonus
+    if (def->category >= 7 && def->category <= 11)
+      levelDefBonus = kEnhanceTable[lvl]; // Armor defense bonus (same table)
+    if (def->category == 6)
+      levelDefBonus = lvl; // Shield: +1 defense per level
   }
 
   int staffRise = 0;
@@ -340,7 +348,7 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
     AddPendingTooltipLine(TT_WHITE, buf);
 
     if (equippedDef) {
-      int eqDmgBonus = equippedLevel * 3;
+      int eqDmgBonus = kEnhanceTable[std::min(equippedLevel, 15)];
       int avgNew = (dMin + dMax) / 2;
       int avgOld = (equippedDef->dmgMin + eqDmgBonus + equippedDef->dmgMax + eqDmgBonus) / 2;
       int diff = avgNew - avgOld;
@@ -378,7 +386,9 @@ void AddPendingItemTooltip(int16_t defIndex, int itemLevel) {
     AddPendingTooltipLine(TT_WHITE, buf);
 
     if (equippedDef) {
-      int eqDefBonus = equippedLevel;
+      int eqDefBonus = (def->category >= 7 && def->category <= 11)
+          ? kEnhanceTable[std::min(equippedLevel, 15)]  // Armor: enhancement table
+          : std::min(equippedLevel, 15);                 // Shield: +1/level
       int diff = totalDef - ((int)equippedDef->defense + eqDefBonus);
       char cmpBuf[48];
       if (diff > 0) {

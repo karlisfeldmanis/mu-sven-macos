@@ -76,8 +76,10 @@ public:
   NpcInfo GetNpcInfo(int index) const;
 
   // Quest marker state (set from main.cpp each frame)
-  void SetQuestState(int questIndex, const int *killCount, const int *required,
-                     int targetCount);
+  // questIndex = Lorencia chain (0-11), deviasQuestIndex = Devias chain (12-17)
+  void SetQuestState(int questIndex, int deviasQuestIndex,
+                     const int *killCount, const int *required,
+                     int targetCount, int currentMapId);
 
   // Server-driven NPC movement (guard patrol)
   void SetNpcMoveTarget(uint16_t serverIndex, float worldX, float worldZ);
@@ -160,11 +162,6 @@ private:
   int m_mapId = 0;
   VFXManager *m_vfxManager = nullptr;
 
-  // Chrome/metal textures for guard +7 armor enhancement glow (Main 5.2)
-  GLuint m_chromeTexture = 0;   // Chrome01.OZJ
-  GLuint m_chrome2Texture = 0;  // Chrome02.OZJ
-  GLuint m_shinyTexture = 0;    // Shiny01.OZJ
-
   // NPC type → model index mapping (for server-spawned NPCs)
   std::unordered_map<uint16_t, int> m_typeToModel;
   // NPC type → scale overrides
@@ -183,11 +180,13 @@ private:
   void addNpc(int modelIdx, int gridX, int gridY, int dir, float scale = 1.0f);
   float snapToTerrain(float worldX, float worldZ);
   glm::vec3 sampleTerrainLightAt(const glm::vec3 &worldPos) const;
-  // Quest marker state
-  int m_questIndex = 0;
+  // Quest marker state (dual chains)
+  int m_questIndex = 0;        // Lorencia chain (0-11)
+  int m_deviasQuestIndex = 12; // Devias chain (12-17)
   int m_questKillCount[3] = {};
   int m_questRequired[3] = {};
   int m_questTargetCount = 0;
+  int m_currentMapId = 0;
 
   // Main 5.2: default NPC PlaySpeed = 0.25 per tick at 25fps = 6.25 fps
   static constexpr float ANIM_SPEED = 6.25f;

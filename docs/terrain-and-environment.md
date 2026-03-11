@@ -6,10 +6,13 @@ The original MU engine for Lorencia renders water as a **regular tile** (layer1 
 
 - `sampleLayerSmooth()` handles water tile animation: `tileUV.x += uTime * 0.1` + sinusoidal Y offset
 - Shore transitions: handled naturally by alpha map blending between Layer1 and Layer2
-- Bridge protection: `sampleLayerSmooth()` checks `TW_NOGROUND` (0x08) on bilinear neighbors
-- TW_NOGROUND reconstruction: .att file lacks flags, reconstructed from bridge objects (type 80)
+- Bridge protection: `sampleLayerSmooth()` checks `TW_NOGROUND` (0x08) on bilinear neighbors.
+- Devias Bridge Fix: Rift chasms in Devias use `TW_NOGROUND` (0x08) which original engine renders as voids by skipping cell rendering. To prevent bridges from being "sunk" into these voids:
+    - `bridgeMask` is reconstructed from bridge objects (type 80).
+    - `Terrain::Load` uses `bridgeMask` to protect cells near bridges from the `TW_NOGROUND` void-skipping logic in `setupMesh`.
+    - `rawAttributes` (pre-reconstruction) are used for mesh generation to ensure only genuine rift cells create voids.
 
-**Lesson learned**: Do not invent rendering systems that don't exist in the original source. For Lorencia, water is just a tile with animated UVs. Special water overlays only exist for Atlantis (WD_7ATLANSE).
+**Lesson learned**: Do not invent rendering systems that don't exist in the original source. For Lorencia, water is just a tile with animated UVs. Special water overlays only exist for Atlantis (WD_7ATLANSE). Devias rifts are procedural voids created by skipping `TW_NOGROUND` cell indices in the triangle EBO.
 
 ## Terrain Tile Index 255
 

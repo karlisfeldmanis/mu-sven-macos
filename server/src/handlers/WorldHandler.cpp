@@ -1,9 +1,11 @@
 #include "handlers/WorldHandler.hpp"
+#include "GameWorld.hpp"
 #include "PacketDefs.hpp"
 #include "StatCalculator.hpp"
 #include "handlers/CharacterHandler.hpp"
 #include "handlers/InventoryHandler.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -45,22 +47,47 @@ void HandleMove(Session &session, const std::vector<uint8_t> &packet,
   // click-to-move DESTINATION, not the player's current position.
   // HandlePrecisePosition (D7) provides the actual current position.
 
+  // Player started walking — reset idle regen timer
+  session.idleTimer = 0.0f;
+  session.idleHpRemainder = 0.0f;
+
   if (session.characterId > 0) {
     db.UpdatePosition(session.characterId, move->x, move->y);
   }
 }
 
 void HandlePrecisePosition(Session &session,
-                           const std::vector<uint8_t> &packet) {
+                           const std::vector<uint8_t> &packet,
+                           GameWorld &world) {
   if (packet.size() < sizeof(PMSG_PRECISE_POS_RECV))
     return;
   const auto *pos =
       reinterpret_cast<const PMSG_PRECISE_POS_RECV *>(packet.data());
+  // Reset idle timer if position actually changed
+  if (std::abs(session.worldX - pos->worldX) > 1.0f ||
+      std::abs(session.worldZ - pos->worldZ) > 1.0f) {
+    session.idleTimer = 0.0f;
+    session.idleHpRemainder = 0.0f;
+  }
   session.worldX = pos->worldX;
   session.worldZ = pos->worldZ;
   printf("[PrecisePos] fd=%d worldX=%.1f worldZ=%.1f gridX=%d gridY=%d\n",
          session.GetFd(), session.worldX, session.worldZ,
          (int)(session.worldZ / 100.0f), (int)(session.worldX / 100.0f));
+
+  // If client just loaded a new map (pending viewport), send NPCs/monsters now.
+  // Guard: only trigger if at least 0.5s has passed since TransitionMap
+  // (pendingViewportDelay starts at 5.0f). This prevents stale PrecisePosition
+  // packets (sent before client received MAP_CHANGE) from triggering viewport.
+  if (session.pendingViewportDelay > 0.0f && session.pendingViewportDelay < 4.5f) {
+    session.pendingViewportDelay = 0.0f;
+    SendNpcViewport(session, world);
+    auto v2pkt = world.BuildMonsterViewportV2Packet();
+    if (!v2pkt.empty())
+      session.Send(v2pkt.data(), v2pkt.size());
+    printf("[PrecisePos] Viewport sent on client ready: %zu NPCs, %zu monsters\n",
+           world.GetNpcs().size(), world.GetMonsterInstances().size());
+  }
 }
 
 void HandleLogin(Session &session, const std::vector<uint8_t> &packet,

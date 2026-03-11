@@ -106,6 +106,10 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `ClientPacketHandler.hpp` | `namespace ClientPacketHandler`: incoming packet dispatch. Context via `ClientGameState`. |
 | **Input & UI** | |
 | `InputHandler.hpp` | `namespace InputHandler`: GLFW callbacks (mouse, keyboard, scroll), `ProcessInput()`. Context via `InputContext`. |
+| `HUD.hpp` | `namespace HUD`: Diablo-style resource orbs and layout. |
+| `GameUI.hpp` | UI texture and widget helpers. |
+| `UITexture.hpp` | UI texture loading and management. |
+| `UIWidget.hpp` | UI primitives: buttons, slots, bars. |
 | `RayPicker.hpp` | `namespace RayPicker`: mouse-to-world raycasting for terrain, NPCs, monsters, ground items. |
 | `UICoords.hpp` | HUD coordinate system with centered scaling. |
 | `Screenshot.hpp` | JPEG capture + GIF recording (frame-diffed animation). |
@@ -156,6 +160,11 @@ main.cpp (orchestrator: init, render loop, shutdown)
 | `model_viewer_main.cpp` | Object browser: scans Object1/ for BMDs, orbit camera, ImGui. |
 | `char_viewer_main.cpp` | Character browser: Player.bmd skeleton + body part armor system. |
 | `diag_nearby_objects.cpp` | Diagnostic: lists objects near a terrain coordinate. |
+| `HUD.cpp` | Diablo-style HUD: layout and resource orbs. |
+| `GameUI.cpp` | UI texture/widget context and helpers. |
+| `UITexture.cpp` | UI texture loading and management. |
+| `UIWidget.cpp` | UI primitive widgets (buttons, slots, bars). |
+| `ChromeGlow.cpp` | Item enhancement rendering pass. |
 
 ### Server Sources (server/)
 

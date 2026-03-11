@@ -26,7 +26,7 @@ static constexpr float CONTAINER_W = 320.0f;
 static constexpr float CONTAINER_H = TAB_H + MAX_VISIBLE * LINE_H + 6.0f;
 
 static std::deque<LogMessage> s_messages;
-static int s_activeTab = 0; // 0=General(all), 1=Combat, 2=System
+static int s_activeTab = 0;    // 0=General(all), 1=Combat, 2=System
 static int s_scrollOffset = 0; // 0 = bottom (newest), positive = scrolled up
 static bool s_userScrolled = false; // true if user has scrolled up
 
@@ -34,17 +34,17 @@ static bool s_userScrolled = false; // true if user has scrolled up
 static float s_tabX[3], s_tabY, s_tabW[3], s_tabEndY;
 // Log area bounds (for scroll hit-test)
 static float s_logX, s_logY, s_logW, s_logH;
-static float s_hoverAlpha = 0.0f; // 0 = hidden, 1 = fully visible
+static float s_hoverAlpha = 0.0f;    // 0 = hidden, 1 = fully visible
 static float s_activityTimer = 0.0f; // Seconds since last new message
-static constexpr float FADE_SHOW_TIME = 5.0f; // Stay visible this long after last message
-static constexpr float FADE_OUT_TIME = 1.5f;  // Fade out duration
+static constexpr float FADE_SHOW_TIME =
+    5.0f; // Stay visible this long after last message
+static constexpr float FADE_OUT_TIME = 1.5f; // Fade out duration
 
 // Count messages matching current tab filter
 static int CountFiltered() {
   int count = 0;
   for (auto &m : s_messages) {
-    if (s_activeTab == 0 ||
-        (s_activeTab == 1 && m.category == MSG_COMBAT) ||
+    if (s_activeTab == 0 || (s_activeTab == 1 && m.category == MSG_COMBAT) ||
         (s_activeTab == 2 && m.category == MSG_SYSTEM))
       count++;
   }
@@ -107,7 +107,7 @@ void Update(float /*deltaTime*/) {
 void Render(ImDrawList *dl, ImFont *font, float screenW, float screenH,
             float hudBarHeight, float mouseX, float mouseY) {
   float cx = 8.0f;
-  float cy = screenH - CONTAINER_H;
+  float cy = screenH - CONTAINER_H - 30.0f; // raised above XP bar
 
   // Store log area bounds for scroll hit-test
   s_logX = cx;
@@ -126,8 +126,8 @@ void Render(ImDrawList *dl, ImFont *font, float screenW, float screenH,
   }
 
   // Track hover for scrollbar and to override fade
-  bool hovered = (mouseX >= cx && mouseX <= cx + CONTAINER_W &&
-                  mouseY >= cy && mouseY <= cy + CONTAINER_H);
+  bool hovered = (mouseX >= cx && mouseX <= cx + CONTAINER_W && mouseY >= cy &&
+                  mouseY <= cy + CONTAINER_H);
   float fadeSpeed = 6.0f;
   if (hovered)
     s_hoverAlpha = std::min(1.0f, s_hoverAlpha + dt * fadeSpeed);
@@ -155,15 +155,15 @@ void Render(ImDrawList *dl, ImFont *font, float screenW, float screenH,
       float ta = s_hoverAlpha;
       bool active = (t == s_activeTab);
       ImU32 tabCol = ScaleAlpha(active ? IM_COL32(255, 200, 50, 230)
-                                       : IM_COL32(150, 150, 150, 130), ta);
+                                       : IM_COL32(150, 150, 150, 130),
+                                ta);
 
       if (active)
         dl->AddRectFilled(ImVec2(tabX, cy + 1), ImVec2(tabX + tw, cy + TAB_H),
                           ScaleAlpha(IM_COL32(255, 200, 50, 20), ta), 2.0f);
 
-      dl->AddText(font, 11.0f,
-                  ImVec2(tabX + 6, cy + (TAB_H - ts.y) * 0.5f), tabCol,
-                  tabNames[t]);
+      dl->AddText(font, 11.0f, ImVec2(tabX + 6, cy + (TAB_H - ts.y) * 0.5f),
+                  tabCol, tabNames[t]);
 
       if (active) {
         dl->AddLine(ImVec2(tabX + 2, cy + TAB_H - 1),
@@ -197,16 +197,19 @@ void Render(ImDrawList *dl, ImFont *font, float screenW, float screenH,
   int maxScroll = std::max(0, totalFiltered - MAX_VISIBLE);
 
   // Clamp scroll offset
-  if (s_scrollOffset > maxScroll) s_scrollOffset = maxScroll;
-  if (s_scrollOffset < 0) s_scrollOffset = 0;
+  if (s_scrollOffset > maxScroll)
+    s_scrollOffset = maxScroll;
+  if (s_scrollOffset < 0)
+    s_scrollOffset = 0;
 
   // If at bottom, clear user-scrolled flag
-  if (s_scrollOffset == 0) s_userScrolled = false;
+  if (s_scrollOffset == 0)
+    s_userScrolled = false;
 
   // Render messages: newest at bottom, scroll offset moves view up
   // startIdx = first message to show (from bottom of filtered list)
-  int endIdx = totalFiltered - s_scrollOffset;       // exclusive
-  int startIdx = std::max(0, endIdx - MAX_VISIBLE);  // inclusive
+  int endIdx = totalFiltered - s_scrollOffset;      // exclusive
+  int startIdx = std::max(0, endIdx - MAX_VISIBLE); // inclusive
 
   for (int i = startIdx; i < endIdx; i++) {
     float y = msgTop + (float)(i - startIdx) * LINE_H;
@@ -235,9 +238,9 @@ void Render(ImDrawList *dl, ImFont *font, float screenW, float screenH,
     // Thumb
     float thumbRatio = (float)MAX_VISIBLE / (float)totalFiltered;
     float thumbH = std::max(12.0f, trackH * thumbRatio);
-    float scrollRatio = (maxScroll > 0)
-        ? (float)(maxScroll - s_scrollOffset) / (float)maxScroll
-        : 0.0f;
+    float scrollRatio =
+        (maxScroll > 0) ? (float)(maxScroll - s_scrollOffset) / (float)maxScroll
+                        : 0.0f;
     float thumbY = trackTop + scrollRatio * (trackH - thumbH);
 
     dl->AddRectFilled(ImVec2(trackX, thumbY),
@@ -248,22 +251,27 @@ void Render(ImDrawList *dl, ImFont *font, float screenW, float screenH,
 
 bool HandleScroll(float mx, float my, float scrollDelta) {
   // Check if mouse is over the log area
-  if (mx < s_logX || mx > s_logX + s_logW ||
-      my < s_logY || my > s_logY + s_logH)
+  if (mx < s_logX || mx > s_logX + s_logW || my < s_logY ||
+      my > s_logY + s_logH)
     return false;
 
   // Scroll: positive delta = scroll up (show older), negative = scroll down
   int lines = (int)(scrollDelta);
-  if (lines == 0) lines = (scrollDelta > 0) ? 1 : -1;
+  if (lines == 0)
+    lines = (scrollDelta > 0) ? 1 : -1;
 
   s_scrollOffset += lines;
   int totalFiltered = CountFiltered();
   int maxScroll = std::max(0, totalFiltered - MAX_VISIBLE);
-  if (s_scrollOffset > maxScroll) s_scrollOffset = maxScroll;
-  if (s_scrollOffset < 0) s_scrollOffset = 0;
+  if (s_scrollOffset > maxScroll)
+    s_scrollOffset = maxScroll;
+  if (s_scrollOffset < 0)
+    s_scrollOffset = 0;
 
-  if (s_scrollOffset > 0) s_userScrolled = true;
-  else s_userScrolled = false;
+  if (s_scrollOffset > 0)
+    s_userScrolled = true;
+  else
+    s_userScrolled = false;
 
   return true;
 }

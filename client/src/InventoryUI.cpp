@@ -1,5 +1,5 @@
-#include "InventoryUI_Internal.hpp"
 #include "HeroCharacter.hpp"
+#include "InventoryUI_Internal.hpp"
 #include "ItemDatabase.hpp"
 #include "ServerConnection.hpp"
 #include "SoundManager.hpp"
@@ -148,14 +148,16 @@ static std::string s_regionName;
 static float s_regionAlpha = 0.0f;
 static float s_regionShowTimer = 0.0f;
 // Main 5.2: UIMN_ALPHA_VARIATION = 0.015 per frame at 25fps
-static constexpr float REGION_FADEIN_SPEED = 0.375f;   // ~2.7s fade in
-static constexpr float REGION_FADEOUT_SPEED = 2.0f;      // ~0.5s fade out
-static constexpr float REGION_SHOW_TIME = 2.0f;         // 2 seconds hold
-// Main 5.2: UIMN_IMG_WIDTH=166, UIMN_IMG_HEIGHT=90 (OZT pre-rendered map name image)
+static constexpr float REGION_FADEIN_SPEED = 0.375f; // ~2.7s fade in
+static constexpr float REGION_FADEOUT_SPEED = 2.0f;  // ~0.5s fade out
+static constexpr float REGION_SHOW_TIME = 2.0f;      // 2 seconds hold
+// Main 5.2: UIMN_IMG_WIDTH=166, UIMN_IMG_HEIGHT=90 (OZT pre-rendered map name
+// image)
 static GLuint s_mapNameTexture = 0;
 static int s_mapNameTexW = 0, s_mapNameTexH = 0;
 
-// ─── Shared helpers (external linkage — declared in InventoryUI_Internal.hpp) ─
+// ─── Shared helpers (external linkage — declared in InventoryUI_Internal.hpp)
+// ─
 
 void BeginPendingTooltip(float tw, float th) {
   ImVec2 mp = ImGui::GetIO().MousePos;
@@ -178,34 +180,32 @@ void AddPendingTooltipLine(ImU32 color, const std::string &text,
   g_pendingTooltip.lines.push_back({color, text, flags});
 }
 
-void AddTooltipSeparator() {
-  g_pendingTooltip.lines.push_back({0, "---", 2});
-}
+void AddTooltipSeparator() { g_pendingTooltip.lines.push_back({0, "---", 2}); }
 
-void DrawStyledPanel(ImDrawList *dl, float x0, float y0, float x1,
-                     float y1, float rounding) {
-  dl->AddRectFilledMultiColor(
-      ImVec2(x0, y0), ImVec2(x1, y1),
-      IM_COL32(8, 8, 18, 245),   // top-left
-      IM_COL32(8, 8, 18, 245),   // top-right
-      IM_COL32(18, 18, 32, 240), // bottom-right
-      IM_COL32(18, 18, 32, 240)  // bottom-left
+void DrawStyledPanel(ImDrawList *dl, float x0, float y0, float x1, float y1,
+                     float rounding) {
+  dl->AddRectFilledMultiColor(ImVec2(x0, y0), ImVec2(x1, y1),
+                              IM_COL32(8, 8, 18, 245),   // top-left
+                              IM_COL32(8, 8, 18, 245),   // top-right
+                              IM_COL32(18, 18, 32, 240), // bottom-right
+                              IM_COL32(18, 18, 32, 240)  // bottom-left
   );
-  dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
-              IM_COL32(5, 5, 10, 255), rounding, 0, 2.0f);
+  dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(5, 5, 10, 255), rounding,
+              0, 2.0f);
   dl->AddRect(ImVec2(x0 + 2, y0 + 2), ImVec2(x1 - 2, y1 - 2),
-              IM_COL32(80, 70, 45, 140), rounding > 2 ? rounding - 1 : rounding);
+              IM_COL32(80, 70, 45, 140),
+              rounding > 2 ? rounding - 1 : rounding);
 }
 
-void DrawStyledSlot(ImDrawList *dl, ImVec2 p0, ImVec2 p1,
-                    bool hovered, float rounding) {
+void DrawStyledSlot(ImDrawList *dl, ImVec2 p0, ImVec2 p1, bool hovered,
+                    float rounding) {
   dl->AddRectFilled(p0, p1, IM_COL32(12, 12, 22, 220), rounding);
   dl->AddLine(ImVec2(p0.x + 1, p0.y + 1), ImVec2(p1.x - 1, p0.y + 1),
               IM_COL32(0, 0, 0, 100));
   dl->AddLine(ImVec2(p0.x + 1, p0.y + 1), ImVec2(p0.x + 1, p1.y - 1),
               IM_COL32(0, 0, 0, 100));
-  ImU32 borderCol = hovered ? IM_COL32(180, 160, 90, 200)
-                            : IM_COL32(65, 60, 45, 200);
+  ImU32 borderCol =
+      hovered ? IM_COL32(180, 160, 90, 200) : IM_COL32(65, 60, 45, 200);
   dl->AddRect(p0, p1, borderCol, rounding);
 }
 
@@ -216,9 +216,8 @@ void DrawStyledBar(ImDrawList *dl, float x, float y, float w, float h,
   ImVec2 p0(x, y), p1(x + w, y + h);
   dl->AddRectFilled(p0, p1, IM_COL32(8, 8, 15, 220), 3.0f);
   if (frac > 0.01f) {
-    dl->AddRectFilledMultiColor(
-        p0, ImVec2(x + w * frac, y + h),
-        topColor, topColor, botColor, botColor);
+    dl->AddRectFilledMultiColor(p0, ImVec2(x + w * frac, y + h), topColor,
+                                topColor, botColor, botColor);
     dl->AddLine(ImVec2(x + 1, y + 1), ImVec2(x + w * frac - 1, y + 1),
                 IM_COL32(255, 255, 255, 40));
   }
@@ -230,11 +229,65 @@ void DrawStyledBar(ImDrawList *dl, float x, float y, float w, float h,
   dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
 }
 
-void DrawShadowText(ImDrawList *dl, ImVec2 pos, ImU32 color,
-                    const char *text, int shadowOffset) {
+void DrawShadowText(ImDrawList *dl, ImVec2 pos, ImU32 color, const char *text,
+                    int shadowOffset) {
   dl->AddText(ImVec2(pos.x + shadowOffset, pos.y + shadowOffset),
               IM_COL32(0, 0, 0, 230), text);
   dl->AddText(pos, color, text);
+}
+
+void DrawOrb(ImDrawList *dl, float cx, float cy, float radius, float frac,
+             ImU32 fillTop, ImU32 fillBot, ImU32 emptyColor, ImU32 frameColor,
+             const char *label) {
+  frac = std::clamp(frac, 0.0f, 1.0f);
+
+  // 1. Empty orb background (dark interior)
+  dl->AddCircleFilled(ImVec2(cx, cy), radius - 2, emptyColor, 64);
+
+  // 2. Filled portion — clip from bottom up
+  if (frac > 0.01f) {
+    float fillH = radius * 2.0f * frac;
+    float clipTop = cy + radius - fillH;
+    dl->PushClipRect(ImVec2(cx - radius, clipTop),
+                     ImVec2(cx + radius, cy + radius + 1), true);
+    // Gradient fill from top to bottom of the fill portion
+    // Use two half-circles for the gradient effect
+    float midY = clipTop + fillH * 0.5f;
+    // Top half of fill
+    dl->AddCircleFilled(ImVec2(cx, cy), radius - 3, fillTop, 64);
+    // Bottom gradient overlay
+    dl->PushClipRect(ImVec2(cx - radius, midY),
+                     ImVec2(cx + radius, cy + radius + 1), true);
+    dl->AddCircleFilled(ImVec2(cx, cy), radius - 3, fillBot, 64);
+    dl->PopClipRect();
+    dl->PopClipRect();
+
+    // Specular highlight — small bright arc near top of fill
+    float hlY = clipTop + 4.0f;
+    dl->PushClipRect(ImVec2(cx - radius * 0.5f, hlY),
+                     ImVec2(cx + radius * 0.5f, hlY + 8.0f), true);
+    dl->AddCircleFilled(ImVec2(cx, cy), radius - 6, IM_COL32(255, 255, 255, 35),
+                        64);
+    dl->PopClipRect();
+  }
+
+  // 3. Ornate frame ring (outer)
+  dl->AddCircle(ImVec2(cx, cy), radius, IM_COL32(15, 12, 8, 255), 64, 4.0f);
+  dl->AddCircle(ImVec2(cx, cy), radius - 1, frameColor, 64, 2.0f);
+  dl->AddCircle(ImVec2(cx, cy), radius + 1, IM_COL32(30, 25, 15, 200), 64,
+                1.0f);
+
+  // 4. Inner shadow ring
+  dl->AddCircle(ImVec2(cx, cy), radius - 4, IM_COL32(0, 0, 0, 60), 64, 1.5f);
+
+  // 5. Text overlay centered in orb
+  if (label && label[0]) {
+    ImVec2 tsz = ImGui::CalcTextSize(label);
+    float tx = cx - tsz.x * 0.5f;
+    float ty = cy - tsz.y * 0.5f + 6.0f; // slightly below center
+    dl->AddText(ImVec2(tx + 1, ty + 1), IM_COL32(0, 0, 0, 220), label);
+    dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
+  }
 }
 
 // ─── Internal helpers (unnamed namespace) ───────────────────────────────────
@@ -481,11 +534,14 @@ void Init(const InventoryUIContext &ctx) {
 
   // Load map name OZT images (Main 5.2: Local/[Language]/ImgsMapName/)
   if (s_mapNameTexture == 0) {
-    s_mapNameTexture = TextureLoader::LoadOZT("Data/Local/Eng/ImgsMapName/lorencia.OZT");
+    s_mapNameTexture =
+        TextureLoader::LoadOZT("Data/Local/Eng/ImgsMapName/lorencia.OZT");
     if (s_mapNameTexture) {
       glBindTexture(GL_TEXTURE_2D, s_mapNameTexture);
-      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &s_mapNameTexW);
-      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &s_mapNameTexH);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,
+                               &s_mapNameTexW);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT,
+                               &s_mapNameTexH);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
       std::cout << "[UI] Loaded map name image: " << s_mapNameTexW << "x"
@@ -531,7 +587,8 @@ void ConsumeQuickSlotItem(int slotIndex) {
     return;
   int16_t defIdx = s_ctx->potionBar[slotIndex];
   if (defIdx <= 0) {
-    std::cout << "[QuickSlot] Slot " << slotIndex << " empty (defIdx=" << defIdx << ")" << std::endl;
+    std::cout << "[QuickSlot] Slot " << slotIndex << " empty (defIdx=" << defIdx
+              << ")" << std::endl;
     return;
   }
 
@@ -654,8 +711,7 @@ void RecalcEquipmentStats() {
 }
 
 // Get the equip slot index for a given item category (-1 if none)
-int GetEquipSlotForCategory(uint8_t category,
-                            bool isAlternativeHand) {
+int GetEquipSlotForCategory(uint8_t category, bool isAlternativeHand) {
   switch (category) {
   case 0:
   case 1:
@@ -695,7 +751,6 @@ const DropDef *GetEquippedDropDef(int equipSlot) {
       s_ctx->equipSlots[equipSlot].itemIndex);
   return ItemDatabase::GetDropInfo(di);
 }
-
 
 void UpdateAndRenderNotification(float deltaTime) {
   if (s_notifyTimer <= 0.0f)
@@ -748,9 +803,7 @@ void ShowNotification(const char *msg) {
   s_notifyTimer = NOTIFY_DURATION;
 }
 
-bool HasActiveNotification() {
-  return s_notifyTimer > 0.0f;
-}
+bool HasActiveNotification() { return s_notifyTimer > 0.0f; }
 
 // ─── Region Name Display (Main 5.2: CUIMapName) ─────────────────────────────
 
@@ -765,8 +818,11 @@ void ShowRegionName(const char *name) {
   const char *oztFile = nullptr;
   if (strcmp(name, "Lorencia") == 0)
     oztFile = "Data/Local/Eng/ImgsMapName/lorencia.OZT";
+  else if (strcmp(name, "Devias") == 0)
+    oztFile = "Data/Local/Eng/ImgsMapName/devias.OZT";
   else if (strcmp(name, "Dungeon") == 0)
-    oztFile = "Data/Local/Eng/ImgsMapName/dungeun.OZT"; // Original typo in assets
+    oztFile =
+        "Data/Local/Eng/ImgsMapName/dungeun.OZT"; // Original typo in assets
 
   if (oztFile) {
     if (s_mapNameTexture) {
@@ -776,17 +832,17 @@ void ShowRegionName(const char *name) {
     s_mapNameTexture = TextureLoader::LoadOZT(oztFile);
     if (s_mapNameTexture) {
       glBindTexture(GL_TEXTURE_2D, s_mapNameTexture);
-      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &s_mapNameTexW);
-      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &s_mapNameTexH);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,
+                               &s_mapNameTexW);
+      glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT,
+                               &s_mapNameTexH);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
   }
 }
 
-bool HasActiveRegionName() {
-  return s_regionState != RegionNameState::HIDE;
-}
+bool HasActiveRegionName() { return s_regionState != RegionNameState::HIDE; }
 
 void UpdateAndRenderRegionName(float deltaTime) {
   if (s_regionState == RegionNameState::HIDE)
@@ -835,11 +891,9 @@ void UpdateAndRenderRegionName(float deltaTime) {
     float py = displaySize.y * 0.80f - imgH;
 
     ImVec4 tintCol(1.0f, 1.0f, 1.0f, s_regionAlpha);
-    dl->AddImage(
-        (ImTextureID)(intptr_t)s_mapNameTexture,
-        ImVec2(px, py), ImVec2(px + imgW, py + imgH),
-        ImVec2(0, 0), ImVec2(1, 1),
-        ImGui::ColorConvertFloat4ToU32(tintCol));
+    dl->AddImage((ImTextureID)(intptr_t)s_mapNameTexture, ImVec2(px, py),
+                 ImVec2(px + imgW, py + imgH), ImVec2(0, 0), ImVec2(1, 1),
+                 ImGui::ColorConvertFloat4ToU32(tintCol));
   } else {
     // Fallback: text rendering if OZT not loaded
     ImFont *font = s_ctx->fontRegion ? s_ctx->fontRegion : s_ctx->fontDefault;
@@ -848,7 +902,8 @@ void UpdateAndRenderRegionName(float deltaTime) {
     ImVec2 textSize = ImGui::CalcTextSize(s_regionName.c_str());
     float px = (displaySize.x - textSize.x) * 0.5f;
     float py = displaySize.y * 0.72f - textSize.y;
-    dl->AddText(ImVec2(px, py), IM_COL32(255, 220, 160, a), s_regionName.c_str());
+    dl->AddText(ImVec2(px, py), IM_COL32(255, 220, 160, a),
+                s_regionName.c_str());
     if (font)
       ImGui::PopFont();
   }
@@ -859,14 +914,14 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   float pw = PANEL_W, ph = PANEL_H + 60.0f * g_uiPanelScale;
 
   // WoW-style palette
-  const ImU32 colTitle   = IM_COL32(255, 210, 80, 255);
+  const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
   const ImU32 colSection = IM_COL32(200, 170, 60, 220);
-  const ImU32 colLabel   = IM_COL32(160, 160, 180, 255);
-  const ImU32 colValue   = IM_COL32(255, 255, 255, 255);
-  const ImU32 colGreen   = IM_COL32(100, 255, 100, 255);
+  const ImU32 colLabel = IM_COL32(160, 160, 180, 255);
+  const ImU32 colValue = IM_COL32(255, 255, 255, 255);
+  const ImU32 colGreen = IM_COL32(100, 255, 100, 255);
   const ImU32 colSepLine = IM_COL32(100, 85, 50, 140);
-  const ImU32 colRowA    = IM_COL32(20, 20, 35, 180);
-  const ImU32 colRowB    = IM_COL32(28, 28, 45, 180);
+  const ImU32 colRowA = IM_COL32(20, 20, 35, 180);
+  const ImU32 colRowB = IM_COL32(28, 28, 45, 180);
   char buf[256];
 
   float W = BASE_PANEL_W; // internal layout width (unscaled)
@@ -875,21 +930,24 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   float rowGap = 1;     // gap between rows
   float sectionGap = 8; // extra gap before each section header
 
-  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py),
-                  c.ToScreenX(px + pw), c.ToScreenY(py + ph));
+  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py), c.ToScreenX(px + pw),
+                  c.ToScreenY(py + ph));
   DrawCloseButton(dl, c, px, py);
 
   // ─── Header: Character name + class/level ────────────────────────
-  DrawPanelTextCentered(dl, c, px, py, 0, 10, W, s_ctx->characterName,
-                        colTitle, s_ctx->fontDefault);
+  DrawPanelTextCentered(dl, c, px, py, 0, 10, W, s_ctx->characterName, colTitle,
+                        s_ctx->fontDefault);
 
   {
     const char *className = "Dark Knight";
     if (s_ctx->hero) {
       uint8_t cc = s_ctx->hero->GetClass();
-      if (cc == 0) className = "Dark Wizard";
-      else if (cc == 32) className = "Elf";
-      else if (cc == 48) className = "Magic Gladiator";
+      if (cc == 0)
+        className = "Dark Wizard";
+      else if (cc == 32)
+        className = "Elf";
+      else if (cc == 48)
+        className = "Magic Gladiator";
     }
     snprintf(buf, sizeof(buf), "Level %d %s", *s_ctx->serverLevel, className);
     DrawPanelTextCentered(dl, c, px, py, 0, 30, W, buf, colLabel);
@@ -919,7 +977,7 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   auto drawSectionHeader = [&](float relY, const char *text) {
     float sx0 = c.ToScreenX(px + margin * g_uiPanelScale);
     float sx1 = c.ToScreenX(px + (W - margin) * g_uiPanelScale);
-    float sy  = c.ToScreenY(py + (relY + 7) * g_uiPanelScale);
+    float sy = c.ToScreenY(py + (relY + 7) * g_uiPanelScale);
     ImVec2 tsz = ImGui::CalcTextSize(text);
     float tw = tsz.x + 12;
     float cx0 = (sx0 + sx1 - tw) * 0.5f;
@@ -967,10 +1025,13 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
       ImVec2 bp0(btnX, btnY), bp1(btnX + btnS, btnY + btnS);
       ImVec2 mp = ImGui::GetIO().MousePos;
       bool hov = mp.x >= bp0.x && mp.x < bp1.x && mp.y >= bp0.y && mp.y < bp1.y;
-      ImU32 btnCol = hov ? IM_COL32(80, 200, 80, 255) : IM_COL32(50, 140, 50, 230);
+      ImU32 btnCol =
+          hov ? IM_COL32(80, 200, 80, 255) : IM_COL32(50, 140, 50, 230);
       dl->AddRectFilled(bp0, bp1, btnCol, 3.0f);
-      dl->AddRect(bp0, bp1, hov ? IM_COL32(130, 255, 130, 180)
-                                : IM_COL32(40, 100, 40, 180), 3.0f);
+      dl->AddRect(bp0, bp1,
+                  hov ? IM_COL32(130, 255, 130, 180)
+                      : IM_COL32(40, 100, 40, 180),
+                  3.0f);
       ImVec2 ps = ImGui::CalcTextSize("+");
       float ptx = btnX + (btnS - ps.x) * 0.5f;
       float pty = btnY + (btnS - ps.y) * 0.5f;
@@ -1075,14 +1136,18 @@ void RenderCharInfoPanel(ImDrawList *dl, const UICoords &c) {
   {
     const char *manaLabel = isDKBars ? "AG" : "Mana";
     float bx = margin, bw = W - margin * 2, bh = 16;
-    snprintf(buf, sizeof(buf), "%s  %d / %d", manaLabel, std::max(curMP, 0), maxMP);
+    snprintf(buf, sizeof(buf), "%s  %d / %d", manaLabel, std::max(curMP, 0),
+             maxMP);
     float sx0 = c.ToScreenX(px + bx * g_uiPanelScale);
     float sy0 = c.ToScreenY(py + curY * g_uiPanelScale);
     float sx1 = c.ToScreenX(px + (bx + bw) * g_uiPanelScale);
     float sy1 = c.ToScreenY(py + (curY + bh) * g_uiPanelScale);
-    ImU32 barTop = isDKBars ? IM_COL32(180, 160, 40, 230) : IM_COL32(40, 100, 220, 230);
-    ImU32 barBot = isDKBars ? IM_COL32(130, 115, 20, 230) : IM_COL32(25, 60, 160, 230);
-    DrawStyledBar(dl, sx0, sy0, sx1 - sx0, sy1 - sy0, mpFrac, barTop, barBot, buf);
+    ImU32 barTop =
+        isDKBars ? IM_COL32(180, 160, 40, 230) : IM_COL32(40, 100, 220, 230);
+    ImU32 barBot =
+        isDKBars ? IM_COL32(130, 115, 20, 230) : IM_COL32(25, 60, 160, 230);
+    DrawStyledBar(dl, sx0, sy0, sx1 - sx0, sy1 - sy0, mpFrac, barTop, barBot,
+                  buf);
   }
 }
 
@@ -1095,15 +1160,16 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
   // Colors
   const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
   const ImU32 colHeader = IM_COL32(200, 180, 120, 255);
-  const ImU32 colSlotBg = IM_COL32(0, 0, 0, 60); // subtle background, grid visible
+  const ImU32 colSlotBg =
+      IM_COL32(0, 0, 0, 60); // subtle background, grid visible
   const ImU32 colSlotBr = IM_COL32(80, 75, 60, 255);
   const ImU32 colGold = IM_COL32(255, 215, 0, 255);
   const ImU32 colValue = IM_COL32(255, 255, 255, 255);
   const ImU32 colDragHi = IM_COL32(255, 255, 0, 100);
   char buf[256];
 
-  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py),
-                  c.ToScreenX(px + pw), c.ToScreenY(py + ph));
+  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py), c.ToScreenX(px + pw),
+                  c.ToScreenY(py + ph));
 
   // Title
   DrawPanelTextCentered(dl, c, px, py, 0, 11, BASE_PANEL_W, "Inventory",
@@ -1231,7 +1297,6 @@ void RenderInventoryPanel(ImDrawList *dl, const UICoords &c) {
           if (hoverItem && !g_isDragging)
             AddPendingItemTooltip(s_ctx->inventory[slot].defIndex,
                                   s_ctx->inventory[slot].itemLevel);
-
 
           // Quantity overlay (deferred — drawn after 3D item models)
           if (s_ctx->inventory[slot].quantity > 1) {
@@ -1393,8 +1458,8 @@ void RenderShopPanel(ImDrawList *dl, const UICoords &c) {
   const ImU32 colTitle = IM_COL32(255, 210, 80, 255);
   const ImU32 colValue = IM_COL32(255, 255, 255, 255);
 
-  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py),
-                  c.ToScreenX(px + pw), c.ToScreenY(py + ph));
+  DrawStyledPanel(dl, c.ToScreenX(px), c.ToScreenY(py), c.ToScreenX(px + pw),
+                  c.ToScreenY(py + ph));
 
   DrawPanelTextCentered(dl, c, px, py, 0, 11, BASE_PANEL_W, "Shop", colTitle,
                         s_ctx->fontDefault);
@@ -1481,18 +1546,16 @@ void RenderShopPanel(ImDrawList *dl, const UICoords &c) {
                 : def.modelFile.c_str();
         if (model && model[0]) {
           int winH = (int)ImGui::GetIO().DisplaySize.y;
-          g_renderQueue.push_back({model, s_shopGrid[slot].defIndex,
-                                   (int)iMin.x, winH - (int)iMax.y,
-                                   (int)(iMax.x - iMin.x),
-                                   (int)(iMax.y - iMin.y), hoverItem,
-                                   s_shopGrid[slot].itemLevel});
+          g_renderQueue.push_back(
+              {model, s_shopGrid[slot].defIndex, (int)iMin.x,
+               winH - (int)iMax.y, (int)(iMax.x - iMin.x),
+               (int)(iMax.y - iMin.y), hoverItem, s_shopGrid[slot].itemLevel});
         }
       }
 
       if (hoverItem && !g_isDragging)
         AddPendingItemTooltip(s_shopGrid[slot].defIndex,
                               s_shopGrid[slot].itemLevel);
-
     }
   }
 }
@@ -1701,27 +1764,14 @@ bool HandlePanelClick(float vx, float vy) {
   // Quickbar (HUD area) - bottom center
   int winW, winH;
   glfwGetWindowSize(glfwGetCurrentContext(), &winW, &winH);
-  // HUD layout constants (must match RenderQuickbar)
-  static constexpr float HUD_SLOT = 44.0f;
-  static constexpr float HUD_GAP = 5.0f;
-  static constexpr float HUD_BAR_W = 140.0f;
-  static constexpr float HUD_BTN = 36.0f;
-  static constexpr float HUD_BTN_GAP = 3.0f;
-  static constexpr float HUD_MENU_W = HUD_GAP + HUD_BTN * 4 + HUD_BTN_GAP * 3;
-  static constexpr float HUD_CONTENT_W =
-      HUD_BAR_W + HUD_GAP * 2 + (HUD_SLOT + HUD_GAP) * 4 + HUD_GAP +
-      (HUD_SLOT + HUD_GAP) * 4 + HUD_GAP + HUD_SLOT + HUD_GAP * 2 +
-      HUD_BAR_W;
-  static constexpr float HUD_START_VX = (1280.0f - HUD_CONTENT_W) * 0.5f;
-  static constexpr float HUD_ROW_VY = 818.0f;
+  // Use shared Diablo-style HUD layout constants
+  using namespace HudLayout;
 
-  if (vy >= HUD_ROW_VY) {
-    float curX = HUD_START_VX + HUD_BAR_W + HUD_GAP * 2; // After HP bar
-
+  if (vy >= ROW_VY) {
     // Potion slots (Q, W, E, R)
     for (int i = 0; i < 4; i++) {
-      float x0 = curX + i * (HUD_SLOT + HUD_GAP);
-      if (vx >= x0 && vx <= x0 + HUD_SLOT && s_ctx->potionBar[i] != -1) {
+      float x0 = PotionSlotX(i);
+      if (vx >= x0 && vx <= x0 + SLOT && s_ctx->potionBar[i] != -1) {
         g_isDragging = true;
         g_dragFromPotionSlot = i;
         g_dragDefIndex = s_ctx->potionBar[i];
@@ -1732,12 +1782,10 @@ bool HandlePanelClick(float vx, float vy) {
       }
     }
 
-    float skillStartX = curX + 4 * (HUD_SLOT + HUD_GAP) + HUD_GAP;
-
     // Skill slots (1-4)
     for (int i = 0; i < 4; i++) {
-      float x0 = skillStartX + i * (HUD_SLOT + HUD_GAP);
-      if (vx >= x0 && vx <= x0 + HUD_SLOT && s_ctx->skillBar[i] != -1) {
+      float x0 = SkillSlotX(i);
+      if (vx >= x0 && vx <= x0 + SLOT && s_ctx->skillBar[i] != -1) {
         g_isDragging = true;
         g_dragFromSkillSlot = i;
         g_dragDefIndex = -(int)s_ctx->skillBar[i]; // Negative = skill ID
@@ -1749,8 +1797,8 @@ bool HandlePanelClick(float vx, float vy) {
     }
 
     // RMC Slot
-    float rmcX = skillStartX + 4 * (HUD_SLOT + HUD_GAP) + HUD_GAP;
-    if (vx >= rmcX && vx <= rmcX + HUD_SLOT) {
+    float rmcX = RmcSlotX();
+    if (vx >= rmcX && vx <= rmcX + SLOT) {
       if (s_ctx->rmcSkillId && *s_ctx->rmcSkillId >= 0) {
         g_isDragging = true;
         g_dragFromRmcSlot = true;
@@ -1761,14 +1809,24 @@ bool HandlePanelClick(float vx, float vy) {
         return true;
       }
     }
+  }
 
-    // Menu buttons: C, I, L, T, M (bottom-right corner, at quickbar row level)
-    static constexpr int HUD_MBTN_COUNT = 5;
-    static constexpr float HUD_MBTN_VY = HUD_ROW_VY + (HUD_SLOT - HUD_BTN) * 0.5f;
-    float menuStartX = 1280.0f - (HUD_BTN * HUD_MBTN_COUNT + HUD_BTN_GAP * (HUD_MBTN_COUNT - 1)) - 4.0f;
-    for (int i = 0; i < HUD_MBTN_COUNT; i++) {
-      float bx = menuStartX + i * (HUD_BTN + HUD_BTN_GAP);
-      if (vx >= bx && vx <= bx + HUD_BTN && vy >= HUD_MBTN_VY && vy <= HUD_MBTN_VY + HUD_BTN) {
+  // Menu buttons: C, I, S, T, M (screen-pixel, bottom-right corner)
+  // Convert virtual coords to screen pixels for hit testing
+  {
+    float scrW = (float)winW, scrH = (float)winH;
+    float bs = MBTN_SCREEN_BTN;
+    float bStartX = scrW - MBTN_SCREEN_RIGHT_PAD - MBTN_SCREEN_TOTAL_W;
+    float bStartY =
+        scrH - XP_SCREEN_BOTTOM - XP_SCREEN_H - MBTN_SCREEN_BOTTOM_PAD - bs;
+    // Convert virtual click coords to screen pixels
+    ImVec2 mp = ImGui::GetIO().MousePos;
+    float clickX = mp.x, clickY = mp.y;
+    for (int i = 0; i < MBTN_COUNT; i++) {
+      float bx = bStartX + i * (bs + MBTN_SCREEN_GAP);
+      float by = bStartY;
+      if (clickX >= bx && clickX <= bx + bs && clickY >= by &&
+          clickY <= by + bs) {
         if (i == 0) {
           *s_ctx->showCharInfo = !*s_ctx->showCharInfo;
           SoundManager::Play(SOUND_INTERFACE01);
@@ -1776,10 +1834,10 @@ bool HandlePanelClick(float vx, float vy) {
           *s_ctx->showInventory = !*s_ctx->showInventory;
           SoundManager::Play(SOUND_INTERFACE01);
         } else if (i == 2) {
-          *s_ctx->showQuestLog = !*s_ctx->showQuestLog;
+          *s_ctx->showSkillWindow = !*s_ctx->showSkillWindow;
           SoundManager::Play(SOUND_INTERFACE01);
         } else if (i == 3 && s_ctx->teleportingToTown &&
-                 !*s_ctx->teleportingToTown) {
+                   !*s_ctx->teleportingToTown) {
           if (s_ctx->hero && s_ctx->hero->IsDead()) {
             // Can't teleport when dead
           } else if (s_ctx->hero && s_ctx->hero->IsInSafeZone()) {
@@ -1790,8 +1848,7 @@ bool HandlePanelClick(float vx, float vy) {
             *s_ctx->teleportTimer = s_ctx->teleportCastTime;
             SoundManager::Play(SOUND_SUMMON);
           }
-        } else if (i == 4 && s_ctx->mountToggling &&
-                 !*s_ctx->mountToggling) {
+        } else if (i == 4 && s_ctx->mountToggling && !*s_ctx->mountToggling) {
           if (s_ctx->hero && s_ctx->hero->HasMountEquipped()) {
             s_ctx->hero->StopMoving();
             *s_ctx->mountToggling = true;
@@ -1967,7 +2024,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
 
   int winW, winH;
   glfwGetWindowSize(window, &winW, &winH);
-  bool droppedOnHUD = (vy >= 818.0f); // HUD row VY threshold (must match ROW_VY)
+  bool droppedOnHUD =
+      (vy >= HudLayout::ROW_VY); // HUD row VY threshold (uses shared constant)
 
   if (g_dragFromPotionSlot != -1) {
     if (!droppedOnHUD) {
@@ -2237,7 +2295,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
             std::string partModel =
                 ItemDatabase::GetBodyPartModelFile(cat, idx);
             if (!partModel.empty())
-              s_ctx->hero->EquipBodyPart(bodyPart, partModel, g_dragItemLevel, idx);
+              s_ctx->hero->EquipBodyPart(bodyPart, partModel, g_dragItemLevel,
+                                         idx);
           }
 
           // Send Equip packet
@@ -2265,24 +2324,14 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
     }
 
     // 2. Check drop on Quickbar Slots (bottom bar)
-    // Layout constants (must match RenderQuickbar / HandlePanelClick)
-    static constexpr float DROP_SLOT = 44.0f;
-    static constexpr float DROP_GAP = 5.0f;
-    static constexpr float DROP_BAR_W = 140.0f;
-    static constexpr float DROP_CONTENT_W =
-        DROP_BAR_W + DROP_GAP * 2 + (DROP_SLOT + DROP_GAP) * 4 + DROP_GAP +
-        (DROP_SLOT + DROP_GAP) * 4 + DROP_GAP + DROP_SLOT + DROP_GAP * 2 +
-        DROP_BAR_W;
-    static constexpr float DROP_START_VX = (1280.0f - DROP_CONTENT_W) * 0.5f;
-    static constexpr float DROP_ROW_VY = 818.0f;
+    // Use shared Diablo-style HUD layout constants
+    using namespace HudLayout;
 
-    if (vy >= DROP_ROW_VY) {
-      float curX = DROP_START_VX + DROP_BAR_W + DROP_GAP * 2;
-
+    if (vy >= ROW_VY) {
       // Potion slots (Q, W, E, R)
       for (int i = 0; i < 4; i++) {
-        float x0 = curX + i * (DROP_SLOT + DROP_GAP);
-        if (vx >= x0 && vx <= x0 + DROP_SLOT) {
+        float x0 = PotionSlotX(i);
+        if (vx >= x0 && vx <= x0 + SLOT) {
           if (g_dragDefIndex >= 0) {
             auto it = g_itemDefs.find(g_dragDefIndex);
             if (it != g_itemDefs.end() && it->second.category == 14) {
@@ -2294,12 +2343,10 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
         }
       }
 
-      float skillStartX = curX + 4 * (DROP_SLOT + DROP_GAP) + DROP_GAP;
-
       // Skill slots (1-4)
       for (int i = 0; i < 4; i++) {
-        float x0 = skillStartX + i * (DROP_SLOT + DROP_GAP);
-        if (vx >= x0 && vx <= x0 + DROP_SLOT) {
+        float x0 = SkillSlotX(i);
+        if (vx >= x0 && vx <= x0 + SLOT) {
           if (g_dragDefIndex < 0) {
             uint8_t skillId = (uint8_t)(-g_dragDefIndex);
             s_ctx->skillBar[i] = (int8_t)skillId;
@@ -2310,8 +2357,8 @@ void HandlePanelMouseUp(GLFWwindow *window, float vx, float vy) {
       }
 
       // RMC Slot
-      float rmcX = skillStartX + 4 * (DROP_SLOT + DROP_GAP) + DROP_GAP;
-      if (vx >= rmcX && vx <= rmcX + DROP_SLOT) {
+      float rmcX = RmcSlotX();
+      if (vx >= rmcX && vx <= rmcX + SLOT) {
         if (g_dragDefIndex < 0) {
           uint8_t skillId = (uint8_t)(-g_dragDefIndex);
           *s_ctx->rmcSkillId = (int8_t)skillId;

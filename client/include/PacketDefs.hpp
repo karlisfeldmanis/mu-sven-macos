@@ -175,9 +175,9 @@ struct PMSG_CHARLIST_ENTRY {
   uint16_t level; // big-endian on wire
   uint8_t classCode; // 0=DW, 16=DK, 32=ELF, 48=MG
   uint8_t ctlCode;
-  uint8_t charSet[18];
+  uint8_t charSet[20]; // [0]=class, [1-14]=equip 0-6, [15-16]=pet/mount, [17-18]=wings
   uint8_t guildStatus;
-  uint8_t equipLevels[7]; // +0-15 per slot (RH, LH, Helm, Armor, Pants, Gloves, Boots)
+  uint8_t equipLevels[8]; // +0-15 per slot (RH, LH, Helm, Armor, Pants, Gloves, Boots, Wings)
 };
 
 // C->S: Character Create (F3:01)
@@ -651,9 +651,10 @@ struct PMSG_POSITION_SEND {
 
 // S->C: Quest state sync (0x50:0x00) — supports up to 3 kill targets per quest
 struct PMSG_QUEST_STATE_SEND {
-  PSBMSG_HEAD h;       // C1:0x50:0x00
-  uint8_t questIndex;  // 0-4 active quest, 5=all done
-  uint8_t targetCount; // 1-3 kill targets this quest
+  PSBMSG_HEAD h;              // C1:0x50:0x00
+  uint8_t questIndex;         // Lorencia chain (0-11), 12=all done
+  uint8_t deviasQuestIndex;   // Devias chain (12-17), 18=all done
+  uint8_t targetCount;        // 1-3 kill targets for map-active quest
   struct Target {
     uint8_t killCount;
     uint8_t killsRequired;

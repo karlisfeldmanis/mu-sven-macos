@@ -719,7 +719,7 @@ void HandleEquip(Session &session, const std::vector<uint8_t> &packet,
 
   SendEquipment(session, db, charId);
   InventoryHandler::SendInventorySync(session);
-  SendCharStats(session);
+  SendCharStats(session, db, charId);
 }
 
 void HandleStatAlloc(Session &session, const std::vector<uint8_t> &packet,

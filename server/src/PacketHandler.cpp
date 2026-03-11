@@ -60,7 +60,7 @@ void Handle(Session &session, const std::vector<uint8_t> &packet, Database &db,
     WorldHandler::HandleMove(session, packet, db);
     break;
   case Opcode::PRECISE_POS:
-    WorldHandler::HandlePrecisePosition(session, packet);
+    WorldHandler::HandlePrecisePosition(session, packet, world);
     break;
 
   // Character
@@ -133,8 +133,9 @@ void Handle(Session &session, const std::vector<uint8_t> &packet, Database &db,
     if (sx == 0 && sy == 0) {
       if (mapId == 0) { sx = 125; sy = 125; }       // Lorencia center
       else if (mapId == 1) { sx = 108; sy = 247; }   // Dungeon entrance
+      else if (mapId == 2) { sx = 210; sy = 40; }    // Devias center
     }
-    if (mapId <= 1) { // Only allow maps 0-1 for now
+    if (mapId <= 2) { // Allow maps 0-2
       printf("[PacketHandler] Warp command: fd=%d -> map %d (%d,%d)\n",
              session.GetFd(), mapId, sx, sy);
       server.TransitionMap(session, mapId, sx, sy);

@@ -1,5 +1,6 @@
 #include "ItemModelManager.hpp"
 #include "BMDUtils.hpp"
+#include "ChromeGlow.hpp"
 #include "ItemDatabase.hpp"
 #include "Shader.hpp"
 #include <GL/glew.h>
@@ -14,13 +15,16 @@ std::unique_ptr<Shader> ItemModelManager::s_shadowShader;
 std::string ItemModelManager::s_dataPath;
 std::shared_ptr<BMDData> ItemModelManager::s_playerBmd;
 std::vector<BoneWorldMatrix> ItemModelManager::s_playerIdleBones;
-GLuint ItemModelManager::s_chromeTexture = 0;
-GLuint ItemModelManager::s_chrome2Texture = 0;
-GLuint ItemModelManager::s_shinyTexture = 0;
-
 // Main 5.2: ItemLight — returns BlendMesh index for weapons with glow
 int ItemModelManager::GetItemBlendMesh(int category, int itemIndex) {
   if (category == 3 && itemIndex == 0) return 1; // Light Spear: mesh 1 glows
+  // Main 5.2 ItemObjectAttribute (ZzzObject.cpp:5286-5435):
+  // Swords with BlendMesh=1 (blade glow)
+  if (category == 0 && (itemIndex == 5 || itemIndex == 10 ||
+                        itemIndex == 13 || itemIndex == 14))
+    return 1;
+  // Main 5.2: Wing05/06 have BlendMesh=-1 (no additive overlay mesh).
+  // They use standard RENDER_TEXTURE with oscillating BlendMeshLight.
   return -1; // No glow
 }
 
@@ -56,10 +60,6 @@ void ItemModelManager::Init(Shader *shader, const std::string &dataPath) {
   // Load shadow shader (same as monsters/NPCs/hero)
   s_shadowShader = Shader::Load("shadow.vert", "shadow.frag");
 
-  // Chrome environment map textures for +7/+9/+11 glow (Main 5.2)
-  s_chromeTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome01.OZJ");
-  s_chrome2Texture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome02.OZJ");
-  s_shinyTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Shiny01.OZJ");
 }
 
 static void UploadStaticMesh(const Mesh_t &mesh, const std::string &texPath,
@@ -512,59 +512,40 @@ void ItemModelManager::RenderItemUI(const std::string &modelFile,
     if (isGlowMesh)
       shader->setFloat("blendMeshLight", 1.0f); // Restore
   }
-  // ── +7/+9/+11 chrome glow passes (Main 5.2 RENDER_CHROME|RENDER_BRIGHT) ──
-  if (itemLevel >= 7 && s_chromeTexture) {
+  // ── +7/+9/+11/+13 chrome glow passes (ChromeGlow module) ──
+  if (itemLevel >= 7 && ChromeGlow::GetTextures().chrome1 && category >= 0) {
     float t = (float)glfwGetTime();
-    glBlendFunc(GL_ONE, GL_ONE); // Additive
-    glDepthMask(GL_FALSE);
-
-    struct GlowPass { int chromeMode; };
-    GlowPass passes[3];
-    int numPasses = 0;
-    if (itemLevel >= 11) {
-      passes[0] = {2}; passes[1] = {3}; passes[2] = {1};
-      numPasses = 3;
-    } else if (itemLevel >= 9) {
-      passes[0] = {1}; passes[1] = {3};
-      numPasses = 2;
-    } else {
-      passes[0] = {1};
-      numPasses = 1;
-    }
-
-    glm::vec3 glowColor(1.0f, 0.5f, 0.0f);
-
-    for (int gp = 0; gp < numPasses; ++gp) {
-      shader->setVec3("glowColor", glowColor);
-      shader->setInt("chromeMode", passes[gp].chromeMode);
-      shader->setFloat("chromeTime", t);
-      GLuint glowTex = (passes[gp].chromeMode == 2) ? s_chrome2Texture
-                     : (passes[gp].chromeMode == 3) ? s_shinyTexture
-                     : s_chromeTexture;
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, glowTex);
-      for (int mi = 0; mi < (int)model->meshes.size(); ++mi) {
-        const auto &mb = model->meshes[mi];
-        if (mb.hidden || mb.indexCount == 0) continue;
-        // Skip skin/body meshes for body parts (same filter as normal render)
-        if (isBodyPart && mi < (int)model->bmd->Meshes.size()) {
-          std::string texLower = model->bmd->Meshes[mi].TextureName;
-          std::transform(texLower.begin(), texLower.end(), texLower.begin(), ::tolower);
-          if (texLower.find("skin_") != std::string::npos || texLower.find("hide") != std::string::npos) continue;
-          if (category != 7 && texLower.find("head_") != std::string::npos) continue;
+    ChromeGlow::GlowPass passes[3];
+    int n = ChromeGlow::GetGlowPasses(itemLevel, category, itemIndex, passes);
+    if (n > 0) {
+      glBlendFunc(GL_ONE, GL_ONE);
+      glDepthMask(GL_FALSE);
+      for (int gp = 0; gp < n; ++gp) {
+        shader->setVec3("glowColor", passes[gp].color);
+        shader->setInt("chromeMode", passes[gp].chromeMode);
+        shader->setFloat("chromeTime", t);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, passes[gp].texture);
+        for (int mi = 0; mi < (int)model->meshes.size(); ++mi) {
+          const auto &mb = model->meshes[mi];
+          if (mb.hidden || mb.indexCount == 0) continue;
+          if (isBodyPart && mi < (int)model->bmd->Meshes.size()) {
+            std::string texLower = model->bmd->Meshes[mi].TextureName;
+            std::transform(texLower.begin(), texLower.end(), texLower.begin(), ::tolower);
+            if (texLower.find("skin_") != std::string::npos || texLower.find("hide") != std::string::npos) continue;
+            if (category != 7 && texLower.find("head_") != std::string::npos) continue;
+          }
+          if (blendMeshIdx >= 0 && mi < (int)model->bmd->Meshes.size() &&
+              model->bmd->Meshes[mi].Texture == blendMeshIdx) continue;
+          glBindVertexArray(mb.vao);
+          glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
         }
-        // Skip BlendMesh glow meshes — already additive
-        if (blendMeshIdx >= 0 && mi < (int)model->bmd->Meshes.size() &&
-            model->bmd->Meshes[mi].Texture == blendMeshIdx) continue;
-        glBindVertexArray(mb.vao);
-        glDrawElements(GL_TRIANGLES, mb.indexCount, GL_UNSIGNED_INT, 0);
       }
+      glDepthMask(GL_TRUE);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      shader->setVec3("glowColor", glm::vec3(0.0f));
+      shader->setInt("chromeMode", 0);
     }
-
-    glDepthMask(GL_TRUE);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    shader->setVec3("glowColor", glm::vec3(0.0f));
-    shader->setInt("chromeMode", 0);
   }
 
   glEnable(GL_CULL_FACE);

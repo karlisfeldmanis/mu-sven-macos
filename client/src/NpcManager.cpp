@@ -1,4 +1,5 @@
 #include "NpcManager.hpp"
+#include "ChromeGlow.hpp"
 #include "HeroCharacter.hpp" // For PointLight struct
 #include "SoundManager.hpp"
 #include "TerrainUtils.hpp"
@@ -23,7 +24,15 @@ static const std::unordered_map<uint16_t, std::string> s_npcNames = {
     {246, "Corporal Brynn"},
     {247, "Sergeant Dorian"},
     {248, "Lieutenant Kael"},
-    {249, "Captain Marcus"}};
+    {249, "Captain Marcus"},
+    {300, "Baz the Vault Keeper"},
+    {301, "Guild Master"},
+    {302, "Caren the Barmaid"},
+    {303, "Izabel the Wizard"},
+    {304, "Zienna the Arms Dealer"},
+    {310, "Ranger Elise"},
+    {311, "Tracker Nolan"},
+    {312, "Warden Hale"}};
 
 glm::vec3 NpcManager::sampleTerrainLightAt(const glm::vec3 &worldPos) const {
   return TerrainUtils::SampleLightAt(m_terrainLightmap, worldPos);
@@ -249,11 +258,6 @@ void NpcManager::InitModels(const std::string &dataPath) {
 
   // ── Guard NPCs (Main 5.2: ZzzCharacter.cpp:13859-13890) ──
   // Guards use Player.bmd skeleton + armor set 9 (heavy plate)
-  // Load chrome/metal textures for +7 enhancement glow
-  m_chromeTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome01.OZJ");
-  m_chrome2Texture = TextureLoader::LoadOZJ(dataPath + "/Effect/Chrome02.OZJ");
-  m_shinyTexture = TextureLoader::LoadOZJ(dataPath + "/Effect/Shiny01.OZJ");
-
   std::string playerPath = dataPath + "/Player/";
   std::string itemPath = dataPath + "/Item/";
 
@@ -294,6 +298,20 @@ void NpcManager::InitModels(const std::string &dataPath) {
       m_ownedBmds.push_back(std::move(spearBmd2));
     }
     m_typeToModel[247] = poleaxeIdx;
+  }
+
+  // ── Devias NPC type mappings (reuse existing models) ──
+  m_typeToModel[300] = storageIdx;  // Baz the Vault Keeper (same as Safety Guardian)
+  m_typeToModel[301] = manIdx;      // Guild Master
+  m_typeToModel[302] = femaleIdx;   // Caren the Barmaid
+  m_typeToModel[303] = wizardIdx;   // Izabel the Wizard
+  m_typeToModel[304] = manIdx;      // Zienna the Arms Dealer
+  if (berdyshIdx >= 0) {
+    m_typeToModel[310] = berdyshIdx;  // Ranger Elise (quest guard)
+    m_typeToModel[311] = berdyshIdx;  // Tracker Nolan (quest guard)
+  }
+  if (poleaxeIdx >= 0) {
+    m_typeToModel[312] = poleaxeIdx;  // Warden Hale (quest guard)
   }
 
   m_modelsLoaded = true;
@@ -437,10 +455,11 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
 
     // NPC proximity sounds (Main 5.2: ZzzCharacter.cpp:5906-5926)
     // Only blacksmith has an audible sound in Lorencia (hammer strike)
+    // OpenAL 3D attenuation handles volume: full at 200 units, fades to silent at 2000
     if (npc.npcType == 251 && npc.action == 0) {
       float dx = npc.position.x - camPos.x;
       float dz = npc.position.z - camPos.z;
-      if (dx * dx + dz * dz < 400.0f * 400.0f) {
+      if (dx * dx + dz * dz < 2000.0f * 2000.0f) {
         if (prevAnimFrame < 5.0f && npc.animFrame >= 5.0f)
           SoundManager::Play3D(SOUND_NPC_BLACKSMITH, npc.position.x,
                                npc.position.y, npc.position.z);
@@ -612,7 +631,8 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
     // Main 5.2: o->BlendMesh = 4; o->BlendMeshLight = Luminosity;
     // Luminosity for Lorencia is a constant 0.8f (ZzzCharacter.cpp:5500)
     bool isBlacksmith = (npc.npcType == 251);
-    bool isGuardNpc = (npc.npcType >= 245 && npc.npcType <= 249);
+    bool isGuardNpc = (npc.npcType >= 245 && npc.npcType <= 249) ||
+                      (npc.npcType >= 310 && npc.npcType <= 312);
     float forgeLum = 1.0f;
     if (isBlacksmith) {
       forgeLum = 0.8f;
@@ -659,50 +679,23 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
       m_shader->setFloat("blendMeshLight", 1.0f);
     }
 
-    // ── +7 plate armor enhancement glow for guards ──
-    // Guards wear +7 plate armor (item index 9). Use proper per-part glow
-    // with chrome textures, matching HeroCharacter enhancement rendering.
-    // Main 5.2 ZzzObject.cpp RenderPartObjectEffect
-    bool isGuardType = (npc.npcType >= 245 && npc.npcType <= 249);
-    if (isGuardType && m_chromeTexture) {
+    // ── +7 plate armor enhancement glow for guards (ChromeGlow module) ──
+    bool isGuardType = (npc.npcType >= 245 && npc.npcType <= 249) ||
+                       (npc.npcType >= 310 && npc.npcType <= 312);
+    if (isGuardType && ChromeGlow::GetTextures().chrome1) {
       static constexpr int GUARD_ARMOR_LEVEL = 7;
       static constexpr int GUARD_ITEM_INDEX = 9; // Plate armor
       float t = (float)glfwGetTime();
-
-      // Main 5.2 glow pass definitions
-      struct GlowPass { int chromeMode; };
-      auto getGlowPasses = [](uint8_t level, GlowPass *passes) -> int {
-        if (level >= 13) {
-          passes[0] = {4}; passes[1] = {3}; passes[2] = {1}; return 3;
-        } else if (level >= 11) {
-          passes[0] = {2}; passes[1] = {3}; passes[2] = {1}; return 3;
-        } else if (level >= 9) {
-          passes[0] = {1}; passes[1] = {3}; return 2;
-        } else {
-          passes[0] = {1}; return 1;
-        }
-      };
-
-      glBlendFunc(GL_ONE, GL_ONE);
-      glDepthMask(GL_FALSE);
-      glDisable(GL_CULL_FACE);
-
-      // Guard body parts: 0=Helm(cat7), 1=Armor(cat8), 2=Pants(cat9),
-      //                    3=Gloves(cat10), 4=Boots(cat11)
+      ChromeGlow::BeginGlow();
       for (int p = 0; p < (int)npc.bodyParts.size(); ++p) {
         auto &bp = npc.bodyParts[p];
-        glm::vec3 partGlow = GetPartObjectColor(7 + p, GUARD_ITEM_INDEX);
-        GlowPass passes[3];
-        int numPasses = getGlowPasses(GUARD_ARMOR_LEVEL, passes);
-        for (int gp = 0; gp < numPasses; ++gp) {
-          m_shader->setVec3("glowColor", partGlow);
+        ChromeGlow::GlowPass passes[3];
+        int n = ChromeGlow::GetGlowPasses(GUARD_ARMOR_LEVEL, 7 + p, GUARD_ITEM_INDEX, passes);
+        for (int gp = 0; gp < n; ++gp) {
+          m_shader->setVec3("glowColor", passes[gp].color);
           m_shader->setInt("chromeMode", passes[gp].chromeMode);
           m_shader->setFloat("chromeTime", t);
-          GLuint glowTex = (passes[gp].chromeMode == 2 || passes[gp].chromeMode == 4)
-                               ? m_chrome2Texture
-                         : (passes[gp].chromeMode == 3) ? m_shinyTexture
-                         : m_chromeTexture;
-          glBindTexture(GL_TEXTURE_2D, glowTex);
+          glBindTexture(GL_TEXTURE_2D, passes[gp].texture);
           for (auto &mb : bp.meshBuffers) {
             if (mb.indexCount == 0 || mb.hidden) continue;
             glBindVertexArray(mb.vao);
@@ -710,12 +703,7 @@ void NpcManager::Render(const glm::mat4 &view, const glm::mat4 &proj,
           }
         }
       }
-
-      glEnable(GL_CULL_FACE);
-      glDepthMask(GL_TRUE);
-      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-      m_shader->setVec3("glowColor", glm::vec3(0.0f));
-      m_shader->setInt("chromeMode", 0);
+      ChromeGlow::EndGlow(m_shader->ID);
     }
 
     // ── Guard weapon rendering (Main 5.2: ZzzCharacter.cpp:13859-13890) ──
@@ -1060,24 +1048,31 @@ void NpcManager::Cleanup() {
   m_shadowShader.reset();
 }
 
-void NpcManager::SetQuestState(int questIndex, const int *killCount,
-                               const int *required, int targetCount) {
+void NpcManager::SetQuestState(int questIndex, int deviasQuestIndex,
+                               const int *killCount, const int *required,
+                               int targetCount, int currentMapId) {
   m_questIndex = questIndex;
+  m_deviasQuestIndex = deviasQuestIndex;
   m_questTargetCount = targetCount;
+  m_currentMapId = currentMapId;
   for (int i = 0; i < 3; i++) {
     m_questKillCount[i] = killCount ? killCount[i] : 0;
     m_questRequired[i] = required ? required[i] : 0;
   }
 }
 
-// Quest chain layout (9 quests: 5 kill + 4 travel):
+// Quest chain layout (12 quests: 5 kill + 4 travel + 3 dungeon kill):
 //   Kill quest indices by guard: 0=248, 2=246, 4=245, 6=247, 8=249
 //   Travel quest destinations:   1→246, 3→245, 5→247, 7→249
+//   Dungeon quests (9-11): all from Marcus (249), kill type
 // QuestType: 0=kill, 1=travel
 struct QuestChainEntry { uint16_t guardType; uint8_t questType; };
-static const QuestChainEntry s_questChain[9] = {
+static const QuestChainEntry s_questChain[18] = {
   {248, 0}, {246, 1}, {246, 0}, {247, 1}, {247, 0},
   {245, 1}, {245, 0}, {249, 1}, {249, 0},
+  {249, 0}, {249, 0}, {249, 0}, // Dungeon quests from Marcus
+  // Devias quest chain
+  {310, 0}, {311, 1}, {311, 0}, {312, 1}, {312, 0}, {312, 0},
 };
 
 // Determine quest marker for a guard NPC:
@@ -1085,11 +1080,21 @@ static const QuestChainEntry s_questChain[9] = {
 //  '?' grey = kill quest in progress (kills not done)
 //  '?' gold = kill quest complete (ready to turn in)
 //  '\0' = no marker
-static char GetQuestMarker(uint16_t npcType, int questIndex,
+static bool IsDeviasNpcType(uint16_t npcType) {
+  return npcType == 310 || npcType == 311 || npcType == 312;
+}
+
+static char GetQuestMarker(uint16_t npcType, int lorcQuestIndex,
+                           int deviasQuestIndex,
                            const int *killCount, const int *required,
-                           int targetCount, ImU32 &color) {
-  if (questIndex < 0 || questIndex >= 9)
+                           int targetCount, int currentMapId, ImU32 &color) {
+  // Pick the chain-appropriate quest index based on NPC type
+  int questIndex = IsDeviasNpcType(npcType) ? deviasQuestIndex : lorcQuestIndex;
+  if (questIndex < 0 || questIndex >= 18)
     return '\0'; // All done or invalid
+
+  // Kill counts are only valid for the map-appropriate chain
+  bool killCountsValid = IsDeviasNpcType(npcType) ? (currentMapId == 2) : (currentMapId != 2);
 
   const auto &cur = s_questChain[questIndex];
 
@@ -1106,10 +1111,12 @@ static char GetQuestMarker(uint16_t npcType, int questIndex,
   if (npcType != cur.guardType)
     return '\0';
 
-  // Check if accepted (server sends targets when accepted)
+  // Check if accepted — kill counts only valid if we're on the right map
   bool accepted = false;
-  for (int i = 0; i < targetCount; i++) {
-    if (required[i] > 0) { accepted = true; break; }
+  if (killCountsValid) {
+    for (int i = 0; i < targetCount; i++) {
+      if (required[i] > 0) { accepted = true; break; }
+    }
   }
 
   if (!accepted) {
@@ -1184,8 +1191,9 @@ void NpcManager::RenderLabels(ImDrawList *dl, const glm::mat4 &view,
 
     // Quest marker above nameplate (for guard NPCs)
     ImU32 markerColor = 0;
-    char marker = GetQuestMarker(info.type, m_questIndex, m_questKillCount,
-                                 m_questRequired, m_questTargetCount,
+    char marker = GetQuestMarker(info.type, m_questIndex, m_deviasQuestIndex,
+                                 m_questKillCount, m_questRequired,
+                                 m_questTargetCount, m_currentMapId,
                                  markerColor);
     if (marker != '\0') {
       char markerStr[2] = {marker, '\0'};

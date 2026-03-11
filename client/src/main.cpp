@@ -3,6 +3,7 @@
 #include "BoidManager.hpp"
 #include "Camera.hpp"
 #include "CharacterSelect.hpp"
+#include "ChromeGlow.hpp"
 #include "ClickEffect.hpp"
 #include "ClientPacketHandler.hpp"
 #include "ClientTypes.hpp"
@@ -169,7 +170,8 @@ static const int MAX_POINT_LIGHTS = 64;
 static std::vector<PointLight> g_pointLights;
 
 // Day/night cycle (Main 5.2: luminosity = sin(WorldTime*0.004)*0.15 + 0.6)
-// WorldTime ticks at 25fps (40ms per tick) in original; we use real seconds * 25
+// WorldTime ticks at 25fps (40ms per tick) in original; we use real seconds *
+// 25
 static float g_worldTime = 0.0f;
 static float g_luminosity = 1.0f;
 
@@ -196,10 +198,183 @@ static FloatingDamage g_floatingDmg[MAX_FLOATING_DAMAGE] = {};
 static GroundItem g_groundItems[MAX_GROUND_ITEMS] = {};
 static const std::string g_dataPath = "Data";
 
-// Current map ID (0=Lorencia, 1=Dungeon). File world = mapId + 1.
+// Current map ID (0=Lorencia, 1=Dungeon, 2=Devias). File world = mapId + 1.
 static int g_currentMapId = 0;
 // Per-map clear color (Main 5.2 ZzzScene.cpp:2059)
-static ImVec4 g_clearColor = ImVec4(10.0f / 256.0f, 20.0f / 256.0f, 14.0f / 256.0f, 1.0f);
+static ImVec4 g_clearColor =
+    ImVec4(10.0f / 256.0f, 20.0f / 256.0f, 14.0f / 256.0f, 1.0f);
+
+// ═══════════════════════════════════════════════════════════════════
+// MapConfig — centralized per-map configuration (replaces scattered if/else)
+// ═══════════════════════════════════════════════════════════════════
+struct MapConfig {
+  uint8_t mapId;
+  const char *regionName;
+
+  // Atmosphere
+  float clearR, clearG, clearB;
+  float fogR, fogG, fogB;
+  float fogNear, fogFar;
+  float luminosity;
+
+  // Post-processing
+  float bloomIntensity, bloomThreshold, vignetteStrength;
+  float tintR, tintG, tintB;
+
+  // Feature flags
+  bool hasSky, hasGrass, hasDoors, hasLeaves, hasWind;
+  bool hasDungeonTraps;
+
+  // Sound
+  int ambientLoop; // SOUND_WIND01, SOUND_DUNGEON01, or 0
+  const char *safeMusic;
+  const char *wildMusic; // nullptr = same as safeMusic everywhere
+
+  // Objects
+  bool useNamedObjects; // true=Object1/ named mapping, false=ObjectN/ generic
+
+  // Roof hiding (Main 5.2 ZzzObject.cpp indoor detection)
+  int roofTypes[8];
+  int roofTypeCount;
+  uint8_t indoorTiles[4];
+  int indoorTileCount;
+  bool indoorAbove; // Also count tiles >= indoorThreshold as indoor
+  uint8_t indoorThreshold;
+
+  // Bridge types for TW_NOGROUND reconstruction
+  int bridgeTypes[8];
+  int bridgeTypeCount;
+};
+
+static const MapConfig MAP_CONFIGS[] = {
+    {
+        // Lorencia (mapId=0)
+        0,
+        "Lorencia",
+        10.f / 256,
+        20.f / 256,
+        14.f / 256, // clearColor
+        0.117f,
+        0.078f,
+        0.039f, // fogColor
+        1500.f,
+        3500.f,
+        1.0f, // fogNear, fogFar, luminosity
+        0.5f,
+        0.35f,
+        0.15f, // bloom, threshold, vignette
+        1.02f,
+        1.0f,
+        0.96f, // colorTint (warm)
+        true,
+        true,
+        false,
+        true,
+        true,
+        false, // sky, grass, doors, leaves, wind, traps
+        SOUND_WIND01,
+        "Music/MuTheme.mp3",
+        "Music/main_theme.mp3",
+        true, // useNamedObjects
+        {125, 126},
+        2,
+        {4},
+        1,
+        false,
+        0, // roofHiding
+        {80},
+        1, // bridgeTypes
+    },
+    {
+        // Dungeon (mapId=1)
+        1,
+        "Dungeon",
+        0.f,
+        0.f,
+        0.f, // clearColor (black)
+        0.f,
+        0.f,
+        0.f, // fogColor (black)
+        800.f,
+        2500.f,
+        1.2f, // fogNear, fogFar, luminosity
+        0.7f,
+        0.25f,
+        0.4f, // bloom, threshold, vignette
+        0.88f,
+        0.93f,
+        1.08f, // colorTint (cool blue)
+        false,
+        false,
+        false,
+        false,
+        false,
+        true, // sky, grass, doors, leaves, wind, traps
+        SOUND_DUNGEON01,
+        "Music/Dungeon.mp3",
+        nullptr,
+        false, // useNamedObjects
+        {0},
+        0,
+        {0},
+        0,
+        false,
+        0, // roofHiding (none)
+        {0},
+        0, // bridgeTypes (none)
+    },
+    {
+        // Devias (mapId=2)
+        2,
+        "Devias",
+        0.f,
+        0.f,
+        10.f / 256, // clearColor (near-black blue)
+        0.55f,
+        0.65f,
+        0.75f, // fogColor (cool blue)
+        1500.f,
+        4000.f,
+        1.0f, // fogNear, fogFar, luminosity
+        0.45f,
+        0.4f,
+        0.1f, // bloom, threshold, vignette
+        0.92f,
+        0.96f,
+        1.08f, // colorTint (cool ice)
+        false,
+        true,
+        true,
+        false,
+        true,
+        false, // sky, grass, doors, leaves, wind, traps
+        SOUND_WIND01,
+        "Music/Devias.mp3",
+        nullptr,
+        false, // useNamedObjects
+        {81, 82, 96, 98, 99},
+        5,
+        {3},
+        1,
+        true,
+        10, // roofHiding
+        {80},
+        1, // bridgeTypes (MODEL_BRIDGE, same as Lorencia)
+    },
+};
+
+static const MapConfig *g_mapCfg = &MAP_CONFIGS[0]; // Active map config
+
+static const MapConfig *GetMapConfig(uint8_t mapId) {
+  for (const auto &cfg : MAP_CONFIGS)
+    if (cfg.mapId == mapId)
+      return &cfg;
+  return &MAP_CONFIGS[0]; // Fallback to Lorencia
+}
+
+// Apply atmosphere/rendering settings from MapConfig to all subsystems
+static void ApplyMapAtmosphere(const MapConfig &cfg);
+// Forward declaration — defined after g_grass, g_hero etc. are declared
 
 // Server-received character stats for HUD
 static int g_serverLevel = 1;
@@ -223,134 +398,439 @@ static bool g_showSkillWindow = false;
 static std::vector<uint8_t> g_learnedSkills;
 
 // Quick slot assignments
-static int16_t g_potionBar[4] = {850, 851, 852, -1}; // Apple, SmallHP, MedHP, (empty)
+static int16_t g_potionBar[4] = {850, 851, 852,
+                                 -1}; // Apple, SmallHP, MedHP, (empty)
 static int8_t g_skillBar[10] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
-static float g_potionCooldown = 0.0f;  // Potion cooldown timer (seconds)
+static float g_potionCooldown = 0.0f; // Potion cooldown timer (seconds)
 static constexpr float POTION_COOLDOWN_TIME = 30.0f;
 static bool g_shopOpen = false;
 static bool g_showGameMenu = false;
 static std::vector<ShopItem> g_shopItems;
 static bool g_questDialogOpen = false;
-static bool g_questDialogWasOpen = false; // Track previous frame to detect fresh open
+static bool g_questDialogWasOpen =
+    false; // Track previous frame to detect fresh open
 static bool g_questDialogJustOpened = false; // Skip clicks on first frame
 static int g_questDialogNpcIndex = -1;
-static int g_questDialogSelected = -1; // -1 = quest list view, 0-4 = viewing specific quest
+static int g_questDialogSelected =
+    -1; // -1 = quest list view, 0-4 = viewing specific quest
 static bool g_showQuestLog = false; // L key quest log window
-static bool g_mouseOverUIPanel = false; // Set each frame: true if cursor is over any UI panel
+static bool g_mouseOverUIPanel =
+    false; // Set each frame: true if cursor is over any UI panel
 static bool g_showCommandTerminal = false;
 static char g_commandBuffer[128] = {};
-static bool g_commandFocusNeeded = false; // Set true when terminal opens to grab focus
+static bool g_commandFocusNeeded =
+    false; // Set true when terminal opens to grab focus
 // Stored panel bounds for quest dialog and quest log (updated during render)
 static float g_qdPanelRect[4] = {}; // x, y, w, h
 static float g_qlPanelRect[4] = {}; // x, y, w, h
 
 // Quest system state (synced from server)
-static int g_questIndex = 0;
+static int g_questIndex = 0; // Active quest for current map
 static int g_questKillCount[3] = {};
 static int g_questRequired[3] = {};
 static int g_questTargetCount = 0;
 static bool g_questAccepted = false;
+static int g_deviasQuestIndex = 12; // Devias chain (12-17), 18=done
 
 // Quest definitions (client mirror of server QuestHandler data)
 // 9 quests: 5 kill + 4 travel, linear chain across 5 guards
-struct QuestTarget { uint8_t monType; uint8_t killsReq; const char *name; };
-struct QuestRewardItem { int16_t defIndex; uint8_t itemLevel; }; // -1 = no item
+struct QuestTarget {
+  uint8_t monType;
+  uint8_t killsReq;
+  const char *name;
+};
+struct QuestRewardItem {
+  int16_t defIndex;
+  uint8_t itemLevel;
+}; // -1 = no item
 struct QuestClientInfo {
   uint16_t guardType;
-  uint8_t questType;   // 0=kill, 1=travel
+  uint8_t questType; // 0=kill, 1=travel
   int targetCount;
   QuestTarget targets[3];
   const char *loreText;
   const char *questName;
+  const char *location; // e.g. "Lorencia", "Dungeon 2"
+  uint8_t recommendedLevel;
   uint32_t zenReward;
   uint32_t xpReward;
-  QuestRewardItem dkReward; // DK weapon reward
-  QuestRewardItem dwReward; // DW weapon reward
+  QuestRewardItem dkReward;     // DK weapon reward
+  QuestRewardItem dwReward;     // DW weapon reward
   QuestRewardItem orbReward;    // DK skill orb
   QuestRewardItem scrollReward; // DW spell scroll
 };
-static constexpr int QUEST_COUNT = 9;
+static constexpr int QUEST_COUNT = 18;
 static const QuestClientInfo g_questDefs[QUEST_COUNT] = {
-  // Quest 0 (Kill): Lieutenant Kael — Spider + Budge Dragon
-  // DK: Kris +0, DW: Skull Staff +0, Orb: Falling Slash, Scroll: Fire Ball
-  {248, 0, 2, {{3, 10, "Spider"}, {2, 5, "Budge Dragon"}, {}},
-   "Welcome, adventurer. Spiders crawl\n"
-   "through the sewers and Budge Dragons\n"
-   "terrorize the farmers. Clear out 10\n"
-   "Spiders and 5 Budge Dragons, and I'll\n"
-   "see you're properly equipped.",
-   "Clearing the Outskirts", 5000, 60000, {0, 0}, {160, 0}, {404, 0}, {483, 0}},
-  // Quest 1 (Travel): → Corporal Brynn
-  {246, 1, 0, {{}, {}, {}},
-   "Well done. Take these weapons — you've\n"
-   "earned them. Head to Corporal Brynn\n"
-   "near the potion shop. She's dealing\n"
-   "with bigger threats.",
-   "Report to Corporal Brynn", 3000, 30000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
-  // Quest 2 (Kill): Corporal Brynn — Bull Fighter + Hound
-  // DK: Short Sword +2, DW: Skull Staff +2, Orb: Lunge, Scroll: Lightning
-  {246, 0, 2, {{0, 8, "Bull Fighter"}, {1, 6, "Hound"}, {}},
-   "Kael sent you? Good. Bull Fighters\n"
-   "block the eastern road and Hounds\n"
-   "roam the plains at night. Slay 8 Bull\n"
-   "Fighters and 6 Hounds to secure the area.",
-   "Defending the Roads", 10000, 100000, {1, 2}, {160, 2}, {405, 0}, {482, 0}},
-  // Quest 3 (Travel): → Sergeant Dorian
-  {247, 1, 0, {{}, {}, {}},
-   "Impressive work. Sergeant Dorian in\n"
-   "the center of town needs help. Tell\n"
-   "him Brynn sent you.",
-   "Report to Sergeant Dorian", 5000, 50000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
-  // Quest 4 (Kill): Sergeant Dorian — Elite BF + Lich
-  // DK: Rapier +0, DW: Skull Staff +4, Orb: Uppercut, Scroll: Teleport
-  {247, 0, 2, {{4, 6, "Elite Bull Fighter"}, {6, 5, "Lich"}, {}},
-   "Brynn's recruit? Let's see what you've\n"
-   "got. Elite Bull Fighters lead raiding\n"
-   "parties and Liches strike from the\n"
-   "ruins. Eliminate 6 Elite Bull Fighters\n"
-   "and 5 Liches.",
-   "The Elite Vanguard", 15000, 130000, {2, 0}, {160, 4}, {406, 0}, {485, 0}},
-  // Quest 5 (Travel): → Warden Aldric
-  {245, 1, 0, {{}, {}, {}},
-   "You fight well. Warden Aldric on\n"
-   "the west wall guards the frontier.\n"
-   "Go lend him your blade.",
-   "Report to Warden Aldric", 8000, 80000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
-  // Quest 6 (Kill): Warden Aldric — Giant
-  // DK: Katana +0, DW: Angelic Staff +0, Orb: Cyclone, Scroll: Meteorite
-  {245, 0, 1, {{7, 5, "Giant"}, {}, {}},
-   "Dorian speaks highly of you. Giants\n"
-   "crush our watchtowers. Their strength\n"
-   "is immense. Fell 5 of them before they\n"
-   "reach the walls.",
-   "Watchtower Defense", 25000, 200000, {3, 0}, {161, 0}, {407, 0}, {481, 0}},
-  // Quest 7 (Travel): → Captain Marcus
-  {249, 1, 0, {{}, {}, {}},
-   "You're stronger than most soldiers.\n"
-   "Captain Marcus at the south gate tracks\n"
-   "the undead command. Report to him.",
-   "Report to Captain Marcus", 10000, 100000, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}},
-  // Quest 8 (Kill): Captain Marcus — Skeleton Warrior + Lich
-  // DK: Gladius +0, DW: Angelic Staff +3, Orb: Slash, Scroll: Ice
-  {249, 0, 2, {{14, 5, "Skeleton Warrior"}, {6, 4, "Lich"}, {}},
-   "So you're the one clearing the roads.\n"
-   "Skeleton Warriors march from the\n"
-   "cemetery and Liches command them from\n"
-   "the ruins. Destroy 5 Warriors and 4\n"
-   "Liches, and I'll give you the finest\n"
-   "weapons in our armory.",
-   "The Final Stand", 50000, 350000, {6, 0}, {161, 3}, {408, 0}, {486, 0}},
+    // Quest 0 (Kill): Lieutenant Kael — Spider + Budge Dragon
+    // DK: Kris +0, DW: Skull Staff +0, Orb: Falling Slash, Scroll: Fire Ball
+    {248,
+     0,
+     2,
+     {{3, 10, "Spider"}, {2, 5, "Budge Dragon"}, {}},
+     "Welcome, adventurer. Spiders crawl\n"
+     "through the sewers and Budge Dragons\n"
+     "terrorize the farmers. Clear out 10\n"
+     "Spiders and 5 Budge Dragons, and I'll\n"
+     "see you're properly equipped.",
+     "Clearing the Outskirts",
+     "Lorencia",
+     3,
+     5000,
+     60000,
+     {0, 0},
+     {160, 0},
+     {404, 0},
+     {483, 0}},
+    // Quest 1 (Travel): → Corporal Brynn
+    {246,
+     1,
+     0,
+     {{}, {}, {}},
+     "Well done. Take these weapons — you've\n"
+     "earned them. Head to Corporal Brynn\n"
+     "near the potion shop. She's dealing\n"
+     "with bigger threats.",
+     "Report to Corporal Brynn",
+     "Lorencia",
+     5,
+     3000,
+     30000,
+     {-1, 0},
+     {-1, 0},
+     {-1, 0},
+     {-1, 0}},
+    // Quest 2 (Kill): Corporal Brynn — Bull Fighter + Hound
+    // DK: Short Sword +2, DW: Skull Staff +2, Orb: Lunge, Scroll: Lightning
+    {246,
+     0,
+     2,
+     {{0, 8, "Bull Fighter"}, {1, 6, "Hound"}, {}},
+     "Kael sent you? Good. Bull Fighters\n"
+     "block the eastern road and Hounds\n"
+     "roam the plains at night. Slay 8 Bull\n"
+     "Fighters and 6 Hounds to secure the area.",
+     "Defending the Roads",
+     "Lorencia",
+     8,
+     10000,
+     100000,
+     {1, 2},
+     {160, 2},
+     {405, 0},
+     {482, 0}},
+    // Quest 3 (Travel): → Sergeant Dorian
+    {247,
+     1,
+     0,
+     {{}, {}, {}},
+     "Impressive work. Sergeant Dorian in\n"
+     "the center of town needs help. Tell\n"
+     "him Brynn sent you.",
+     "Report to Sergeant Dorian",
+     "Lorencia",
+     10,
+     5000,
+     50000,
+     {-1, 0},
+     {-1, 0},
+     {-1, 0},
+     {-1, 0}},
+    // Quest 4 (Kill): Sergeant Dorian — Elite BF + Lich
+    // DK: Rapier +0, DW: Skull Staff +4, Orb: Uppercut, Scroll: Teleport
+    {247,
+     0,
+     2,
+     {{4, 6, "Elite Bull Fighter"}, {6, 5, "Lich"}, {}},
+     "Brynn's recruit? Let's see what you've\n"
+     "got. Elite Bull Fighters lead raiding\n"
+     "parties and Liches strike from the\n"
+     "ruins. Eliminate 6 Elite Bull Fighters\n"
+     "and 5 Liches.",
+     "The Elite Vanguard",
+     "Lorencia",
+     15,
+     15000,
+     130000,
+     {2, 0},
+     {160, 4},
+     {406, 0},
+     {485, 0}},
+    // Quest 5 (Travel): → Warden Aldric
+    {245,
+     1,
+     0,
+     {{}, {}, {}},
+     "You fight well. Warden Aldric on\n"
+     "the west wall guards the frontier.\n"
+     "Go lend him your blade.",
+     "Report to Warden Aldric",
+     "Lorencia",
+     18,
+     8000,
+     80000,
+     {-1, 0},
+     {-1, 0},
+     {-1, 0},
+     {-1, 0}},
+    // Quest 6 (Kill): Warden Aldric — Giant
+    // DK: Katana +0, DW: Angelic Staff +0, Orb: Cyclone, Scroll: Meteorite
+    {245,
+     0,
+     1,
+     {{7, 5, "Giant"}, {}, {}},
+     "Dorian speaks highly of you. Giants\n"
+     "crush our watchtowers. Their strength\n"
+     "is immense. Fell 5 of them before they\n"
+     "reach the walls.",
+     "Watchtower Defense",
+     "Lorencia",
+     20,
+     25000,
+     200000,
+     {3, 0},
+     {161, 0},
+     {407, 0},
+     {481, 0}},
+    // Quest 7 (Travel): → Captain Marcus
+    {249,
+     1,
+     0,
+     {{}, {}, {}},
+     "You're stronger than most soldiers.\n"
+     "Captain Marcus at the south gate tracks\n"
+     "the undead command. Report to him.",
+     "Report to Captain Marcus",
+     "Lorencia",
+     23,
+     10000,
+     100000,
+     {-1, 0},
+     {-1, 0},
+     {-1, 0},
+     {-1, 0}},
+    // Quest 8 (Kill): Captain Marcus — Skeleton Warrior + Lich
+    // DK: Gladius +0, DW: Angelic Staff +3, Orb: Slash, Scroll: Ice
+    {249,
+     0,
+     2,
+     {{14, 5, "Skeleton Warrior"}, {6, 4, "Lich"}, {}},
+     "So you're the one clearing the roads.\n"
+     "Skeleton Warriors march from the\n"
+     "cemetery and Liches command them from\n"
+     "the ruins. Destroy 5 Warriors and 4\n"
+     "Liches, and I'll give you the finest\n"
+     "weapons in our armory.",
+     "The Final Stand",
+     "Lorencia",
+     25,
+     50000,
+     350000,
+     {6, 0},
+     {161, 3},
+     {408, 0},
+     {486, 0}},
+    // Quest 9 (Kill): Marcus — Skeleton Warrior + Larva (Dungeon 1 entrance)
+    // DK: Small Axe +0, DW: Serpent Staff +0, Orb: Twisting Slash, Scroll:
+    // Flame
+    {249,
+     0,
+     2,
+     {{14, 10, "Skeleton Warrior"}, {12, 8, "Larva"}, {}},
+     "The dungeon beneath Lorencia festers\n"
+     "with undead. Skeleton Warriors and\n"
+     "Larvae infest the entrance corridors.\n"
+     "Descend and destroy 10 Skeleton\n"
+     "Warriors and 8 Larvae.",
+     "Into the Depths",
+     "Dungeon 1",
+     30,
+     60000,
+     400000,
+     {5, 0},
+     {162, 0},
+     {391, 0},
+     {484, 0}},
+    // Quest 10 (Kill): Marcus — Elite Skeleton + Cyclops (Dungeon 2)
+    // DK: Falchion +2, DW: Thunder Staff +0, Orb: Twisting Slash, Scroll:
+    // Twister
+    {249,
+     0,
+     2,
+     {{16, 8, "Elite Skeleton"}, {17, 6, "Cyclops"}, {}},
+     "The second level holds deadlier foes.\n"
+     "Elite Skeletons command from the deep\n"
+     "corridors and Cyclops crush all who\n"
+     "enter. Slay 8 Elite Skeletons and\n"
+     "6 Cyclops.",
+     "The Deep Corridors",
+     "Dungeon 2",
+     40,
+     80000,
+     500000,
+     {7, 2},
+     {163, 0},
+     {391, 0},
+     {487, 0}},
+    // Quest 11 (Kill): Marcus — Ghost + Gorgon (Dungeon 3)
+    // DK: Blade +3, DW: Gorgon Staff +0, Orb: Twisting Slash, Scroll: Evil
+    // Spirit
+    {249,
+     0,
+     2,
+     {{11, 10, "Ghost"}, {18, 1, "Gorgon"}, {}},
+     "At the dungeon's heart lurks the Gorgon\n"
+     "-- a creature of terrible power, guarded\n"
+     "by restless Ghosts. Banish 10 Ghosts\n"
+     "and slay the Gorgon itself.",
+     "Heart of Darkness",
+     "Dungeon 3",
+     55,
+     100000,
+     700000,
+     {8, 3},
+     {164, 0},
+     {391, 0},
+     {488, 0}},
+    // ── Devias quest chain (12-17) ──
+    // Quest 12 (Kill): Ranger Elise — Worm + Assassin
+    // DK: Katana +2, DW: Angelic Staff +2, Orb: Impale, Scroll: Poison
+    {310,
+     0,
+     2,
+     {{24, 10, "Worm"}, {21, 8, "Assassin"}, {}},
+     "The frozen wilds of Devias are overrun.\n"
+     "Worms burrow beneath the snow and\n"
+     "Assassins stalk the trade routes. Clear\n"
+     "out 10 Worms and 8 Assassins to\n"
+     "secure the passage.",
+     "Securing the Trade Route",
+     "Devias",
+     20,
+     30000,
+     200000,
+     {3, 2},
+     {161, 2},
+     {397, 0},
+     {480, 0}},
+    // Quest 13 (Travel): → Tracker Nolan
+    {311,
+     1,
+     0,
+     {{}, {}, {}},
+     "The trade route is safer now. Tracker\n"
+     "Nolan scouts the western hunting grounds.\n"
+     "Find him — he's tracking something\n"
+     "dangerous.",
+     "Report to Tracker Nolan",
+     "Devias",
+     22,
+     15000,
+     100000,
+     {-1, 0},
+     {-1, 0},
+     {-1, 0},
+     {-1, 0}},
+    // Quest 14 (Kill): Tracker Nolan — Hommerd + Assassin
+    // DK: Gladius +2, DW: Serpent Staff +1, Orb: Twisting Slash, Scroll:
+    // Teleport
+    {311,
+     0,
+     2,
+     {{23, 8, "Hommerd"}, {21, 6, "Assassin"}, {}},
+     "Elise sent you? Good timing. Hommerds\n"
+     "and Assassins control the central plains.\n"
+     "They ambush travelers and raid supply\n"
+     "wagons. Slay 8 Hommerds and 6 Assassins.",
+     "Clearing the Plains",
+     "Devias",
+     25,
+     50000,
+     300000,
+     {6, 2},
+     {162, 1},
+     {391, 0},
+     {485, 0}},
+    // Quest 15 (Travel): → Warden Hale
+    {312,
+     1,
+     0,
+     {{}, {}, {}},
+     "You fight like a veteran. Warden Hale\n"
+     "patrols the frontier where the Elite\n"
+     "Yetis gather. He needs reinforcements.",
+     "Report to Warden Hale",
+     "Devias",
+     28,
+     20000,
+     120000,
+     {-1, 0},
+     {-1, 0},
+     {-1, 0},
+     {-1, 0}},
+    // Quest 16 (Kill): Warden Hale — Elite Yeti
+    // DK: Serpent Sword +1, DW: Thunder Staff +0, Orb: Twisting Slash, Scroll:
+    // Ice
+    {312,
+     0,
+     1,
+     {{20, 16, "Elite Yeti"}, {}, {}},
+     "The Elite Yetis have grown dangerous.\n"
+     "They terrorize the southern reaches,\n"
+     "attacking anyone who wanders too far.\n"
+     "Slay 16 of these beasts.",
+     "The Elite Yeti Menace",
+     "Devias",
+     32,
+     70000,
+     450000,
+     {8, 1},
+     {163, 0},
+     {391, 0},
+     {486, 0}},
+    // Quest 17 (Kill): Warden Hale — Ice Queen (boss)
+    // DK: Light Saber +0, DW: Gorgon Staff +0, Orb: Greater Fortitude, Scroll:
+    // Twister
+    {312,
+     0,
+     1,
+     {{25, 1, "Ice Queen"}, {}, {}},
+     "Deep in the frozen wastes, the Ice Queen\n"
+     "commands all creatures of Devias. She is\n"
+     "the source of this endless winter. Only\n"
+     "the strongest warriors survive her wrath.\n"
+     "Destroy her.",
+     "The Ice Queen",
+     "Devias",
+     50,
+     120000,
+     800000,
+     {10, 0},
+     {164, 0},
+     {398, 0},
+     {487, 0}},
 };
 
 // Guard name lookup by NPC type
 static const char *GetGuardName(uint16_t type) {
   switch (type) {
-    case 245: return "Warden Aldric";
-    case 246: return "Corporal Brynn";
-    case 247: return "Sergeant Dorian";
-    case 248: return "Lieutenant Kael";
-    case 249: return "Captain Marcus";
-    default: return "Guard";
+  case 245:
+    return "Warden Aldric";
+  case 246:
+    return "Corporal Brynn";
+  case 247:
+    return "Sergeant Dorian";
+  case 248:
+    return "Lieutenant Kael";
+  case 249:
+    return "Captain Marcus";
+  case 310:
+    return "Ranger Elise";
+  case 311:
+    return "Tracker Nolan";
+  case 312:
+    return "Warden Hale";
+  default:
+    return "Guard";
   }
 }
 
@@ -372,15 +852,37 @@ static int GetTravelQuestTo(uint16_t guardType) {
   return -1;
 }
 
+// Devias quest chain boundary
+static constexpr int DEVIAS_QUEST_START = 12;
+
+// Is this a Devias quest guard?
+static bool IsDeviasGuard(uint16_t guardType) {
+  return guardType == 310 || guardType == 311 || guardType == 312;
+}
+
+// Get the active quest index for a given chain
+// For Lorencia guards: use g_questIndex (quests 0-11)
+// For Devias guards: use g_deviasQuestIndex (quests 12-17)
+static int GetActiveQuestForGuard(uint16_t guardType) {
+  return IsDeviasGuard(guardType) ? g_deviasQuestIndex : g_questIndex;
+}
+
+// Get the chain-appropriate quest index for determining status of quest qi
+static int GetChainIndex(int qi) {
+  return (qi >= DEVIAS_QUEST_START) ? g_deviasQuestIndex : g_questIndex;
+}
+
 // Draw a weapon reward item box with 3D model + name label
 // Returns the height consumed (0 if no valid reward)
 static float DrawQuestRewardItem(ImDrawList *dl, float px, float cy,
                                  float panelW, const QuestRewardItem &reward,
                                  const char *classLabel) {
-  if (reward.defIndex < 0) return 0;
+  if (reward.defIndex < 0)
+    return 0;
   auto &itemDefs = ItemDatabase::GetItemDefs();
   auto it = itemDefs.find(reward.defIndex);
-  if (it == itemDefs.end()) return 0;
+  if (it == itemDefs.end())
+    return 0;
 
   const auto &def = it->second;
   float boxSize = 44.0f;
@@ -389,13 +891,13 @@ static float DrawQuestRewardItem(ImDrawList *dl, float px, float cy,
 
   // Hover detection
   ImVec2 mPos = ImGui::GetIO().MousePos;
-  bool hovered = mPos.x >= boxX && mPos.x <= boxX + boxSize &&
-                 mPos.y >= boxY && mPos.y <= boxY + boxSize;
+  bool hovered = mPos.x >= boxX && mPos.x <= boxX + boxSize && mPos.y >= boxY &&
+                 mPos.y <= boxY + boxSize;
 
   // Dark slot background with hover highlight
-  dl->AddRectFilled(ImVec2(boxX, boxY), ImVec2(boxX + boxSize, boxY + boxSize),
-                    hovered ? IM_COL32(35, 32, 25, 220) : IM_COL32(20, 18, 14, 200),
-                    3.0f);
+  dl->AddRectFilled(
+      ImVec2(boxX, boxY), ImVec2(boxX + boxSize, boxY + boxSize),
+      hovered ? IM_COL32(35, 32, 25, 220) : IM_COL32(20, 18, 14, 200), 3.0f);
   dl->AddRect(ImVec2(boxX, boxY), ImVec2(boxX + boxSize, boxY + boxSize),
               hovered ? IM_COL32(100, 90, 60, 220) : IM_COL32(60, 55, 40, 180),
               3.0f, 0, 1.0f);
@@ -406,9 +908,9 @@ static float DrawQuestRewardItem(ImDrawList *dl, float px, float cy,
                               : def.modelFile.c_str();
   if (modelName && modelName[0]) {
     int winH = (int)ImGui::GetIO().DisplaySize.y;
-    InventoryUI::AddRenderJob({modelName, reward.defIndex,
-                               (int)boxX, winH - (int)(boxY + boxSize),
-                               (int)boxSize, (int)boxSize, hovered});
+    InventoryUI::AddRenderJob({modelName, reward.defIndex, (int)boxX,
+                               winH - (int)(boxY + boxSize), (int)boxSize,
+                               (int)boxSize, hovered});
   }
 
   // Tooltip on hover
@@ -420,15 +922,18 @@ static float DrawQuestRewardItem(ImDrawList *dl, float px, float cy,
   float textY = boxY + 6;
   char nameBuf[64];
   if (reward.itemLevel > 0)
-    snprintf(nameBuf, sizeof(nameBuf), "%s +%d", def.name.c_str(), reward.itemLevel);
+    snprintf(nameBuf, sizeof(nameBuf), "%s +%d", def.name.c_str(),
+             reward.itemLevel);
   else
     snprintf(nameBuf, sizeof(nameBuf), "%s", def.name.c_str());
   dl->AddText(ImVec2(textX, textY),
-              hovered ? IM_COL32(140, 230, 255, 255) : IM_COL32(100, 200, 255, 255),
+              hovered ? IM_COL32(140, 230, 255, 255)
+                      : IM_COL32(100, 200, 255, 255),
               nameBuf);
 
   // Class label beneath name
-  dl->AddText(ImVec2(textX, textY + 16), IM_COL32(140, 135, 120, 200), classLabel);
+  dl->AddText(ImVec2(textX, textY + 16), IM_COL32(140, 135, 120, 200),
+              classLabel);
 
   return boxSize + 4; // height consumed
 }
@@ -438,7 +943,7 @@ static bool g_isLearningSkill = false;
 static float g_learnSkillTimer = 0.0f;
 static uint8_t g_learningSkillId = 0;
 static float g_autoSaveTimer = 0.0f;
-static constexpr float AUTOSAVE_INTERVAL = 60.0f; // Save quickslots every 60s
+static constexpr float AUTOSAVE_INTERVAL = 60.0f;   // Save quickslots every 60s
 static constexpr float LEARN_SKILL_DURATION = 3.0f; // Seconds of heal anim
 
 // RMC (Right Mouse Click) skill slot
@@ -484,14 +989,13 @@ static UICoords g_hudCoords; // File-scope for mouse callback access
 // (see src/ClientPacketHandler.cpp)
 
 static const TerrainData *g_terrainDataPtr = nullptr;
-static std::unique_ptr<TerrainData> g_terrainDataOwned; // Owns terrain data (heap for ChangeMap)
+static std::unique_ptr<TerrainData>
+    g_terrainDataOwned; // Owns terrain data (heap for ChangeMap)
 
-// Roof hiding: types 125 (HouseWall05) and 126 (HouseWall06) fade when
-// hero stands on layer1 tile == 4 (building interior). Original:
-// ZzzObject.cpp:3744
-static std::unordered_map<int, float> g_typeAlpha = {{125, 1.0f}, {126, 1.0f}};
-static std::unordered_map<int, float> g_typeAlphaTarget = {{125, 1.0f},
-                                                           {126, 1.0f}};
+// Roof hiding: per-map object types that fade when hero is indoors.
+// Rebuilt on each map change from MapConfig::roofHiding (no cross-map bleed).
+static std::unordered_map<int, float> g_typeAlpha;
+static std::unordered_map<int, float> g_typeAlphaTarget;
 
 // ── Game state machine ──
 enum class GameState {
@@ -504,6 +1008,15 @@ static GameState g_gameState = GameState::CONNECTING;
 static bool g_worldInitialized = false; // True once game world is set up
 static int g_loadingFrames = 0;         // Frames spent in LOADING state
 static GLuint g_loadingTex = 0;         // Loading screen texture
+
+// ── Map transition preloader (fullscreen overlay during ChangeMap) ──
+static bool g_mapTransitionActive = false;
+static int g_mapTransitionPhase = 0; // 0=fade-in, 1=do work, 2=fade-out
+static float g_mapTransitionAlpha = 0.0f;
+static int g_mapTransitionFrames = 0; // Frames rendered in current phase
+static uint8_t g_mapTransMapId = 0;
+static uint8_t g_mapTransSpawnX = 0;
+static uint8_t g_mapTransSpawnY = 0;
 
 // ── Post-processing (bloom + vignette + color grading) ──
 struct PostProcessState {
@@ -552,13 +1065,10 @@ static void InitPostProcess() {
 
   // Fullscreen quad (NDC positions + tex coords)
   float quadVerts[] = {
-    // pos        // uv
-    -1.0f,  1.0f, 0.0f, 1.0f,
-    -1.0f, -1.0f, 0.0f, 0.0f,
-     1.0f, -1.0f, 1.0f, 0.0f,
-    -1.0f,  1.0f, 0.0f, 1.0f,
-     1.0f, -1.0f, 1.0f, 0.0f,
-     1.0f,  1.0f, 1.0f, 1.0f,
+      // pos        // uv
+      -1.0f, 1.0f,  0.0f, 1.0f, -1.0f, -1.0f, 0.0f, 0.0f,
+      1.0f,  -1.0f, 1.0f, 0.0f, -1.0f, 1.0f,  0.0f, 1.0f,
+      1.0f,  -1.0f, 1.0f, 0.0f, 1.0f,  1.0f,  1.0f, 1.0f,
   };
   glGenVertexArrays(1, &pp.quadVAO);
   glGenBuffers(1, &pp.quadVBO);
@@ -631,8 +1141,8 @@ static void ResizePostProcessFBOs(int fbW, int fbH) {
   for (int i = 0; i < 2; ++i) {
     glBindFramebuffer(GL_FRAMEBUFFER, pp.bloomFBO[i]);
     glBindTexture(GL_TEXTURE_2D, pp.bloomTex[i]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pp.bloomW, pp.bloomH, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pp.bloomW, pp.bloomH, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -659,17 +1169,20 @@ struct LightTemplate {
 };
 
 // Build object occupancy grid for grass exclusion
-static std::vector<bool> BuildObjectOccupancy(
-    const std::vector<ObjectRenderer::ObjectInstance> &insts) {
+static std::vector<bool>
+BuildObjectOccupancy(const std::vector<ObjectRenderer::ObjectInstance> &insts) {
   std::vector<bool> occ(256 * 256, false);
   for (auto &inst : insts) {
     glm::vec3 p = glm::vec3(inst.modelMatrix[3]);
     int cx = (int)(p.x / 100.0f);
     int cz = (int)(p.z / 100.0f);
     int r = 1;
-    if (inst.type >= 115 && inst.type <= 129) r = 3; // Buildings/walls
-    else if (inst.type >= 30 && inst.type <= 46) r = 2; // Stones/statues/tombs
-    else if (inst.type >= 65 && inst.type <= 85) r = 2; // Walls/bridges/fences
+    if (inst.type >= 115 && inst.type <= 129)
+      r = 3; // Buildings/walls
+    else if (inst.type >= 30 && inst.type <= 46)
+      r = 2; // Stones/statues/tombs
+    else if (inst.type >= 65 && inst.type <= 85)
+      r = 2; // Walls/bridges/fences
     for (int dz = -r; dz <= r; ++dz)
       for (int dx = -r; dx <= r; ++dx) {
         int gz = cz + dz, gx = cx + dx;
@@ -681,7 +1194,7 @@ static std::vector<bool> BuildObjectOccupancy(
 }
 
 // Returns light properties for a given object type, or nullptr if not a light
-static const LightTemplate *GetLightProperties(int type) {
+static const LightTemplate *GetLightProperties(int type, int mapId = -1) {
   static const LightTemplate fireLightProps = {glm::vec3(1.5f, 0.9f, 0.5f),
                                                800.0f, 150.0f};
   static const LightTemplate bonfireProps = {glm::vec3(1.5f, 0.75f, 0.3f),
@@ -699,15 +1212,15 @@ static const LightTemplate *GetLightProperties(int type) {
 
   // Dungeon torches (Main 5.2: tall fire stand + standard lantern)
   static const LightTemplate dungeonTorchProps = {glm::vec3(1.4f, 0.8f, 0.4f),
-                                                   700.0f, 200.0f};
+                                                  700.0f, 200.0f};
   // Lance Trap (type 100): blue lightning glow (Main 5.2: BITMAP_LIGHTNING)
   static const LightTemplate lanceTrapProps = {glm::vec3(0.4f, 0.6f, 1.5f),
-                                                500.0f, 50.0f};
+                                               500.0f, 50.0f};
 
   switch (type) {
-  case 41:
+  case 41: // Dungeon torches only
   case 42:
-    return &dungeonTorchProps;
+    return (mapId == 1) ? &dungeonTorchProps : nullptr;
   case 50:
   case 51:
     return &fireLightProps;
@@ -726,9 +1239,15 @@ static const LightTemplate *GetLightProperties(int type) {
   case 132:
     return &lightFixtureProps;
   case 39: // Lance Trap (dungeon) — blue lightning glow
-    return &lanceTrapProps;
+    return (mapId == 1) ? &lanceTrapProps : nullptr;
   case 150:
     return &candleProps;
+  case 78: // StoneMuWall02 — torch/window glow (BlendMesh=3)
+    return &streetLightProps;
+  case 30: // Devias fireplace (Stone01) — warm fire glow
+    return (mapId == 2) ? &fireLightProps : nullptr;
+  case 66: // Devias wall fire (SteelWall02) — warm fire glow
+    return (mapId == 2) ? &candleProps : nullptr;
   default:
     return nullptr;
   }
@@ -748,9 +1267,8 @@ static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY);
 int main(int argc, char **argv) {
   // Require launch via launch.sh (sets MU_LAUNCHED env var)
   if (!getenv("MU_LAUNCHED")) {
-    fprintf(stderr,
-            "ERROR: Please use launch.sh to start the game.\n"
-            "  Usage: ./launch.sh\n");
+    fprintf(stderr, "ERROR: Please use launch.sh to start the game.\n"
+                    "  Usage: ./launch.sh\n");
     return 1;
   }
 
@@ -873,7 +1391,8 @@ int main(int argc, char **argv) {
       g_fontDefault =
           io.Fonts->AddFontFromFileTTF(fontPath, 13.0f * contentScale);
       g_fontBold = io.Fonts->AddFontFromFileTTF(fontPath, 15.0f * contentScale);
-      g_fontRegion = io.Fonts->AddFontFromFileTTF(fontPath, 26.0f * contentScale);
+      g_fontRegion =
+          io.Fonts->AddFontFromFileTTF(fontPath, 26.0f * contentScale);
     }
     if (!g_fontDefault)
       g_fontDefault = io.Fonts->AddFontDefault(&cfg);
@@ -896,100 +1415,54 @@ int main(int argc, char **argv) {
 
   MockData hudData = MockData::CreateDK50();
 
-  // Load Terrain for testing
+  // Load Terrain (initial map = Lorencia, mapId 0)
   std::string data_path = g_dataPath;
-  g_terrainDataOwned = std::make_unique<TerrainData>(TerrainParser::LoadWorld(1, data_path));
+  const MapConfig &initCfg = *GetMapConfig(g_currentMapId);
+  int initWorldId = g_currentMapId + 1;
+  g_terrainDataOwned = std::make_unique<TerrainData>(
+      TerrainParser::LoadWorld(initWorldId, data_path));
   TerrainData &terrainData = *g_terrainDataOwned;
 
-  // Reconstruct TW_NOGROUND for bridge cells.
-  // The .att file for this data version lacks these flags (verified: 0
-  // cells). Original engine reads them from .att (ZzzLodTerrain.cpp:1665). We
-  // reconstruct from bridge objects (type 80) with orientation awareness.
-  {
-    const int S = TerrainParser::TERRAIN_SIZE;
-    // Guard: skip bridge reconstruction if terrain mapping data is missing
-    if ((int)terrainData.mapping.attributes.size() < S * S ||
-        (int)terrainData.mapping.layer1.size() < S * S) {
-      std::cerr << "[Terrain] Warning: mapping data missing, skipping bridge "
-                   "reconstruction"
-                << std::endl;
-    } else {
-      int count = 0;
-      for (const auto &obj : terrainData.objects) {
-        if (obj.type != 80)
-          continue;
-        int gz = (int)(obj.position.x / 100.0f);
-        int gx = (int)(obj.position.z / 100.0f);
-        float angZ =
-            std::abs(std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
-        bool spanAlongGZ = (std::abs(angZ - 90.0f) < 45.0f);
-        // +1 buffer for bilinear neighbor coverage in shader
-        int rGZ = spanAlongGZ ? 4 : 2;
-        int rGX = spanAlongGZ ? 2 : 4;
-        for (int dz = -rGZ; dz <= rGZ; ++dz) {
-          for (int dx = -rGX; dx <= rGX; ++dx) {
-            int cz = gz + dz, cx = gx + dx;
-            if (cz >= 0 && cz < S && cx >= 0 && cx < S) {
-              terrainData.mapping.attributes[cz * S + cx] |= 0x08;
-              count++;
-            }
-          }
-        }
-      }
-      // Expand TW_NOGROUND to adjacent water cells so bilinear sampling in the
-      // shader never mixes unmarked water into bridge road tiles.
-      std::vector<uint8_t> expanded = terrainData.mapping.attributes;
-      for (int z = 0; z < S; ++z) {
-        for (int x = 0; x < S; ++x) {
-          if (!(terrainData.mapping.attributes[z * S + x] & 0x08))
-            continue;
-          for (int dz = -1; dz <= 1; ++dz) {
-            for (int dx = -1; dx <= 1; ++dx) {
-              int nz = z + dz, nx = x + dx;
-              if (nz >= 0 && nz < S && nx >= 0 && nx < S) {
-                if (terrainData.mapping.layer1[nz * S + nx] == 5)
-                  expanded[nz * S + nx] |= 0x08;
-              }
-            }
-          }
-        }
-      }
-      terrainData.mapping.attributes = expanded;
-
-      int finalCount = 0;
-      for (int idx = 0; idx < S * S; ++idx)
-        if (terrainData.mapping.attributes[idx] & 0x08)
-          finalCount++;
-      std::cout << "[Terrain] Marked " << finalCount
-                << " bridge cells as TW_NOGROUND (" << count
-                << " from objects + expansion)" << std::endl;
-    } // else (has mapping data)
-  }
+  // Original .att files have correct heightmap and attributes for all terrain
+  // including bridges. No bridge-specific reconstruction or mask needed.
+  auto rawAttributes = terrainData.mapping.attributes;
+  std::vector<bool> bridgeMask; // empty
 
   // Make terrain data accessible for movement/height
   g_terrainDataPtr = &terrainData;
   RayPicker::Init(&terrainData, &g_camera, &g_npcManager, &g_monsterManager,
                   g_groundItems, MAX_GROUND_ITEMS, &g_objectRenderer);
 
-  g_terrain.Load(terrainData, 1, data_path);
-  std::cout << "Loaded Map 1 (Lorencia): " << terrainData.heightmap.size()
-            << " height samples, " << terrainData.objects.size() << " objects"
-            << std::endl;
+  g_terrain.Load(terrainData, initWorldId, data_path, rawAttributes,
+                 bridgeMask);
+  std::cout << "Loaded Map " << initWorldId << " (" << initCfg.regionName
+            << "): " << terrainData.heightmap.size() << " height samples, "
+            << terrainData.objects.size() << " objects" << std::endl;
 
-  // Load world objects
+  // Load world objects (config-driven path selection)
   g_objectRenderer.Init();
   g_objectRenderer.SetTerrainLightmap(terrainData.lightmap);
   g_objectRenderer.SetTerrainMapping(&terrainData.mapping);
   g_objectRenderer.SetTerrainHeightmap(terrainData.heightmap);
-  std::string object1_path = data_path + "/Object1";
-  g_objectRenderer.LoadObjects(terrainData.objects, object1_path);
+  if (initCfg.useNamedObjects) {
+    std::string object1_path = data_path + "/Object1";
+    g_objectRenderer.LoadObjects(terrainData.objects, object1_path);
+  } else {
+    std::string objectN_path =
+        data_path + "/Object" + std::to_string(initWorldId);
+    std::string object1_path = data_path + "/Object1";
+    g_objectRenderer.LoadObjectsGeneric(terrainData.objects, objectN_path,
+                                        object1_path);
+  }
   checkGLError("object renderer load");
   std::cout << "[ObjectRenderer] Loaded " << terrainData.objects.size()
             << " object instances, " << g_objectRenderer.GetModelCount()
             << " unique models" << std::endl;
   g_grass.Init();
-  auto occupancy = BuildObjectOccupancy(g_objectRenderer.GetInstances());
-  g_grass.Load(terrainData, 1, data_path, &occupancy);
+  if (initCfg.hasGrass) {
+    auto occupancy = BuildObjectOccupancy(g_objectRenderer.GetInstances());
+    g_grass.Load(terrainData, initWorldId, data_path, &occupancy);
+  }
   checkGLError("grass load");
 
   // Initialize sky
@@ -1011,11 +1484,12 @@ int main(int argc, char **argv) {
   g_boidManager.SetTerrainData(&terrainData);
   checkGLError("fire init");
   for (auto &inst : g_objectRenderer.GetInstances()) {
-    auto &offsets = GetFireOffsets(inst.type);
+    auto &offsets = GetFireOffsets(inst.type, g_currentMapId);
     for (auto &off : offsets) {
-      // Extract rotation without scale (original CreateFire only rotates, no
-      // scale)
       glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
+      // Offsets are in MU model-local space. The model matrix rotation
+      // (R_base * R_angles) maps MU Z→GL Y via the -90°Z/-90°Y base rotations,
+      // so rot * off correctly transforms the MU offset to GL world space.
       glm::mat3 rot;
       for (int c = 0; c < 3; c++)
         rot[c] = glm::normalize(glm::vec3(inst.modelMatrix[c]));
@@ -1025,7 +1499,7 @@ int main(int argc, char **argv) {
   // Register smoke emitters for torch smoke objects (types 131, 132)
   // Main 5.2: CreateFire(1/2) on MODEL_LIGHT01+1/+2
   for (auto &inst : g_objectRenderer.GetInstances()) {
-    auto &smokeOffsets = GetSmokeOffsets(inst.type);
+    auto &smokeOffsets = GetSmokeOffsets(inst.type, g_currentMapId);
     for (auto &off : smokeOffsets) {
       glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
       glm::mat3 rot;
@@ -1049,7 +1523,7 @@ int main(int argc, char **argv) {
   // Collect point lights from light-emitting objects
   g_pointLights.clear();
   for (auto &inst : g_objectRenderer.GetInstances()) {
-    const LightTemplate *props = GetLightProperties(inst.type);
+    const LightTemplate *props = GetLightProperties(inst.type, g_currentMapId);
     if (!props)
       continue;
     // Extract world position from model matrix translation column
@@ -1073,6 +1547,7 @@ int main(int argc, char **argv) {
   g_hero.LoadStats(1, 28, 20, 25, 10, 0, 0, 110, 110, 20, 20, 50, 50, 16);
   g_hero.SetTerrainLightmap(terrainData.lightmap);
   g_hero.SetPointLights(g_pointLights);
+  ChromeGlow::LoadTextures(g_dataPath);
   ItemModelManager::Init(g_hero.GetShader(), g_dataPath);
   g_hero.SnapToTerrain();
 
@@ -1230,6 +1705,7 @@ int main(int argc, char **argv) {
     gameState.questKillCount = g_questKillCount;
     gameState.questRequired = g_questRequired;
     gameState.questTargetCount = &g_questTargetCount;
+    gameState.deviasQuestIndex = &g_deviasQuestIndex;
     gameState.spawnDamageNumber = [](const glm::vec3 &pos, int dmg,
                                      uint8_t type) {
       FloatingDamageRenderer::Spawn(pos, dmg, type, g_floatingDmg,
@@ -1328,6 +1804,7 @@ int main(int argc, char **argv) {
       std::cout << "[State] -> LOADING (waiting for world data)" << std::endl;
     };
     csCtx.onExit = [&]() { glfwSetWindowShouldClose(window, GLFW_TRUE); };
+    ChromeGlow::LoadTextures(g_dataPath);
     CharacterSelect::Init(csCtx);
   }
 
@@ -1424,8 +1901,8 @@ int main(int argc, char **argv) {
           g_hero.SetPosition(debugObj.position);
           g_hero.SnapToTerrain();
           g_camera.SetPosition(g_hero.GetPosition());
-          objectDebugName = "obj_type" + std::to_string(debugObj.type) + "_idx" +
-                            std::to_string(objectDebugIdx);
+          objectDebugName = "obj_type" + std::to_string(debugObj.type) +
+                            "_idx" + std::to_string(objectDebugIdx);
           if (!autoGif)
             autoScreenshot = true;
         }
@@ -1491,8 +1968,8 @@ int main(int argc, char **argv) {
           glBindFramebuffer(GL_FRAMEBUFFER, pp.bloomFBO[dstIdx]);
           glClear(GL_COLOR_BUFFER_BIT);
           pp.blur->setBool("uHorizontal", horizontal);
-          pp.blur->setFloat("uTexelSize",
-                            horizontal ? (1.0f / pp.bloomW) : (1.0f / pp.bloomH));
+          pp.blur->setFloat("uTexelSize", horizontal ? (1.0f / pp.bloomW)
+                                                     : (1.0f / pp.bloomH));
           glBindTexture(GL_TEXTURE_2D, pp.bloomTex[srcIdx]);
           RenderFullscreenQuad(pp);
         }
@@ -1516,20 +1993,26 @@ int main(int argc, char **argv) {
 
         // Restore GL state
         glEnable(GL_DEPTH_TEST);
-        if (wasBlend) glEnable(GL_BLEND);
-        if (wasCull) glEnable(GL_CULL_FACE);
-        if (wasStencil) glEnable(GL_STENCIL_TEST);
+        if (wasBlend)
+          glEnable(GL_BLEND);
+        if (wasCull)
+          glEnable(GL_CULL_FACE);
+        if (wasStencil)
+          glEnable(GL_STENCIL_TEST);
       }
 
-      // Draw ImGui UI on top of post-processed scene (sharp, unaffected by bloom)
+      // Draw ImGui UI on top of post-processed scene (sharp, unaffected by
+      // bloom)
       ImGui::Render();
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
       // Poll mouse clicks for character slot selection AFTER ImGui render
-      // so WantCaptureMouse is accurate (prevents button clicks selecting slots)
+      // so WantCaptureMouse is accurate (prevents button clicks selecting
+      // slots)
       {
         static bool prevMouseDown = false;
-        bool mouseDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool mouseDown =
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         if (mouseDown && !prevMouseDown && !ImGui::GetIO().WantCaptureMouse) {
           double mx, my;
           glfwGetCursorPos(window, &mx, &my);
@@ -1566,8 +2049,8 @@ int main(int argc, char **argv) {
         float dispH = imgH * scale;
         float x0 = (winW - dispW) * 0.5f;
         float y0 = (winH - dispH) * 0.5f;
-        dl->AddImage((ImTextureID)(intptr_t)g_loadingTex,
-                     ImVec2(x0, y0), ImVec2(x0 + dispW, y0 + dispH));
+        dl->AddImage((ImTextureID)(intptr_t)g_loadingTex, ImVec2(x0, y0),
+                     ImVec2(x0 + dispW, y0 + dispH));
       }
 
       // Loading text overlay at bottom
@@ -1586,12 +2069,53 @@ int main(int argc, char **argv) {
     // INGAME state: normal game world update + render
     // ═══════════════════════════════════════════════
 
-    // Check for pending map change from server
+    // Check for pending map change from server — start transition overlay
     {
       auto &mc = ClientPacketHandler::GetPendingMapChange();
       if (mc.pending) {
+        if (!g_mapTransitionActive) {
+          // No transition in progress — start one (e.g. walking into gate)
+          g_mapTransitionActive = true;
+          g_mapTransitionPhase = 0; // fade-in
+          g_mapTransitionAlpha = 0.0f;
+          g_mapTransitionFrames = 0;
+        }
+        // Always update target from server packet (authoritative)
+        g_mapTransMapId = mc.mapId;
+        g_mapTransSpawnX = mc.spawnX;
+        g_mapTransSpawnY = mc.spawnY;
         mc.pending = false;
-        ChangeMap(mc.mapId, mc.spawnX, mc.spawnY);
+      }
+    }
+
+    // Map transition preloader: fade-in → load → fade-out
+    if (g_mapTransitionActive) {
+      if (g_mapTransitionPhase == 0) {
+        // Phase 0: Fade to black
+        g_mapTransitionAlpha += deltaTime * 4.0f; // ~0.25s fade-in
+        if (g_mapTransitionAlpha >= 1.0f) {
+          g_mapTransitionAlpha = 1.0f;
+          g_mapTransitionFrames++;
+          // Wait 2 rendered frames at full black before heavy work
+          if (g_mapTransitionFrames >= 2) {
+            g_mapTransitionPhase = 1;
+          }
+        }
+      } else if (g_mapTransitionPhase == 1) {
+        // Phase 1: Do the heavy map loading (runs once)
+        ChangeMap(g_mapTransMapId, g_mapTransSpawnX, g_mapTransSpawnY);
+        // Tell server we're ready — triggers deferred NPC/monster viewport send
+        glm::vec3 hp = g_hero.GetPosition();
+        g_server.SendPrecisePosition(hp.x, hp.z);
+        g_mapTransitionPhase = 2;
+        g_mapTransitionFrames = 0;
+      } else if (g_mapTransitionPhase == 2) {
+        // Phase 2: Fade out
+        g_mapTransitionAlpha -= deltaTime * 2.0f; // ~0.5s fade-out
+        if (g_mapTransitionAlpha <= 0.0f) {
+          g_mapTransitionAlpha = 0.0f;
+          g_mapTransitionActive = false;
+        }
       }
     }
 
@@ -1600,8 +2124,8 @@ int main(int argc, char **argv) {
 
     // Main 5.2 Lorencia uses static daylight (no day/night cycle)
     g_worldTime += deltaTime * 25.0f; // Still tick for chrome/sun animation
-    // Per-map luminosity: Lorencia=1.0, Dungeon=1.2 (dark lightmap needs boost)
-    g_luminosity = (g_currentMapId == 1) ? 1.2f : 1.0f;
+    // Per-map luminosity from config
+    g_luminosity = g_mapCfg->luminosity;
 
     // Push luminosity to all renderers
     g_terrain.SetLuminosity(g_luminosity);
@@ -1621,7 +2145,7 @@ int main(int argc, char **argv) {
       static float posTimer = 0.0f;
       static int lastGridX = -1, lastGridY = -1;
       posTimer += deltaTime;
-      if (posTimer >= 0.25f) {
+      if (posTimer >= 0.25f && !g_mapTransitionActive) {
         posTimer = 0.0f;
         glm::vec3 hp = g_hero.GetPosition();
         g_server.SendPrecisePosition(hp.x, hp.z);
@@ -1642,10 +2166,10 @@ int main(int argc, char **argv) {
       glm::vec3 lp = g_hero.GetPosition();
       SoundManager::UpdateListener(lp.x, lp.y, lp.z);
 
-      // 3D ambient wind — orbits slowly around the player (Lorencia only)
+      // 3D ambient wind — orbits slowly around the player (maps with wind)
       static bool windStarted = false;
       static float windAngle = 0.0f;
-      if (g_currentMapId == 0) {
+      if (g_mapCfg->hasWind) {
         if (!windStarted) {
           float wx = lp.x + 200.0f;
           SoundManager::Play3DLoop(SOUND_WIND01, wx, lp.y + 50.0f, lp.z, 0.4f);
@@ -1657,7 +2181,8 @@ int main(int argc, char **argv) {
         float wz = lp.z + sinf(windAngle) * windDist;
         SoundManager::UpdateSource3D(SOUND_WIND01, wx, lp.y + 50.0f, wz);
       } else {
-        windStarted = false; // Reset so wind restarts when returning to Lorencia
+        windStarted =
+            false; // Reset so wind restarts when returning to Lorencia
       }
     }
 
@@ -1713,7 +2238,8 @@ int main(int argc, char **argv) {
                   g_server.SendSkillAttack(serverIdx, skillId);
                 }
               } else {
-                InventoryUI::ShowNotification(isDK ? "Not enough AG!" : "Not enough Mana!");
+                InventoryUI::ShowNotification(isDK ? "Not enough AG!"
+                                                   : "Not enough Mana!");
               }
             } else {
               g_server.SendAttack(serverIdx);
@@ -1722,7 +2248,9 @@ int main(int argc, char **argv) {
         }
         // Flash: send delayed damage packet when beam spawns at frame 7.0
         {
-          uint16_t aqTarget; uint8_t aqSkill; float aqX, aqZ;
+          uint16_t aqTarget;
+          uint8_t aqSkill;
+          float aqX, aqZ;
           if (g_hero.PopPendingAquaPacket(aqTarget, aqSkill, aqX, aqZ)) {
             g_server.SendSkillAttack(aqTarget, aqSkill, aqX, aqZ);
           }
@@ -1751,8 +2279,8 @@ int main(int argc, char **argv) {
                     g_hero.SkillAttackMonster(g_hoveredMonster, hmi.position,
                                               skillId);
                   } else {
-                    InventoryUI::ShowNotification(
-                        isDK ? "Not enough AG!" : "Not enough Mana!");
+                    InventoryUI::ShowNotification(isDK ? "Not enough AG!"
+                                                       : "Not enough Mana!");
                     g_hero.CancelAttack();
                     g_hero.ClearGlobalCooldown();
                   }
@@ -1790,8 +2318,8 @@ int main(int argc, char **argv) {
               if (curResource >= cost) {
                 g_hero.SkillAttackMonster(nextTarget, nextPos, skillId);
               } else {
-                InventoryUI::ShowNotification(
-                    isDK ? "Not enough AG!" : "Not enough Mana!");
+                InventoryUI::ShowNotification(isDK ? "Not enough AG!"
+                                                   : "Not enough Mana!");
                 g_hero.CancelAttack();
               }
             } else if (g_hero.GetActiveSkillId() == 0) {
@@ -1802,12 +2330,13 @@ int main(int argc, char **argv) {
         }
 
         // Self-AoE continuous casting: re-cast when GCD expires + RMB held
-        bool isAoESkill = (g_rmcSkillId == 8 || g_rmcSkillId == 9 || g_rmcSkillId == 10 ||
-                           g_rmcSkillId == 12 || g_rmcSkillId == 14 ||
-                           g_rmcSkillId == 41 || g_rmcSkillId == 42 || g_rmcSkillId == 43);
+        bool isAoESkill =
+            (g_rmcSkillId == 8 || g_rmcSkillId == 9 || g_rmcSkillId == 10 ||
+             g_rmcSkillId == 12 || g_rmcSkillId == 14 || g_rmcSkillId == 41 ||
+             g_rmcSkillId == 42 || g_rmcSkillId == 43);
         if (g_hero.GetAttackState() == AttackState::NONE &&
-            g_hero.GetAttackTarget() < 0 && g_rightMouseHeld &&
-            isAoESkill && g_hero.GetGlobalCooldown() <= 0.0f) {
+            g_hero.GetAttackTarget() < 0 && g_rightMouseHeld && isAoESkill &&
+            g_hero.GetGlobalCooldown() <= 0.0f) {
           uint8_t skillId = (uint8_t)g_rmcSkillId;
           int cost = InventoryUI::GetSkillResourceCost(skillId);
           bool isDK = (g_hero.GetClass() == 16);
@@ -1815,7 +2344,8 @@ int main(int argc, char **argv) {
           if (curResource >= cost) {
             glm::vec3 heroPos = g_hero.GetPosition();
             bool isMeleeAoE = (skillId == 41 || skillId == 42 || skillId == 43);
-            bool casterCentered = (skillId == 9 || skillId == 10 || skillId == 14 || isMeleeAoE);
+            bool casterCentered =
+                (skillId == 9 || skillId == 10 || skillId == 14 || isMeleeAoE);
             glm::vec3 groundTarget = heroPos;
             if (!isMeleeAoE) {
               double mx, my;
@@ -1830,8 +2360,12 @@ int main(int argc, char **argv) {
             } else {
               g_server.SendSkillAttack(0xFFFF, skillId, atkX, atkZ);
             }
-            // Optimistically deduct resource to prevent spam before server reply
-            if (isDK) g_serverAG -= cost; else g_serverMP -= cost;
+            // Optimistically deduct resource to prevent spam before server
+            // reply
+            if (isDK)
+              g_serverAG -= cost;
+            else
+              g_serverMP -= cost;
           }
         }
       }
@@ -1880,15 +2414,20 @@ int main(int argc, char **argv) {
         if (g_hero.IsMounted())
           g_hero.UnequipMount();
 
-        // If in dungeon, trigger server-side map transition by sending
-        // position to the dungeon exit gate zone (grid 108,248)
+        // If in dungeon, warp to Lorencia city center (grid 137,126)
         if (g_currentMapId != 0) {
-          float gateWorldX = 248.0f * 100.0f;
-          float gateWorldZ = 108.0f * 100.0f;
           SoundManager::StopAll();
-          g_server.SendPrecisePosition(gateWorldX, gateWorldZ);
+          g_server.SendWarpCommand(0, 137, 126);
           g_hero.SetAction(1);
           g_hero.SetTeleportCooldown();
+          // Start transition overlay immediately
+          g_mapTransitionActive = true;
+          g_mapTransitionPhase = 0;
+          g_mapTransitionAlpha = 0.0f;
+          g_mapTransitionFrames = 0;
+          g_mapTransMapId = 0;
+          g_mapTransSpawnX = 137;
+          g_mapTransSpawnY = 126;
         } else {
           // Already on Lorencia — teleport to city center (grid 137,126)
           const int S = TerrainParser::TERRAIN_SIZE;
@@ -1948,30 +2487,47 @@ int main(int argc, char **argv) {
 
     // Hero respawn: after death timer expires, respawn in Lorencia safe zone
     if (g_hero.ReadyToRespawn()) {
-      // Find walkable safe zone tile (same spiral search as init)
-      const int S = TerrainParser::TERRAIN_SIZE;
-      int startGX = 125, startGZ = 125;
-      glm::vec3 spawnPos(12500.0f, 0.0f, 12500.0f);
-      for (int radius = 0; radius < 30; radius++) {
-        bool found = false;
-        for (int dy = -radius; dy <= radius && !found; dy++) {
-          for (int dx = -radius; dx <= radius && !found; dx++) {
-            if (radius > 0 && std::abs(dx) != radius && std::abs(dy) != radius)
-              continue;
-            int cx = startGX + dx, cz = startGZ + dy;
-            if (cx < 1 || cz < 1 || cx >= S - 1 || cz >= S - 1)
-              continue;
-            uint8_t attr = g_terrainDataPtr->mapping.attributes[cz * S + cx];
-            if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
-              spawnPos =
-                  glm::vec3((float)cz * 100.0f, 0.0f, (float)cx * 100.0f);
-              found = true;
+      // Lorencia city center (grid 137,126)
+      glm::vec3 spawnPos(12600.0f, 0.0f, 13700.0f);
+
+      if (g_currentMapId != 0) {
+        // In dungeon: warp to Lorencia city center + start fade overlay
+        g_server.SendWarpCommand(0, 137, 126);
+        g_mapTransitionActive = true;
+        g_mapTransitionPhase = 0;
+        g_mapTransitionAlpha =
+            0.8f; // Start mostly black (death screen is dark)
+        g_mapTransitionFrames = 0;
+        g_mapTransMapId = 0;
+        g_mapTransSpawnX = 137;
+        g_mapTransSpawnY = 126;
+      } else {
+        // Already on Lorencia: find walkable tile near city center
+        const int S = TerrainParser::TERRAIN_SIZE;
+        int startGX = 137, startGZ = 126;
+        for (int radius = 0; radius < 30; radius++) {
+          bool found = false;
+          for (int dy = -radius; dy <= radius && !found; dy++) {
+            for (int dx = -radius; dx <= radius && !found; dx++) {
+              if (radius > 0 && std::abs(dx) != radius &&
+                  std::abs(dy) != radius)
+                continue;
+              int cx = startGX + dx, cz = startGZ + dy;
+              if (cx < 1 || cz < 1 || cx >= S - 1 || cz >= S - 1)
+                continue;
+              uint8_t attr = g_terrainDataPtr->mapping.attributes[cz * S + cx];
+              if ((attr & 0x04) == 0 && (attr & 0x08) == 0) {
+                spawnPos =
+                    glm::vec3((float)cz * 100.0f, 0.0f, (float)cx * 100.0f);
+                found = true;
+              }
             }
           }
+          if (found)
+            break;
         }
-        if (found)
-          break;
       }
+
       g_hero.Respawn(spawnPos);
       g_hero.SnapToTerrain();
       g_camera.SetPosition(g_hero.GetPosition());
@@ -1980,13 +2536,13 @@ int main(int argc, char **argv) {
 
       // Notify server that player is alive (clears session.dead)
       g_server.SendCharSave(
-          (uint16_t)g_heroCharacterId, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
-          (uint16_t)g_serverDex, (uint16_t)g_serverVit, (uint16_t)g_serverEne,
-          (uint16_t)g_serverMaxHP, (uint16_t)g_serverMaxHP,
-          (uint16_t)g_serverMaxMP, (uint16_t)g_serverMaxMP,
-          (uint16_t)g_serverMaxAG, (uint16_t)g_serverMaxAG,
-          (uint16_t)g_serverLevelUpPoints, (uint64_t)g_serverXP, g_skillBar,
-          g_potionBar, g_rmcSkillId);
+          (uint16_t)g_heroCharacterId, (uint16_t)g_serverLevel,
+          (uint16_t)g_serverStr, (uint16_t)g_serverDex, (uint16_t)g_serverVit,
+          (uint16_t)g_serverEne, (uint16_t)g_serverMaxHP,
+          (uint16_t)g_serverMaxHP, (uint16_t)g_serverMaxMP,
+          (uint16_t)g_serverMaxMP, (uint16_t)g_serverMaxAG,
+          (uint16_t)g_serverMaxAG, (uint16_t)g_serverLevelUpPoints,
+          (uint64_t)g_serverXP, g_skillBar, g_potionBar, g_rmcSkillId);
     }
 
     // Periodic autosave (quickslots, stats) every 60 seconds
@@ -1994,10 +2550,10 @@ int main(int argc, char **argv) {
     if (g_autoSaveTimer >= AUTOSAVE_INTERVAL && !g_hero.IsDead()) {
       g_autoSaveTimer = 0.0f;
       g_server.SendCharSave(
-          (uint16_t)g_heroCharacterId, (uint16_t)g_serverLevel, (uint16_t)g_serverStr,
-          (uint16_t)g_serverDex, (uint16_t)g_serverVit, (uint16_t)g_serverEne,
-          (uint16_t)g_serverHP, (uint16_t)g_serverMaxHP, (uint16_t)g_serverMP,
-          (uint16_t)g_serverMaxMP, (uint16_t)g_serverAG,
+          (uint16_t)g_heroCharacterId, (uint16_t)g_serverLevel,
+          (uint16_t)g_serverStr, (uint16_t)g_serverDex, (uint16_t)g_serverVit,
+          (uint16_t)g_serverEne, (uint16_t)g_serverHP, (uint16_t)g_serverMaxHP,
+          (uint16_t)g_serverMP, (uint16_t)g_serverMaxMP, (uint16_t)g_serverAG,
           (uint16_t)g_serverMaxAG, (uint16_t)g_serverLevelUpPoints,
           (uint64_t)g_serverXP, g_skillBar, g_potionBar, g_rmcSkillId);
     }
@@ -2024,7 +2580,8 @@ int main(int argc, char **argv) {
         // Auto-pickup Zen only (items require explicit click)
         if (gi.defIndex == -1 && dist < 120.0f && !g_hero.IsDead()) {
           g_server.SendPickup(gi.dropIndex);
-          gi.active = false; // Optimistic remove (sound plays on server confirm)
+          gi.active =
+              false; // Optimistic remove (sound plays on server confirm)
         }
         // Despawn after 60s
         if (gi.timer > 60.0f)
@@ -2032,7 +2589,7 @@ int main(int argc, char **argv) {
       }
     }
 
-    // Roof hiding: read layer1 tile at hero position, fade types 125/126
+    // Roof hiding: read layer1 tile at hero position, fade roof types
     if (g_terrainDataPtr) {
       glm::vec3 heroPos = g_hero.GetPosition();
       const int S = TerrainParser::TERRAIN_SIZE;
@@ -2041,16 +2598,29 @@ int main(int argc, char **argv) {
       uint8_t heroTile = 0;
       if (gx >= 0 && gz >= 0 && gx < S && gz < S)
         heroTile = g_terrainDataPtr->mapping.layer1[gz * S + gx];
-      // Original: HeroTile == 4 hides roof meshes
-      float target = (heroTile == 4) ? 0.0f : 1.0f;
-      g_typeAlphaTarget[125] = target;
-      g_typeAlphaTarget[126] = target;
+      // Indoor detection — config-driven roof hiding (Main 5.2: ZzzObject.cpp)
+      if (g_mapCfg->roofTypeCount > 0) {
+        bool isIndoor = false;
+        for (int i = 0; i < g_mapCfg->indoorTileCount; ++i)
+          if (heroTile == g_mapCfg->indoorTiles[i])
+            isIndoor = true;
+        if (g_mapCfg->indoorAbove && heroTile >= g_mapCfg->indoorThreshold)
+          isIndoor = true;
+        float target = isIndoor ? 0.0f : 1.0f;
+        for (int i = 0; i < g_mapCfg->roofTypeCount; ++i)
+          g_typeAlphaTarget[g_mapCfg->roofTypes[i]] = target;
+      }
       // Fast fade — nearly instant (95%+ in 1-2 frames)
       float blend = 1.0f - std::exp(-20.0f * deltaTime);
       for (auto &[type, alpha] : g_typeAlpha) {
         alpha += (g_typeAlphaTarget[type] - alpha) * blend;
       }
       g_objectRenderer.SetTypeAlpha(g_typeAlpha);
+
+      // Door animation: proximity-based swing/slide (Main 5.2:
+      // ZzzObject.cpp:3871)
+      if (g_mapCfg->hasDoors)
+        g_objectRenderer.UpdateDoors(heroPos, deltaTime);
 
       // SafeZone detection: attribute 0x01 = TW_SAFEZONE
       uint8_t heroAttr = 0;
@@ -2059,11 +2629,11 @@ int main(int argc, char **argv) {
       bool wasInSafeZone = g_hero.IsInSafeZone();
       bool nowInSafeZone = (heroAttr & 0x01) != 0;
       g_hero.SetInSafeZone(nowInSafeZone);
-      // Main 5.2: stop wind in safe zone, restart outside (Lorencia only)
-      if (g_currentMapId == 0) {
+      // Config-driven safe zone music/wind transitions
+      if (g_mapCfg->hasWind) {
         if (nowInSafeZone && !wasInSafeZone) {
           SoundManager::Stop(SOUND_WIND01);
-          SoundManager::CrossfadeTo(g_dataPath + "/Music/MuTheme.mp3");
+          SoundManager::CrossfadeTo(g_dataPath + "/" + g_mapCfg->safeMusic);
         } else if (!nowInSafeZone && wasInSafeZone) {
           SoundManager::PlayLoop(SOUND_WIND01);
           SoundManager::FadeOut();
@@ -2120,14 +2690,14 @@ int main(int argc, char **argv) {
     }
 
     // Sky renders first (behind everything, no depth write)
-    // Dungeon has no sky — only render for Lorencia (map 0)
-    if (g_currentMapId == 0) {
+    if (g_mapCfg->hasSky) {
       g_sky.Render(view, projection, camPos, g_luminosity);
     }
 
-    // Main 5.2: AddTerrainLight — merge world point lights + spell projectile lights
-    // Spell lights are transient (per-frame), so rebuild the full list each frame.
-    // Static vectors reuse capacity across frames (zero heap allocs after warmup).
+    // Main 5.2: AddTerrainLight — merge world point lights + spell projectile
+    // lights Spell lights are transient (per-frame), so rebuild the full list
+    // each frame. Static vectors reuse capacity across frames (zero heap allocs
+    // after warmup).
     {
       static std::vector<glm::vec3> lightPos, lightCol;
       static std::vector<float> lightRange;
@@ -2173,8 +2743,8 @@ int main(int argc, char **argv) {
     g_objectRenderer.Render(view, projection, g_camera.GetPosition(),
                             currentFrame);
 
-    // Render grass billboards (Lorencia only — no grass underground)
-    if (g_currentMapId == 0) {
+    // Render grass billboards (config-driven)
+    if (g_mapCfg->hasGrass) {
       std::vector<GrassRenderer::PushSource> pushSources;
       pushSources.push_back({g_hero.GetPosition(), 100.0f});
       g_grass.Render(view, projection, currentFrame, camPos, pushSources);
@@ -2192,7 +2762,7 @@ int main(int argc, char **argv) {
 
     // Dungeon trap VFX (Main 5.2: types 39=lance, 40=blade, 51=fire)
     // HiddenMesh=-2, VFX-only — spawned continuously in CharacterAnimation
-    if (g_currentMapId == 1) {
+    if (g_mapCfg->hasDungeonTraps) {
       static float trapVfxTimer = 0.0f;
       trapVfxTimer += deltaTime;
       if (trapVfxTimer >= 0.15f) { // ~7 bursts/sec
@@ -2200,7 +2770,8 @@ int main(int argc, char **argv) {
         for (auto &inst : g_objectRenderer.GetInstances()) {
           glm::vec3 pos = glm::vec3(inst.modelMatrix[3]);
           if (inst.type == 39) {
-            // Lance Trap: lightning sprites (Main 5.2: MODEL_SAW + SOUND_TRAP01)
+            // Lance Trap: lightning sprites (Main 5.2: MODEL_SAW +
+            // SOUND_TRAP01)
             pos.y += 30.0f + (float)(rand() % 40);
             g_vfxManager.SpawnBurst(ParticleType::SPELL_LIGHTNING, pos, 2);
           } else if (inst.type == 51) {
@@ -2214,43 +2785,51 @@ int main(int argc, char **argv) {
 
     g_vfxManager.Update(deltaTime);
 
-    // Twister proximity: apply StormTime spin when tornado VFX reaches a monster
+    // Twister proximity: apply StormTime spin when tornado VFX reaches a
+    // monster
     if (g_vfxManager.HasActiveTwisters()) {
       int monCount = g_monsterManager.GetMonsterCount();
       for (int mi = 0; mi < monCount; ++mi) {
         MonsterInfo info = g_monsterManager.GetMonsterInfo(mi);
-        if (info.hp <= 0) continue;
+        if (info.hp <= 0)
+          continue;
         if (g_vfxManager.CheckTwisterHit(info.serverIndex, info.position))
           g_monsterManager.ApplyStormTime(info.serverIndex, 10);
       }
     }
 
-    // Evil Spirit: StormTime spin on nearby monsters (Main 5.2: same as Twister)
+    // Evil Spirit: StormTime spin on nearby monsters (Main 5.2: same as
+    // Twister)
     if (g_vfxManager.HasActiveSpiritBeams()) {
       int monCount = g_monsterManager.GetMonsterCount();
       for (int mi = 0; mi < monCount; ++mi) {
         MonsterInfo info = g_monsterManager.GetMonsterInfo(mi);
-        if (info.hp <= 0) continue;
+        if (info.hp <= 0)
+          continue;
         if (g_vfxManager.CheckSpiritBeamHit(info.serverIndex, info.position))
           g_monsterManager.ApplyStormTime(info.serverIndex, 10);
       }
     }
 
-    // Boids — birds in Lorencia, bats in Dungeon (BoidManager handles map logic)
+    // Boids — birds in Lorencia, bats in Dungeon (BoidManager handles map
+    // logic)
     g_boidManager.Update(deltaTime, g_hero.GetPosition(), 0, currentFrame);
     g_fireEffect.Render(view, projection);
 
     // Render ambient creatures (birds/fish/bats/leaves)
     g_boidManager.RenderShadows(view, projection);
     g_boidManager.Render(view, projection, camPos);
-    if (g_currentMapId == 0)
+    if (g_mapCfg->hasLeaves)
       g_boidManager.RenderLeaves(view, projection);
 
-    // Update NPC interaction state (guard faces player only when quest dialog is open)
+    // Update NPC interaction state (guard faces player only when quest dialog
+    // is open)
     g_npcManager.SetPlayerPosition(g_hero.GetPosition());
-    g_npcManager.SetInteractingNpc(g_questDialogOpen ? g_questDialogNpcIndex : -1);
-    g_npcManager.SetQuestState(g_questIndex, g_questKillCount, g_questRequired,
-                               g_questTargetCount);
+    g_npcManager.SetInteractingNpc(g_questDialogOpen ? g_questDialogNpcIndex
+                                                     : -1);
+    g_npcManager.SetQuestState(g_questIndex, g_deviasQuestIndex,
+                               g_questKillCount, g_questRequired,
+                               g_questTargetCount, g_currentMapId);
 
     // Render NPC characters with shadows
     g_npcManager.RenderShadows(view, projection);
@@ -2288,13 +2867,13 @@ int main(int argc, char **argv) {
         float bx = bones[i][0][3];
         float by = bones[i][1][3];
         float bz = bones[i][2][3];
-        // Apply facing rotation in MU space (same as shadow HeroCharacter.cpp:994)
+        // Apply facing rotation in MU space (same as shadow
+        // HeroCharacter.cpp:994)
         float rx = bx * cosF - by * sinF;
         float ry = bx * sinF + by * cosF;
-        // Full model transform: translate * rotZ(-90) * rotY(-90) * rotZ(facing)
-        // After facing rotation in MU space: (rx, ry, bz)
-        // After rotY(-90): (-bz, ry, rx)
-        // After rotZ(-90): (ry, bz, rx)
+        // Full model transform: translate * rotZ(-90) * rotY(-90) *
+        // rotZ(facing) After facing rotation in MU space: (rx, ry, bz) After
+        // rotY(-90): (-bz, ry, rx) After rotZ(-90): (ry, bz, rx)
         boneWorldPos[i] = heroPos + glm::vec3(ry, bz, rx);
       }
       g_vfxManager.SetHeroBonePositions(boneWorldPos);
@@ -2303,7 +2882,7 @@ int main(int argc, char **argv) {
     // Feed weapon blur trail points to VFX (Main 5.2: per-frame capture)
     if (g_hero.IsWeaponTrailActive() && g_hero.HasValidTrailPoints()) {
       g_vfxManager.AddWeaponTrailPoint(g_hero.GetWeaponTrailTip(),
-                                        g_hero.GetWeaponTrailBase());
+                                       g_hero.GetWeaponTrailBase());
     }
 
     // Render VFX (after all characters so particles layer on top)
@@ -2368,9 +2947,12 @@ int main(int argc, char **argv) {
 
       // Restore GL state
       glEnable(GL_DEPTH_TEST);
-      if (wasBlend) glEnable(GL_BLEND);
-      if (wasCull) glEnable(GL_CULL_FACE);
-      if (wasStencil) glEnable(GL_STENCIL_TEST);
+      if (wasBlend)
+        glEnable(GL_BLEND);
+      if (wasCull)
+        glEnable(GL_CULL_FACE);
+      if (wasStencil)
+        glEnable(GL_STENCIL_TEST);
     }
 
     // Auto-GIF: capture with warmup for fire particle buildup
@@ -2411,7 +2993,8 @@ int main(int argc, char **argv) {
       {
         static float smoothedFPS = 60.0f;
         float instantFPS = 1.0f / std::max(deltaTime, 0.001f);
-        smoothedFPS += (instantFPS - smoothedFPS) * 0.05f; // ~20-frame smoothing
+        smoothedFPS +=
+            (instantFPS - smoothedFPS) * 0.05f; // ~20-frame smoothing
         char fpsText[16];
         snprintf(fpsText, sizeof(fpsText), "%.0f", smoothedFPS);
         dl->AddText(ImVec2(5, 4), IM_COL32(200, 200, 200, 160), fpsText);
@@ -2435,11 +3018,9 @@ int main(int argc, char **argv) {
       }
 
       // ── Monster nameplates ──
-      g_monsterManager.RenderNameplates(dl, g_fontDefault, view, projection,
-                                        winW, winH, camPos, g_hoveredMonster,
-                                        g_hero.GetAttackTarget(),
-                                        g_serverLevel);
-
+      g_monsterManager.RenderNameplates(
+          dl, g_fontDefault, view, projection, winW, winH, camPos,
+          g_hoveredMonster, g_hero.GetAttackTarget(), g_serverLevel);
 
       // ── Ground item 3D models + physics ──
       GroundItemRenderer::RenderModels(
@@ -2505,14 +3086,14 @@ int main(int argc, char **argv) {
         uint16_t guardType = npcInfo.type;
 
         // WoW-style colors
-        ImU32 cBg       = IM_COL32(12, 10, 8, 235);
-        ImU32 cBorder   = IM_COL32(80, 70, 50, 180);
-        ImU32 cTitle    = IM_COL32(255, 210, 80, 255);
-        ImU32 cText     = IM_COL32(200, 195, 180, 255);
-        ImU32 cTextDim  = IM_COL32(140, 135, 120, 255);
-        ImU32 cGold     = IM_COL32(255, 210, 50, 255);
-        ImU32 cGreen    = IM_COL32(80, 220, 80, 255);
-        ImU32 cSep      = IM_COL32(50, 45, 35, 120);
+        ImU32 cBg = IM_COL32(12, 10, 8, 235);
+        ImU32 cBorder = IM_COL32(80, 70, 50, 180);
+        ImU32 cTitle = IM_COL32(255, 210, 80, 255);
+        ImU32 cText = IM_COL32(200, 195, 180, 255);
+        ImU32 cTextDim = IM_COL32(140, 135, 120, 255);
+        ImU32 cGold = IM_COL32(255, 210, 50, 255);
+        ImU32 cGreen = IM_COL32(80, 220, 80, 255);
+        ImU32 cSep = IM_COL32(50, 45, 35, 120);
 
         auto drawButton = [&](float bx, float by, float bw, float bh,
                               const char *label, ImU32 textColor) -> bool {
@@ -2520,12 +3101,15 @@ int main(int argc, char **argv) {
           bool hov = mousePos.x >= bMin2.x && mousePos.x <= bMax2.x &&
                      mousePos.y >= bMin2.y && mousePos.y <= bMax2.y;
           dl->AddRectFilled(bMin2, bMax2,
-                            hov ? IM_COL32(45, 40, 28, 230) : IM_COL32(25, 22, 16, 230), 3.0f);
+                            hov ? IM_COL32(45, 40, 28, 230)
+                                : IM_COL32(25, 22, 16, 230),
+                            3.0f);
           dl->AddRect(bMin2, bMax2, cBorder, 3.0f, 0, 1.0f);
           ImVec2 ls = ImGui::CalcTextSize(label);
           dl->AddText(ImVec2(bx + (bw - ls.x) * 0.5f, by + (bh - ls.y) * 0.5f),
                       textColor, label);
-          return hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !g_questDialogJustOpened;
+          return hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                 !g_questDialogJustOpened;
         };
 
         float btnW = 80.0f, btnH = 26.0f;
@@ -2534,30 +3118,40 @@ int main(int argc, char **argv) {
         // States: "offer_kill", "travel_accept", "in_progress", "completable",
         //         "handoff", "done", "not_yet", "all_done"
         const char *dialogState = "not_yet";
-        const QuestClientInfo *showQuest = nullptr;    // Quest to display info for
-        const QuestClientInfo *travelQuest = nullptr;   // Travel quest (for combined travel+accept)
+        const QuestClientInfo *showQuest = nullptr; // Quest to display info for
+        const QuestClientInfo *travelQuest =
+            nullptr; // Travel quest (for combined travel+accept)
 
-        if (g_questIndex >= QUEST_COUNT) {
+        // Use chain-appropriate quest index based on guard type
+        int chainQI = GetActiveQuestForGuard(guardType);
+        bool isActiveChain = IsDeviasGuard(guardType) ? (g_currentMapId == 2)
+                                                      : (g_currentMapId != 2);
+
+        if (chainQI >= QUEST_COUNT) {
           dialogState = "all_done";
         } else {
-          const auto &curQ = g_questDefs[g_questIndex];
+          const auto &curQ = g_questDefs[chainQI];
           if (curQ.questType == 1 && curQ.guardType == guardType) {
-            // This guard is the travel destination — show combined travel+kill accept
+            // This guard is the travel destination — show combined travel+kill
+            // accept
             dialogState = "travel_accept";
             travelQuest = &curQ;
             // The next quest (kill quest) should be the one we show
-            if (g_questIndex + 1 < QUEST_COUNT)
-              showQuest = &g_questDefs[g_questIndex + 1];
+            if (chainQI + 1 < QUEST_COUNT)
+              showQuest = &g_questDefs[chainQI + 1];
           } else if (curQ.questType == 0 && curQ.guardType == guardType) {
             // This guard owns the current kill quest
-            bool accepted = (g_questTargetCount > 0);
+            bool accepted = isActiveChain && (g_questTargetCount > 0);
             if (!accepted) {
               dialogState = "offer_kill";
               showQuest = &curQ;
             } else {
               bool allDone = true;
               for (int i = 0; i < g_questTargetCount; i++) {
-                if (g_questKillCount[i] < g_questRequired[i]) { allDone = false; break; }
+                if (g_questKillCount[i] < g_questRequired[i]) {
+                  allDone = false;
+                  break;
+                }
               }
               if (allDone) {
                 dialogState = "completable";
@@ -2570,7 +3164,7 @@ int main(int argc, char **argv) {
           } else {
             // Not this guard's turn — check relationship
             int myKillQuest = GetGuardKillQuest(guardType);
-            if (myKillQuest >= 0 && myKillQuest < g_questIndex) {
+            if (myKillQuest >= 0 && myKillQuest < chainQI) {
               // Guard's quest is done
               if (curQ.questType == 1) {
                 dialogState = "handoff"; // Tell player to go to next guard
@@ -2616,13 +3210,14 @@ int main(int argc, char **argv) {
           showCloseBtn = true;
         } else if (strcmp(dialogState, "completable") == 0 && showQuest) {
           titleText = showQuest->questName;
-          dialogText = "Well done! You've completed\nthe task. Here is your reward.";
+          dialogText =
+              "Well done! You've completed\nthe task. Here is your reward.";
           showObjectives = true;
           showRewards = true;
           showCompleteBtn = true;
         } else if (strcmp(dialogState, "handoff") == 0) {
           // Find the travel destination guard name
-          const auto &curQ = g_questDefs[g_questIndex];
+          const auto &curQ = g_questDefs[chainQI];
           const char *destName = GetGuardName(curQ.guardType);
           static char handoffBuf[128];
           snprintf(handoffBuf, sizeof(handoffBuf),
@@ -2630,13 +3225,21 @@ int main(int argc, char **argv) {
           dialogText = handoffBuf;
           showCloseBtn = true;
         } else if (strcmp(dialogState, "done") == 0) {
-          dialogText = "My tasks are complete.\nGood luck on your journey, warrior.";
+          dialogText =
+              "My tasks are complete.\nGood luck on your journey, warrior.";
           showCloseBtn = true;
         } else if (strcmp(dialogState, "all_done") == 0) {
-          dialogText = "Lorencia owes you a great debt,\nwarrior. Every threat has been\nvanquished by your hand. May the\nSerenity guide your path.";
+          dialogText =
+              IsDeviasGuard(guardType)
+                  ? "Devias is safe once more, warrior.\nThe ice holds no more "
+                    "terrors.\nMay the winds carry you to glory."
+                  : "Lorencia owes you a great debt,\nwarrior. Every threat "
+                    "has been\nvanquished by your hand. May the\nSerenity "
+                    "guide your path.";
           showCloseBtn = true;
         } else { // not_yet
-          dialogText = "I have no task for you yet.\nSpeak to the other guards first.";
+          dialogText =
+              "I have no task for you yet.\nSpeak to the other guards first.";
           showCloseBtn = true;
         }
 
@@ -2644,47 +3247,72 @@ int main(int argc, char **argv) {
         ImVec2 dialogSize = ImGui::CalcTextSize(dialogText);
         float subtitleH = showQuest ? (ImGui::CalcTextSize(npcName).y + 4) : 0;
         float objH = 0;
-        if (showObjectives && showQuest) objH = 18 + showQuest->targetCount * 18.0f;
+        if (showObjectives && showQuest)
+          objH = 18 + showQuest->targetCount * 18.0f;
         int weaponCount = 0;
         if (showRewards && showQuest && showQuest->questType == 0) {
-          if (showQuest->dkReward.defIndex >= 0) weaponCount++;
-          if (showQuest->dwReward.defIndex >= 0) weaponCount++;
-          if (showQuest->orbReward.defIndex >= 0) weaponCount++;
-          if (showQuest->scrollReward.defIndex >= 0) weaponCount++;
+          if (showQuest->dkReward.defIndex >= 0)
+            weaponCount++;
+          if (showQuest->dwReward.defIndex >= 0)
+            weaponCount++;
+          if (showQuest->orbReward.defIndex >= 0)
+            weaponCount++;
+          if (showQuest->scrollReward.defIndex >= 0)
+            weaponCount++;
         }
         float weaponH = weaponCount > 0 ? (weaponCount * 48.0f + 4.0f) : 0;
         float rewardsH = showRewards ? (10 + 18 + 18 + 18 + weaponH) : 0;
         float buttonsH = btnH + 16;
-        float panelH = 14 + 20 + 6 + subtitleH + 1 + 10 + dialogSize.y + 10
-                        + objH + rewardsH + buttonsH + 14;
+        float infoH = showQuest ? (ImGui::GetFontSize() + 8) : 0;
+        float panelH = 14 + 20 + 6 + subtitleH + infoH + 1 + 10 + dialogSize.y +
+                       10 + objH + rewardsH + buttonsH + 14;
         float px = (dispSize.x - panelW) * 0.5f;
         float py = (dispSize.y - panelH) * 0.5f;
-        g_qdPanelRect[0] = px; g_qdPanelRect[1] = py;
-        g_qdPanelRect[2] = panelW; g_qdPanelRect[3] = panelH;
+        g_qdPanelRect[0] = px;
+        g_qdPanelRect[1] = py;
+        g_qdPanelRect[2] = panelW;
+        g_qdPanelRect[3] = panelH;
 
         // Panel background with double border for parchment feel
-        dl->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), cBg, 5.0f);
-        dl->AddRect(ImVec2(px + 1, py + 1), ImVec2(px + panelW - 1, py + panelH - 1),
+        dl->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), cBg,
+                          5.0f);
+        dl->AddRect(ImVec2(px + 1, py + 1),
+                    ImVec2(px + panelW - 1, py + panelH - 1),
                     IM_COL32(40, 35, 25, 100), 4.0f, 0, 1.0f);
-        dl->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), cBorder, 5.0f, 0, 1.5f);
+        dl->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), cBorder,
+                    5.0f, 0, 1.5f);
 
         float contentY = py + 14;
 
         // Title
         {
           ImVec2 ts = ImGui::CalcTextSize(titleText);
-          dl->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, contentY), cTitle, titleText);
+          dl->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, contentY), cTitle,
+                      titleText);
           contentY += ts.y + 6;
         }
 
         // Guard name subtitle (if title is quest name)
         if (showQuest) {
           ImVec2 gs = ImGui::CalcTextSize(npcName);
-          dl->AddText(ImVec2(px + (panelW - gs.x) * 0.5f, contentY), cTextDim, npcName);
+          dl->AddText(ImVec2(px + (panelW - gs.x) * 0.5f, contentY), cTextDim,
+                      npcName);
           contentY += gs.y + 4;
+          // Location and recommended level
+          char infoBuf[64];
+          snprintf(infoBuf, sizeof(infoBuf), "%s  |  Lv. %d",
+                   showQuest->location, (int)showQuest->recommendedLevel);
+          ImVec2 infoSz = ImGui::CalcTextSize(infoBuf);
+          ImU32 lvColor = (g_hero.GetLevel() >= showQuest->recommendedLevel)
+                              ? IM_COL32(120, 180, 120, 200)
+                              : IM_COL32(200, 120, 80, 200);
+          dl->AddText(ImVec2(px + (panelW - infoSz.x) * 0.5f, contentY),
+                      lvColor, infoBuf);
+          contentY += infoSz.y + 4;
         }
 
-        dl->AddLine(ImVec2(px + 16, contentY), ImVec2(px + panelW - 16, contentY), cSep);
+        dl->AddLine(ImVec2(px + 16, contentY),
+                    ImVec2(px + panelW - 16, contentY), cSep);
         contentY += 10;
 
         // Dialog text
@@ -2695,7 +3323,8 @@ int main(int argc, char **argv) {
         if (showObjectives && showQuest) {
           dl->AddText(ImVec2(px + 20, contentY), cTextDim, "Objectives");
           contentY += 18;
-          bool inProgress = (strcmp(dialogState, "in_progress") == 0 || strcmp(dialogState, "completable") == 0);
+          bool inProgress = (strcmp(dialogState, "in_progress") == 0 ||
+                             strcmp(dialogState, "completable") == 0);
           for (int i = 0; i < showQuest->targetCount; i++) {
             char objBuf[80];
             if (inProgress) {
@@ -2703,10 +3332,12 @@ int main(int argc, char **argv) {
                        showQuest->targets[i].name, g_questKillCount[i],
                        (int)showQuest->targets[i].killsReq);
               bool done = g_questKillCount[i] >= showQuest->targets[i].killsReq;
-              dl->AddText(ImVec2(px + 22, contentY), done ? cGreen : cText, objBuf);
+              dl->AddText(ImVec2(px + 22, contentY), done ? cGreen : cText,
+                          objBuf);
             } else {
               snprintf(objBuf, sizeof(objBuf), "  Slay %d %s",
-                       showQuest->targets[i].killsReq, showQuest->targets[i].name);
+                       showQuest->targets[i].killsReq,
+                       showQuest->targets[i].name);
               dl->AddText(ImVec2(px + 22, contentY), cText, objBuf);
             }
             contentY += 18;
@@ -2716,27 +3347,38 @@ int main(int argc, char **argv) {
         // Rewards
         if (showRewards && showQuest) {
           contentY += 4;
-          dl->AddLine(ImVec2(px + 16, contentY), ImVec2(px + panelW - 16, contentY), cSep);
+          dl->AddLine(ImVec2(px + 16, contentY),
+                      ImVec2(px + panelW - 16, contentY), cSep);
           contentY += 6;
           dl->AddText(ImVec2(px + 20, contentY), cTextDim, "Rewards");
           contentY += 18;
           // Include travel quest rewards if applicable
           uint32_t totalZen = showQuest->zenReward;
           uint32_t totalXp = showQuest->xpReward;
-          if (travelQuest) { totalZen += travelQuest->zenReward; totalXp += travelQuest->xpReward; }
+          if (travelQuest) {
+            totalZen += travelQuest->zenReward;
+            totalXp += travelQuest->xpReward;
+          }
 
           std::string zenStr = std::to_string(totalZen);
           int n = (int)zenStr.length() - 3;
-          while (n > 0) { zenStr.insert(n, ","); n -= 3; }
+          while (n > 0) {
+            zenStr.insert(n, ",");
+            n -= 3;
+          }
           char rwBuf[64];
           snprintf(rwBuf, sizeof(rwBuf), "  %s Zen", zenStr.c_str());
           dl->AddText(ImVec2(px + 22, contentY), cGold, rwBuf);
           contentY += 18;
           std::string xpStr = std::to_string(totalXp);
           n = (int)xpStr.length() - 3;
-          while (n > 0) { xpStr.insert(n, ","); n -= 3; }
+          while (n > 0) {
+            xpStr.insert(n, ",");
+            n -= 3;
+          }
           snprintf(rwBuf, sizeof(rwBuf), "  %s Experience", xpStr.c_str());
-          dl->AddText(ImVec2(px + 22, contentY), IM_COL32(180, 140, 255, 255), rwBuf);
+          dl->AddText(ImVec2(px + 22, contentY), IM_COL32(180, 140, 255, 255),
+                      rwBuf);
           contentY += 18;
           // Item reward 3D models
           if (showQuest->questType == 0) {
@@ -2747,18 +3389,20 @@ int main(int argc, char **argv) {
             float h2 = DrawQuestRewardItem(dl, px, contentY, panelW,
                                            showQuest->dwReward, "Dark Wizard");
             contentY += h2;
-            float h3 = DrawQuestRewardItem(dl, px, contentY, panelW,
-                                           showQuest->orbReward, "DK Skill Orb");
+            float h3 = DrawQuestRewardItem(
+                dl, px, contentY, panelW, showQuest->orbReward, "DK Skill Orb");
             contentY += h3;
-            float h4 = DrawQuestRewardItem(dl, px, contentY, panelW,
-                                           showQuest->scrollReward, "DW Spell Scroll");
+            float h4 =
+                DrawQuestRewardItem(dl, px, contentY, panelW,
+                                    showQuest->scrollReward, "DW Spell Scroll");
             contentY += h4;
           }
         }
 
         // Separator before buttons
         contentY += 2;
-        dl->AddLine(ImVec2(px + 16, contentY), ImVec2(px + panelW - 16, contentY), cSep);
+        dl->AddLine(ImVec2(px + 16, contentY),
+                    ImVec2(px + panelW - 16, contentY), cSep);
 
         // Buttons
         float btnY = py + panelH - btnH - 12.0f;
@@ -2791,8 +3435,8 @@ int main(int argc, char **argv) {
             closeQuestDialog();
           }
         } else {
-          if (drawButton(px + (panelW - btnW) * 0.5f, btnY, btnW, btnH,
-                         "Close", cTextDim)) {
+          if (drawButton(px + (panelW - btnW) * 0.5f, btnY, btnW, btnH, "Close",
+                         cTextDim)) {
             SoundManager::Play(SOUND_CLICK01);
             closeQuestDialog();
           }
@@ -2801,8 +3445,10 @@ int main(int argc, char **argv) {
     }
 
     // ── Quest Tracker HUD (top-right, minimal) ──
-    if (g_questIndex < QUEST_COUNT) {
-      const auto &curQ = g_questDefs[g_questIndex];
+    // Show the map-appropriate active quest
+    int trackerQI = (g_currentMapId == 2) ? g_deviasQuestIndex : g_questIndex;
+    if (trackerQI < QUEST_COUNT) {
+      const auto &curQ = g_questDefs[trackerQI];
       bool showTracker = false;
 
       if (curQ.questType == 1) {
@@ -2818,7 +3464,8 @@ int main(int argc, char **argv) {
         dl->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + trackerW, ty + trackerH),
                           IM_COL32(0, 0, 0, 120), 3.0f);
         float cy = ty + 4;
-        dl->AddText(ImVec2(tx + 6, cy), IM_COL32(220, 185, 50, 220), curQ.questName);
+        dl->AddText(ImVec2(tx + 6, cy), IM_COL32(220, 185, 50, 220),
+                    curQ.questName);
         cy += lineH + 2;
         char buf[64];
         snprintf(buf, sizeof(buf), " Find %s", GetGuardName(curQ.guardType));
@@ -2831,31 +3478,37 @@ int main(int argc, char **argv) {
         float lineH = 15.0f;
         bool allDone = true;
         for (int i = 0; i < g_questTargetCount; i++) {
-          if (g_questKillCount[i] < g_questRequired[i]) { allDone = false; break; }
+          if (g_questKillCount[i] < g_questRequired[i]) {
+            allDone = false;
+            break;
+          }
         }
         float trackerW = 200.0f;
-        float trackerH = 20.0f + g_questTargetCount * lineH + (allDone ? lineH : 0);
+        float trackerH =
+            20.0f + g_questTargetCount * lineH + (allDone ? lineH : 0);
         float tx = dispSize.x - trackerW - 12.0f;
         float ty = 60.0f;
         dl->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + trackerW, ty + trackerH),
                           IM_COL32(0, 0, 0, 120), 3.0f);
         float cy = ty + 4;
-        dl->AddText(ImVec2(tx + 6, cy), IM_COL32(220, 185, 50, 220), curQ.questName);
+        dl->AddText(ImVec2(tx + 6, cy), IM_COL32(220, 185, 50, 220),
+                    curQ.questName);
         cy += lineH + 2;
         for (int i = 0; i < g_questTargetCount; i++) {
           char buf[48];
           bool done = g_questKillCount[i] >= g_questRequired[i];
-          snprintf(buf, sizeof(buf), " %s  %d/%d",
-                   curQ.targets[i].name,
+          snprintf(buf, sizeof(buf), " %s  %d/%d", curQ.targets[i].name,
                    g_questKillCount[i], g_questRequired[i]);
           dl->AddText(ImVec2(tx + 6, cy),
-                      done ? IM_COL32(80, 210, 80, 200) : IM_COL32(180, 180, 180, 200),
+                      done ? IM_COL32(80, 210, 80, 200)
+                           : IM_COL32(180, 180, 180, 200),
                       buf);
           cy += lineH;
         }
         if (allDone) {
           char turnIn[64];
-          snprintf(turnIn, sizeof(turnIn), "Return to %s", GetGuardName(curQ.guardType));
+          snprintf(turnIn, sizeof(turnIn), "Return to %s",
+                   GetGuardName(curQ.guardType));
           dl->AddText(ImVec2(tx + 6, cy), IM_COL32(220, 185, 50, 220), turnIn);
         }
       }
@@ -2869,34 +3522,49 @@ int main(int argc, char **argv) {
       ImVec2 mPos = ImGui::GetIO().MousePos;
 
       // WoW-style colors
-      ImU32 qlBg      = IM_COL32(12, 10, 8, 240);
-      ImU32 qlBorder  = IM_COL32(80, 70, 50, 180);
-      ImU32 qlTitle   = IM_COL32(255, 210, 80, 255);
-      ImU32 qlText    = IM_COL32(200, 195, 180, 255);
-      ImU32 qlDim     = IM_COL32(140, 135, 120, 255);
-      ImU32 qlGold    = IM_COL32(255, 210, 50, 255);
-      ImU32 qlGreen   = IM_COL32(80, 220, 80, 255);
-      ImU32 qlSep     = IM_COL32(50, 45, 35, 120);
-      ImU32 qlRowHov  = IM_COL32(40, 35, 25, 200);
-      ImU32 qlPurple  = IM_COL32(180, 140, 255, 255);
-      ImU32 qlRed     = IM_COL32(220, 80, 80, 255);
+      ImU32 qlBg = IM_COL32(12, 10, 8, 240);
+      ImU32 qlBorder = IM_COL32(80, 70, 50, 180);
+      ImU32 qlTitle = IM_COL32(255, 210, 80, 255);
+      ImU32 qlText = IM_COL32(200, 195, 180, 255);
+      ImU32 qlDim = IM_COL32(140, 135, 120, 255);
+      ImU32 qlGold = IM_COL32(255, 210, 50, 255);
+      ImU32 qlGreen = IM_COL32(80, 220, 80, 255);
+      ImU32 qlSep = IM_COL32(50, 45, 35, 120);
+      ImU32 qlRowHov = IM_COL32(40, 35, 25, 200);
+      ImU32 qlPurple = IM_COL32(180, 140, 255, 255);
+      ImU32 qlRed = IM_COL32(220, 80, 80, 255);
 
       static int qlSelectedQuest = -1; // -1 = list view
 
       float panelW = 340.0f;
 
       // Quest status: 0=locked, 1=available, 2=in progress, 3=complete, 4=done
+      // Uses chain-appropriate index: quests 0-11 → g_questIndex, 12-17 →
+      // g_deviasQuestIndex
       auto qlStatus = [&](int qi) -> int {
-        if (qi < g_questIndex) return 4; // already completed
-        if (qi > g_questIndex) return 0; // locked
-        // Current quest
+        int chainIdx = GetChainIndex(qi);
+        if (qi < chainIdx)
+          return 4; // already completed
+        if (qi > chainIdx)
+          return 0; // locked
+        // Current quest in this chain
         const auto &q = g_questDefs[qi];
-        if (q.questType == 1) return 2; // travel quest = always in progress
-        // Kill quest: check if accepted (server sends targets when accepted)
-        if (g_questTargetCount == 0) return 1; // not accepted yet
+        if (q.questType == 1)
+          return 2; // travel quest = always in progress
+        // Kill quest: only show kill counts if this chain is active on current
+        // map
+        bool isActiveChain = (qi >= DEVIAS_QUEST_START) ? (g_currentMapId == 2)
+                                                        : (g_currentMapId != 2);
+        if (!isActiveChain)
+          return 1; // available but kill counts are for other chain
+        if (g_questTargetCount == 0)
+          return 1; // not accepted yet
         bool allDone = true;
         for (int i = 0; i < g_questTargetCount; i++)
-          if (g_questKillCount[i] < g_questRequired[i]) { allDone = false; break; }
+          if (g_questKillCount[i] < g_questRequired[i]) {
+            allDone = false;
+            break;
+          }
         return allDone ? 3 : 2;
       };
 
@@ -2912,7 +3580,8 @@ int main(int argc, char **argv) {
       // Reset selected if it's no longer active
       if (qlSelectedQuest >= 0) {
         int st = qlStatus(qlSelectedQuest);
-        if (st != 2 && st != 3) qlSelectedQuest = -1;
+        if (st != 2 && st != 3)
+          qlSelectedQuest = -1;
       }
 
       // Right side positioning
@@ -2928,28 +3597,39 @@ int main(int argc, char **argv) {
         float objH = isTravel ? 18.0f : q.targetCount * 18.0f;
         int qlWeaponCount = 0;
         if (!isTravel) {
-          if (q.dkReward.defIndex >= 0) qlWeaponCount++;
-          if (q.dwReward.defIndex >= 0) qlWeaponCount++;
+          if (q.dkReward.defIndex >= 0)
+            qlWeaponCount++;
+          if (q.dwReward.defIndex >= 0)
+            qlWeaponCount++;
         }
-        float qlWeaponH = qlWeaponCount > 0 ? (qlWeaponCount * 48.0f + 4.0f) : 0;
+        float qlWeaponH =
+            qlWeaponCount > 0 ? (qlWeaponCount * 48.0f + 4.0f) : 0;
         float rewardsH = 10 + 18 + 18 + 18 + qlWeaponH;
         // Guard name subtitle
-        float qlSubtitleH = ImGui::CalcTextSize(GetGuardName(q.guardType)).y + 4;
+        float qlSubtitleH =
+            ImGui::CalcTextSize(GetGuardName(q.guardType)).y + 4;
+        float qlInfoH = ImGui::GetFontSize() + 8; // location + level line
         float hintH = (st == 3 || isTravel) ? 24.0f : 6.0f;
         float abandonH = (st == 2 && !isTravel) ? 34.0f : 0.0f;
-        float panelH = 12 + 20 + 6 + qlSubtitleH + 1 + 10 + loreSize.y + 10 + 18 + objH +
-                       rewardsH + hintH + abandonH + 26 + 12 + 14;
+        float panelH = 12 + 20 + 6 + qlSubtitleH + qlInfoH + 1 + 10 +
+                       loreSize.y + 10 + 18 + objH + rewardsH + hintH +
+                       abandonH + 26 + 12 + 14;
         float py = (dispSz.y - panelH) * 0.5f;
-        g_qlPanelRect[0] = px; g_qlPanelRect[1] = py;
-        g_qlPanelRect[2] = panelW; g_qlPanelRect[3] = panelH;
+        g_qlPanelRect[0] = px;
+        g_qlPanelRect[1] = py;
+        g_qlPanelRect[2] = panelW;
+        g_qlPanelRect[3] = panelH;
 
-        ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBg, 4.0f);
-        ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBorder, 4.0f, 0, 1.0f);
+        ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH),
+                          qlBg, 4.0f);
+        ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBorder,
+                    4.0f, 0, 1.0f);
 
         float cy = py + 12;
         {
           ImVec2 ts = ImGui::CalcTextSize(q.questName);
-          ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle, q.questName);
+          ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle,
+                      q.questName);
           cy += ts.y + 6;
         }
 
@@ -2957,8 +3637,22 @@ int main(int argc, char **argv) {
         const char *guardName = GetGuardName(q.guardType);
         {
           ImVec2 gs = ImGui::CalcTextSize(guardName);
-          ql->AddText(ImVec2(px + (panelW - gs.x) * 0.5f, cy), qlDim, guardName);
+          ql->AddText(ImVec2(px + (panelW - gs.x) * 0.5f, cy), qlDim,
+                      guardName);
           cy += gs.y + 4;
+        }
+        // Location and recommended level
+        {
+          char infoBuf[64];
+          snprintf(infoBuf, sizeof(infoBuf), "%s  |  Lv. %d", q.location,
+                   (int)q.recommendedLevel);
+          ImVec2 infoSz = ImGui::CalcTextSize(infoBuf);
+          ImU32 lvColor = (g_hero.GetLevel() >= q.recommendedLevel)
+                              ? IM_COL32(120, 180, 120, 200)
+                              : IM_COL32(200, 120, 80, 200);
+          ql->AddText(ImVec2(px + (panelW - infoSz.x) * 0.5f, cy), lvColor,
+                      infoBuf);
+          cy += infoSz.y + 4;
         }
 
         ql->AddLine(ImVec2(px + 16, cy), ImVec2(px + panelW - 16, cy), qlSep);
@@ -2973,14 +3667,15 @@ int main(int argc, char **argv) {
 
         if (isTravel) {
           char objBuf[80];
-          snprintf(objBuf, sizeof(objBuf), "  Report to %s", GetGuardName(q.guardType));
+          snprintf(objBuf, sizeof(objBuf), "  Report to %s",
+                   GetGuardName(q.guardType));
           ql->AddText(ImVec2(px + 20, cy), qlText, objBuf);
           cy += 18;
         } else {
           for (int i = 0; i < q.targetCount; i++) {
             char objBuf[80];
-            snprintf(objBuf, sizeof(objBuf), "  %s  %d / %d",
-                     q.targets[i].name, g_questKillCount[i], (int)q.targets[i].killsReq);
+            snprintf(objBuf, sizeof(objBuf), "  %s  %d / %d", q.targets[i].name,
+                     g_questKillCount[i], (int)q.targets[i].killsReq);
             bool done = g_questKillCount[i] >= q.targets[i].killsReq;
             ql->AddText(ImVec2(px + 20, cy), done ? qlGreen : qlText, objBuf);
             cy += 18;
@@ -2996,14 +3691,20 @@ int main(int argc, char **argv) {
         {
           std::string zenStr = std::to_string(q.zenReward);
           int n = (int)zenStr.length() - 3;
-          while (n > 0) { zenStr.insert(n, ","); n -= 3; }
+          while (n > 0) {
+            zenStr.insert(n, ",");
+            n -= 3;
+          }
           char rwBuf[64];
           snprintf(rwBuf, sizeof(rwBuf), "  %s Zen", zenStr.c_str());
           ql->AddText(ImVec2(px + 20, cy), qlGold, rwBuf);
           cy += 18;
           std::string xpStr = std::to_string(q.xpReward);
           n = (int)xpStr.length() - 3;
-          while (n > 0) { xpStr.insert(n, ","); n -= 3; }
+          while (n > 0) {
+            xpStr.insert(n, ",");
+            n -= 3;
+          }
           snprintf(rwBuf, sizeof(rwBuf), "  %s Experience", xpStr.c_str());
           ql->AddText(ImVec2(px + 20, cy), qlPurple, rwBuf);
           cy += 18;
@@ -3012,17 +3713,17 @@ int main(int argc, char **argv) {
         // Item reward 3D models
         if (!isTravel) {
           cy += 4;
-          float h1 = DrawQuestRewardItem(ql, px, cy, panelW,
-                                         q.dkReward, "Dark Knight");
+          float h1 = DrawQuestRewardItem(ql, px, cy, panelW, q.dkReward,
+                                         "Dark Knight");
           cy += h1;
-          float h2 = DrawQuestRewardItem(ql, px, cy, panelW,
-                                         q.dwReward, "Dark Wizard");
+          float h2 = DrawQuestRewardItem(ql, px, cy, panelW, q.dwReward,
+                                         "Dark Wizard");
           cy += h2;
-          float h3 = DrawQuestRewardItem(ql, px, cy, panelW,
-                                         q.orbReward, "DK Skill Orb");
+          float h3 = DrawQuestRewardItem(ql, px, cy, panelW, q.orbReward,
+                                         "DK Skill Orb");
           cy += h3;
-          float h4 = DrawQuestRewardItem(ql, px, cy, panelW,
-                                         q.scrollReward, "DW Spell Scroll");
+          float h4 = DrawQuestRewardItem(ql, px, cy, panelW, q.scrollReward,
+                                         "DW Spell Scroll");
           cy += h4;
         }
 
@@ -3031,7 +3732,8 @@ int main(int argc, char **argv) {
         if (isTravel)
           ql->AddText(ImVec2(px + 18, cy), qlGold, "Travel to the next guard.");
         else if (st == 3)
-          ql->AddText(ImVec2(px + 18, cy), qlGold, "Return to complete this quest.");
+          ql->AddText(ImVec2(px + 18, cy), qlGold,
+                      "Return to complete this quest.");
 
         // Buttons row: Back + Abandon (if kill quest in progress)
         float btnY2 = py + panelH - 26 - 12;
@@ -3050,10 +3752,14 @@ int main(int argc, char **argv) {
             bool hov = mPos.x >= bMin.x && mPos.x <= bMax.x &&
                        mPos.y >= bMin.y && mPos.y <= bMax.y;
             ql->AddRectFilled(bMin, bMax,
-                              hov ? IM_COL32(45, 40, 28, 230) : IM_COL32(25, 22, 16, 230), 3.0f);
+                              hov ? IM_COL32(45, 40, 28, 230)
+                                  : IM_COL32(25, 22, 16, 230),
+                              3.0f);
             ql->AddRect(bMin, bMax, qlBorder, 3.0f, 0, 1.0f);
             ImVec2 ls = ImGui::CalcTextSize("Back");
-            ql->AddText(ImVec2(bx1 + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f), qlDim, "Back");
+            ql->AddText(
+                ImVec2(bx1 + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f),
+                qlDim, "Back");
             if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
               SoundManager::Play(SOUND_CLICK01);
               qlSelectedQuest = -1;
@@ -3066,11 +3772,15 @@ int main(int argc, char **argv) {
             bool hov = mPos.x >= bMin.x && mPos.x <= bMax.x &&
                        mPos.y >= bMin.y && mPos.y <= bMax.y;
             ql->AddRectFilled(bMin, bMax,
-                              hov ? IM_COL32(80, 25, 25, 230) : IM_COL32(45, 15, 15, 230), 3.0f);
-            ql->AddRect(bMin, bMax, hov ? qlRed : IM_COL32(120, 50, 50, 180), 3.0f, 0, 1.0f);
+                              hov ? IM_COL32(80, 25, 25, 230)
+                                  : IM_COL32(45, 15, 15, 230),
+                              3.0f);
+            ql->AddRect(bMin, bMax, hov ? qlRed : IM_COL32(120, 50, 50, 180),
+                        3.0f, 0, 1.0f);
             ImVec2 ls = ImGui::CalcTextSize("Abandon");
-            ql->AddText(ImVec2(bx2 + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f),
-                        hov ? qlRed : IM_COL32(180, 100, 100, 255), "Abandon");
+            ql->AddText(
+                ImVec2(bx2 + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f),
+                hov ? qlRed : IM_COL32(180, 100, 100, 255), "Abandon");
             if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
               SoundManager::Play(SOUND_CLICK01);
               g_server.SendQuestAbandon();
@@ -3082,13 +3792,17 @@ int main(int argc, char **argv) {
           float bw = 80;
           float bx = px + (panelW - bw) * 0.5f;
           ImVec2 bMin(bx, btnY2), bMax(bx + bw, btnY2 + bh);
-          bool hov = mPos.x >= bMin.x && mPos.x <= bMax.x &&
-                     mPos.y >= bMin.y && mPos.y <= bMax.y;
+          bool hov = mPos.x >= bMin.x && mPos.x <= bMax.x && mPos.y >= bMin.y &&
+                     mPos.y <= bMax.y;
           ql->AddRectFilled(bMin, bMax,
-                            hov ? IM_COL32(45, 40, 28, 230) : IM_COL32(25, 22, 16, 230), 3.0f);
+                            hov ? IM_COL32(45, 40, 28, 230)
+                                : IM_COL32(25, 22, 16, 230),
+                            3.0f);
           ql->AddRect(bMin, bMax, qlBorder, 3.0f, 0, 1.0f);
           ImVec2 ls = ImGui::CalcTextSize("Back");
-          ql->AddText(ImVec2(bx + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f), qlDim, "Back");
+          ql->AddText(
+              ImVec2(bx + (bw - ls.x) * 0.5f, btnY2 + (bh - ls.y) * 0.5f),
+              qlDim, "Back");
           if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             SoundManager::Play(SOUND_CLICK01);
             qlSelectedQuest = -1;
@@ -3096,21 +3810,26 @@ int main(int argc, char **argv) {
         }
       } else {
         // ── QUEST LIST VIEW — only active quests ──
-        float rowH = 32.0f;
+        float rowH = 44.0f;
 
         if (activeCount == 0) {
           // No active quests
           float panelH = 80.0f;
           float py = (dispSz.y - panelH) * 0.5f;
-          g_qlPanelRect[0] = px; g_qlPanelRect[1] = py;
-          g_qlPanelRect[2] = panelW; g_qlPanelRect[3] = panelH;
-          ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBg, 4.0f);
-          ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBorder, 4.0f, 0, 1.0f);
+          g_qlPanelRect[0] = px;
+          g_qlPanelRect[1] = py;
+          g_qlPanelRect[2] = panelW;
+          g_qlPanelRect[3] = panelH;
+          ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH),
+                            qlBg, 4.0f);
+          ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH),
+                      qlBorder, 4.0f, 0, 1.0f);
           float cy = py + 12;
           {
             const char *title = "Quest Log";
             ImVec2 ts = ImGui::CalcTextSize(title);
-            ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle, title);
+            ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle,
+                        title);
             cy += ts.y + 6;
           }
           ql->AddLine(ImVec2(px + 14, cy), ImVec2(px + panelW - 14, cy), qlSep);
@@ -3122,17 +3841,22 @@ int main(int argc, char **argv) {
           float listH = activeCount * rowH + 8;
           float panelH = 40 + listH + 12;
           float py = (dispSz.y - panelH) * 0.5f;
-          g_qlPanelRect[0] = px; g_qlPanelRect[1] = py;
-          g_qlPanelRect[2] = panelW; g_qlPanelRect[3] = panelH;
+          g_qlPanelRect[0] = px;
+          g_qlPanelRect[1] = py;
+          g_qlPanelRect[2] = panelW;
+          g_qlPanelRect[3] = panelH;
 
-          ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBg, 4.0f);
-          ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH), qlBorder, 4.0f, 0, 1.0f);
+          ql->AddRectFilled(ImVec2(px, py), ImVec2(px + panelW, py + panelH),
+                            qlBg, 4.0f);
+          ql->AddRect(ImVec2(px, py), ImVec2(px + panelW, py + panelH),
+                      qlBorder, 4.0f, 0, 1.0f);
 
           float cy = py + 12;
           {
             const char *title = "Quest Log";
             ImVec2 ts = ImGui::CalcTextSize(title);
-            ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle, title);
+            ql->AddText(ImVec2(px + (panelW - ts.x) * 0.5f, cy), qlTitle,
+                        title);
             cy += ts.y + 6;
           }
           ql->AddLine(ImVec2(px + 14, cy), ImVec2(px + panelW - 14, cy), qlSep);
@@ -3157,16 +3881,34 @@ int main(int argc, char **argv) {
             ImU32 iconCol, nameCol;
             bool isTravel = (q.questType == 1);
             if (st == 3) {
-              icon = "?"; iconCol = qlGold; nameCol = IM_COL32(230, 210, 140, 255);
+              icon = "?";
+              iconCol = qlGold;
+              nameCol = IM_COL32(230, 210, 140, 255);
             } else if (isTravel) {
-              icon = ">"; iconCol = qlGold; nameCol = IM_COL32(230, 210, 140, 255);
+              icon = ">";
+              iconCol = qlGold;
+              nameCol = IM_COL32(230, 210, 140, 255);
             } else {
-              icon = "..."; iconCol = qlDim; nameCol = qlText;
+              icon = "...";
+              iconCol = qlDim;
+              nameCol = qlText;
             }
 
-            float textY = rowY + (rowH - ImGui::GetFontSize()) * 0.5f;
+            float fontSize = ImGui::GetFontSize();
+            float textY = rowY + (rowH - fontSize * 2 - 2) * 0.5f;
             ql->AddText(ImVec2(rowX + 6, textY), iconCol, icon);
             ql->AddText(ImVec2(rowX + 26, textY), nameCol, q.questName);
+            // Location + level subtitle
+            {
+              char locBuf[48];
+              snprintf(locBuf, sizeof(locBuf), "%s  Lv. %d", q.location,
+                       (int)q.recommendedLevel);
+              ImU32 locCol = (g_hero.GetLevel() >= q.recommendedLevel)
+                                 ? IM_COL32(100, 150, 100, 180)
+                                 : IM_COL32(180, 100, 70, 180);
+              ql->AddText(ImVec2(rowX + 26, textY + fontSize + 2), locCol,
+                          locBuf);
+            }
 
             // Progress on right
             if (st == 3) {
@@ -3182,15 +3924,18 @@ int main(int argc, char **argv) {
               for (int i = 0; i < q.targetCount; i++) {
                 if (g_questKillCount[i] < q.targets[i].killsReq) {
                   char prog[16];
-                  snprintf(prog, sizeof(prog), "%d/%d", g_questKillCount[i], (int)q.targets[i].killsReq);
+                  snprintf(prog, sizeof(prog), "%d/%d", g_questKillCount[i],
+                           (int)q.targets[i].killsReq);
                   ImVec2 pSz = ImGui::CalcTextSize(prog);
-                  ql->AddText(ImVec2(rowX + rowW - pSz.x - 6, textY), qlDim, prog);
+                  ql->AddText(ImVec2(rowX + rowW - pSz.x - 6, textY), qlDim,
+                              prog);
                   break;
                 }
               }
             }
 
-            ql->AddLine(ImVec2(rowX, rowY + rowH - 1), ImVec2(rowX + rowW, rowY + rowH - 1), qlSep);
+            ql->AddLine(ImVec2(rowX, rowY + rowH - 1),
+                        ImVec2(rowX + rowW, rowY + rowH - 1), qlSep);
 
             if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
               SoundManager::Play(SOUND_CLICK01);
@@ -3243,7 +3988,8 @@ int main(int argc, char **argv) {
       const char *title = "Game Menu";
       ImVec2 titleSize = ImGui::CalcTextSize(title);
       float titleX = px + (panelW - titleSize.x) * 0.5f;
-      dl->AddText(ImVec2(titleX, py + 14.0f), IM_COL32(255, 210, 80, 255), title);
+      dl->AddText(ImVec2(titleX, py + 14.0f), IM_COL32(255, 210, 80, 255),
+                  title);
 
       // Button dimensions and positions
       float btnW = 180.0f, btnH = 36.0f;
@@ -3260,10 +4006,10 @@ int main(int argc, char **argv) {
         ImVec2 bMin(bx, by), bMax(bx + bw, by + bh);
         bool hovered = mousePos.x >= bx && mousePos.x <= bx + bw &&
                        mousePos.y >= by && mousePos.y <= by + bh;
-        ImU32 bgCol = hovered ? IM_COL32(60, 50, 30, 255)
-                              : IM_COL32(35, 30, 20, 255);
-        ImU32 borderCol = hovered ? IM_COL32(200, 170, 60, 255)
-                                  : IM_COL32(120, 100, 60, 200);
+        ImU32 bgCol =
+            hovered ? IM_COL32(60, 50, 30, 255) : IM_COL32(35, 30, 20, 255);
+        ImU32 borderCol =
+            hovered ? IM_COL32(200, 170, 60, 255) : IM_COL32(120, 100, 60, 200);
         dl->AddRectFilled(bMin, bMax, bgCol, 3.0f);
         dl->AddRect(bMin, bMax, borderCol, 3.0f, 0, 1.2f);
         ImVec2 labelSize = ImGui::CalcTextSize(label);
@@ -3315,7 +4061,8 @@ int main(int argc, char **argv) {
               g_loadingTex = TextureLoader::LoadOZJ(path);
             }
           }
-          std::cout << "[State] -> LOADING (waiting for world data)" << std::endl;
+          std::cout << "[State] -> LOADING (waiting for world data)"
+                    << std::endl;
         };
         csCtx.onExit = [&]() { glfwSetWindowShouldClose(window, GLFW_TRUE); };
         CharacterSelect::Init(csCtx);
@@ -3340,7 +4087,7 @@ int main(int argc, char **argv) {
       ImVec2 dispSize = ImGui::GetIO().DisplaySize;
       float termW = 400.0f, termH = 32.0f;
       float termX = (dispSize.x - termW) * 0.5f;
-      float termY = dispSize.y - 110.0f;
+      float termY = dispSize.y - 185.0f;
 
       ImGui::SetNextWindowPos(ImVec2(termX, termY));
       ImGui::SetNextWindowSize(ImVec2(termW, termH));
@@ -3348,8 +4095,7 @@ int main(int argc, char **argv) {
       ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.47f, 0.39f, 0.24f, 1.0f));
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 4));
       ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 3.0f);
-      ImGui::Begin("##CommandTerminal",
-                   nullptr,
+      ImGui::Begin("##CommandTerminal", nullptr,
                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
                        ImGuiWindowFlags_NoCollapse);
@@ -3359,30 +4105,44 @@ int main(int argc, char **argv) {
         ImGui::SetKeyboardFocusHere();
         g_commandFocusNeeded = false;
       }
-      bool submitted = ImGui::InputText(
-          "##cmd", g_commandBuffer, sizeof(g_commandBuffer),
-          ImGuiInputTextFlags_EnterReturnsTrue);
+      bool submitted =
+          ImGui::InputText("##cmd", g_commandBuffer, sizeof(g_commandBuffer),
+                           ImGuiInputTextFlags_EnterReturnsTrue);
       ImGui::PopItemWidth();
 
       if (submitted && g_commandBuffer[0] != '\0') {
         std::string cmd(g_commandBuffer);
         std::string cmdLower = cmd;
-        for (auto &c : cmdLower) c = (char)std::tolower((unsigned char)c);
+        for (auto &c : cmdLower)
+          c = (char)std::tolower((unsigned char)c);
 
         if (cmdLower.find("/warp ") == 0 || cmdLower.find("/move ") == 0) {
           std::string arg = cmdLower.substr(cmdLower.find(' ') + 1);
-          while (!arg.empty() && arg[0] == ' ') arg.erase(arg.begin());
+          while (!arg.empty() && arg[0] == ' ')
+            arg.erase(arg.begin());
 
           uint8_t mapId = 255;
           uint8_t sx = 0, sy = 0;
           if (arg == "lorencia" || arg == "0") {
-            mapId = 0; sx = 125; sy = 125;
+            mapId = 0;
+            sx = 125;
+            sy = 125;
           } else if (arg == "dungeon" || arg == "dungeon 1" || arg == "1") {
-            mapId = 1; sx = 108; sy = 247;
+            mapId = 1;
+            sx = 108;
+            sy = 247;
           } else if (arg == "dungeon 2" || arg == "dungeon2") {
-            mapId = 1; sx = 231; sy = 126;
+            mapId = 1;
+            sx = 231;
+            sy = 126;
           } else if (arg == "dungeon 3" || arg == "dungeon3") {
-            mapId = 1; sx = 233; sy = 23;
+            mapId = 1;
+            sx = 233;
+            sy = 23;
+          } else if (arg == "devias" || arg == "2") {
+            mapId = 2;
+            sx = 210;
+            sy = 40;
           }
 
           if (mapId != 255) {
@@ -3546,32 +4306,64 @@ int main(int argc, char **argv) {
         over = true; // full-screen overlay or terminal open
       } else {
         // InventoryUI panels (char info, inventory, shop)
-        if (g_showCharInfo && InventoryUI::IsPointInPanel(mx, my, InventoryUI::GetCharInfoPanelX()))
+        if (g_showCharInfo && InventoryUI::IsPointInPanel(
+                                  mx, my, InventoryUI::GetCharInfoPanelX()))
           over = true;
-        if (g_showInventory && InventoryUI::IsPointInPanel(mx, my, InventoryUI::GetInventoryPanelX()))
+        if (g_showInventory && InventoryUI::IsPointInPanel(
+                                   mx, my, InventoryUI::GetInventoryPanelX()))
           over = true;
-        if (g_shopOpen && InventoryUI::IsPointInPanel(mx, my, InventoryUI::GetShopPanelX()))
+        if (g_shopOpen &&
+            InventoryUI::IsPointInPanel(mx, my, InventoryUI::GetShopPanelX()))
           over = true;
         // Skill window (centered, roughly 500x400)
         if (g_showSkillWindow) {
           float sw = 492.0f, sh = 400.0f; // approximate
           float sx = (1270.0f - sw) * 0.5f, sy = (720.0f - sh) * 0.5f;
-          if (mx >= sx && mx < sx + sw && my >= sy && my < sy + sh) over = true;
+          if (mx >= sx && mx < sx + sw && my >= sy && my < sy + sh)
+            over = true;
         }
         // Quest dialog
         if (g_questDialogOpen && g_qdPanelRect[2] > 0) {
-          if (mx >= g_qdPanelRect[0] && mx < g_qdPanelRect[0] + g_qdPanelRect[2] &&
-              my >= g_qdPanelRect[1] && my < g_qdPanelRect[1] + g_qdPanelRect[3])
+          if (mx >= g_qdPanelRect[0] &&
+              mx < g_qdPanelRect[0] + g_qdPanelRect[2] &&
+              my >= g_qdPanelRect[1] &&
+              my < g_qdPanelRect[1] + g_qdPanelRect[3])
             over = true;
         }
         // Quest log
         if (g_showQuestLog && g_qlPanelRect[2] > 0) {
-          if (mx >= g_qlPanelRect[0] && mx < g_qlPanelRect[0] + g_qlPanelRect[2] &&
-              my >= g_qlPanelRect[1] && my < g_qlPanelRect[1] + g_qlPanelRect[3])
+          if (mx >= g_qlPanelRect[0] &&
+              mx < g_qlPanelRect[0] + g_qlPanelRect[2] &&
+              my >= g_qlPanelRect[1] &&
+              my < g_qlPanelRect[1] + g_qlPanelRect[3])
             over = true;
         }
       }
       g_mouseOverUIPanel = over;
+    }
+
+    // Map transition overlay (fullscreen black fade)
+    if (g_mapTransitionActive && g_mapTransitionAlpha > 0.0f) {
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+      int winW, winH;
+      glfwGetWindowSize(window, &winW, &winH);
+      ImDrawList *dl = ImGui::GetForegroundDrawList();
+      uint8_t a = (uint8_t)(g_mapTransitionAlpha * 255.0f);
+      dl->AddRectFilled(ImVec2(0, 0), ImVec2((float)winW, (float)winH),
+                        IM_COL32(0, 0, 0, a));
+      // Show "Loading..." text when fully opaque
+      if (g_mapTransitionAlpha > 0.9f) {
+        const char *loadText = "Loading...";
+        ImVec2 tsz = ImGui::CalcTextSize(loadText);
+        dl->AddText(
+            ImVec2(winW * 0.5f - tsz.x * 0.5f, winH * 0.5f - tsz.y * 0.5f),
+            IM_COL32(220, 200, 160, (int)(g_mapTransitionAlpha * 255)),
+            loadText);
+      }
+      ImGui::Render();
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
 
     // Per-frame GL error check (only first 10 frames to avoid log spam)
@@ -3602,6 +4394,7 @@ int main(int argc, char **argv) {
   // Cleanup
   SoundManager::Shutdown();
   CharacterSelect::Shutdown();
+  ChromeGlow::DeleteTextures();
   g_monsterManager.Cleanup();
   g_boidManager.Cleanup();
   g_npcManager.Cleanup();
@@ -3671,7 +4464,8 @@ static void InitGameWorld(ServerData &serverData) {
       g_equipSlots[eq.slot].category = eq.info.category;
       g_equipSlots[eq.slot].itemIndex = eq.info.itemIndex;
       g_equipSlots[eq.slot].itemLevel = eq.info.itemLevel;
-      int16_t defIdx = (int16_t)eq.info.category * 32 + (int16_t)eq.info.itemIndex;
+      int16_t defIdx =
+          (int16_t)eq.info.category * 32 + (int16_t)eq.info.itemIndex;
       const char *clientModel = ItemDatabase::GetDropModelName(defIdx);
       g_equipSlots[eq.slot].modelFile =
           (clientModel && clientModel[0]) ? clientModel : eq.info.modelFile;
@@ -3691,18 +4485,21 @@ static void InitGameWorld(ServerData &serverData) {
       std::string partModel = ItemDatabase::GetBodyPartModelFile(
           eq.info.category, eq.info.itemIndex);
       if (!partModel.empty())
-        g_hero.EquipBodyPart(bodyPart, partModel, eq.info.itemLevel, eq.info.itemIndex);
+        g_hero.EquipBodyPart(bodyPart, partModel, eq.info.itemLevel,
+                             eq.info.itemIndex);
     }
     std::cout << "[Equip] Slot " << (int)eq.slot << ": " << eq.info.modelFile
               << " cat=" << (int)eq.info.category << std::endl;
   }
 
   g_syncDone = true;
-  // Stop char select music — actual game music chosen after spawn position is known
+  // Stop char select music — actual game music chosen after spawn position is
+  // known
   SoundManager::StopMusic();
   // Show region name (Main 5.2: CUIMapName on map enter)
-  // Note: if char is on dungeon map, ChangeMap() will override this with "Dungeon"
-  InventoryUI::ShowRegionName(g_currentMapId == 0 ? "Lorencia" : "Dungeon");
+  // Note: if char is on dungeon map, ChangeMap() will override this with
+  // "Dungeon"
+  InventoryUI::ShowRegionName(GetMapConfig(g_currentMapId)->regionName);
   g_npcManager.SetTerrainLightmap(g_terrainDataPtr->lightmap);
   g_npcManager.SetVFXManager(&g_vfxManager);
   InventoryUI::RecalcEquipmentStats();
@@ -3726,15 +4523,15 @@ static void InitGameWorld(ServerData &serverData) {
               << " monsters from server" << std::endl;
   }
 
-  // Spawn at server-provided position (from CharInfo F3:03), fallback to town center
+  // Spawn at server-provided position (from CharInfo F3:03), fallback to town
+  // center
   if (serverData.hasSpawnPos) {
     float spawnX = (float)serverData.spawnGridY * 100.0f;
     float spawnZ = (float)serverData.spawnGridX * 100.0f;
     g_hero.SetPosition(glm::vec3(spawnX, 0.0f, spawnZ));
     std::cout << "[Spawn] Using server position: grid ("
-              << (int)serverData.spawnGridX << ","
-              << (int)serverData.spawnGridY << ") -> world ("
-              << spawnX << "," << spawnZ << ")" << std::endl;
+              << (int)serverData.spawnGridX << "," << (int)serverData.spawnGridY
+              << ") -> world (" << spawnX << "," << spawnZ << ")" << std::endl;
   } else {
     g_hero.SetPosition(glm::vec3(12750.0f, 0.0f, 13500.0f));
   }
@@ -3746,8 +4543,9 @@ static void InitGameWorld(ServerData &serverData) {
     const int S = TerrainParser::TERRAIN_SIZE;
     int gz = (int)(heroPos.x / 100.0f);
     int gx = (int)(heroPos.z / 100.0f);
-    bool walkable = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
-                    (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x04) == 0;
+    bool walkable =
+        (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
+        (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x04) == 0;
     if (!walkable) {
       int startGX = gx > 0 ? gx : 125;
       int startGZ = gz > 0 ? gz : 135;
@@ -3778,24 +4576,29 @@ static void InitGameWorld(ServerData &serverData) {
   }
   g_camera.SetPosition(g_hero.GetPosition());
 
-  // Choose music based on spawn position terrain attribute (Lorencia initial load)
+  // Choose music based on spawn position terrain attribute (Lorencia initial
+  // load)
   {
     glm::vec3 heroPos = g_hero.GetPosition();
     const int S = TerrainParser::TERRAIN_SIZE;
     int gz = (int)(heroPos.x / 100.0f);
     int gx = (int)(heroPos.z / 100.0f);
-    bool inSafeZone = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
-                      (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x01) != 0;
+    bool inSafeZone =
+        (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
+        (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x01) != 0;
     g_hero.SetInSafeZone(inSafeZone);
-    // Only start Lorencia-specific sounds on initial load (map 0)
-    // ChangeMap handles per-map sound setup for warps
-    if (g_currentMapId == 0) {
-      if (inSafeZone) {
-        SoundManager::PlayMusic(g_dataPath + "/Music/MuTheme.mp3");
-      } else {
-        SoundManager::PlayLoop(SOUND_WIND01);
-      }
-    }
+    // Start per-map sounds on initial load (config-driven)
+    const MapConfig &sndCfg = *GetMapConfig(g_currentMapId);
+    if (sndCfg.ambientLoop && !inSafeZone)
+      SoundManager::PlayLoop(sndCfg.ambientLoop);
+    if (inSafeZone || !sndCfg.wildMusic)
+      SoundManager::PlayMusic(g_dataPath + "/" + sndCfg.safeMusic);
+    else if (sndCfg.wildMusic)
+      SoundManager::PlayMusic(g_dataPath + "/" + sndCfg.wildMusic);
+
+    // Apply atmosphere from config (clear color, fog, luminosity, post-proc,
+    // roof hiding)
+    ApplyMapAtmosphere(sndCfg);
   }
 
   // Pass point lights to renderers
@@ -3817,16 +4620,75 @@ static void InitGameWorld(ServerData &serverData) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// ApplyMapAtmosphere — applies all per-map rendering/audio settings
+// from a MapConfig. Called by both initial load and ChangeMap.
+// ═══════════════════════════════════════════════════════════════════
+static void ApplyMapAtmosphere(const MapConfig &cfg) {
+  g_mapCfg = &cfg;
+  g_currentMapId = cfg.mapId;
+
+  // Clear color
+  g_clearColor = ImVec4(cfg.clearR, cfg.clearG, cfg.clearB, 1.0f);
+
+  // Fog — propagate to all renderers including grass
+  glm::vec3 fogCol(cfg.fogR, cfg.fogG, cfg.fogB);
+  g_objectRenderer.SetFogColor(fogCol);
+  g_objectRenderer.SetFogRange(cfg.fogNear, cfg.fogFar);
+  g_terrain.SetFogColor(fogCol);
+  g_terrain.SetFogRange(cfg.fogNear, cfg.fogFar);
+  g_grass.SetFogColor(fogCol);
+  g_grass.SetFogRange(cfg.fogNear, cfg.fogFar);
+
+  // Luminosity
+  g_luminosity = cfg.luminosity;
+  g_terrain.SetLuminosity(g_luminosity);
+  g_objectRenderer.SetLuminosity(g_luminosity);
+  g_hero.SetLuminosity(g_luminosity);
+  g_npcManager.SetLuminosity(g_luminosity);
+  g_monsterManager.SetLuminosity(g_luminosity);
+  g_boidManager.SetLuminosity(g_luminosity);
+  if (cfg.hasGrass)
+    g_grass.SetLuminosity(g_luminosity);
+
+  // Post-processing
+  if (g_postProcess.enabled) {
+    g_postProcess.bloomIntensity = cfg.bloomIntensity;
+    g_postProcess.bloomThreshold = cfg.bloomThreshold;
+    g_postProcess.vignetteStrength = cfg.vignetteStrength;
+    g_postProcess.colorTint = glm::vec3(cfg.tintR, cfg.tintG, cfg.tintB);
+  }
+
+  // Rebuild roof hiding maps for this map only (no cross-map bleed)
+  g_typeAlpha.clear();
+  g_typeAlphaTarget.clear();
+  for (int i = 0; i < cfg.roofTypeCount; ++i) {
+    g_typeAlpha[cfg.roofTypes[i]] = 1.0f;
+    g_typeAlphaTarget[cfg.roofTypes[i]] = 1.0f;
+  }
+
+  // Set map ID on all subsystems
+  g_objectRenderer.SetMapId(cfg.mapId);
+  g_boidManager.SetMapId(cfg.mapId);
+  g_monsterManager.SetMapId(cfg.mapId);
+  g_npcManager.SetMapId(cfg.mapId);
+  g_hero.SetMapId(cfg.mapId);
+
+  // Region name display
+  InventoryUI::ShowRegionName(cfg.regionName);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // ChangeMap — called when server sends MAP_CHANGE packet (0x1C)
 // Reloads terrain, objects, grass, fire, lights for the new map.
 // ═══════════════════════════════════════════════════════════════════
 
 static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY) {
+  const MapConfig &cfg = *GetMapConfig(mapId);
   std::string data_path = g_dataPath;
   int fileWorldId = mapId + 1; // map 0 → World1, map 1 → World2
 
-  std::cout << "[ChangeMap] Transitioning to map " << (int)mapId
-            << " (World" << fileWorldId << ") spawn=("
+  std::cout << "[ChangeMap] Transitioning to map " << (int)mapId << " ("
+            << cfg.regionName << ", World" << fileWorldId << ") spawn=("
             << (int)spawnX << "," << (int)spawnY << ")" << std::endl;
 
   // Stop hero movement
@@ -3836,92 +4698,55 @@ static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY) {
   g_monsterManager.ClearMonsters();
   g_npcManager.ClearSpawnedNpcs();
   g_fireEffect.ClearEmitters();
-  // Deactivate all ground items
   for (int i = 0; i < MAX_GROUND_ITEMS; i++)
     g_groundItems[i].active = false;
-
-  // Cleanup renderers (frees GL resources)
   g_objectRenderer.Cleanup();
   g_grass.Cleanup();
 
   // ── Phase 2: Load new terrain ──
   auto newTerrain = std::make_unique<TerrainData>(
       TerrainParser::LoadWorld(fileWorldId, data_path));
+  auto rawAttributes = newTerrain->mapping.attributes;
+  std::vector<bool> bridgeMask; // empty — no bridge hacks needed
 
-  // Bridge reconstruction for Lorencia (map 0)
-  if (mapId == 0) {
-    const int S = TerrainParser::TERRAIN_SIZE;
-    if ((int)newTerrain->mapping.attributes.size() >= S * S &&
-        (int)newTerrain->mapping.layer1.size() >= S * S) {
-      for (const auto &obj : newTerrain->objects) {
-        if (obj.type != 80) continue;
-        int gz = (int)(obj.position.x / 100.0f);
-        int gx = (int)(obj.position.z / 100.0f);
-        float angZ = std::abs(std::fmod(glm::degrees(obj.rotation.z) + 360.0f, 180.0f));
-        bool spanAlongGZ = (std::abs(angZ - 90.0f) < 45.0f);
-        int rGZ = spanAlongGZ ? 4 : 2;
-        int rGX = spanAlongGZ ? 2 : 4;
-        for (int dz = -rGZ; dz <= rGZ; ++dz)
-          for (int dx = -rGX; dx <= rGX; ++dx) {
-            int cz = gz + dz, cx = gx + dx;
-            if (cz >= 0 && cz < S && cx >= 0 && cx < S)
-              newTerrain->mapping.attributes[cz * S + cx] |= 0x08;
-          }
-      }
-      // Expand to adjacent water cells
-      std::vector<uint8_t> expanded = newTerrain->mapping.attributes;
-      for (int z = 0; z < S; ++z)
-        for (int x = 0; x < S; ++x) {
-          if (!(newTerrain->mapping.attributes[z * S + x] & 0x08)) continue;
-          for (int dz = -1; dz <= 1; ++dz)
-            for (int dx = -1; dx <= 1; ++dx) {
-              int nz = z + dz, nx = x + dx;
-              if (nz >= 0 && nz < S && nx >= 0 && nx < S)
-                if (newTerrain->mapping.layer1[nz * S + nx] == 5)
-                  expanded[nz * S + nx] |= 0x08;
-            }
-        }
-      newTerrain->mapping.attributes = expanded;
-    }
-  }
-
-  // Swap terrain data (old data freed when unique_ptr is reassigned)
   g_terrainDataOwned = std::move(newTerrain);
   g_terrainDataPtr = g_terrainDataOwned.get();
 
   // ── Phase 3: Reload terrain renderer ──
-  g_terrain.Load(*g_terrainDataPtr, fileWorldId, data_path);
+  g_terrain.Load(*g_terrainDataPtr, fileWorldId, data_path, rawAttributes,
+                 bridgeMask);
 
-  // ── Phase 4: Reload objects ──
+  // ── Phase 4: Reload objects (config-driven path selection) ──
   g_objectRenderer.Init();
-  g_objectRenderer.SetMapId(mapId);
   g_objectRenderer.SetTerrainLightmap(g_terrainDataPtr->lightmap);
   g_objectRenderer.SetTerrainMapping(&g_terrainDataPtr->mapping);
   g_objectRenderer.SetTerrainHeightmap(g_terrainDataPtr->heightmap);
 
-  if (mapId == 0) {
-    // Lorencia: named object mapping (Object1/)
+  if (cfg.useNamedObjects) {
     std::string object1_path = data_path + "/Object1";
     g_objectRenderer.LoadObjects(g_terrainDataPtr->objects, object1_path);
   } else {
-    // Dungeon and other maps: generic ObjectXX.bmd naming with Lorencia fallback
-    std::string objectN_path = data_path + "/Object" + std::to_string(fileWorldId);
+    std::string objectN_path =
+        data_path + "/Object" + std::to_string(fileWorldId);
     std::string object1_path = data_path + "/Object1";
     g_objectRenderer.LoadObjectsGeneric(g_terrainDataPtr->objects, objectN_path,
                                         object1_path);
   }
 
-  // ── Phase 5: Reload grass (Lorencia only — no grass underground) ──
+  // ── Phase 5: Reload grass (config-driven) ──
   g_grass.Init();
-  if (mapId == 0) {
+  if (cfg.hasGrass) {
     auto occGrid = BuildObjectOccupancy(g_objectRenderer.GetInstances());
     g_grass.Load(*g_terrainDataPtr, fileWorldId, data_path, &occGrid);
-    g_grass.SetLuminosity(g_luminosity);
   }
+
+  // Doors (config-driven)
+  if (cfg.hasDoors)
+    g_objectRenderer.InitDoors();
 
   // ── Phase 6: Register fire/smoke emitters from new objects ──
   for (auto &inst : g_objectRenderer.GetInstances()) {
-    auto &offsets = GetFireOffsets(inst.type);
+    auto &offsets = GetFireOffsets(inst.type, mapId);
     for (auto &off : offsets) {
       glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
       glm::mat3 rot;
@@ -3931,7 +4756,7 @@ static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY) {
     }
   }
   for (auto &inst : g_objectRenderer.GetInstances()) {
-    auto &smokeOffsets = GetSmokeOffsets(inst.type);
+    auto &smokeOffsets = GetSmokeOffsets(inst.type, mapId);
     for (auto &off : smokeOffsets) {
       glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
       glm::mat3 rot;
@@ -3946,26 +4771,23 @@ static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY) {
     }
   }
 
-  // ── Phase 6b: Dungeon trap VFX emitters (types 39=lance, 51=fire) ──
-  // Main 5.2: HiddenMesh=-2, VFX-only objects
-  if (mapId == 1) {
+  // Dungeon trap VFX emitters (config-driven)
+  if (cfg.hasDungeonTraps) {
     for (auto &inst : g_objectRenderer.GetInstances()) {
       glm::vec3 trapPos = glm::vec3(inst.modelMatrix[3]);
-      if (inst.type == 39) {
-        // Lance trap: lightning glow base emitter
+      if (inst.type == 39)
         g_fireEffect.AddEmitter(trapPos + glm::vec3(0.0f, 50.0f, 0.0f));
-      } else if (inst.type == 51) {
-        // Fire trap: fire base emitter
+      else if (inst.type == 51)
         g_fireEffect.AddEmitter(trapPos + glm::vec3(0.0f, 30.0f, 0.0f));
-      }
     }
   }
 
   // ── Phase 7: Collect point lights ──
   g_pointLights.clear();
   for (auto &inst : g_objectRenderer.GetInstances()) {
-    const LightTemplate *props = GetLightProperties(inst.type);
-    if (!props) continue;
+    const LightTemplate *props = GetLightProperties(inst.type, mapId);
+    if (!props)
+      continue;
     glm::vec3 worldPos = glm::vec3(inst.modelMatrix[3]);
     PointLight light;
     light.position = worldPos + glm::vec3(0.0f, props->heightOffset, 0.0f);
@@ -3974,10 +4796,6 @@ static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY) {
     light.objectType = inst.type;
     g_pointLights.push_back(light);
   }
-  // Terrain CPU lightmap uses all lights (no cap).
-  // Shader-based renderers are capped at MAX_POINT_LIGHTS in their SetPointLights.
-
-  // Push lights to all renderers
   {
     std::vector<glm::vec3> lightPos, lightCol;
     std::vector<float> lightRange;
@@ -4016,87 +4834,29 @@ static void ChangeMap(uint8_t mapId, uint8_t spawnX, uint8_t spawnY) {
   g_hero.SnapToTerrain();
   g_camera.SetPosition(g_hero.GetPosition());
 
-  // ── Phase 10: Sound/music transition ──
-  SoundManager::StopAll(); // Stop ambient loops (wind, dungeon)
-  if (mapId == 0) {
-    // Lorencia: wind ambient + town theme if in safe zone
-    SoundManager::PlayLoop(SOUND_WIND01);
+  // ── Phase 10: Sound/music transition (config-driven) ──
+  SoundManager::StopAll();
+  if (cfg.ambientLoop)
+    SoundManager::PlayLoop(cfg.ambientLoop);
+  {
     glm::vec3 hp = g_hero.GetPosition();
     const int S = TerrainParser::TERRAIN_SIZE;
     int gz = (int)(hp.x / 100.0f), gx = (int)(hp.z / 100.0f);
-    bool inSafe = (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
-                  (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x01) != 0;
+    bool inSafe =
+        (gx >= 0 && gz >= 0 && gx < S && gz < S) &&
+        (g_terrainDataPtr->mapping.attributes[gz * S + gx] & 0x01) != 0;
     g_hero.SetInSafeZone(inSafe);
-    if (inSafe)
-      SoundManager::CrossfadeTo(data_path + "/Music/MuTheme.mp3");
-    else
-      SoundManager::CrossfadeTo(data_path + "/Music/main_theme.mp3");
-  } else if (mapId == 1) {
-    // Dungeon: cave ambient + dungeon music
-    SoundManager::PlayLoop(SOUND_DUNGEON01);
-    SoundManager::CrossfadeTo(data_path + "/Music/Dungeon.mp3");
-    // Bat sounds handled dynamically by BoidManager (removed static loops)
+    if (inSafe || !cfg.wildMusic)
+      SoundManager::CrossfadeTo(data_path + "/" + cfg.safeMusic);
+    else if (cfg.wildMusic)
+      SoundManager::CrossfadeTo(data_path + "/" + cfg.wildMusic);
   }
 
-  // Update map state + region name
-  g_currentMapId = mapId;
-  g_boidManager.SetMapId(mapId);
-  g_monsterManager.SetMapId(mapId);
-  g_npcManager.SetMapId(mapId);
-  g_hero.SetMapId(mapId);
-  const char *regionName = (mapId == 0) ? "Lorencia" : "Dungeon";
-  InventoryUI::ShowRegionName(regionName);
+  // ── Phase 11: Apply atmosphere + map state (config-driven) ──
+  ApplyMapAtmosphere(cfg);
 
-  // Per-map atmosphere (Main 5.2 ZzzScene.cpp:2059)
-  // Main 5.2 has fog DISABLED globally — uses glClearColor for distance fade.
-  // We use shader fog as modern equivalent, tinted to match clear color.
-  if (mapId == 1) {
-    // Dungeon: black background, dark fog fading to black
-    g_clearColor = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
-    g_objectRenderer.SetFogColor(glm::vec3(0.0f));
-    g_objectRenderer.SetFogRange(800.0f, 2500.0f);
-    g_terrain.SetFogColor(glm::vec3(0.0f));
-    g_terrain.SetFogRange(800.0f, 2500.0f);
-    // Moderate luminosity boost — dungeon lightmap is dark by design,
-    // but shader fog darkens further compared to Main 5.2's fogless rendering
-    g_luminosity = 1.2f;
-  } else {
-    // Lorencia: warm greenish-brown (Main 5.2: 10/256, 20/256, 14/256)
-    g_clearColor = ImVec4(10.0f / 256.0f, 20.0f / 256.0f, 14.0f / 256.0f, 1.0f);
-    g_objectRenderer.SetFogColor(glm::vec3(0.117f, 0.078f, 0.039f));
-    g_objectRenderer.SetFogRange(1500.0f, 3500.0f);
-    g_terrain.SetFogColor(glm::vec3(0.117f, 0.078f, 0.039f));
-    g_terrain.SetFogRange(1500.0f, 3500.0f);
-    g_luminosity = 1.0f;
-  }
-  // Propagate luminosity to all renderers
-  g_terrain.SetLuminosity(g_luminosity);
-  g_objectRenderer.SetLuminosity(g_luminosity);
-  g_hero.SetLuminosity(g_luminosity);
-  g_npcManager.SetLuminosity(g_luminosity);
-  g_monsterManager.SetLuminosity(g_luminosity);
-  g_boidManager.SetLuminosity(g_luminosity);
-  if (mapId == 0) g_grass.SetLuminosity(g_luminosity);
-
-  // Per-map post-processing atmosphere
-  if (g_postProcess.enabled) {
-    if (mapId == 1) {
-      // Dungeon: stronger bloom (fire/magic glow), heavy vignette, cool blue
-      g_postProcess.bloomIntensity = 0.7f;
-      g_postProcess.bloomThreshold = 0.25f;
-      g_postProcess.vignetteStrength = 0.4f;
-      g_postProcess.colorTint = glm::vec3(0.88f, 0.93f, 1.08f); // Cool blue
-    } else {
-      // Lorencia: warm bloom on fires/torches, subtle vignette
-      g_postProcess.bloomIntensity = 0.5f;
-      g_postProcess.bloomThreshold = 0.35f;
-      g_postProcess.vignetteStrength = 0.15f;
-      g_postProcess.colorTint = glm::vec3(1.02f, 1.0f, 0.96f); // Warm
-    }
-  }
-
-  std::cout << "[ChangeMap] Map " << (int)mapId << " loaded: "
-            << g_objectRenderer.GetInstanceCount() << " objects, "
-            << g_pointLights.size() << " lights, "
+  std::cout << "[ChangeMap] Map " << (int)mapId
+            << " loaded: " << g_objectRenderer.GetInstanceCount()
+            << " objects, " << g_pointLights.size() << " lights, "
             << g_fireEffect.GetEmitterCount() << " fire emitters" << std::endl;
 }

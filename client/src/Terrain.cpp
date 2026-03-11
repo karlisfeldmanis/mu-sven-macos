@@ -1,7 +1,7 @@
 #include "Terrain.hpp"
 #include "TextureLoader.hpp"
-#include <glm/gtc/type_ptr.hpp>
 #include <fstream>
+#include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 #include <set>
 
@@ -204,10 +204,18 @@ Terrain::~Terrain() {
 }
 
 void Terrain::Load(const TerrainData &data, int worldID,
-                   const std::string &data_path) {
+                   const std::string &data_path,
+                   const std::vector<uint8_t> &rawAttributes,
+                   const std::vector<bool> &bridgeMask) {
   this->worldID = worldID;
   m_heightmap = data.heightmap; // Store for physics
-  setupMesh(data.heightmap, data.lightmap);
+  // Use raw (pre-bridge-reconstruction) attributes for mesh generation so only
+  // real NOGROUND cells (Devias rifts) create voids, not synthetic bridge
+  // cells. bridgeMask marks cells near bridge objects to protect from rift
+  // sinking.
+  const auto &meshAttrs =
+      rawAttributes.empty() ? data.mapping.attributes : rawAttributes;
+  setupMesh(data.heightmap, data.lightmap, meshAttrs, bridgeMask);
   std::string worldDir = data_path + "/World" + std::to_string(worldID);
   setupTextures(data, worldDir);
 }
@@ -250,7 +258,9 @@ void Terrain::SetPointLights(const std::vector<glm::vec3> &positions,
                              const std::vector<glm::vec3> &colors,
                              const std::vector<float> &ranges,
                              const std::vector<int> &objectTypes) {
-  plCount = (int)positions.size(); // No cap — terrain uses CPU lightmap, not shader uniforms
+  plCount =
+      (int)positions
+          .size(); // No cap — terrain uses CPU lightmap, not shader uniforms
   plPositions.assign(positions.begin(), positions.begin() + plCount);
   plColors.assign(colors.begin(), colors.begin() + plCount);
   plRanges.assign(ranges.begin(), ranges.begin() + plCount);
@@ -321,7 +331,9 @@ void Terrain::Render(const glm::mat4 &view, const glm::mat4 &projection,
 }
 
 void Terrain::setupMesh(const std::vector<float> &heightmap,
-                        const std::vector<glm::vec3> &lightmap) {
+                        const std::vector<glm::vec3> &lightmap,
+                        const std::vector<uint8_t> &rawAttributes,
+                        const std::vector<bool> &bridgeMask) {
   std::vector<Vertex> vertices;
   std::vector<unsigned int> indices;
 
@@ -351,8 +363,22 @@ void Terrain::setupMesh(const std::vector<float> &heightmap,
 
   // Sven's GL_TRIANGLE_FAN uses diagonal from (x,z) to (x+1,z+1).
   // Match that triangulation for consistent lightmap/height interpolation.
+  // Main 5.2 (ZzzLodTerrain.cpp:1709): cells with TW_NOGROUND are not rendered,
+  // creating voids for Devias rifts/chasms. Vertices are still generated for
+  // all cells so adjacent rendered cells can share rift-edge vertices at low
+  // heights.
+  bool hasAttrs = (rawAttributes.size() >= (size_t)(size * size));
+  bool hasBridgeMask = (bridgeMask.size() >= (size_t)(size * size));
+
   for (int z = 0; z < size - 1; ++z) {
     for (int x = 0; x < size - 1; ++x) {
+      // Skip cells with TW_NOGROUND (bit 3 = 0x08) — creates voids for rifts
+      // BUT keep bridge-masked cells (terrain under bridges must be rendered)
+      if (hasAttrs && (rawAttributes[z * size + x] & 0x08)) {
+        if (!hasBridgeMask || !bridgeMask[z * size + x])
+          continue;
+      }
+
       int current = z * size + x; // (x, z)
       int next = current + size;  // (x, z+1)
 
@@ -365,6 +391,79 @@ void Terrain::setupMesh(const std::vector<float> &heightmap,
       indices.push_back(current);
       indices.push_back(next + 1);
       indices.push_back(next);
+    }
+  }
+
+  // Rift edge blending: sink vertex heights of NOGROUND cells + darken colors
+  // near voids. Only vertices whose own cell has NOGROUND get sunk — normal
+  // terrain (including bridge cells) is never modified.
+  if (hasAttrs) {
+    const int BLEND_DIST = 16; // Color fade gradient width (cells)
+
+    // Phase 1: Sink vertex heights for NOGROUND cells only.
+    // This pushes void-cell vertices down so cliff faces aren't visible.
+    for (int z = 0; z < size; ++z) {
+      for (int x = 0; x < size; ++x) {
+        if (rawAttributes[z * size + x] & 0x08) {
+          vertices[z * size + x].position.y -= 600.0f;
+        }
+      }
+    }
+
+    // Compute minimum Chebyshev distance from each vertex to nearest NOGROUND
+    // cell (for color darkening only — no height changes).
+    std::vector<int> riftDist(size * size, BLEND_DIST + 1);
+
+    // Seed: vertices adjacent to NOGROUND cells get distance 0
+    for (int z = 0; z < size; ++z) {
+      for (int x = 0; x < size; ++x) {
+        for (int dz = -1; dz <= 0; ++dz) {
+          for (int dx = -1; dx <= 0; ++dx) {
+            int cz = z + dz, cx = x + dx;
+            if (cz >= 0 && cz < size && cx >= 0 && cx < size) {
+              if (rawAttributes[cz * size + cx] & 0x08) {
+                riftDist[z * size + x] = 0;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // BFS expansion: propagate distances outward
+    for (int d = 0; d < BLEND_DIST; ++d) {
+      for (int z = 0; z < size; ++z) {
+        for (int x = 0; x < size; ++x) {
+          if (riftDist[z * size + x] != d)
+            continue;
+          for (int nz = z - 1; nz <= z + 1; ++nz) {
+            for (int nx = x - 1; nx <= x + 1; ++nx) {
+              if (nz >= 0 && nz < size && nx >= 0 && nx < size) {
+                if (riftDist[nz * size + nx] > d + 1)
+                  riftDist[nz * size + nx] = d + 1;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Phase 2: Darken vertex colors near rift edges.
+    // dist 0-3 = fully dark (sunk zone), then cubic ease-in over gradient.
+    for (int z = 0; z < size; ++z) {
+      for (int x = 0; x < size; ++x) {
+        int d = riftDist[z * size + x];
+        if (d <= BLEND_DIST) {
+          float factor;
+          if (d <= 4) {
+            factor = 0.0f; // Near void: completely black
+          } else {
+            float t = (float)(d - 4) / (float)(BLEND_DIST - 4);
+            factor = t * t * t; // Cubic ease-in
+          }
+          vertices[z * size + x].color *= factor;
+        }
+      }
     }
   }
 
@@ -673,14 +772,17 @@ void Terrain::applyDynamicLights() {
     }
 
     // Per-type flickering (Main 5.2 ZzzObject.cpp:3908-3940)
-    // Use slow sine-wave modulation instead of per-frame random to avoid strobing.
-    // Original runs at 25fps tick rate; at 60fps pure random is 2.4x too fast.
+    // Use slow sine-wave modulation instead of per-frame random to avoid
+    // strobing. Original runs at 25fps tick rate; at 60fps pure random is 2.4x
+    // too fast.
     static float s_flickerPhase = 0.0f;
-    if (li == 0) s_flickerPhase += 0.04f; // ~2.4 rad/sec ≈ gentle flicker
+    if (li == 0)
+      s_flickerPhase += 0.04f; // ~2.4 rad/sec ≈ gentle flicker
     glm::vec3 color = plColors[li];
     int objType = (li < (int)plObjectTypes.size()) ? plObjectTypes[li] : 0;
     if (objType == -1) {
-      // Spell light: color already has Main 5.2 luminosity, pass through unscaled
+      // Spell light: color already has Main 5.2 luminosity, pass through
+      // unscaled
     } else if (objType == 90 || objType == 98) { // StreetLight / Town lantern
       float phase = s_flickerPhase + (float)li * 1.7f;
       float L = 0.75f + 0.05f * std::sin(phase); // subtle flicker
@@ -693,7 +795,8 @@ void Terrain::applyDynamicLights() {
       float phase = s_flickerPhase + (float)li * 1.3f;
       float L = 0.5f + 0.05f * std::sin(phase);
       color = glm::vec3(L, L * 0.55f, L * 0.2f);
-    } else if (objType == 50 || objType == 51 || objType == 55) { // Fire / Gate fire
+    } else if (objType == 50 || objType == 51 ||
+               objType == 55) { // Fire / Gate fire
       float phase = s_flickerPhase + (float)li * 1.5f;
       float L = 0.5f + 0.05f * std::sin(phase);
       color = glm::vec3(L, L * 0.6f, L * 0.25f);
@@ -705,7 +808,8 @@ void Terrain::applyDynamicLights() {
       float phase = s_flickerPhase + (float)li * 1.9f;
       float L = 0.45f + 0.05f * std::sin(phase);
       color = glm::vec3(L, L * 0.6f, L * 0.3f);
-    } else if (objType == 130 || objType == 131 || objType == 132) { // Light fixtures
+    } else if (objType == 130 || objType == 131 ||
+               objType == 132) { // Light fixtures
       float phase = s_flickerPhase + (float)li * 2.1f;
       float L = 0.5f + 0.04f * std::sin(phase);
       color = glm::vec3(L, L * 0.7f, L * 0.4f);
@@ -716,7 +820,6 @@ void Terrain::applyDynamicLights() {
     float rf = (float)cellRange;
     int gxi = (int)gx;
     int gzi = (int)gz;
-
 
     for (int sz = gzi - cellRange; sz <= gzi + cellRange; ++sz) {
       if (sz < 0 || sz >= S)

@@ -18,7 +18,8 @@ void SendMonsterViewport(Session &session, const GameWorld &world);
 void HandleMove(Session &session, const std::vector<uint8_t> &packet,
                 Database &db);
 void HandlePrecisePosition(Session &session,
-                           const std::vector<uint8_t> &packet);
+                           const std::vector<uint8_t> &packet,
+                           GameWorld &world);
 
 // Auth handlers (simple auto-login flow)
 void HandleLogin(Session &session, const std::vector<uint8_t> &packet,

@@ -130,7 +130,7 @@ public:
   int CreateCharacter(int accountId, const std::string &name, uint8_t classCode);
   bool DeleteCharacter(int accountId, int charId);
 
-  void UpdatePosition(int charId, uint8_t x, uint8_t y);
+  void UpdatePosition(int charId, uint8_t x, uint8_t y, int mapId = -1);
   void UpdateCharacterStats(int charId, uint16_t level, uint16_t strength,
                             uint16_t dexterity, uint16_t vitality,
                             uint16_t energy, uint16_t life, uint16_t maxLife,
@@ -201,9 +201,16 @@ public:
     int killCount1 = 0;
     int killCount2 = 0;
     bool accepted = false;
+    // Devias chain (independent)
+    int deviasQuestIndex = 12;
+    int deviasKc0 = 0;
+    int deviasKc1 = 0;
+    int deviasKc2 = 0;
+    bool deviasAccepted = false;
   };
   QuestState LoadQuestState(int characterId);
   void SaveQuestState(int characterId, int questIndex, int kc0, int kc1, int kc2, bool accepted);
+  void SaveDeviasQuestState(int characterId, int questIndex, int kc0, int kc1, int kc2, bool accepted);
 
   // Chat log persistence
   struct ChatLogEntry {

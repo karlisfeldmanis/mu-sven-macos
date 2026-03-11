@@ -739,7 +739,6 @@ void BoidManager::updateFishs(float dt, const glm::vec3 &heroPos) {
 
 void BoidManager::spawnLeaf(LeafParticle &leaf, const glm::vec3 &heroPos) {
   // Main 5.2: CreateLorenciaLeaf (ZzzEffectFireLeave.cpp:205-224)
-  // MU coords → our coords: Position[0]→X, Position[1]→Z, Position[2]→Y
   leaf.live = true;
   leaf.alpha = 1.0f;
   leaf.onGround = false;
@@ -748,18 +747,26 @@ void BoidManager::spawnLeaf(LeafParticle &leaf, const glm::vec3 &heroPos) {
   leaf.position.z = heroPos.z + (float)(rand() % 1400 - 500);
   leaf.position.y = heroPos.y + (float)(rand() % 300 + 50);
 
-  // Wind velocity
-  leaf.velocity.x = -(float)(rand() % 64 + 64) * 0.1f;
-  // Main 5.2: if behind camera, reverse wind direction
-  if (leaf.position.z < heroPos.z + 400.0f)
-    leaf.velocity.x = -leaf.velocity.x + 3.2f;
-  leaf.velocity.z = (float)(rand() % 32 - 16) * 0.1f;
-  leaf.velocity.y = (float)(rand() % 32 - 16) * 0.1f;
+  // Variety: ~50% fall to ground, ~50% drift/fly away
+  bool drifter = (rand() % 100) < 50;
+  float windDir = (leaf.position.z < heroPos.z + 400.0f) ? 1.0f : -1.0f;
 
-  // Angular velocity (degrees per tick)
-  leaf.turningForce.x = (float)(rand() % 16 - 8) * 0.1f;
-  leaf.turningForce.z = (float)(rand() % 64 - 32) * 0.1f;
-  leaf.turningForce.y = (float)(rand() % 16 - 8) * 0.1f;
+  if (drifter) {
+    // Drifters: stronger horizontal wind, gentle fall — fly off screen
+    leaf.velocity.x = windDir * ((float)(rand() % 80 + 60));  // 60-140 u/s
+    leaf.velocity.z = (float)(rand() % 60 - 30);              // ±30 u/s lateral
+    leaf.velocity.y = -(float)(rand() % 8 + 2);               // -2 to -10 u/s very gentle
+  } else {
+    // Fallers: less wind, stronger downward — land on terrain
+    leaf.velocity.x = windDir * ((float)(rand() % 40 + 20));  // 20-60 u/s
+    leaf.velocity.z = (float)(rand() % 30 - 15);              // ±15 u/s lateral
+    leaf.velocity.y = -(float)(rand() % 25 + 15);             // -15 to -40 u/s downward
+  }
+
+  // Angular velocity (degrees/second)
+  leaf.turningForce.x = (float)(rand() % 90 - 45);
+  leaf.turningForce.z = (float)(rand() % 180 - 90);
+  leaf.turningForce.y = (float)(rand() % 90 - 45);
 
   leaf.angle = glm::vec3(0.0f);
 }
@@ -767,8 +774,6 @@ void BoidManager::spawnLeaf(LeafParticle &leaf, const glm::vec3 &heroPos) {
 void BoidManager::updateLeaves(float dt, const glm::vec3 &heroPos) {
   if (!m_leafTexture)
     return;
-
-  float ticks = dt * 25.0f; // Convert to tick-based (25fps)
 
   for (int i = 0; i < MAX_LEAVES; ++i) {
     LeafParticle &leaf = m_leaves[i];
@@ -778,26 +783,40 @@ void BoidManager::updateLeaves(float dt, const glm::vec3 &heroPos) {
       continue;
     }
 
-    // Main 5.2: MoveEtcLeaf (ZzzEffectFireLeave.cpp:376-395)
     float terrainH = getTerrainHeight(leaf.position.x, leaf.position.z);
 
+    // Kill leaves that drifted too far — this keeps the spawn loop alive
+    float dx = leaf.position.x - heroPos.x;
+    float dz = leaf.position.z - heroPos.z;
+    float distSq = dx * dx + dz * dz;
+    if (distSq > 1200.0f * 1200.0f) {
+      leaf.live = false;
+      continue;
+    }
+
     if (leaf.position.y <= terrainH) {
-      // On ground: snap to terrain, fade light (alpha) by 0.05/tick
+      // On ground: snap to terrain, fade out
       leaf.position.y = terrainH;
       leaf.onGround = true;
-      leaf.alpha -= 0.05f * ticks;
+      leaf.alpha -= 1.2f * dt; // ~0.8s to fade out
       if (leaf.alpha <= 0.0f)
         leaf.live = false;
     } else {
-      // Airborne: add turbulence, then move
-      leaf.velocity.x += (float)(rand() % 16 - 8) * 0.1f;
-      leaf.velocity.z += (float)(rand() % 16 - 8) * 0.1f;
-      leaf.velocity.y += (float)(rand() % 16 - 8) * 0.1f;
-      leaf.position += leaf.velocity * ticks;
+      // Airborne: gravity + random gusts (units/second)
+      leaf.velocity.y -= 15.0f * dt; // Gravity pull
+      // Random turbulence — scale by sqrt(dt) for framerate-independent Brownian motion
+      float sqrtDt = sqrtf(dt);
+      leaf.velocity.x += (float)(rand() % 100 - 50) * 1.0f * sqrtDt;
+      leaf.velocity.z += (float)(rand() % 100 - 50) * 1.0f * sqrtDt;
+      leaf.velocity.y += (float)(rand() % 60 - 25) * 0.8f * sqrtDt; // Slight upward bias
+      // Damping — prevents runaway speed while keeping leaves lively
+      float damping = expf(-0.5f * dt);
+      leaf.velocity *= damping;
+      leaf.position += leaf.velocity * dt;
     }
 
-    // Rotate by turning force
-    leaf.angle += leaf.turningForce * ticks;
+    // Tumble rotation (degrees/second)
+    leaf.angle += leaf.turningForce * dt;
   }
 }
 

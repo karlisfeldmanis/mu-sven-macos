@@ -17,12 +17,63 @@ void HeroCharacter::renderPetCompanion(const glm::mat4 &view, const glm::mat4 &p
   // ── Pet companion: update + render (Guardian Angel / Imp) ──
   // Main 5.2 GOBoid.cpp: Direction-vector movement with random wandering
   if (m_pet.active && m_pet.bmd && !m_pet.meshBuffers.empty()) {
-    constexpr float FLY_RANGE = 100.0f;         // Max wander distance from owner
-    constexpr float MAX_DIST = 180.0f;           // Hard leash — teleport back if exceeded
     constexpr float TICK_INTERVAL = 0.04f;       // 25fps tick rate
-    constexpr float MAX_TURN_PER_TICK = 20.0f;   // Degrees per tick
-    constexpr float MIN_HEIGHT = 100.0f;         // Above owner
-    constexpr float MAX_HEIGHT = 200.0f;         // Above owner
+
+    if (m_pet.itemIndex == 1) {
+      // ── IMP: sits on character's left shoulder (Main 5.2 bone-attached) ──
+      // Main 5.2 GOBoid.cpp: Imp uses BoneTransform[20] for height positioning.
+      // Imp sits on the character's shoulder, not flying around like the Angel.
+      constexpr float SHOULDER_OFFSET_LEFT = 12.0f;  // Perpendicular to facing (left)
+      constexpr float SHOULDER_OFFSET_BACK = -3.0f;  // Slightly behind
+      constexpr int   SHOULDER_BONE = 20;             // Main 5.2 BoneTransform[20]
+      constexpr float SHOULDER_HEIGHT_FALLBACK = 105.0f;
+      constexpr float SHOULDER_HEIGHT_EXTRA = 50.0f;  // Main 5.2: + 50.0f above bone
+
+      // Get shoulder height from character's cached bone matrices (BMD-local Z → GL Y)
+      float shoulderHeight = SHOULDER_HEIGHT_FALLBACK;
+      if (SHOULDER_BONE < (int)m_cachedBones.size()) {
+        // m_cachedBones are BMD-local (MU Z-up). [2][3] = MU Z = height.
+        shoulderHeight = m_cachedBones[SHOULDER_BONE][2][3] + SHOULDER_HEIGHT_EXTRA;
+      }
+
+      // Position on left shoulder relative to character facing
+      float perpAngle = m_facing + (float)M_PI * 0.5f; // 90° left
+      float targetX = m_pos.x + cosf(perpAngle) * SHOULDER_OFFSET_LEFT
+                               + cosf(m_facing) * SHOULDER_OFFSET_BACK;
+      float targetZ = m_pos.z + sinf(perpAngle) * SHOULDER_OFFSET_LEFT
+                               + sinf(m_facing) * SHOULDER_OFFSET_BACK;
+      float targetY = m_pos.y + shoulderHeight;
+
+      // Smooth lerp to target position (snappy follow, no lag)
+      float lerpRate = glm::clamp(deltaTime * 12.0f, 0.0f, 1.0f);
+      m_pet.pos.x += (targetX - m_pet.pos.x) * lerpRate;
+      m_pet.pos.z += (targetZ - m_pet.pos.z) * lerpRate;
+      m_pet.pos.y += (targetY - m_pet.pos.y) * lerpRate;
+
+      // Face same direction as character
+      float facingDiff = m_facing - m_pet.facing;
+      while (facingDiff > (float)M_PI) facingDiff -= 2.0f * (float)M_PI;
+      while (facingDiff < -(float)M_PI) facingDiff += 2.0f * (float)M_PI;
+      m_pet.facing += facingDiff * glm::clamp(deltaTime * 8.0f, 0.0f, 1.0f);
+      m_pet.pitch = 0.0f; // Level, not looking down
+
+      // Sparkle — imp embers
+      m_pet.tickAccum += deltaTime;
+      while (m_pet.tickAccum >= TICK_INTERVAL) {
+        m_pet.tickAccum -= TICK_INTERVAL;
+        if (m_vfxManager && rand() % 6 == 0) {
+          glm::vec3 sparkPos = m_pet.pos + glm::vec3(
+              (float)(rand() % 12 - 6), (float)(rand() % 12 - 6), (float)(rand() % 12 - 6));
+          m_vfxManager->SpawnBurst(ParticleType::IMP_SPARKLE, sparkPos, 1);
+        }
+      }
+    } else {
+      // ── GUARDIAN ANGEL: flying orbit around owner (Main 5.2 GOBoid.cpp) ──
+      constexpr float FLY_RANGE = 100.0f;         // Max wander distance from owner
+      constexpr float MAX_DIST = 180.0f;           // Hard leash — teleport back if exceeded
+      constexpr float MAX_TURN_PER_TICK = 20.0f;   // Degrees per tick
+      constexpr float MIN_HEIGHT = 100.0f;         // Above owner
+      constexpr float MAX_HEIGHT = 200.0f;         // Above owner
 
     // ── Teleport pet to owner if too far (login, teleport, initial spawn at origin) ──
     float petDistX = m_pet.pos.x - m_pos.x;
@@ -118,13 +169,11 @@ void HeroCharacter::renderPetCompanion(const glm::mat4 &view, const glm::mat4 &p
         m_pet.dirAngle += ((float)(rand() % 10 - 5)) * 0.4f;
         m_pet.dirAngle *= 0.93f; // Decay toward center
 
-        // Sparkle — angel gets white dots, imp gets red-orange embers
+        // Sparkle — angel gets white dots
         if (m_vfxManager && rand() % 4 == 0) {
           glm::vec3 sparkPos = m_pet.pos + glm::vec3(
               (float)(rand() % 16 - 8), (float)(rand() % 16 - 8), (float)(rand() % 16 - 8));
-          auto sparkType = m_pet.itemIndex == 1 ? ParticleType::IMP_SPARKLE
-                                                : ParticleType::PET_SPARKLE;
-          m_vfxManager->SpawnBurst(sparkType, sparkPos, 1);
+          m_vfxManager->SpawnBurst(ParticleType::PET_SPARKLE, sparkPos, 1);
         }
       }
     } else {
@@ -190,13 +239,11 @@ void HeroCharacter::renderPetCompanion(const glm::mat4 &view, const glm::mat4 &p
         if (m_pet.pos.y > m_pos.y + MAX_HEIGHT) m_pet.heightVel -= 0.5f;
         m_pet.heightVel *= 0.92f; // Strong damping for smooth bobbing
 
-        // Sparkle — angel gets white dots, imp gets red-orange embers
+        // Sparkle — angel gets white dots
         if (m_vfxManager && rand() % 4 == 0) {
           glm::vec3 sparkPos = m_pet.pos + glm::vec3(
               (float)(rand() % 16 - 8), (float)(rand() % 16 - 8), (float)(rand() % 16 - 8));
-          auto sparkType = m_pet.itemIndex == 1 ? ParticleType::IMP_SPARKLE
-                                                : ParticleType::PET_SPARKLE;
-          m_vfxManager->SpawnBurst(sparkType, sparkPos, 1);
+          m_vfxManager->SpawnBurst(ParticleType::PET_SPARKLE, sparkPos, 1);
         }
       }
       // Update facing AFTER movement so angel always looks at character head
@@ -214,6 +261,7 @@ void HeroCharacter::renderPetCompanion(const glm::mat4 &view, const glm::mat4 &p
       m_pet.facing += facingDiff * glm::clamp(deltaTime * 3.0f, 0.0f, 1.0f);
       m_pet.pitch = atan2f(dy, std::max(hDist, 1.0f));
     }
+    } // end Guardian Angel branch
 
     // ── Alpha: exponential smoothing (Main 5.2: Alpha += (AlphaTarget - Alpha) * 0.1f per tick) ──
     // Adapted for delta-time: alpha approaches 1.0 with ~10% convergence per tick
@@ -253,12 +301,14 @@ void HeroCharacter::renderPetCompanion(const glm::mat4 &view, const glm::mat4 &p
                                m_pet.meshBuffers[mi]);
     }
 
-    // Build pet model matrix: translate to pet.pos, scale 0.7 (Main 5.2: o->Scale = 0.7f)
+    // Build pet model matrix: translate to pet.pos + BMD rotations + scale
+    // Imp on shoulder is slightly smaller (0.55) than flying Angel (0.6)
+    float petScale = (m_pet.itemIndex == 1) ? 0.55f : 0.6f;
     glm::mat4 petModel = glm::translate(glm::mat4(1.0f), m_pet.pos);
     petModel = glm::rotate(petModel, glm::radians(-90.0f), glm::vec3(0, 0, 1));
     petModel = glm::rotate(petModel, glm::radians(-90.0f), glm::vec3(0, 1, 0));
     petModel = glm::rotate(petModel, m_pet.facing, glm::vec3(0, 0, 1));
-    petModel = glm::scale(petModel, glm::vec3(0.55f));
+    petModel = glm::scale(petModel, glm::vec3(petScale));
 
     m_shader->setMat4("model", petModel);
     m_shader->setFloat("objectAlpha", m_pet.alpha);
@@ -388,16 +438,26 @@ void HeroCharacter::EquipPet(uint8_t itemIndex) {
   m_pet.animFrame = 0.0f;
   m_pet.sparkTimer = 0.0f;
   // Direction-vector movement init (Main 5.2 GOBoid.cpp)
-  // Main 5.2: spawn at random offset ±256 XY, +128-256 Z from owner
-  m_pet.dirAngle = glm::radians((float)(rand() % 360));
-  m_pet.speed = (16.0f + (float)(rand() % 64)) * 0.1f; // Initial idle speed
-  m_pet.heightVel = ((float)(rand() % 64 - 32)) * 0.1f;
-  m_pet.facing = m_pet.dirAngle;
   m_pet.tickAccum = 0.0f;
   m_pet.lastOwnerPos = m_pos;
-  m_pet.pos = m_pos + glm::vec3(
-      (float)(rand() % 200 - 100), 128.0f + (float)(rand() % 128),
-      (float)(rand() % 200 - 100));
+  m_pet.facing = m_facing;
+  if (itemIndex == 1) {
+    // Imp: spawn directly on character's left shoulder
+    float perpAngle = m_facing + (float)M_PI * 0.5f;
+    m_pet.pos = m_pos + glm::vec3(cosf(perpAngle) * 20.0f, 105.0f,
+                                   sinf(perpAngle) * 20.0f);
+    m_pet.dirAngle = 0.0f;
+    m_pet.speed = 0.0f;
+    m_pet.heightVel = 0.0f;
+  } else {
+    // Angel: spawn at random offset ±256 XY, +128-256 Z from owner
+    m_pet.dirAngle = glm::radians((float)(rand() % 360));
+    m_pet.speed = (16.0f + (float)(rand() % 64)) * 0.1f;
+    m_pet.heightVel = ((float)(rand() % 64 - 32)) * 0.1f;
+    m_pet.pos = m_pos + glm::vec3(
+        (float)(rand() % 200 - 100), 128.0f + (float)(rand() % 128),
+        (float)(rand() % 200 - 100));
+  }
 
   std::cout << "[Hero] Pet companion equipped: Helper0"
             << (int)(itemIndex + 1) << ".bmd ("

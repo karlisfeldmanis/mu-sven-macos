@@ -23,7 +23,10 @@ public:
   void Cleanup();
 
   void SetFogColor(const glm::vec3 &c) { fogColor = c; }
-  void SetFogRange(float near_, float far_) { fogNear = near_; fogFar = far_; }
+  void SetFogRange(float near_, float far_) {
+    fogNear = near_;
+    fogFar = far_;
+  }
   void SetLuminosity(float l) { m_luminosity = l; }
 
 private:
@@ -54,6 +57,9 @@ private:
   GLint u_numPushers = -1;
   GLint u_pushPos[17] = {}, u_pushRadius[17] = {};
   GLint u_grassTex[3] = {};
+  GLint u_alphaMult = -1;
+  int m_worldID = 0;
+  float m_alphaMult = 1.0f;
 };
 
 #endif // GRASS_RENDERER_HPP

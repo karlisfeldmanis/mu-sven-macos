@@ -275,7 +275,7 @@ private:
     if (fireType >= 0) {
       glm::mat4 modelMat = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
                                        glm::vec3(1.0f, 0.0f, 0.0f));
-      auto &offsets = GetFireOffsets(fireType);
+      auto &offsets = GetFireOffsets(fireType, 0);
       for (auto &off : offsets) {
         glm::vec3 worldPos = glm::vec3(modelMat * glm::vec4(off, 1.0f));
         fireEffect.AddEmitter(worldPos);

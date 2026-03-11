@@ -1,4 +1,5 @@
 #include "ObjectRenderer.hpp"
+#include "SoundManager.hpp"
 #include "TextureLoader.hpp"
 #include <cmath>
 #include <fstream>
@@ -33,9 +34,21 @@ static int GetBlendMeshTexId(int type) {
     return 1; // DungeonGate02 torch — fire glow mesh
   case 42:
     return 1; // DungeonGate03 torch — fire glow mesh
+  // Devias (World3) BlendMesh objects — Main 5.2: ZzzObject.cpp
+  case 54:
+    return 1; // Tomb glow
+  case 56:
+    return 1; // MerchantAnimal glow
+  case 78:
+    return 3; // StoneMuWall torch/window glow
   default:
     return -1;
   }
+}
+
+// Door types for Devias (Main 5.2: ZzzObject.cpp:3871-3913)
+static bool IsDoorType(int type) {
+  return type == 20 || type == 65 || type == 86 || type == 88;
 }
 
 // Type-to-filename mapping based on reference _enum.h + MapManager.cpp
@@ -135,7 +148,8 @@ void ObjectRenderer::Init() {
 
 void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
                                 const std::vector<BoneWorldMatrix> &bones,
-                                std::vector<MeshBuffers> &out, bool dynamic) {
+                                std::vector<MeshBuffers> &out, bool dynamic,
+                                const std::string &fallbackTexDir) {
   MeshBuffers mb;
   mb.texture = 0;
 
@@ -233,6 +247,9 @@ void ObjectRenderer::UploadMesh(const Mesh_t &mesh, const std::string &baseDir,
   glEnableVertexAttribArray(2);
 
   auto texResult = TextureLoader::ResolveWithInfo(baseDir, mesh.TextureName);
+  // Fallback: if texture not found in primary dir, try fallback dir (e.g. Object1/)
+  if (!texResult.textureID && !fallbackTexDir.empty())
+    texResult = TextureLoader::ResolveWithInfo(fallbackTexDir, mesh.TextureName);
   mb.texture = texResult.textureID;
   mb.hasAlpha = texResult.hasAlpha;
   mb.textureName = mesh.TextureName;
@@ -499,7 +516,13 @@ void ObjectRenderer::LoadObjects(const std::vector<ObjectData> &objects,
     glm::vec3 worldPos = glm::vec3(model[3]);
     glm::vec3 tLight = SampleTerrainLight(worldPos);
 
-    instances.push_back({obj.type, model, tLight});
+    // Per-instance animation phase offset (unique per tree from position hash)
+    float phaseOff = 0.0f;
+    if (obj.type >= 0 && obj.type <= 19) {
+      glm::vec3 wp = glm::vec3(model[3]);
+      phaseOff = std::fmod(wp.x * 0.0137f + wp.z * 0.0251f + wp.y * 0.0193f, 1.0f);
+    }
+    instances.push_back({obj.type, model, tLight, phaseOff});
 
     // Collect interactive objects for sit/pose system (Main 5.2 OPERATE)
     // Lorencia: type 6=Tree07 (sit), 133=PoseBox (pose), 145=Furniture06 (sit),
@@ -573,7 +596,10 @@ void ObjectRenderer::LoadObjectsGeneric(
 
       std::string fullPath = objectDir + "/" + buf;
       std::string texDir = objectDir + "/";
+      std::string fallbackTexDir; // For texture fallback when BMD from objectDir
       auto bmd = BMDParser::Parse(fullPath);
+      if (bmd && !fallbackDir.empty())
+        fallbackTexDir = fallbackDir + "/"; // BMD from primary dir, fallback textures to Object1/
 
       // Try 2: Fallback to Lorencia naming from fallbackDir
       if (!bmd && !fallbackDir.empty()) {
@@ -581,6 +607,7 @@ void ObjectRenderer::LoadObjectsGeneric(
         if (!lorName.empty()) {
           fullPath = fallbackDir + "/" + lorName;
           texDir = fallbackDir + "/";
+          fallbackTexDir.clear(); // Already using fallback dir for textures
           bmd = BMDParser::Parse(fullPath);
           if (bmd)
             ++fromFallback;
@@ -597,21 +624,36 @@ void ObjectRenderer::LoadObjectsGeneric(
       cache.boneMatrices = ComputeBoneMatrices(bmd.get());
       cache.blendMeshTexId = GetBlendMeshTexId(obj.type);
 
-      // Enable animation for models with multiple keyframes (low instance count)
-      if (!bmd->Actions.empty() && bmd->Actions[0].NumAnimationKeys > 1) {
-        int instanceCount = 0;
-        for (auto &o : objects)
-          if (o.type == obj.type)
-            instanceCount++;
-        if (instanceCount <= 20) {
-          cache.isAnimated = true;
-          cache.numAnimationKeys = bmd->Actions[0].NumAnimationKeys;
-        }
-      }
+      // GPU tree sway only for Lorencia (LoadObjects path). Non-Lorencia tree
+      // BMDs (ObjectXX.bmd) have different bone/animation structures that the
+      // sway shader misinterprets, causing severe distortion.
+      bool isTree = false;
+      bool hasAnim = !bmd->Actions.empty() && bmd->Actions[0].NumAnimationKeys > 1;
 
-      for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
-        UploadMesh(bmd->Meshes[mi], texDir, cache.boneMatrices,
-                   cache.meshBuffers, cache.isAnimated);
+      if (hasAnim && isTree) {
+        // GPU-skinned path for trees (enables vertex shader sway)
+        cache.isGPUAnimated = true;
+        cache.numAnimationKeys = bmd->Actions[0].NumAnimationKeys;
+        for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
+          UploadMeshGPUSkinned(bmd->Meshes[mi], texDir, cache.meshBuffers);
+        }
+      } else {
+        // Enable animation for models with multiple keyframes (low instance count)
+        if (hasAnim) {
+          int instanceCount = 0;
+          for (auto &o : objects)
+            if (o.type == obj.type)
+              instanceCount++;
+          if (instanceCount <= 20) {
+            cache.isAnimated = true;
+            cache.numAnimationKeys = bmd->Actions[0].NumAnimationKeys;
+          }
+        }
+
+        for (int mi = 0; mi < (int)bmd->Meshes.size(); ++mi) {
+          UploadMesh(bmd->Meshes[mi], texDir, cache.boneMatrices,
+                     cache.meshBuffers, cache.isAnimated, fallbackTexDir);
+        }
       }
 
       // Mark BlendMesh meshes (fire glow / torch light)
@@ -651,9 +693,74 @@ void ObjectRenderer::LoadObjectsGeneric(
     glm::vec3 worldPos = glm::vec3(model[3]);
     glm::vec3 tLight = SampleTerrainLight(worldPos);
 
-    instances.push_back({obj.type, model, tLight});
+    float phaseOff2 = 0.0f;
+    if (obj.type >= 0 && obj.type <= 19) {
+      phaseOff2 = std::fmod(worldPos.x * 0.0137f + worldPos.z * 0.0251f + worldPos.y * 0.0193f, 1.0f);
+    }
+    int instIdx = (int)instances.size();
+    instances.push_back({obj.type, model, tLight, phaseOff2});
+
+    // Collect interactive objects for sit/pose system (Devias types)
+    // Main 5.2: types 22,25,40,45,55,73 use CreateOperate
+    {
+      InteractType iact = InteractType::SIT;
+      bool isInteractive = false;
+      float pickRadius = 30.0f;
+      float pickHeight = 100.0f;
+      switch (obj.type) {
+      case 22: case 25: case 40: case 45: case 55: case 73:
+        iact = InteractType::SIT;
+        isInteractive = true;
+        pickRadius = 35.0f;
+        pickHeight = 110.0f;
+        break;
+      case 91: // Devias pose trigger (Main 5.2: CreateOperate + HiddenMesh=-2, bbox 40x40x160)
+        iact = InteractType::POSE;
+        isInteractive = true;
+        pickRadius = 40.0f;
+        pickHeight = 160.0f;
+        break;
+      case 133: // MODEL_POSE_BOX (shared from Lorencia)
+        iact = InteractType::POSE;
+        isInteractive = true;
+        pickRadius = 20.0f;
+        pickHeight = 100.0f;
+        break;
+      default: break;
+      }
+      if (isInteractive) {
+        InteractiveObject io;
+        io.type = obj.type;
+        io.worldPos = worldPos;
+        io.facingAngle = obj.mu_angle_raw.z;
+        io.alignToObject = true;
+        io.action = iact;
+        io.radius = pickRadius;
+        io.height = pickHeight;
+        m_interactiveObjects.push_back(io);
+      }
+    }
+
+    // Register Devias doors with their original transform data
+    if (m_mapId == 2 && IsDoorType(obj.type)) {
+      DoorState ds;
+      ds.instanceIdx = instIdx;
+      ds.origPos = worldPos;
+      ds.origAngleDeg = std::fmod(obj.mu_angle_raw.z, 360.0f);
+      ds.currentAngleDeg = ds.origAngleDeg;
+      ds.rotRad = obj.rotation;
+      ds.scale = obj.scale;
+      ds.isSliding = (obj.type == 86);
+      ds.soundPlayed = true;  // Start true: suppress sound until player walks away and returns
+      m_doors.push_back(ds);
+    }
   }
 
+  if (!m_doors.empty()) {
+    std::cout << "[ObjectRenderer] Registered " << m_doors.size()
+              << " Devias doors" << std::endl;
+    m_doorCooldown = 1.5f; // Suppress door sounds for 1.5s after map load
+  }
   std::cout << "[ObjectRenderer] Generic: Loaded " << instances.size()
             << " instances, " << modelCache.size() << " unique models ("
             << fromFallback << " from fallback), skipped " << skipped
@@ -839,24 +946,13 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
         if (!cache.bmdData)
           continue;
 
-        // GPU-skinned animation (trees): compute bone matrices for shader upload
+        // GPU-skinned animation (trees): advance base frame per type
+        // Actual bone matrices computed per-instance during render (with phase offset)
         if (cache.isGPUAnimated) {
           auto &state = animStates[type];
           state.frame += TREE_ANIM_SPEED * dt;
           if (state.frame >= (float)cache.numAnimationKeys)
             state.frame = std::fmod(state.frame, (float)cache.numAnimationKeys);
-
-          auto bones = ComputeBoneMatricesInterpolated(cache.bmdData.get(), 0,
-                                                       state.frame);
-          // Convert BoneWorldMatrix (3x4 row-major) to glm::mat4 (column-major)
-          cache.gpuBoneMatrices.resize(bones.size());
-          for (size_t i = 0; i < bones.size(); ++i) {
-            auto &bm = bones[i];
-            cache.gpuBoneMatrices[i][0] = glm::vec4(bm[0][0], bm[1][0], bm[2][0], 0.0f);
-            cache.gpuBoneMatrices[i][1] = glm::vec4(bm[0][1], bm[1][1], bm[2][1], 0.0f);
-            cache.gpuBoneMatrices[i][2] = glm::vec4(bm[0][2], bm[1][2], bm[2][2], 0.0f);
-            cache.gpuBoneMatrices[i][3] = glm::vec4(bm[0][3], bm[1][3], bm[2][3], 1.0f);
-          }
           continue;
         }
 
@@ -943,6 +1039,12 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
          inst.type == 52 || inst.type == 60))
       continue;
 
+    // Devias hidden objects (Main 5.2 ZzzObject.cpp:4642-4668 — HiddenMesh=-2)
+    // Type 91: pose trigger volume (CreateOperate + invisible box)
+    // Type 100: lightning crystal effect (effect-only, no mesh)
+    if (m_mapId == 2 && (inst.type == 91 || inst.type == 100))
+      continue;
+
     // Type filter: if set, only render specified types
     if (!m_typeFilter.empty()) {
       bool allowed = false;
@@ -986,13 +1088,33 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
     shader->setVec3("terrainLight", inst.terrainLight);
 
     // GPU skinning: upload bone matrices for GPU-animated types (trees)
-    if (it->second.isGPUAnimated && !it->second.gpuBoneMatrices.empty()) {
-      int count = std::min((int)it->second.gpuBoneMatrices.size(), 48);
+    if (it->second.isGPUAnimated && it->second.bmdData) {
+      // Per-instance bone matrices: base frame + instance phase offset
+      auto &state = animStates[inst.type];
+      float numKeys = (float)it->second.numAnimationKeys;
+      float instFrame = std::fmod(state.frame + inst.animPhaseOffset * numKeys, numKeys);
+
+      auto bones = ComputeBoneMatricesInterpolated(it->second.bmdData.get(), 0, instFrame);
+      int count = std::min((int)bones.size(), 48);
+      // Convert BoneWorldMatrix (3x4 row-major) to glm::mat4 (column-major)
+      static std::vector<glm::mat4> tmpMats;
+      tmpMats.resize(count);
+      for (int bi = 0; bi < count; ++bi) {
+        auto &bm = bones[bi];
+        tmpMats[bi][0] = glm::vec4(bm[0][0], bm[1][0], bm[2][0], 0.0f);
+        tmpMats[bi][1] = glm::vec4(bm[0][1], bm[1][1], bm[2][1], 0.0f);
+        tmpMats[bi][2] = glm::vec4(bm[0][2], bm[1][2], bm[2][2], 0.0f);
+        tmpMats[bi][3] = glm::vec4(bm[0][3], bm[1][3], bm[2][3], 1.0f);
+      }
       glUniformMatrix4fv(shader->loc("boneMatrices"), count, GL_FALSE,
-                         glm::value_ptr(it->second.gpuBoneMatrices[0]));
+                         glm::value_ptr(tmpMats[0]));
       shader->setBool("useSkinning", true);
+      // Per-instance sway (additional vertex displacement on top of unique bones)
+      shader->setFloat("swayPhase", inst.animPhaseOffset * 6.2832f);
+      shader->setFloat("swayTime", currentTime);
     } else {
       shader->setBool("useSkinning", false);
+      shader->setFloat("swayPhase", -1.0f); // disabled
     }
 
     // Check if this model type has BlendMesh animation
@@ -1112,6 +1234,103 @@ void ObjectRenderer::Render(const glm::mat4 &view, const glm::mat4 &projection,
 
 }
 
+// ── Door animation (Main 5.2: ZzzObject.cpp:3871-3913) ──
+
+void ObjectRenderer::InitDoors() {
+  // Doors are registered during LoadObjectsGeneric for Devias (mapId==2).
+  // This method exists for explicit re-initialization if needed.
+}
+
+// Helper: rebuild a model matrix with modified MU Z angle
+static glm::mat4 BuildModelMatrix(const glm::vec3 &pos, const glm::vec3 &rotRad,
+                                   float scale) {
+  glm::mat4 m = glm::translate(glm::mat4(1.0f), pos);
+  m = glm::rotate(m, glm::radians(-90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+  m = glm::rotate(m, glm::radians(-90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+  m = glm::rotate(m, rotRad.z, glm::vec3(0.0f, 0.0f, 1.0f));
+  m = glm::rotate(m, rotRad.y, glm::vec3(0.0f, 1.0f, 0.0f));
+  m = glm::rotate(m, rotRad.x, glm::vec3(1.0f, 0.0f, 0.0f));
+  m = glm::scale(m, glm::vec3(scale));
+  return m;
+}
+
+// Smooth angle interpolation toward target (Main 5.2: TurnAngle2)
+static float TurnAngle2(float current, float target, float maxStep) {
+  float diff = target - current;
+  while (diff > 180.0f) diff -= 360.0f;
+  while (diff < -180.0f) diff += 360.0f;
+  if (std::fabs(diff) < maxStep) return target;
+  return current + (diff > 0.0f ? maxStep : -maxStep);
+}
+
+void ObjectRenderer::UpdateDoors(const glm::vec3 &heroPos, float deltaTime) {
+  if (m_doorCooldown > 0.0f) m_doorCooldown -= deltaTime;
+  for (auto &door : m_doors) {
+    auto &inst = instances[door.instanceIdx];
+    float dx = heroPos.x - door.origPos.x;
+    float dz = heroPos.z - door.origPos.z;
+    float dist = std::sqrt(dx * dx + dz * dz);
+
+    if (dist < 200.0f) {
+      if (door.isSliding) {
+        // Sliding door (type 86): translate position based on proximity
+        // Main 5.2 uses Angle[2] to determine slide direction
+        float slideAmount = (200.0f - dist) * 2.0f;
+        glm::vec3 newPos = door.origPos;
+        float angleMod = std::fmod(door.origAngleDeg, 360.0f);
+        if (angleMod < 0) angleMod += 360.0f;
+        // Slide direction depends on original facing
+        if (angleMod > 80.0f && angleMod < 100.0f) newPos.z += slideAmount;
+        else if (angleMod > 260.0f && angleMod < 280.0f) newPos.z -= slideAmount;
+        else if (angleMod < 10.0f || angleMod > 350.0f) newPos.x += slideAmount;
+        else if (angleMod > 170.0f && angleMod < 190.0f) newPos.x -= slideAmount;
+        inst.modelMatrix[3] = glm::vec4(newPos, 1.0f);
+        if (!door.soundPlayed && m_doorCooldown <= 0.0f) {
+          SoundManager::Play(SOUND_DOOR02);
+          door.soundPlayed = true;
+        }
+      } else {
+        // Swinging door (types 20,65,88): rotate based on proximity
+        float swingAmount = (200.0f - dist) * 0.5f;
+        float angleMod = std::fmod(door.origAngleDeg, 360.0f);
+        if (angleMod < 0) angleMod += 360.0f;
+        float newAngle = door.origAngleDeg;
+        if (angleMod > 80.0f && angleMod < 100.0f)
+          newAngle = 30.0f - swingAmount;
+        else if (angleMod > 260.0f && angleMod < 280.0f)
+          newAngle = 330.0f + swingAmount;
+        else if (angleMod < 10.0f || angleMod > 350.0f)
+          newAngle = 300.0f - swingAmount;
+        else if (angleMod > 170.0f && angleMod < 190.0f)
+          newAngle = 240.0f + swingAmount;
+        door.currentAngleDeg = newAngle;
+        glm::vec3 newRot = door.rotRad;
+        newRot.z = glm::radians(newAngle);
+        inst.modelMatrix = BuildModelMatrix(door.origPos, newRot, door.scale);
+        if (!door.soundPlayed && m_doorCooldown <= 0.0f) {
+          SoundManager::Play(SOUND_DOOR01);
+          door.soundPlayed = true;
+        }
+      }
+    } else {
+      // Close: return to original position/angle
+      door.soundPlayed = false;
+      if (door.isSliding) {
+        // Lerp position back
+        glm::vec3 curPos = glm::vec3(inst.modelMatrix[3]);
+        glm::vec3 newPos = curPos + (door.origPos - curPos) * 0.2f;
+        inst.modelMatrix[3] = glm::vec4(newPos, 1.0f);
+      } else {
+        // Smoothly rotate back (10 degrees per tick ≈ 250 deg/s at 25fps)
+        door.currentAngleDeg = TurnAngle2(door.currentAngleDeg, door.origAngleDeg, 10.0f);
+        glm::vec3 newRot = door.rotRad;
+        newRot.z = glm::radians(door.currentAngleDeg);
+        inst.modelMatrix = BuildModelMatrix(door.origPos, newRot, door.scale);
+      }
+    }
+  }
+}
+
 void ObjectRenderer::Cleanup() {
   for (auto &[type, cache] : modelCache) {
     for (auto &mb : cache.meshBuffers) {
@@ -1127,6 +1346,9 @@ void ObjectRenderer::Cleanup() {
   }
   modelCache.clear();
   instances.clear();
+  m_doors.clear();
+  m_interactiveObjects.clear();
+  m_doorCooldown = 0.0f;
   if (m_chromeTexture) {
     glDeleteTextures(1, &m_chromeTexture);
     m_chromeTexture = 0;
