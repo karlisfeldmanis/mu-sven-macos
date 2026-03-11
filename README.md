@@ -5,26 +5,23 @@ A native C++20 restoration of the MU Online engine for macOS with OpenGL 3.3+. F
 ## Features
 
 - **Multi-World Support**: 
-    - **Lorencia**: 2800+ objects, procedural fire, interactive grass, and sky dome.
-    - **Devias**: Rift/Void rendering, bridge safety fixes, and snow atmosphere.
-- **Character Systems**:
-    - **Classes**: Dark Knight (DK) and Dark Wizard (DW) with class-specific stats and visual assets.
-    - **Progression**: Stat allocation, level-up effects, and skill-learning via orbs/scrolls.
-    - **Mounts & Pets**: Support for Uniria, Dinorant, and Boid-based pet AI.
+    - **Maps**: Lorencia (Plains), Dungeon (Underground), and Devias (Snow).
+    - **Atmosphere**: procedural fire, interactive grass, snow particles, and rift/void rendering.
+- **Character & Progression**:
+    - **Classes**: Dark Knight (DK) and Dark Wizard (DW) with class-specific stats.
+    - **Quest System**: **18 linear quests** across all maps with item/skill rewards.
+    - **Asset Depth**: **900+ items** (Swords, Wings, Armor Sets) and **20+ class skills**.
 - **Combat & AI**:
-    - **Combat**: Server-authoritative hits, DK/DW formulas, AG (Ability Gauge) system.
-    - **Monster AI**: 7-state server machine, A* pathfinding, Pack Assist, and Chase Failure leashing.
+    - **Combat**: Server-authoritative hits, AG/Mana costs, and DoT/Stun status effects.
+    - **Monster AI**: 7-state server machine, A* pathfinding, Pack Assist, and Leashing.
 - **UI & Interaction**:
-    - **Character Select**: High-fidelity scene with FBO-rendered face portraits and interactive emotes.
-    - **Diablo HUD**: Custom resource orbs (HP/AG/Mana) and expanded 13-slot quickbar (1-0, QWE).
-    - **Message Log**: Persistent, filtered system/combat log with auto-fade and WoW-style interaction.
-    - **Panels**: Full inventory/equipment (64 slots), skill window, NPC shops, and name markers.
-- **Visuals & Media**:
-    - **VFX**: Particle bursts, ribbon trails, and **Chrome Glow** (+7 item levels).
-    - **Capture**: High-performance JPEG screenshots and animated GIF recording (frame-diffed).
-- **Engine & Net**:
-    - **Networking**: Binary TCP protocol with map-switching and OZT texture overlays.
-    - **Persistence**: SQLite-backed server with 60s autosaves and item/monster databases.
+    - **Character Select**: High-fidelity scene with FBO-rendered face portraits.
+    - **Diablo HUD**: Custom resource orbs (HP/AG/Mana) and expanded 13-slot quickbar.
+    - **Vendors**: Full item shop system with Hanzo, Pasi, and Amy.
+- **Engine & Media**:
+    - **VFX**: Particle bursts, ribbon trails, and **Chrome Glow** (+7 item enhancements).
+    - **Capture**: High-performance JPEG screenshots and animated GIF recording.
+    - **Persistence**: SQLite-backed server with map-specific quest and inventory tracking.
 
 ## Project Structure
 

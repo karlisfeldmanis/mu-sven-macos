@@ -13,6 +13,27 @@ A high-fidelity standalone scene for character management and creation.
 - **Emote System**: Interactive class-specific emotes (Salute for males, Greeting for Elf) that blend with idle animations.
 - **Equipment Preview**: Full rendering of equipped armor, weapons, and animated wings.
 
+## Character Creation Flow
+
+The creation process is a synchronized handshake between the client UI and the server database.
+
+1. **Class Selection**: Choose between Dark Knight (DK) or Dark Wizard (DW).
+2. **Name Validation**: Real-time server-side check for name availability (`SUB_CHARCREATE`).
+3. **Stat Initialization**: Database seeds starting stats based on class (e.g., DK starts with 28 STR, DW with 30 ENE).
+4. **Transition**: Seamless hand-off from the character scene to the game world.
+
+## Skill System & Combat HUD
+
+Skills are class-resticted abilities with unique costs and ranges.
+
+- **Resource Costs**: DK skills consume **AG (Ability Gauge)**; DW spells consume **Mana**.
+- **Combat Feedback**: Real-time damage numbers with color coding (White: Normal, Yellow: Critical, Blue: Excellent).
+- **Skill Types**:
+    - **Physical (DK)**: Twisting Slash (AoE), Death Stab (Splash), Rageful Blow.
+    - **Wizardry (DW)**: Evil Spirit (Screen AoE), Hellfire, Aqua Beam (Line), Teleport (Utility).
+- **Stun/Status**: Twister and Evil Spirit apply a brief movement stun (`stormTime`) to targets.
+- **DoT**: Poison spells apply a 10-second server-side debuff.
+
 ## Diablo HUD (Resource Orbs)
 
 The main HUD is inspired by Diablo, featuring large circular orbs for primary resources.
@@ -81,6 +102,8 @@ Procedural life rendered using specialized Boid AI.
 | `SystemMessageLog.cpp` | Persistent message log with tab filtering |
 | `BoidManager.cpp` | Ambient creature AI (birds, bats, fish, leaves) |
 | `Screenshot.cpp` | JPEG/GIF capture and recording system |
+| `CombatHandler.cpp` | Server-side skill logic and damage math |
+| `QuestHandler.cpp` | Mission state and reward distribution |
 | `HUD.cpp` | Layout and rendering of the Diablo HUD |
 | `GameUI.cpp` | General UI texture and widget helpers |
 | `UITexture.cpp` | Low-level UI texture loading and management |
